@@ -1,0 +1,579 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OpenFit</title>
+</head>
+<body style="margin:0;">
+<div id="app-root"></div>
+<style>
+  :root{
+    --bg:#14171c;
+    --surface:#1c2029;
+    --surface2:#242a34;
+    --border:#2f3540;
+    --text:#edeef0;
+    --muted:#8b93a1;
+    --accent:#e8a33d;
+    --accent-dim:#7a5a24;
+    --good:#5fb88a;
+    --warn:#d96c5c;
+    --font-display: "Arial Narrow", "Helvetica Neue Condensed", Helvetica, Arial, sans-serif;
+    --font-body: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    --font-mono: "SF Mono", "Menlo", "Consolas", monospace;
+  }
+  *{box-sizing:border-box;}
+  #app-root{
+    background:var(--bg);
+    color:var(--text);
+    font-family:var(--font-body);
+    padding:16px 14px 40px;
+    min-height:100vh;
+    max-width:480px;
+    margin:0 auto;
+  }
+  .eyebrow{
+    font-family:var(--font-mono);
+    font-size:11px;
+    letter-spacing:2px;
+    text-transform:uppercase;
+    color:var(--muted);
+    margin:0 0 4px;
+  }
+  .scoreboard{
+    background:linear-gradient(180deg,var(--surface),var(--surface2));
+    border:1px solid var(--border);
+    border-radius:10px;
+    padding:18px 16px;
+    margin-bottom:14px;
+    position:relative;
+    overflow:hidden;
+  }
+  .scoreboard::before{
+    content:"";
+    position:absolute; top:0; left:0; right:0; height:3px;
+    background:var(--accent);
+  }
+  .days-left{
+    font-family:var(--font-display);
+    font-weight:800;
+    font-size:64px;
+    line-height:0.9;
+    color:var(--accent);
+    letter-spacing:-1px;
+  }
+  .days-label{
+    font-size:13px;
+    color:var(--muted);
+    margin-top:2px;
+  }
+  .row{display:flex; gap:10px;}
+  .stat-box{
+    flex:1;
+    background:var(--surface2);
+    border:1px solid var(--border);
+    border-radius:8px;
+    padding:10px 12px;
+  }
+  .stat-num{
+    font-family:var(--font-display);
+    font-weight:700;
+    font-size:22px;
+  }
+  .stat-label{
+    font-size:11px;
+    color:var(--muted);
+    text-transform:uppercase;
+    letter-spacing:0.5px;
+  }
+  section{
+    background:var(--surface);
+    border:1px solid var(--border);
+    border-radius:10px;
+    padding:14px;
+    margin-bottom:12px;
+  }
+  h2{
+    font-family:var(--font-display);
+    font-size:19px;
+    font-weight:800;
+    margin:0 0 10px;
+    letter-spacing:0.3px;
+  }
+  .log-form{display:flex; gap:8px; margin-bottom:10px;}
+  .log-form input{
+    flex:1;
+    background:var(--surface2);
+    border:1px solid var(--border);
+    color:var(--text);
+    border-radius:6px;
+    padding:9px 10px;
+    font-size:15px;
+    font-family:var(--font-body);
+  }
+  .log-form button, .primary-btn{
+    background:var(--accent);
+    color:#14171c;
+    border:none;
+    border-radius:6px;
+    padding:9px 14px;
+    font-weight:700;
+    font-size:14px;
+    cursor:pointer;
+  }
+  .log-form button:active, .primary-btn:active{opacity:0.8;}
+  svg{width:100%; display:block; margin-top:6px;}
+  .weight-list{list-style:none; padding:0; margin:10px 0 0; max-height:120px; overflow-y:auto;}
+  .weight-list li{
+    display:flex; justify-content:space-between;
+    font-size:13px; color:var(--muted);
+    padding:4px 0; border-bottom:1px solid var(--border);
+  }
+  .weight-list li span:last-child{color:var(--text); font-family:var(--font-mono);}
+  .phase-pill{
+    display:inline-block;
+    font-size:10px;
+    letter-spacing:1px;
+    text-transform:uppercase;
+    padding:3px 8px;
+    border-radius:20px;
+    font-weight:700;
+    margin-bottom:8px;
+  }
+  .phase-foundation{background:#2a3a4a; color:#8ec2f2;}
+  .phase-build{background:#2f3a26; color:#a8d97c;}
+  .phase-peak{background:#3a2a26; color:#e8a33d;}
+  .phase-taper{background:#3a2634; color:#e8859c;}
+  .week-tab{
+    display:flex; align-items:center; justify-content:space-between;
+    background:var(--surface2);
+    border:1px solid var(--border);
+    border-radius:8px;
+    padding:10px 12px;
+    margin-bottom:6px;
+    cursor:pointer;
+  }
+  .week-tab.active{border-color:var(--accent);}
+  .week-tab .wk-title{font-weight:700; font-size:14px;}
+  .week-tab .wk-dates{font-size:11px; color:var(--muted); font-family:var(--font-mono);}
+  .week-detail{
+    background:var(--surface2);
+    border:1px solid var(--border);
+    border-top:none;
+    border-radius:0 0 8px 8px;
+    margin:-8px 0 6px;
+    padding:12px;
+  }
+  .day-block{margin-bottom:10px;}
+  .day-block .day-name{font-weight:700; font-size:13px; color:var(--accent); margin-bottom:3px;}
+  .day-block ul{margin:0; padding-left:18px; font-size:13px; color:var(--text);}
+  .day-block ul li{margin-bottom:2px;}
+  .checklist{display:flex; flex-wrap:wrap; gap:6px; margin-top:8px;}
+  .check-item{
+    display:flex; align-items:center; gap:5px;
+    background:var(--bg);
+    border:1px solid var(--border);
+    border-radius:6px;
+    padding:5px 8px;
+    font-size:12px;
+    cursor:pointer;
+  }
+  .check-item.done{border-color:var(--good); color:var(--good);}
+  .note{font-size:12px; color:var(--muted); margin-top:8px; line-height:1.5;}
+  .back-flag{
+    background:rgba(217,108,92,0.12);
+    border:1px solid var(--warn);
+    color:#f2a89b;
+    border-radius:6px;
+    padding:8px 10px;
+    font-size:12px;
+    margin-top:8px;
+  }
+  .empty{color:var(--muted); font-size:13px; text-align:center; padding:10px 0;}
+  .reset-link{font-size:11px; color:var(--muted); text-decoration:underline; text-align:right; display:block; margin-top:8px; cursor:pointer;}
+</style>
+
+<script>
+(function(){
+  const WEDDING = new Date("2026-12-05T00:00:00");
+  const START = new Date("2026-08-21T00:00:00");
+  const START_WEIGHT = 92;
+  const GOAL_WEIGHT = 85;
+
+  function fmtDate(d){
+    return d.toLocaleDateString('en-GB',{day:'numeric',month:'short'});
+  }
+  function addDays(d,n){ const r=new Date(d); r.setDate(r.getDate()+n); return r; }
+  function todayMidnight(){ const t=new Date(); t.setHours(0,0,0,0); return t; }
+
+  // Build 15 week structure
+  const phaseFor = (wk)=>{
+    if(wk<=5) return {key:'foundation',label:'Foundation'};
+    if(wk===6) return {key:'foundation',label:'Deload'};
+    if(wk<=10) return {key:'build',label:'Build'};
+    if(wk===11) return {key:'build',label:'Deload'};
+    if(wk<=14) return {key:'peak',label:'Peak'};
+    return {key:'taper',label:'Taper — wedding week'};
+  };
+
+  const programs = {
+    foundation:{
+      title:"Foundation",
+      cls:"phase-foundation",
+      note:"Build the habit, groove the movements, keep loads moderate. Every session ends with core/back work — this is what makes the back more resilient, not avoiding it.",
+      days:[
+        {name:"Strength A", items:["Goblet squat 3x10","DB row 3x10/side","Chest press (machine/DB) 3x10","Glute bridge 3x12","Plank 3x30s"]},
+        {name:"Strength B", items:["Leg press 3x10","Lat pulldown 3x10","Seated shoulder press 3x10","Hip thrust 3x12","Dead bug 3x8/side"]},
+        {name:"Strength C", items:["Walking lunges 3x10/leg","Seated cable row 3x10","Incline DB press 3x10","Light DB Romanian deadlift 3x10","Bird dog 3x8/side"]},
+        {name:"Cardio 1", items:["30 min brisk walk or bike, easy pace"]},
+        {name:"Cardio 2", items:["30 min steady state, easy-moderate pace"]}
+      ]
+    },
+    build:{
+      title:"Build",
+      cls:"phase-build",
+      note:"Same three lifting days, but add a rep or a bit of load each week if it felt solid last week. One cardio day becomes intervals. Keep the McGill-style back work in — it's paying off now.",
+      days:[
+        {name:"Strength A", items:["Goblet/DB squat 3x12, add load if easy","DB row 3x12/side","Chest press 3x12","Hip thrust 3x15","Side plank 3x20s/side"]},
+        {name:"Strength B", items:["Leg press 4x10, increase load","Lat pulldown 4x10","Seated shoulder press 3x10","Suitcase carry 3x30m","Bird dog 3x10/side"]},
+        {name:"Strength C", items:["Walking lunges 3x12/leg","Seated cable row 4x10","Incline DB press 3x12","DB Romanian deadlift 3x12, add load","Curl-up 3x8"]},
+        {name:"Cardio: Intervals", items:["8x 30s hard / 90s easy on bike or row"]},
+        {name:"Cardio: Steady", items:["35-40 min moderate pace"]}
+      ]
+    },
+    peak:{
+      title:"Peak",
+      cls:"phase-peak",
+      note:"Heaviest loads of the block, still pain-free range only. This is the highest-output phase — recovery (sleep, protein) matters as much as the sessions themselves.",
+      days:[
+        {name:"Strength A", items:["Squat pattern 4x8, heavier","DB row 4x10/side","Chest press 4x8","Hip thrust 4x12","Side plank 3x30s/side"]},
+        {name:"Strength B", items:["Leg press 4x8, heavier","Lat pulldown 4x8","Seated shoulder press 4x8","Suitcase carry 3x40m","Bird dog 3x10/side"]},
+        {name:"Strength C", items:["Walking lunges 4x10/leg","Seated cable row 4x8","Incline DB press 4x8","DB Romanian deadlift 4x10","Curl-up 3x10"]},
+        {name:"Cardio: Intervals", items:["10x 30s hard / 90s easy"]},
+        {name:"Cardio: Steady", items:["40 min moderate pace"]}
+      ]
+    },
+    taper:{
+      title:"Taper",
+      cls:"phase-taper",
+      note:"Wedding week. Volume drops ~40% — you're not losing fitness in one week, but soreness and puffiness are exactly what you don't want in photos. Nothing new, nothing to failure.",
+      days:[
+        {name:"Strength (light)", items:["Same movements as Peak, half the sets, moderate weight, stop well short of failure"]},
+        {name:"Mobility/back work", items:["Bird dog, dead bug, gentle walk, stretching — no loading"]},
+        {name:"Rest", items:["Full rest, hydrate well, prioritise sleep"]},
+      ]
+    }
+  };
+
+  const weeks = [];
+  for(let i=0;i<15;i++){
+    const wk = i+1;
+    const start = addDays(START, i*7);
+    const end = addDays(start, 6);
+    weeks.push({num:wk, start, end, phase:phaseFor(wk)});
+  }
+
+  async function apiGetWeights(){
+    const r = await fetch('/api/weights'); return r.ok ? r.json() : [];
+  }
+  async function apiAddWeight(dateStr, weight){
+    await fetch('/api/weights', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({date:dateStr, weight})});
+  }
+  async function apiClearWeights(){
+    await fetch('/api/weights', {method:'DELETE'});
+  }
+  async function apiGetWorkouts(){
+    const r = await fetch('/api/workouts'); return r.ok ? r.json() : {};
+  }
+  async function apiSetWorkout(week, idx, done){
+    await fetch('/api/workouts', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({week, idx, done})});
+  }
+  async function apiGetActivity(days){
+    const r = await fetch('/api/activity?days='+(days||30)); return r.ok ? r.json() : [];
+  }
+  async function apiGetPlugins(){
+    const r = await fetch('/api/plugins'); return r.ok ? r.json() : [];
+  }
+  async function apiSyncPlugin(id){
+    const r = await fetch('/api/sync/'+id+'?days=7', {method:'POST'}); return r.ok ? r.json() : {ok:false};
+  }
+
+  let weightLog = [];
+  let workoutLog = {};
+  let activityLog = [];
+  let pluginList = [];
+  let openWeek = null;
+
+  function renderPlugins(){
+    const holder = document.getElementById('plugins-holder');
+    if(!holder) return;
+    if(!pluginList.length){
+      holder.innerHTML = '<div class="empty">No sync plugins installed.</div>';
+      return;
+    }
+    holder.innerHTML = `
+      <div style="display:flex; flex-wrap:wrap; gap:6px; margin-bottom:10px;">
+        ${pluginList.map(p=>`
+          <button class="check-item plugin-sync-btn ${p.configured?'':'done'}" data-plugin="${p.id}"
+            style="cursor:pointer; ${p.configured?'':'opacity:0.5;'}" ${p.configured?'':'disabled'}>
+            ${p.configured?'⟳':'⚠'} Sync ${p.name}
+          </button>
+        `).join('')}
+      </div>
+      ${pluginList.some(p=>!p.configured) ? '<div class="note">Plugins greyed out need env vars set - see README.</div>' : ''}
+    `;
+    holder.querySelectorAll('.plugin-sync-btn').forEach(btn=>{
+      btn.onclick = async ()=>{
+        const id = btn.getAttribute('data-plugin');
+        btn.textContent = 'Syncing…';
+        btn.disabled = true;
+        const res = await apiSyncPlugin(id);
+        activityLog = await apiGetActivity(14);
+        renderActivity();
+        btn.textContent = res.ok ? '✓ Synced' : '✗ Failed';
+      };
+    });
+  }
+
+  function renderActivity(){
+    const holder = document.getElementById('activity-holder');
+    if(!holder) return;
+    if(!activityLog.length){
+      holder.innerHTML = '<div class="empty">No synced data yet — hit "Sync now" (auto-syncs every few hours in the background).</div>';
+      return;
+    }
+    holder.innerHTML = `
+      <ul class="weight-list">
+        ${activityLog.slice(0,7).map(a=>{
+          const d = new Date(a.date+"T00:00:00");
+          const parts = [];
+          if(a.steps!=null) parts.push(a.steps.toLocaleString()+' steps');
+          if(a.resting_hr!=null) parts.push(a.resting_hr+' bpm rest');
+          if(a.sleep_hours!=null) parts.push(a.sleep_hours+'h sleep');
+          return `<li><span>${fmtDate(d)}</span><span>${parts.join(' · ')||'—'}</span></li>`;
+        }).join('')}
+      </ul>
+    `;
+  }
+
+  function currentWeekNum(){
+    const diff = Math.floor((todayMidnight() - START)/(1000*60*60*24));
+    const wk = Math.floor(diff/7)+1;
+    return Math.min(Math.max(wk,1),15);
+  }
+
+  function render(){
+    const root = document.getElementById('app-root');
+    const daysLeft = Math.max(0, Math.ceil((WEDDING - todayMidnight())/(1000*60*60*24)));
+    const lastWeight = weightLog.length ? weightLog[weightLog.length-1].weight : START_WEIGHT;
+    const lost = (START_WEIGHT - lastWeight).toFixed(1);
+    const toGo = Math.max(0,(lastWeight - GOAL_WEIGHT)).toFixed(1);
+
+    root.innerHTML = `
+      <div style="display:flex; align-items:baseline; justify-content:space-between; margin-bottom:2px;">
+        <div style="font-family:var(--font-display); font-weight:800; font-size:15px; letter-spacing:0.5px;">OPENFIT</div>
+        <div style="font-size:10px; color:var(--muted); font-family:var(--font-mono);">self-hosted · plugin-synced</div>
+      </div>
+      <div class="eyebrow">Goal: wedding on Dec 5</div>
+      <div class="scoreboard">
+        <div class="days-left">${daysLeft}</div>
+        <div class="days-label">days until Dec 5</div>
+        <div class="row" style="margin-top:14px;">
+          <div class="stat-box">
+            <div class="stat-num">${lastWeight}kg</div>
+            <div class="stat-label">Current</div>
+          </div>
+          <div class="stat-box">
+            <div class="stat-num" style="color:var(--good)">${lost>0?'-'+lost:lost}kg</div>
+            <div class="stat-label">Lost so far</div>
+          </div>
+          <div class="stat-box">
+            <div class="stat-num" style="color:var(--accent)">${toGo}kg</div>
+            <div class="stat-label">To goal (85)</div>
+          </div>
+        </div>
+      </div>
+
+      <section>
+        <h2>Weight log</h2>
+        <div class="log-form">
+          <input type="number" step="0.1" id="weight-input" placeholder="Weight in kg" />
+          <button id="log-btn">Log</button>
+        </div>
+        <div id="chart-holder"></div>
+        <ul class="weight-list" id="weight-list"></ul>
+        ${weightLog.length ? '<span class="reset-link" id="reset-weight">clear weight log</span>' : ''}
+      </section>
+
+      <section>
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+          <h2 style="margin:0;">Activity</h2>
+        </div>
+        <div id="plugins-holder"></div>
+        <div id="activity-holder"></div>
+      </section>
+
+      <section>
+        <h2>15-week program</h2>
+        <div id="weeks-holder"></div>
+      </section>
+    `;
+
+    renderChart();
+    renderWeightList();
+    renderWeeks();
+    renderActivity();
+    renderPlugins();
+
+    document.getElementById('log-btn').onclick = async ()=>{
+      const input = document.getElementById('weight-input');
+      const val = parseFloat(input.value);
+      if(!val || val<40 || val>250) return;
+      const today = todayMidnight().toISOString().slice(0,10);
+      await apiAddWeight(today, val);
+      weightLog = await apiGetWeights();
+      input.value='';
+      render();
+    };
+    const resetBtn = document.getElementById('reset-weight');
+    if(resetBtn){
+      resetBtn.onclick = async ()=>{
+        await apiClearWeights();
+        weightLog = [];
+        render();
+      };
+    }
+  }
+
+  function renderWeightList(){
+    const ul = document.getElementById('weight-list');
+    if(!weightLog.length){
+      ul.innerHTML = '<li class="empty" style="border:none;">No entries yet — log your first weigh-in above.</li>';
+      return;
+    }
+    ul.innerHTML = weightLog.slice().reverse().slice(0,8).map(e=>{
+      const d = new Date(e.date+"T00:00:00");
+      return `<li><span>${fmtDate(d)}</span><span>${e.weight}kg</span></li>`;
+    }).join('');
+  }
+
+  function renderChart(){
+    const holder = document.getElementById('chart-holder');
+    const w=440,h=140,pad=28;
+    const x0=START.getTime(), x1=WEDDING.getTime();
+    const yTop=95, yBot=76; // weight range padding around 85-92
+    const yMax = Math.max(START_WEIGHT+2, ...weightLog.map(e=>e.weight))+1;
+    const yMin = Math.min(GOAL_WEIGHT-2, ...weightLog.map(e=>e.weight))-1;
+
+    function xPos(t){ return pad + (t-x0)/(x1-x0) * (w-pad*2); }
+    function yPos(v){ return h-pad - (v-yMin)/(yMax-yMin) * (h-pad*2); }
+
+    const targetLine = `M${xPos(x0)},${yPos(START_WEIGHT)} L${xPos(x1)},${yPos(GOAL_WEIGHT)}`;
+
+    let actualLine = '';
+    let dots = '';
+    if(weightLog.length){
+      const pts = weightLog.map(e=>{
+        const t = new Date(e.date+"T00:00:00").getTime();
+        return [xPos(t), yPos(e.weight)];
+      });
+      actualLine = 'M'+pts.map(p=>p[0]+','+p[1]).join(' L');
+      dots = pts.map(p=>`<circle cx="${p[0]}" cy="${p[1]}" r="3" fill="var(--accent)"/>`).join('');
+    }
+
+    holder.innerHTML = `
+      <svg viewBox="0 0 ${w} ${h}">
+        <line x1="${pad}" y1="${yPos(GOAL_WEIGHT)}" x2="${w-pad}" y2="${yPos(GOAL_WEIGHT)}" stroke="var(--border)" stroke-dasharray="3,3"/>
+        <text x="${w-pad}" y="${yPos(GOAL_WEIGHT)-4}" fill="var(--muted)" font-size="9" text-anchor="end">goal 85kg</text>
+        <path d="${targetLine}" stroke="var(--border)" stroke-width="1.5" fill="none" stroke-dasharray="4,3"/>
+        ${actualLine ? `<path d="${actualLine}" stroke="var(--good)" stroke-width="2" fill="none"/>` : ''}
+        ${dots}
+        <text x="${pad}" y="${h-6}" fill="var(--muted)" font-size="9">21 Aug</text>
+        <text x="${w-pad}" y="${h-6}" fill="var(--muted)" font-size="9" text-anchor="end">5 Dec</text>
+      </svg>
+    `;
+  }
+
+  function renderWeeks(){
+    const holder = document.getElementById('weeks-holder');
+    const curWk = currentWeekNum();
+    holder.innerHTML = weeks.map(w=>{
+      const prog = programs[w.phase.key];
+      const isOpen = openWeek===w.num;
+      const isCurrent = w.num===curWk;
+      return `
+        <div>
+          <div class="week-tab ${isOpen?'active':''}" data-week="${w.num}">
+            <div>
+              <div class="wk-title">Week ${w.num}${isCurrent?' • now':''} <span class="phase-pill ${prog.cls}" style="margin-left:6px;">${w.phase.label}</span></div>
+              <div class="wk-dates">${fmtDate(w.start)} – ${fmtDate(w.end)}</div>
+            </div>
+            <div style="color:var(--muted); font-size:18px;">${isOpen?'−':'+'}</div>
+          </div>
+          ${isOpen ? renderWeekDetail(w, prog) : ''}
+        </div>
+      `;
+    }).join('');
+
+    holder.querySelectorAll('.week-tab').forEach(el=>{
+      el.onclick = ()=>{
+        const wk = parseInt(el.getAttribute('data-week'));
+        openWeek = openWeek===wk ? null : wk;
+        render();
+      };
+    });
+
+    if(openWeek){
+      const checks = holder.querySelectorAll('.check-item');
+      checks.forEach(el=>{
+        el.onclick = async ()=>{
+          const wk = el.getAttribute('data-week');
+          const idx = parseInt(el.getAttribute('data-idx'));
+          if(!workoutLog[wk]) workoutLog[wk] = {};
+          const newVal = !workoutLog[wk][idx];
+          workoutLog[wk][idx] = newVal;
+          await apiSetWorkout(parseInt(wk), idx, newVal);
+          render();
+        };
+      });
+    }
+  }
+
+  function renderWeekDetail(w, prog){
+    const done = workoutLog[w.num] || {};
+    const checklist = prog.days.map((d,i)=>`
+      <div class="check-item ${done[i]?'done':''}" data-week="${w.num}" data-idx="${i}">
+        ${done[i]?'✓':'○'} ${d.name}
+      </div>
+    `).join('');
+    return `
+      <div class="week-detail">
+        <span class="phase-pill ${prog.cls}">${prog.title}</span>
+        ${prog.days.map(d=>`
+          <div class="day-block">
+            <div class="day-name">${d.name}</div>
+            <ul>${d.items.map(it=>`<li>${it}</li>`).join('')}</ul>
+          </div>
+        `).join('')}
+        <div class="note">${prog.note}</div>
+        <div class="back-flag">Back flares up? Drop that session's loaded lifts, keep the core/mobility work, and don't push through pain — swap in a walk instead.</div>
+        <div class="checklist">${checklist}</div>
+      </div>
+    `;
+  }
+
+  async function init(){
+    weightLog = await apiGetWeights();
+    workoutLog = await apiGetWorkouts();
+    activityLog = await apiGetActivity(14);
+    pluginList = await apiGetPlugins();
+    openWeek = currentWeekNum();
+    render();
+  }
+  init();
+})();
+</script>
+
+</body>
+</html>

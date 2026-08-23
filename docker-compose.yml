@@ -1,0 +1,13 @@
+services:
+  tracker:
+    build: ./app
+    ports:
+      - "8080:80"
+    volumes:
+      - tracker-data:/data
+    env_file:
+      - .env
+    restart: unless-stopped
+
+volumes:
+  tracker-data:
