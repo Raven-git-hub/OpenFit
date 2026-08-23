@@ -12,26 +12,15 @@ see [ROADMAP.md](ROADMAP.md) for where it's headed.
 
 ## Why this exists
 
-Fuck the cloud, fuck SaaS — every household can run its own server, and
-health data is exactly the kind of thing that shouldn't live somewhere
-else by default. Most fitness trackers lock you into one app tied to one
+Most fitness trackers lock you into one app tied to one
 device brand; most device brands lock your data into their own cloud.
 
-Two projects get close to solving this and stop short in opposite
-directions:
+Health data should be owned by you, and it should be your choice where it is stored and what you do with it.
 
-- **[wger](https://github.com/wger-project/wger)** is a mature,
-  self-hosted workout/nutrition/weight tracker with a real UI — but
-  pulling in data from actual wearables has never been a first-class
-  feature.
-- **[Open Wearables](https://github.com/the-momentum/open-wearables)** is
-  a self-hosted platform that normalizes Garmin/Oura/Whoop/Fitbit data
-  behind one API — but it's developer infrastructure, no tracker UI, no
-  training program, nothing to actually open and use.
-
-OpenFit is the overlap: a tracker with its own UI, built on a plugin
+OpenFit is a tracker with its own UI, built on a plugin
 architecture for device data, so switching devices doesn't mean losing
 your history.
+It also allows you to develop your own plugins which allows you to interpret your own data in a way that is most useful to you.
 
 ## What's here today
 
