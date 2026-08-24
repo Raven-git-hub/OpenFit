@@ -32,6 +32,28 @@ It also allows you to develop your own plugins which allows you to interpret you
   the legacy Fitbit API, which Google is retiring in September 2026)
 - Both plugins auto-sync on a schedule, plus a manual sync button each
 
+## Planned: webhook input (push, not pull)
+
+In addition to pull-based plugins (polling a device's API on a schedule)
+and manual entry, a third input path is planned: a webhook endpoint that
+external automations can push to the moment an event happens - no polling
+delay. Motivating use case: a Home Assistant automation firing on every
+Eufy smart-scale weigh-in, hitting OpenFit directly instead of waiting for
+a scheduled sync.
+
+Design shape:
+- A single generic endpoint (`/api/webhook/<token>`) rather than one per
+  metric, taking `{"metric": "weight", "value": 91.5}` in the body - one
+  URL to copy into any automation tool (Home Assistant, IFTTT, Shortcuts,
+  a script), regardless of what metric it's pushing.
+- The token in the URL *is* the auth - copy it once from Settings into an
+  automation, no separate auth header needed.
+- Regeneratable token if it ever leaks, and sanity-range checks on
+  incoming values so a misfired automation can't silently corrupt a
+  chart with a garbage reading.
+
+See [ROADMAP.md](ROADMAP.md) for where this sits relative to other work.
+
 ## Quick start
 
 ```bash
