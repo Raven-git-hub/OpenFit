@@ -33,9 +33,12 @@ class SyncPlugin(ABC):
         Pull the last `days` days of data from the source and upsert into
         the `activity` table on the given sqlite3 connection.
 
-        Must use INSERT ... ON CONFLICT(date) DO UPDATE, and should
-        COALESCE against existing columns so two plugins covering
-        different days/fields don't stomp on each other. See
+        The activity table is keyed on (date, source), so each plugin owns
+        its own rows and two sources covering the same day never contend.
+        Write your own `id` into the source column and use
+        INSERT ... ON CONFLICT(date, source) DO UPDATE, COALESCE-ing
+        against the existing columns so a later partial sync doesn't blank
+        out fields an earlier one filled in. See
         plugins/garmin/plugin.py for the reference implementation.
 
         Returns the number of days written (for logging/UI feedback).

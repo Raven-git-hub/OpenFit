@@ -108,12 +108,53 @@ app/
     garmin/plugin.py           Garmin Connect
     google_health/plugin.py    Google Health API (Pixel Watch / Fitbit)
     google_health/authorize.py one-time OAuth login for the above
+  migrations/                 Versioned .sql schema migrations + runner
+tests/                        pytest suite (temp DB, no network)
 ```
 
 Data lives in SQLite, on a persistent Docker volume, in three tables:
 `weights`, `workouts`, and `activity`. Every plugin writes into the same
-`activity` table, keyed by date, so the frontend doesn't care which
-plugin a given day's steps came from.
+`activity` table, which is keyed by `(date, source)` — one row per day
+*per source*, so Garmin and Google Health never overwrite each other.
+`GET /api/activity` merges those rows back into one flat row per date
+before returning them, so the frontend doesn't care which plugin a given
+day's steps came from. When two sources report the same metric for the
+same day, the fixed precedence is `garmin` > `google_health`; pass
+`?by_source=1` to get the raw per-source rows instead.
+
+### Schema migrations
+
+The schema is versioned by numbered `.sql` files in `app/migrations/`,
+applied in order and recorded in a `schema_migrations` table. Each one
+runs exactly once, inside a transaction. Migrations run automatically at
+startup, and can be run by hand — do this against a *copy* of the
+database first when a migration touches real data:
+
+```bash
+# 1. back up the DB from the volume (stop first so nothing is mid-write)
+docker compose stop tracker
+docker compose run --rm -v "$PWD":/backup tracker \
+  cp /data/tracker.db /backup/tracker-backup.db
+docker compose start tracker
+
+# 2. dry-run the migration against the copy before deploying
+cd app && python -m migrations ../tracker-backup.db
+```
+
+To add a migration, drop a new `NNN_name.sql` in `app/migrations/`. There
+is deliberately no Alembic/SQLAlchemy here — this is ~100 lines of
+stdlib `sqlite3`, which is the right weight for a single-container app.
+
+### Tests
+
+```bash
+pip install -r requirements-dev.txt
+pytest
+```
+
+The suite runs against a temporary SQLite file and never makes a network
+call — the plugin contract is tested with a fake in-process plugin, not
+against Garmin or Google.
 
 **Multi-user approach:** not row-level multi-tenancy. If this ever runs
 for more than one person, the plan is one isolated container per user
@@ -133,8 +174,9 @@ class MyServicePlugin(SyncPlugin):
     required_env = ["MY_SERVICE_TOKEN"]
 
     def sync(self, conn, days: int) -> int:
-        # fetch data from your source, upsert into `activity`
-        # using INSERT ... ON CONFLICT(date) DO UPDATE with COALESCE
+        # fetch data from your source, upsert into `activity` with
+        # source = your plugin id, using
+        # INSERT ... ON CONFLICT(date, source) DO UPDATE with COALESCE
         # (see plugins/garmin/plugin.py for the exact pattern)
         ...
         return days_written

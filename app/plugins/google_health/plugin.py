@@ -80,11 +80,10 @@ class GoogleHealthPlugin(SyncPlugin):
                 """
                 INSERT INTO activity (date, steps, resting_hr, sleep_hours, source, synced_at)
                 VALUES (?, ?, ?, ?, 'google_health', datetime('now'))
-                ON CONFLICT(date) DO UPDATE SET
+                ON CONFLICT(date, source) DO UPDATE SET
                     steps=COALESCE(excluded.steps, activity.steps),
                     resting_hr=COALESCE(excluded.resting_hr, activity.resting_hr),
                     sleep_hours=COALESCE(excluded.sleep_hours, activity.sleep_hours),
-                    source='google_health',
                     synced_at=datetime('now')
                 """,
                 (

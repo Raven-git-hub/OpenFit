@@ -1,0 +1,8 @@
+# Development/test dependencies.
+#
+# The runtime deps are needed too: the tests import the Flask app and the
+# plugin registry (they never make a network call - Garmin and Google are
+# not contacted by the suite).
+-r app/requirements.txt
+
+pytest==9.1.1
