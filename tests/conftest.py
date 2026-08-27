@@ -5,6 +5,9 @@ Every test runs against a fresh temp SQLite file - never the real
 /data/tracker.db - and nothing here touches the network: Garmin and
 Google Health are never contacted, only the fake plugin in
 test_plugin_contract.py writes rows.
+
+The same goes for the encryption key: every test gets a throwaway one in
+its tmp_path, so nothing can read or create /data/.secret_key.
 """
 
 import os
@@ -17,7 +20,21 @@ APP_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 if APP_DIR not in sys.path:
     sys.path.insert(0, APP_DIR)
 
+import crypto as openfit_crypto  # noqa: E402
 from migrations import run_migrations  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def secret_key_file(tmp_path, monkeypatch):
+    """Point credential encryption at a throwaway key for every test.
+
+    Autouse and unconditional: without it a test that encrypts anything
+    would read - or worse, create - the real /data/.secret_key.
+    """
+    path = tmp_path / ".secret_key"
+    monkeypatch.delenv(openfit_crypto.KEY_ENV, raising=False)
+    monkeypatch.setenv(openfit_crypto.KEY_PATH_ENV, str(path))
+    return path
 
 
 @pytest.fixture

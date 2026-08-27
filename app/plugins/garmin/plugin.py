@@ -9,6 +9,7 @@ scheduled sync.
 """
 
 import os
+import shutil
 from datetime import date, timedelta
 
 from garminconnect import Garmin, GarminConnectAuthenticationError
@@ -19,24 +20,63 @@ from ..base import SyncPlugin
 class GarminPlugin(SyncPlugin):
     id = "garmin"
     name = "Garmin Connect"
+    add_flow = "credentials"
+    fields = [
+        {
+            "key": "email",
+            "label": "Email",
+            "type": "text",
+            "required": True,
+            "env": "GARMIN_EMAIL",
+        },
+        {
+            "key": "password",
+            "label": "Password",
+            "type": "password",
+            "required": True,
+            "env": "GARMIN_PASSWORD",
+        },
+    ]
     required_env = ["GARMIN_EMAIL", "GARMIN_PASSWORD"]
 
-    def _get_client(self):
-        email = os.getenv("GARMIN_EMAIL")
-        password = os.getenv("GARMIN_PASSWORD")
-        if not email or not password:
-            raise RuntimeError("GARMIN_EMAIL / GARMIN_PASSWORD not set")
+    def _tokenstore_path(self):
+        return os.getenv("GARMIN_TOKENSTORE", "/data/.garminconnect")
 
-        tokenstore = os.getenv("GARMIN_TOKENSTORE", "/data/.garminconnect")
+    def clear_cached_auth(self) -> None:
+        """Remove the cached Garmin session so removing really disconnects.
+
+        Without this, deleting the account row would leave a working
+        token on disk - the device would look gone from the UI while the
+        container could still log in.
+        """
+        path = self._tokenstore_path()
+        if os.path.isdir(path):
+            shutil.rmtree(path, ignore_errors=True)
+        elif os.path.exists(path):
+            try:
+                os.remove(path)
+            except OSError as e:
+                print(f"[garmin] could not remove {path}: {e}")
+
+    def _get_client(self, conn=None):
+        creds = self.get_credentials(conn)
+        email = creds.get("email")
+        password = creds.get("password")
+        if not email or not password:
+            raise RuntimeError(
+                "Garmin is not connected - add it under "
+                "Configuration -> Connected sources"
+            )
+
         client = Garmin(email, password)
         try:
-            client.login(tokenstore)
+            client.login(self._tokenstore_path())
         except GarminConnectAuthenticationError as e:
             raise RuntimeError(f"Garmin login failed: {e}")
         return client
 
     def sync(self, conn, days: int) -> int:
-        client = self._get_client()
+        client = self._get_client(conn)
         written = 0
         today = date.today()
 

@@ -18,13 +18,19 @@ plugin's own calls to its own device API.
   `python -m migrations [db]`. New schema change = a new numbered migration.
 - `app/plugins/` — sync plugins. Each is `app/plugins/<name>/plugin.py` subclassing
   `SyncPlugin` (`app/plugins/base.py`), registered in `app/plugins/__init__.py`.
-  New device/service integrations follow this pattern — never bypass it.
+  New device/service integrations follow this pattern — never bypass it. A plugin
+  declares a connector manifest (`fields`, `add_flow`) and reads its credentials
+  via `self.get_credentials(conn)`; the UI's add-a-device form is built from that
+  manifest, so adding a device needs no frontend code.
+- `app/crypto.py` — Fernet encrypt/decrypt for stored credentials.
 - `tests/` — pytest against a temp DB, no network (Garmin/Google are never called).
 - `docs/design/` — design references for the frontend.
 
 ## Data model
-- Tables: `weights`, `workouts`, `activity`, `schema_migrations` (+ `settings` once
-  added). `activity` is keyed `(date, source)` — one row per date per device.
+- Tables: `weights`, `workouts`, `activity`, `settings`, `accounts`,
+  `schema_migrations`. `activity` is keyed `(date, source)` — one row per date per
+  device. `accounts` is one row per plugin, holding that device's credentials as an
+  encrypted JSON blob — never store or return them in the clear.
 - Plugins upsert with `ON CONFLICT(date, source) DO UPDATE ... COALESCE(...)` and
   write their own `id` into `source`. `GET /api/activity` merges per-source rows to
   one flat row per date; `?by_source=1` returns raw rows.
@@ -33,7 +39,8 @@ plugin's own calls to its own device API.
 - **No multi-tenancy in the core app.** No `user_id` columns, no auth on the core.
   Multi-user is a future per-container "Host" layer, not row-level tenancy.
 - **Privacy-first:** no telemetry, no analytics, no external calls except a
-  plugin's own device API, no cloud dependencies.
+  plugin's own device API, no cloud dependencies. Device credentials are encrypted
+  at rest and never returned over the API.
 - **Frontend:** responsive via viewport breakpoints (never device detection);
   theme-aware light+dark; all colours/fonts as CSS variables in the
   `CUSTOMISE OPENFIT HERE` token block. Starts blank — no hardcoded user goals.

@@ -4,7 +4,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY main.py first_login.py ./
+COPY main.py crypto.py first_login.py ./
 COPY plugins ./plugins
 COPY migrations ./migrations
 COPY templates ./templates

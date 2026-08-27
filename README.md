@@ -67,18 +67,35 @@ Visit `http://<your-server-ip>:8080`. It runs fine with zero plugins
 configured — you'll just be logging weight and workouts manually until
 you set one up.
 
+### Connecting a device
+
+Devices are added in the app, not in a config file: **Configuration →
+Connected sources → Add a device**. Pick the device, fill in what it
+asks for, and hit Add. Credentials are encrypted before they're stored
+(see [Credential storage](#credential-storage)), and **Remove** deletes
+them along with any cached session token.
+
+An install that predates this flow keeps working: the `.env` variables
+below are still read as a fallback until you re-add the device through
+the UI.
+
 ### Garmin Connect plugin
 
-1. Fill in `GARMIN_EMAIL` / `GARMIN_PASSWORD` in `.env`.
-2. If your account has MFA/2FA enabled, run the one-time interactive
-   login first so the background sync never has to handle the prompt:
+Add it under **Configuration → Connected sources**, entering the email
+and password for your Garmin Connect account.
+
+If your account has MFA/2FA enabled, run the one-time interactive login
+first so the background sync never has to handle the prompt:
+
 ```bash
-   docker compose run --rm tracker python3 first_login.py
+docker compose run --rm tracker python3 first_login.py
 ```
 
 ### Google Health plugin (Pixel Watch / Fitbit)
 
-Uses standard Google OAuth rather than a password. One-time setup:
+Uses standard Google OAuth rather than a password, so it isn't in the
+"Add a device" list yet — that flow is a separate piece of work. For now
+it is still set up from `.env` plus a one-time authorization:
 
 1. Create a project in [Google Cloud Console](https://console.cloud.google.com/)
    and enable the **Google Health API**.
@@ -108,12 +125,13 @@ app/
     garmin/plugin.py           Garmin Connect
     google_health/plugin.py    Google Health API (Pixel Watch / Fitbit)
     google_health/authorize.py one-time OAuth login for the above
+  crypto.py                   Encrypt/decrypt for stored device credentials
   migrations/                 Versioned .sql schema migrations + runner
 tests/                        pytest suite (temp DB, no network)
 ```
 
-Data lives in SQLite, on a persistent Docker volume, in three tables:
-`weights`, `workouts`, and `activity`. Every plugin writes into the same
+Data lives in SQLite, on a persistent Docker volume, in tables
+`weights`, `workouts`, `activity`, `settings` and `accounts`. Every plugin writes into the same
 `activity` table, which is keyed by `(date, source)` — one row per day
 *per source*, so Garmin and Google Health never overwrite each other.
 `GET /api/activity` merges those rows back into one flat row per date
@@ -121,6 +139,34 @@ before returning them, so the frontend doesn't care which plugin a given
 day's steps came from. When two sources report the same metric for the
 same day, the fixed precedence is `garmin` > `google_health`; pass
 `?by_source=1` to get the raw per-source rows instead.
+
+### Credential storage
+
+Device credentials entered in the UI are stored in the `accounts` table
+as a Fernet-encrypted JSON blob, one row per plugin — so a copy of
+`tracker.db` (a backup, a snapshot, a stray volume mount) is not a copy
+of your Garmin password. They are never read back out over the API: the
+UI can see *that* a device is connected, not what it was connected with.
+
+The key comes from `$OPENFIT_SECRET_KEY` if you set one, otherwise it is
+generated on first use and kept at `/data/.secret_key` with mode `0600`,
+alongside the database on the persistent volume. Back it up with the
+database — lose the key and the stored credentials can't be decrypted,
+at which point re-adding the device in the UI is the fix.
+
+What a plugin needs is declared by the plugin itself, as a manifest on
+its `SyncPlugin` subclass:
+
+```python
+add_flow = "credentials"          # or "oauth"
+fields = [
+    {"key": "email",    "label": "Email",    "type": "text",     "required": True},
+    {"key": "password", "label": "Password", "type": "password", "required": True},
+]
+```
+
+The form, its validation and the storage all follow from that list — the
+UI has no per-device code in it.
 
 ### Schema migrations
 
@@ -171,9 +217,13 @@ from ..base import SyncPlugin
 class MyServicePlugin(SyncPlugin):
     id = "my_service"
     name = "My Service"
-    required_env = ["MY_SERVICE_TOKEN"]
+    add_flow = "credentials"
+    fields = [
+        {"key": "token", "label": "API token", "type": "password", "required": True},
+    ]
 
     def sync(self, conn, days: int) -> int:
+        # self.get_credentials(conn) returns what the user typed in the UI
         # fetch data from your source, upsert into `activity` with
         # source = your plugin id, using
         # INSERT ... ON CONFLICT(date, source) DO UPDATE with COALESCE
