@@ -1,0 +1,781 @@
+<title>OpenFit Dashboard</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700;800&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap');
+
+/* ============================================================
+   CUSTOMISE OPENFIT HERE
+   Every colour, radius and font in the whole interface comes
+   from the tokens below. Change these and the entire app
+   re-skins — you never need to hunt through the markup.
+   The bare :root block is the LIGHT theme; the two blocks
+   after it are the DARK theme (OS-driven, then the toggle).
+   ============================================================ */
+:root{
+  /* neutrals — a slate biased very slightly toward the teal accent */
+  --bg:#eef1f0;
+  --surface:#ffffff;
+  --surface-2:#e9edec;
+  --inset:#f4f6f5;
+  --border:#d5dcda;
+  --border-strong:#c2cbc9;
+  --ink:#141c1b;
+  --ink-2:#3c4746;
+  --muted:#697472;
+
+  /* one accent, used only for interactive things */
+  --accent:#0e9c8b;
+  --accent-ink:#ffffff;
+  --accent-soft:#d4efeb;
+
+  /* metric hues — intuitive, and distinct from each other */
+  --m-weight:#0e9c8b;   /* teal   */
+  --m-steps:#c07d18;    /* amber  */
+  --m-sleep:#5b58c4;    /* indigo */
+  --m-heart:#c94f4a;    /* coral  */
+
+  /* status — reserved, never reused as a metric colour */
+  --good:#2f9e5b;
+  --warn:#c08a1a;
+  --crit:#c94f4a;
+
+  --radius:14px;
+  --radius-sm:9px;
+  --shadow:0 1px 2px rgba(20,28,27,.06), 0 8px 24px rgba(20,28,27,.05);
+
+  --font-display:'Archivo', system-ui, sans-serif;
+  --font-body:'IBM Plex Sans', system-ui, sans-serif;
+  --font-mono:'IBM Plex Mono', ui-monospace, monospace;
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --bg:#0e1316;
+    --surface:#161d21;
+    --surface-2:#1d262b;
+    --inset:#121a1e;
+    --border:#28323800;   /* set below */
+    --border:#2a343a;
+    --border-strong:#39454c;
+    --ink:#e9eeef;
+    --ink-2:#b3bec2;
+    --muted:#7f8c92;
+    --accent:#31d3bf;
+    --accent-ink:#052420;
+    --accent-soft:#123832;
+    --m-weight:#31d3bf;
+    --m-steps:#e0a83a;
+    --m-sleep:#8f8cf0;
+    --m-heart:#ea6a63;
+    --good:#46c06e;
+    --warn:#e0a83a;
+    --crit:#ea6a63;
+    --shadow:0 1px 2px rgba(0,0,0,.3), 0 10px 30px rgba(0,0,0,.35);
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#0e1316;
+  --surface:#161d21;
+  --surface-2:#1d262b;
+  --inset:#121a1e;
+  --border:#2a343a;
+  --border-strong:#39454c;
+  --ink:#e9eeef;
+  --ink-2:#b3bec2;
+  --muted:#7f8c92;
+  --accent:#31d3bf;
+  --accent-ink:#052420;
+  --accent-soft:#123832;
+  --m-weight:#31d3bf;
+  --m-steps:#e0a83a;
+  --m-sleep:#8f8cf0;
+  --m-heart:#ea6a63;
+  --good:#46c06e;
+  --warn:#e0a83a;
+  --crit:#ea6a63;
+  --shadow:0 1px 2px rgba(0,0,0,.3), 0 10px 30px rgba(0,0,0,.35);
+}
+
+*{box-sizing:border-box;}
+html,body{margin:0;}
+body{
+  background:var(--bg);
+  color:var(--ink);
+  font-family:var(--font-body);
+  -webkit-font-smoothing:antialiased;
+  font-size:15px;
+  line-height:1.45;
+}
+button{font-family:inherit;cursor:pointer;}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:4px;}
+.tnum{font-variant-numeric:tabular-nums;}
+
+/* ---------- app shell: top bar + rhombus tab strip ---------- */
+.app{min-height:100vh;}
+.topbar{
+  display:flex;align-items:flex-start;justify-content:space-between;gap:16px;
+  padding:20px 30px 0;
+}
+.brand{display:flex;align-items:center;gap:11px;}
+.brand-mark{
+  width:32px;height:32px;border-radius:8px;flex:none;
+  background:
+    radial-gradient(circle at 50% 50%, var(--accent) 0 4px, transparent 5px),
+    conic-gradient(from -90deg, var(--accent) 0 72%, var(--border-strong) 72% 100%);
+  -webkit-mask:radial-gradient(circle at 50% 50%, transparent 6px, #000 7px);
+          mask:radial-gradient(circle at 50% 50%, transparent 6px, #000 7px);
+}
+.brand-name{font-family:var(--font-display);font-weight:800;letter-spacing:.5px;font-size:23px;}
+.brand-name b{color:var(--accent);}
+
+.status-stack{display:flex;flex-direction:column;align-items:flex-end;gap:8px;}
+.datesync{
+  display:flex;align-items:center;gap:12px;
+  background:var(--surface);border:1px solid var(--border);border-radius:22px;
+  padding:7px 15px;box-shadow:var(--shadow);
+}
+.datesync .ds-date{font-family:var(--font-display);font-weight:700;font-size:13px;color:var(--ink);}
+.datesync .ds-sep{width:1px;height:16px;background:var(--border-strong);}
+.datesync .ds-sync{display:flex;align-items:center;gap:7px;font-family:var(--font-mono);font-size:11.5px;color:var(--muted);}
+.dot{width:7px;height:7px;border-radius:50%;background:var(--good);flex:none;box-shadow:0 0 0 3px color-mix(in srgb,var(--good) 22%,transparent);}
+.theme-toggle{
+  border:1px solid var(--border);border-radius:20px;background:var(--surface);
+  color:var(--muted);font-size:11.5px;font-family:var(--font-mono);padding:6px 13px;
+}
+.theme-toggle:hover{border-color:var(--accent);color:var(--accent);}
+
+.tabstrip{
+  display:flex;gap:8px;align-items:flex-end;
+  padding:18px 30px 0;margin-top:8px;
+  border-bottom:1px solid var(--border);overflow-x:auto;scrollbar-width:none;
+}
+.tabstrip::-webkit-scrollbar{display:none;}
+.tab{
+  border:none;background:var(--surface-2);color:var(--ink-2);
+  font-family:var(--font-display);font-weight:700;font-size:13.5px;letter-spacing:.3px;
+  padding:11px 30px;transform:skewX(-14deg);border-radius:7px 7px 0 0;
+  white-space:nowrap;position:relative;top:1px;transition:background .12s,color .12s;
+}
+.tab>span{display:inline-block;transform:skewX(14deg);}
+.tab:hover{background:var(--surface);color:var(--ink);}
+.tab.active{background:var(--accent);color:var(--accent-ink);}
+.tab-add{margin-left:auto;background:transparent;border:1.5px dashed var(--border-strong);color:var(--muted);font-weight:600;}
+.tab-add:hover{background:transparent;border-color:var(--accent);color:var(--accent);}
+
+.main{padding:24px 30px 60px;min-width:0;}
+.page-head{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;margin-bottom:20px;flex-wrap:wrap;}
+.page-title{font-family:var(--font-display);font-weight:800;font-size:26px;letter-spacing:-.3px;margin:0;text-wrap:balance;}
+.page-sub{color:var(--muted);font-size:13.5px;margin:3px 0 0;}
+
+/* ---------- tile grid ---------- */
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:18px;}
+.tile{
+  background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);
+  box-shadow:var(--shadow);display:flex;flex-direction:column;min-height:270px;overflow:hidden;
+}
+.tile-head{
+  display:flex;align-items:center;justify-content:space-between;
+  padding:14px 16px 10px;
+}
+.tile-title{display:flex;align-items:center;gap:9px;font-family:var(--font-display);font-weight:700;font-size:15px;}
+.tile-title .swatch{width:9px;height:9px;border-radius:3px;flex:none;}
+.tile-menu-btn{
+  border:none;background:none;color:var(--muted);border-radius:7px;
+  width:30px;height:26px;font-size:19px;line-height:1;letter-spacing:1px;display:grid;place-items:center;
+}
+.tile-menu-btn:hover{background:var(--surface-2);color:var(--ink);}
+.tile-body{padding:2px 16px 16px;flex:1;display:flex;flex-direction:column;min-height:0;}
+
+/* empty states */
+.empty{
+  flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;
+  text-align:center;color:var(--muted);padding:18px;
+}
+.empty svg{width:34px;height:34px;stroke:var(--border-strong);fill:none;stroke-width:1.6;}
+.empty .cta{color:var(--accent);font-weight:600;font-size:13.5px;}
+
+/* buttons + inputs */
+.btn{
+  border:1px solid var(--border-strong);background:var(--surface);color:var(--ink);
+  border-radius:var(--radius-sm);padding:9px 14px;font-weight:600;font-size:13.5px;
+}
+.btn:hover{border-color:var(--accent);color:var(--accent);}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-ink);}
+.btn.primary:hover{filter:brightness(1.05);color:var(--accent-ink);}
+.btn.sm{padding:6px 10px;font-size:12.5px;}
+.field{display:flex;flex-direction:column;gap:5px;}
+.field label{font-size:11.5px;text-transform:uppercase;letter-spacing:.8px;color:var(--muted);font-weight:600;}
+.input, select.input{
+  background:var(--inset);border:1px solid var(--border);color:var(--ink);
+  border-radius:var(--radius-sm);padding:10px 11px;font-size:14px;font-family:var(--font-body);width:100%;
+}
+.input:focus{border-color:var(--accent);outline:none;}
+.seg{display:inline-flex;border:1px solid var(--border);border-radius:8px;overflow:hidden;}
+.seg button{border:none;background:var(--surface);color:var(--muted);padding:7px 12px;font-size:12.5px;font-weight:600;}
+.seg button.on{background:var(--accent-soft);color:var(--accent);}
+
+/* ---------- weight chart ---------- */
+.chart-wrap{flex:1;display:flex;flex-direction:column;min-height:0;}
+.chart-readout{display:flex;gap:18px;align-items:baseline;margin:2px 0 8px;flex-wrap:wrap;}
+.readout-big{font-family:var(--font-display);font-weight:800;font-size:30px;letter-spacing:-.5px;}
+.readout-big small{font-size:15px;font-weight:600;color:var(--muted);margin-left:2px;}
+.trend-good{color:var(--good);font-weight:700;font-size:13px;font-family:var(--font-mono);}
+svg.chart{width:100%;height:auto;display:block;overflow:visible;}
+.chart-dot{cursor:pointer;}
+
+/* ---------- add-data accordion ---------- */
+.acc{display:flex;flex-direction:column;gap:8px;}
+.acc-row{border:1px solid var(--border);border-radius:var(--radius-sm);overflow:hidden;background:var(--inset);}
+.acc-btn{
+  width:100%;display:flex;align-items:center;justify-content:space-between;gap:10px;
+  padding:11px 13px;background:none;border:none;color:var(--ink);font-weight:600;font-size:14px;
+}
+.acc-btn .lead{display:flex;align-items:center;gap:10px;}
+.acc-btn .ic{width:17px;height:17px;stroke:var(--muted);fill:none;stroke-width:1.9;}
+.acc-btn .chev{color:var(--muted);transition:transform .15s;}
+.acc-row.open .acc-btn .chev{transform:rotate(90deg);}
+.acc-panel{display:none;padding:0 13px 13px;}
+.acc-row.open .acc-panel{display:block;}
+.add-grid{display:grid;grid-template-columns:1fr 1fr;gap:9px;margin-bottom:9px;}
+
+/* ---------- activity log ---------- */
+.act-list{display:flex;flex-direction:column;gap:7px;overflow-y:auto;}
+.act-item{
+  display:flex;align-items:center;justify-content:space-between;gap:10px;
+  padding:9px 11px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--inset);
+}
+.act-when{font-family:var(--font-mono);font-size:12px;color:var(--muted);flex:none;width:52px;}
+.act-main{flex:1;min-width:0;}
+.act-metrics{font-size:13.5px;color:var(--ink-2);}
+.tag{
+  font-family:var(--font-mono);font-size:10.5px;font-weight:500;letter-spacing:.2px;
+  padding:3px 7px;border-radius:20px;display:inline-flex;align-items:center;gap:5px;white-space:nowrap;flex:none;
+}
+.tag::before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor;opacity:.9;}
+.tag.garmin{color:#3aa2c9;background:color-mix(in srgb,#3aa2c9 15%,transparent);}
+.tag.pixel{color:var(--m-steps);background:color-mix(in srgb,var(--m-steps) 16%,transparent);}
+.tag.manual{color:var(--muted);background:var(--surface-2);}
+.totals{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:12px;padding-top:12px;border-top:1px solid var(--border);}
+.tot{display:flex;flex-direction:column;gap:1px;}
+.tot .n{font-family:var(--font-display);font-weight:700;font-size:18px;}
+.tot .l{font-size:10.5px;text-transform:uppercase;letter-spacing:.6px;color:var(--muted);}
+.cal-strip{margin-top:11px;padding-top:11px;border-top:1px dashed var(--border);display:flex;flex-direction:column;gap:8px;}
+.webhook{
+  display:flex;align-items:center;gap:8px;background:var(--inset);border:1px solid var(--border);
+  border-radius:var(--radius-sm);padding:4px 4px 4px 11px;
+}
+.webhook code{font-family:var(--font-mono);font-size:11.5px;color:var(--ink-2);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+
+/* ---------- goals / dials ---------- */
+.goals{display:flex;flex-direction:column;gap:14px;flex:1;}
+.countdown{
+  display:flex;align-items:baseline;gap:10px;padding:10px 12px;border-radius:var(--radius-sm);
+  background:var(--inset);border:1px solid var(--border);
+}
+.countdown .n{font-family:var(--font-display);font-weight:800;font-size:26px;color:var(--accent);letter-spacing:-.5px;}
+.countdown .t{color:var(--muted);font-size:12.5px;}
+.dials{display:flex;gap:14px;flex-wrap:wrap;}
+.dial{display:flex;flex-direction:column;align-items:center;gap:5px;width:96px;}
+.dial svg{width:82px;height:82px;}
+.dial .lab{font-size:11px;color:var(--muted);text-align:center;line-height:1.2;}
+.dial .val{font-family:var(--font-display);font-weight:800;font-size:16px;}
+.thermo{display:flex;flex-direction:column;gap:6px;flex:1;min-width:130px;}
+.thermo .top{display:flex;justify-content:space-between;align-items:baseline;font-size:12.5px;}
+.thermo .top b{font-family:var(--font-display);font-size:15px;}
+.thermo .track{height:12px;border-radius:8px;background:var(--surface-2);overflow:hidden;border:1px solid var(--border);}
+.thermo .fill{height:100%;border-radius:8px;}
+
+/* ---------- popover menu ---------- */
+.pop{
+  position:fixed;z-index:60;background:var(--surface);border:1px solid var(--border-strong);
+  border-radius:var(--radius-sm);box-shadow:var(--shadow);padding:6px;min-width:210px;
+}
+.pop-h{font-size:10.5px;text-transform:uppercase;letter-spacing:.9px;color:var(--muted);padding:6px 9px 4px;font-weight:700;}
+.pop-item{display:flex;align-items:center;gap:9px;width:100%;border:none;background:none;color:var(--ink);
+  padding:8px 9px;border-radius:7px;font-size:13.5px;text-align:left;}
+.pop-item:hover{background:var(--surface-2);}
+.pop-item .sw{width:9px;height:9px;border-radius:3px;flex:none;}
+.pop-item.cur{color:var(--accent);font-weight:600;}
+
+/* ---------- plan + config pages ---------- */
+.stack{display:flex;flex-direction:column;gap:18px;max-width:760px;}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow);padding:20px;}
+.card h3{font-family:var(--font-display);font-weight:700;font-size:17px;margin:0 0 3px;}
+.card .hint{color:var(--muted);font-size:13px;margin:0 0 16px;}
+.row2{display:grid;grid-template-columns:1fr 1fr;gap:12px;}
+.goal-type{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:14px;}
+.goal-type button{
+  border:1px solid var(--border);background:var(--inset);border-radius:var(--radius-sm);
+  padding:12px 10px;text-align:left;color:var(--ink-2);
+}
+.goal-type button.on{border-color:var(--accent);background:var(--accent-soft);color:var(--accent);}
+.goal-type b{display:block;font-family:var(--font-display);font-size:13.5px;margin-bottom:2px;color:inherit;}
+.goal-type span{font-size:11.5px;color:var(--muted);}
+.src{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 0;border-bottom:1px solid var(--border);}
+.src:last-child{border-bottom:none;}
+.src-l{display:flex;align-items:center;gap:12px;}
+.src-ic{width:38px;height:38px;border-radius:9px;display:grid;place-items:center;background:var(--inset);border:1px solid var(--border);font-family:var(--font-mono);font-weight:600;font-size:13px;}
+.pill{font-size:11px;font-weight:600;padding:4px 9px;border-radius:20px;font-family:var(--font-mono);}
+.pill.ok{color:var(--good);background:color-mix(in srgb,var(--good) 14%,transparent);}
+.pill.wait{color:var(--warn);background:color-mix(in srgb,var(--warn) 14%,transparent);}
+.addtab{border:1.5px dashed var(--border-strong);background:var(--inset);border-radius:var(--radius);padding:22px;text-align:center;}
+.tab-choose{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:14px;}
+.choose{border:1px solid var(--border);border-radius:var(--radius-sm);padding:16px;background:var(--surface);text-align:left;}
+.choose b{font-family:var(--font-display);display:block;margin-bottom:4px;}
+.choose span{font-size:12px;color:var(--muted);}
+.note-box{font-size:12.5px;color:var(--ink-2);background:var(--inset);border:1px solid var(--border);border-left:3px solid var(--accent);border-radius:8px;padding:11px 13px;line-height:1.55;}
+.mono{font-family:var(--font-mono);}
+
+/* ---------- responsive: phone ---------- */
+@media (max-width:860px){
+  .topbar{padding:14px 15px 0;}
+  .brand-name{font-size:20px;}
+  .tabstrip{padding:14px 15px 0;gap:6px;}
+  .tab{padding:10px 20px;font-size:12.5px;}
+  .main{padding:18px 15px 60px;}
+  .grid{grid-template-columns:1fr;}
+  .tile{min-height:auto;}
+  .page-title{font-size:22px;}
+}
+@media (prefers-reduced-motion:reduce){*{transition:none!important;}}
+</style>
+
+<div class="app">
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-mark"></div>
+      <div class="brand-name">Open<b>Fit</b></div>
+    </div>
+    <div class="status-stack">
+      <div class="datesync">
+        <span class="ds-date" id="dsDate">Wed 27 Aug</span>
+        <span class="ds-sep"></span>
+        <span class="ds-sync"><span class="dot"></span> Garmin · 14:22</span>
+      </div>
+      <button class="theme-toggle" id="themeToggle">theme <span id="themeState">auto</span></button>
+    </div>
+  </header>
+
+  <nav class="tabstrip">
+    <button class="tab active" data-tab="home"><span>Home</span></button>
+    <button class="tab" data-tab="plan"><span>Plan</span></button>
+    <button class="tab" data-tab="config"><span>Configuration</span></button>
+    <button class="tab tab-add" id="addTabBtn"><span>＋ Add</span></button>
+  </nav>
+
+  <main class="main" id="main"></main>
+</div>
+
+<script>
+(function(){
+  "use strict";
+  const $ = (s,r)=> (r||document).querySelector(s);
+  const el = (t,c,h)=>{const n=document.createElement(t); if(c)n.className=c; if(h!=null)n.innerHTML=h; return n;};
+  const money = n => n.toLocaleString();
+
+  /* ---- prototype state (in memory; the real app reads/writes the API) ---- */
+  const state = {
+    tab:'home',
+    unit:'kg',
+    weights:[],                      // starts BLANK — you build it
+    goalWeight:null, startWeight:null,
+    // Activity is auto-populated by devices — seeded to show the device tags
+    activity:[
+      {day:'Mon', steps:4037, hr:79, sleep:null, kcal:2180, src:'garmin'},
+      {day:'Sun', steps:3576, hr:71, sleep:4.1, kcal:2040, src:'garmin'},
+      {day:'Sat', steps:2573, hr:80, sleep:null, kcal:1990, src:'garmin'},
+    ],
+    goals:[  // one seeded so the dials are visible; add more in Plan
+      {id:'g1', label:'Steps this week', unit:'', cur:41200, target:70000, hue:'--m-steps'},
+    ],
+    goalStyle:'dial',
+    tiles:{tl:'weight', tr:'adddata', bl:'activity', br:'today'}
+  };
+
+  const WIDGETS = {
+    weight:{name:'Weight progress', sw:'--m-weight', render:renderWeight},
+    adddata:{name:'Add data', sw:'--accent', render:renderAddData},
+    activity:{name:'Activity log', sw:'--m-steps', render:renderActivity},
+    today:{name:"Today's plan & goals", sw:'--m-heart', render:renderToday},
+    steps:{name:'Steps trend', sw:'--m-steps', render:renderStepsTrend},
+    sleep:{name:'Sleep', sw:'--m-sleep', render:renderSleep},
+  };
+
+  /* =========================================================
+     NAV
+     ========================================================= */
+  document.querySelectorAll('.tab[data-tab]').forEach(b=>{
+    b.onclick=()=>{ state.tab=b.dataset.tab; syncNav(); route(); };
+  });
+  const addBtn=$('#addTabBtn');
+  if(addBtn) addBtn.onclick=()=>{ state.tab='config'; syncNav(); route(); };
+  function syncNav(){
+    document.querySelectorAll('.tab[data-tab]').forEach(b=>b.classList.toggle('active', b.dataset.tab===state.tab));
+  }
+  function route(){
+    closePop();
+    if(state.tab==='home') return renderHome();
+    if(state.tab==='plan') return renderPlan();
+    return renderConfig();
+  }
+
+  /* =========================================================
+     HOME — 2×2 tile grid
+     ========================================================= */
+  function renderHome(){
+    const m=$('#main'); m.innerHTML='';
+    const grid = el('div','grid');
+    [['tl','Top left'],['tr','Top right'],['bl','Bottom left'],['br','Bottom right']].forEach(([slot])=>{
+      grid.appendChild(makeTile(slot));
+    });
+    m.appendChild(grid);
+  }
+
+  function makeTile(slot){
+    const wid = state.tiles[slot];
+    const w = WIDGETS[wid];
+    const tile = el('div','tile');
+    const head = el('div','tile-head',
+      `<div class="tile-title"><span class="swatch" style="background:var(${w.sw})"></span>${w.name}</div>`);
+    const menu = el('button','tile-menu-btn','⋯');
+    menu.setAttribute('aria-label','Change this tile');
+    menu.onclick=(e)=>openTileMenu(e,slot);
+    head.appendChild(menu);
+    const body = el('div','tile-body');
+    tile.appendChild(head); tile.appendChild(body);
+    w.render(body);
+    return tile;
+  }
+
+  /* ---- WEIGHT tile ---- */
+  function renderWeight(body){
+    if(!state.weights.length){
+      body.appendChild(emptyState('scale',
+        'No weigh-ins yet','Add your first weight from the Add data tile — the line and your pace-to-goal appear here.'));
+      return;
+    }
+    const wrap = el('div','chart-wrap');
+    const cur = state.weights[state.weights.length-1].w;
+    const first = state.weights[0].w;
+    const delta = (cur-first);
+    const goalTxt = state.goalWeight!=null ? `${(cur-state.goalWeight).toFixed(1)} ${state.unit} to go` : 'no goal set';
+    wrap.appendChild(el('div','chart-readout',
+      `<div class="readout-big tnum">${cur.toFixed(1)}<small>${state.unit}</small></div>
+       <div><span class="trend-good tnum">${delta<=0?'▼':'▲'} ${Math.abs(delta).toFixed(1)} ${state.unit}</span>
+       <span style="color:var(--muted);font-size:12px;"> · ${goalTxt}</span></div>`));
+    wrap.appendChild(buildWeightChart());
+    body.appendChild(wrap);
+  }
+  function buildWeightChart(){
+    const W=440,H=150,pad=26;
+    const pts = state.weights.map((e,i)=>({x:i,w:e.w,label:e.label}));
+    const xs = pts.map(p=>p.x), ws = pts.map(p=>p.w);
+    let lo=Math.min(...ws), hi=Math.max(...ws);
+    if(state.goalWeight!=null){lo=Math.min(lo,state.goalWeight);hi=Math.max(hi,state.goalWeight);}
+    lo-=1;hi+=1;
+    const xMax=Math.max(1,Math.max(...xs));
+    const X=x=>pad+(x/xMax)*(W-pad*2);
+    const Y=w=>H-pad-((w-lo)/(hi-lo))*(H-pad*2);
+    const line=pts.map((p,i)=>(i?'L':'M')+X(p.x)+','+Y(p.w)).join(' ');
+    const area=`${line} L${X(xMax)},${H-pad} L${X(0)},${H-pad} Z`;
+    const goalLine = state.goalWeight!=null
+      ? `<line x1="${pad}" y1="${Y(state.goalWeight)}" x2="${W-pad}" y2="${Y(state.goalWeight)}" stroke="var(--accent)" stroke-dasharray="4 4" stroke-width="1.4" opacity=".7"/>
+         <text x="${W-pad}" y="${Y(state.goalWeight)-5}" fill="var(--muted)" font-size="9" text-anchor="end" font-family="var(--font-mono)">goal ${state.goalWeight}${state.unit}</text>` : '';
+    const dots=pts.map(p=>`<circle class="chart-dot" cx="${X(p.x)}" cy="${Y(p.w)}" r="3.4" fill="var(--surface)" stroke="var(--m-weight)" stroke-width="2"><title>${p.label}: ${p.w}${state.unit}</title></circle>`).join('');
+    const last=pts[pts.length-1];
+    return el('div','chart-wrap', `
+      <svg class="chart" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img" aria-label="Weight over time">
+        <defs><linearGradient id="wg" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stop-color="var(--m-weight)" stop-opacity=".18"/>
+          <stop offset="1" stop-color="var(--m-weight)" stop-opacity="0"/>
+        </linearGradient></defs>
+        ${goalLine}
+        <path d="${area}" fill="url(#wg)"/>
+        <path d="${line}" fill="none" stroke="var(--m-weight)" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round"/>
+        ${dots}
+        <circle cx="${X(last.x)}" cy="${Y(last.w)}" r="4.5" fill="var(--m-weight)"/>
+      </svg>`);
+  }
+
+  /* ---- ADD DATA tile ---- */
+  function renderAddData(body){
+    const rows=[
+      {id:'weight', name:'Add weight', ic:'<path d="M4 7h16l-2 13H6z"/><path d="M9 7a3 3 0 016 0"/>'},
+      {id:'activity', name:'Add activity', ic:'<path d="M4 12h4l2-6 4 12 2-6h4"/>'},
+      {id:'sleep', name:'Add sleep', ic:'<path d="M20 14a7 7 0 11-9-9 6 6 0 009 9z"/>'},
+      {id:'note', name:'Add note', ic:'<path d="M5 4h14v13l-4 4H5z"/><path d="M15 17h4"/>'},
+    ];
+    const acc=el('div','acc');
+    rows.forEach((r,i)=>{
+      const row=el('div','acc-row'+(i===0?' open':''));
+      row.appendChild(el('button','acc-btn',
+        `<span class="lead"><svg class="ic" viewBox="0 0 24 24">${r.ic}</svg>${r.name}</span><span class="chev">›</span>`));
+      const panel=el('div','acc-panel');
+      if(r.id==='weight'){
+        panel.innerHTML=`
+          <div class="add-grid">
+            <div class="field"><label>Weight</label><input class="input" id="wIn" type="number" step="0.1" placeholder="e.g. 90.4"></div>
+            <div class="field"><label>Unit</label>
+              <div class="seg" id="unitSeg"><button data-u="kg" class="on">kg</button><button data-u="lb">lb</button></div></div>
+          </div>
+          <div class="field" style="margin-bottom:10px;"><label>When</label><input class="input" id="wWhen" type="datetime-local"></div>
+          <button class="btn primary" id="wAdd" style="width:100%;">Add weigh-in</button>`;
+      } else {
+        panel.innerHTML=`<p style="color:var(--muted);font-size:13px;margin:2px 0 0;">Manual entry form for ${r.name.toLowerCase().replace('add ','')} — same shape as weight. Most of this arrives automatically from your devices; this is for filling gaps.</p>`;
+      }
+      row.appendChild(panel);
+      row.querySelector('.acc-btn').onclick=()=>row.classList.toggle('open');
+      acc.appendChild(row);
+    });
+    body.appendChild(acc);
+
+    // wire the weight form
+    const when=acc.querySelector('#wWhen'); if(when){ when.value=new Date().toISOString().slice(0,16); }
+    acc.querySelectorAll('#unitSeg button').forEach(b=>b.onclick=()=>{
+      acc.querySelectorAll('#unitSeg button').forEach(x=>x.classList.remove('on'));
+      b.classList.add('on'); state.unit=b.dataset.u;
+    });
+    const add=acc.querySelector('#wAdd');
+    if(add) add.onclick=()=>{
+      const v=parseFloat(acc.querySelector('#wIn').value);
+      if(!v||v<30||v>400){acc.querySelector('#wIn').focus();return;}
+      const d=new Date(acc.querySelector('#wWhen').value||Date.now());
+      if(state.startWeight==null) state.startWeight=v;
+      state.weights.push({w:v,label:d.toLocaleDateString('en-GB',{day:'numeric',month:'short'})});
+      if(state.goalWeight==null) state.goalWeight=Math.round((v-5)*10)/10; // demo goal
+      renderHome();
+    };
+  }
+
+  /* ---- ACTIVITY tile ---- */
+  function renderActivity(body){
+    const list=el('div','act-list');
+    state.activity.forEach(a=>{
+      const parts=[];
+      if(a.steps!=null)parts.push(`${money(a.steps)} steps`);
+      if(a.hr!=null)parts.push(`${a.hr} bpm rest`);
+      if(a.sleep!=null)parts.push(`${a.sleep} h sleep`);
+      const tagCls=a.src==='garmin'?'garmin':a.src==='pixel'?'pixel':'manual';
+      const tagName=a.src==='garmin'?'Garmin':a.src==='pixel'?'Pixel Watch 4':'Manual';
+      list.appendChild(el('div','act-item',
+        `<span class="act-when">${a.day}</span>
+         <span class="act-main"><span class="act-metrics">${parts.join(' · ')||'—'}</span></span>
+         <span class="tag ${tagCls}">${tagName}</span>`));
+    });
+    body.appendChild(list);
+
+    const totals=el('div','totals',
+      `<div class="tot"><span class="n tnum" style="color:var(--m-steps)">10.2k</span><span class="l">Steps</span></div>
+       <div class="tot"><span class="n tnum" style="color:var(--m-sleep)">4.1h</span><span class="l">Sleep</span></div>
+       <div class="tot"><span class="n tnum">6,210</span><span class="l">kcal</span></div>
+       <div class="tot"><span class="n tnum" style="color:var(--m-heart)">0m</span><span class="l">Workout</span></div>`);
+    body.appendChild(totals);
+
+    const cal=el('div','cal-strip',
+      `<div style="display:flex;gap:8px;align-items:center;">
+         <button class="btn sm">＋ Import calendar (.ics)</button>
+         <span style="color:var(--muted);font-size:11.5px;">see events against your data</span>
+       </div>
+       <div class="webhook"><code>https://openfit.local/api/webhook/8f3c…a91</code><button class="btn sm" id="cpHook">Copy</button></div>`);
+    body.appendChild(cal);
+    const cp=cal.querySelector('#cpHook');
+    cp.onclick=()=>{ navigator.clipboard&&navigator.clipboard.writeText('https://openfit.local/api/webhook/8f3c...a91'); cp.textContent='Copied ✓'; setTimeout(()=>cp.textContent='Copy',1400); };
+  }
+
+  /* ---- TODAY (plan & goals) tile ---- */
+  function renderToday(body){
+    if(!state.goals.length){
+      body.appendChild(emptyState('flag','No plan yet','Set an overall goal and a weekly plan in the Plan tab — today’s targets and progress dials show up here.'));
+      return;
+    }
+    const wrap=el('div','goals');
+    wrap.appendChild(el('div','countdown',
+      `<span class="n tnum">100</span><span class="t">days to your goal date · 5 Dec</span>`));
+
+    const toggle=el('div',null,
+      `<div class="seg" id="goalStyle" style="margin-bottom:2px;">
+         <button data-s="dial" class="${state.goalStyle==='dial'?'on':''}">Dials</button>
+         <button data-s="thermo" class="${state.goalStyle==='thermo'?'on':''}">Thermometers</button>
+       </div>`);
+    wrap.appendChild(toggle);
+
+    const holder=el('div', state.goalStyle==='dial'?'dials':'goals');
+    state.goals.forEach(g=>{
+      const pct=Math.max(0,Math.min(1,g.cur/g.target));
+      holder.appendChild(state.goalStyle==='dial'?makeDial(g,pct):makeThermo(g,pct));
+    });
+    wrap.appendChild(holder);
+    body.appendChild(wrap);
+
+    toggle.querySelectorAll('#goalStyle button').forEach(b=>b.onclick=()=>{state.goalStyle=b.dataset.s; renderHome();});
+  }
+  function makeDial(g,pct){
+    const r=32,c=2*Math.PI*r, off=c*(1-pct);
+    const d=el('div','dial');
+    d.innerHTML=`
+      <svg viewBox="0 0 82 82">
+        <circle cx="41" cy="41" r="${r}" fill="none" stroke="var(--surface-2)" stroke-width="8"/>
+        <circle cx="41" cy="41" r="${r}" fill="none" stroke="var(${g.hue})" stroke-width="8" stroke-linecap="round"
+          stroke-dasharray="${c}" stroke-dashoffset="${off}" transform="rotate(-90 41 41)"/>
+        <text x="41" y="46" text-anchor="middle" class="val" fill="var(--ink)" font-family="var(--font-display)" font-weight="800" font-size="15">${Math.round(pct*100)}%</text>
+      </svg>
+      <div class="lab">${g.label}<br><span class="mono" style="color:var(--muted)">${money(g.cur)}${g.unit} / ${money(g.target)}${g.unit}</span></div>`;
+    return d;
+  }
+  function makeThermo(g,pct){
+    const t=el('div','thermo');
+    t.innerHTML=`
+      <div class="top"><span>${g.label}</span><b class="tnum">${Math.round(pct*100)}%</b></div>
+      <div class="track"><div class="fill" style="width:${pct*100}%;background:var(${g.hue})"></div></div>
+      <div class="mono" style="font-size:11px;color:var(--muted)">${money(g.cur)}${g.unit} of ${money(g.target)}${g.unit}</div>`;
+    return t;
+  }
+
+  /* ---- alternate widgets (for the ⋯ swap demo) ---- */
+  function renderStepsTrend(body){
+    const wrap=el('div','chart-wrap');
+    wrap.appendChild(el('div','chart-readout',`<div class="readout-big tnum" style="color:var(--m-steps)">10,186<small>steps today</small></div>`));
+    const days=[4037,3576,2573,5100,6200,4800,10186], W=440,H=120,pad=20,mx=Math.max(...days);
+    const bw=(W-pad*2)/days.length;
+    const bars=days.map((v,i)=>{const h=(v/mx)*(H-pad*2);const x=pad+i*bw+3;const y=H-pad-h;
+      return `<rect x="${x}" y="${y}" width="${bw-6}" height="${h}" rx="4" fill="var(--m-steps)" opacity="${i===days.length-1?1:.5}"><title>${money(v)} steps</title></rect>`;}).join('');
+    wrap.appendChild(el('div',null,`<svg class="chart" viewBox="0 0 ${W} ${H}">${bars}</svg>`));
+    body.appendChild(wrap);
+  }
+  function renderSleep(body){
+    body.appendChild(el('div','chart-readout',
+      `<div class="readout-big tnum" style="color:var(--m-sleep)">4.1<small>h last night</small></div>`));
+    body.appendChild(el('div','note-box','Sleep is running below your 7 h target — 3 of the last 7 nights are missing from Garmin. A Pixel Watch plugin would fill the gaps.'));
+  }
+
+  /* =========================================================
+     TILE ⋯ MENU (swap what's in a slot)
+     ========================================================= */
+  let popEl=null;
+  function openTileMenu(e,slot){
+    e.stopPropagation(); closePop();
+    const cur=state.tiles[slot];
+    const p=el('div','pop'); p.appendChild(el('div','pop-h','Show in this tile'));
+    Object.entries(WIDGETS).forEach(([id,w])=>{
+      const b=el('button','pop-item'+(id===cur?' cur':''),
+        `<span class="sw" style="background:var(${w.sw})"></span>${w.name}${id===cur?' ✓':''}`);
+      b.onclick=()=>{ state.tiles[slot]=id; closePop(); renderHome(); };
+      p.appendChild(b);
+    });
+    document.body.appendChild(p);
+    const r=e.currentTarget.getBoundingClientRect();
+    p.style.top=(r.bottom+6)+'px';
+    p.style.left=Math.max(10,Math.min(r.right-p.offsetWidth, window.innerWidth-p.offsetWidth-10))+'px';
+    popEl=p;
+    setTimeout(()=>document.addEventListener('click',closePop,{once:true}),0);
+  }
+  function closePop(){ if(popEl){popEl.remove();popEl=null;} }
+
+  /* =========================================================
+     PLAN
+     ========================================================= */
+  function renderPlan(){
+    const m=$('#main'); m.innerHTML='';
+    const stack=el('div','stack');
+
+    stack.appendChild(el('div','card',`
+      <h3>Overall goal</h3>
+      <div class="goal-type" id="goalType">
+        <button class="on"><b>Reach a target</b><span>e.g. hit 85&nbsp;kg</span></button>
+        <button><b>Target by a date</b><span>85&nbsp;kg by 5&nbsp;Dec</span></button>
+        <button><b>Maintain weekly</b><span>10k steps / week</span></button>
+      </div>
+      <div class="row2">
+        <div class="field"><label>Metric</label>
+          <select class="input"><option>Body weight</option><option>Steps</option><option>Resting HR</option><option>Sleep</option></select></div>
+        <div class="field"><label>Target value</label><input class="input" placeholder="85"></div>
+        <div class="field"><label>By date <span style="text-transform:none;color:var(--muted)">(optional)</span></label><input class="input" type="date"></div>
+        <div class="field"><label>Starting from</label><input class="input" placeholder="today’s value"></div>
+      </div>
+      <div style="margin-top:16px;"><button class="btn primary">Save goal</button></div>`));
+
+    stack.appendChild(el('div','card',`
+      <h3>Weekly plan</h3>
+      <div class="empty" style="min-height:120px;border:1.5px dashed var(--border-strong);border-radius:12px;">
+        <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
+        <div>No sessions yet</div>
+        <button class="btn primary sm" style="margin-top:6px;">＋ Add a session</button>
+      </div>`));
+
+    m.appendChild(stack);
+  }
+
+  /* =========================================================
+     CONFIGURATION
+     ========================================================= */
+  function renderConfig(){
+    const m=$('#main'); m.innerHTML='';
+    const stack=el('div','stack');
+
+    stack.appendChild(el('div','card',`
+      <h3>Connected sources</h3>
+      <div class="src"><div class="src-l"><div class="src-ic">GC</div>
+        <div><div style="font-weight:600">Garmin Connect</div><div style="color:var(--muted);font-size:12.5px">steps · resting HR · sleep</div></div></div>
+        <span class="pill ok">● connected</span></div>
+      <div class="src"><div class="src-l"><div class="src-ic">GH</div>
+        <div><div style="font-weight:600">Google Health</div><div style="color:var(--muted);font-size:12.5px">needs one-time authorisation</div></div></div>
+        <span class="pill wait">setup needed</span></div>`));
+
+    stack.appendChild(el('div','card',`
+      <h3>Custom tabs</h3>
+      <div class="addtab">
+        <div style="font-family:var(--font-display);font-weight:700;font-size:15px;">Add a tab</div>
+        <div style="color:var(--muted);font-size:13px;margin-top:3px;">Two ways in:</div>
+        <div class="tab-choose">
+          <button class="choose"><b>Paste a definition</b><span>A small YAML/JSON widget spec for data tiles, or a self-contained HTML/JS widget for a full custom console.</span></button>
+          <button class="choose"><b>Upload from file</b><span>Drop in a <span class="mono">.yaml</span> or <span class="mono">.html</span> widget. Runs sandboxed — it can read your data but can’t reach the network.</span></button>
+        </div>
+      </div>`));
+
+    stack.appendChild(el('div','card',`
+      <h3>Appearance</h3>
+      <div class="seg" id="cfgTheme">
+        <button data-t="auto">Auto</button><button data-t="light">Light</button><button data-t="dark">Dark</button>
+      </div>
+      <div class="note-box" style="margin-top:14px;">
+        Want to go further than the theme? Every colour, font and radius is a CSS variable in the
+        <span class="mono">CUSTOMISE OPENFIT HERE</span> block at the top of <span class="mono">index.html</span>.
+        Change a handful of tokens and the whole interface re-skins — no hunting through markup.
+      </div>`));
+
+    m.appendChild(stack);
+    stack.querySelectorAll('#cfgTheme button').forEach(b=>b.onclick=()=>setTheme(b.dataset.t));
+    reflectTheme();
+  }
+
+  /* =========================================================
+     shared bits
+     ========================================================= */
+  function emptyState(icon,title,sub){
+    const icons={
+      scale:'<path d="M4 7h16l-2 13H6z"/><path d="M9 7a3 3 0 016 0"/><path d="M12 11v4"/>',
+      flag:'<path d="M5 21V4M5 4h11l-2 4 2 4H5"/>',
+    };
+    return el('div','empty',
+      `<svg viewBox="0 0 24 24">${icons[icon]||''}</svg><div style="font-weight:600;color:var(--ink-2)">${title}</div>
+       <div style="font-size:12.5px;max-width:230px">${sub}</div>`);
+  }
+
+  /* theme */
+  function setTheme(t){
+    if(t==='auto'){ document.documentElement.removeAttribute('data-theme'); localStorage.removeItem('of-theme'); }
+    else{ document.documentElement.setAttribute('data-theme',t); try{localStorage.setItem('of-theme',t);}catch(e){} }
+    reflectTheme();
+  }
+  function curTheme(){ try{return localStorage.getItem('of-theme')||'auto';}catch(e){return 'auto';} }
+  function reflectTheme(){
+    const t=curTheme();
+    const st=$('#themeState'); if(st)st.textContent=t;
+    document.querySelectorAll('#cfgTheme button').forEach(b=>b.classList.toggle('on',b.dataset.t===t));
+  }
+  $('#themeToggle').onclick=()=>{ const order=['auto','light','dark']; setTheme(order[(order.indexOf(curTheme())+1)%3]); };
+  (function initTheme(){ const t=curTheme(); if(t!=='auto')document.documentElement.setAttribute('data-theme',t); reflectTheme(); })();
+
+  (function(){const d=$('#dsDate'); if(d)d.textContent=new Date().toLocaleDateString('en-GB',{weekday:'short',day:'numeric',month:'short'});})();
+  window.addEventListener('resize',closePop);
+  route();
+})();
+</script>
