@@ -5,9 +5,15 @@ rather than the legacy Fitbit Web API, which Google is deprecating in
 September 2026.
 
 Auth is standard Google OAuth 2.0 (not a password): you register an OAuth
-client in Google Cloud Console, then run authorize.py ONCE to grant access
-and save a refresh token to disk. This plugin just uses that refresh token
-to get short-lived access tokens on each sync - see README for full setup.
+client in Google Cloud Console, then add the device in the UI - client id
+and secret, then approve on Google's consent screen and paste back the
+code. That one-time consent yields a refresh token, stored encrypted in
+the accounts table alongside the client details, which this plugin trades
+for a short-lived access token on each sync.
+
+authorize.py does the same thing from a terminal and stays for installs
+that were set up that way; its on-disk token file is still read as a
+fallback when the stored account has no refresh token of its own.
 
 Data types used (Google Health API v4):
   - steps                     -> dailyRollUp (clean daily sums)
@@ -17,24 +23,44 @@ Data types used (Google Health API v4):
 
 import json
 import os
+import urllib.parse
 from datetime import date, timedelta
 
 import requests
 
 from ..base import SyncPlugin
 
+AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 TOKEN_URL = "https://oauth2.googleapis.com/token"
 API_BASE = "https://health.googleapis.com/v4/users/me"
+
+SCOPES = [
+    "https://www.googleapis.com/auth/googlehealth.activity_and_fitness.readonly",
+    "https://www.googleapis.com/auth/googlehealth.sleep.readonly",
+    "https://www.googleapis.com/auth/googlehealth.health_metrics_and_measurements.readonly",
+]
 
 
 class GoogleHealthPlugin(SyncPlugin):
     id = "google_health"
     name = "Google Health (Pixel Watch / Fitbit)"
-    # Declared now so the connector API can describe this plugin, but the
-    # UI deliberately doesn't offer oauth-type connectors yet: adding
-    # Google means bouncing through Google's consent screen, which is its
-    # own flow (authorize.py, for now) and its own PR.
+    # Google is added by consent, not by password: the UI collects the
+    # client details below, then walks the two oauth_* methods at the
+    # bottom of this class.
     add_flow = "oauth"
+    add_note = (
+        "Create a Google Cloud project, enable the Google Health API, add "
+        "yourself as a test user, make an OAuth client of type Desktop app. "
+        "Scopes: activity_and_fitness.readonly, sleep.readonly, "
+        "health_metrics_and_measurements.readonly"
+    )
+    # Google only issues a refresh token on first consent; a repeat
+    # authorization of an app you already approved comes back without
+    # one until you revoke it.
+    oauth_refresh_help = (
+        "Google didn't return a refresh token - revoke access at "
+        "myaccount.google.com/permissions and try again"
+    )
     fields = [
         {
             "key": "client_id",
@@ -65,35 +91,92 @@ class GoogleHealthPlugin(SyncPlugin):
             except OSError as e:
                 print(f"[google_health] could not remove {path}: {e}")
 
-    def _load_tokens(self):
+    def _legacy_refresh_token(self):
+        """The refresh token authorize.py wrote to disk, if there is one.
+
+        Pre-UI installs authorised from a terminal and have no refresh
+        token in their account blob; this keeps them syncing untouched.
+        """
         path = self._tokenstore_path()
         if not os.path.exists(path):
+            return None
+        try:
+            with open(path) as f:
+                return json.load(f).get("refresh_token")
+        except (OSError, ValueError) as e:
+            print(f"[google_health] could not read {path}: {e}")
+            return None
+
+    def _refresh_token(self, credentials):
+        """The refresh token to sync with: the stored account, else disk."""
+        token = credentials.get("refresh_token") or self._legacy_refresh_token()
+        if not token:
             raise RuntimeError(
-                "No Google Health token found. Run authorize.py once first "
-                "(see README) to grant access."
+                "Google Health is not authorised yet. Add it under Config -> "
+                "Connected sources and approve access on Google's consent screen."
             )
-        with open(path) as f:
-            return json.load(f)
+        return token
 
     def _get_access_token(self, conn=None):
-        tokens = self._load_tokens()
         # Same source of truth as every other plugin: the stored account
-        # if there is one, the env vars otherwise.
+        # if there is one, the env vars otherwise. Since the UI flow, the
+        # refresh token lives in that same encrypted blob.
         creds = self.get_credentials(conn)
-        client_id = creds.get("client_id")
-        client_secret = creds.get("client_secret")
         resp = requests.post(
             TOKEN_URL,
             data={
-                "client_id": client_id,
-                "client_secret": client_secret,
-                "refresh_token": tokens["refresh_token"],
+                "client_id": creds.get("client_id"),
+                "client_secret": creds.get("client_secret"),
+                "refresh_token": self._refresh_token(creds),
                 "grant_type": "refresh_token",
             },
             timeout=15,
         )
         resp.raise_for_status()
         return resp.json()["access_token"]
+
+    # ---- oauth (see SyncPlugin.oauth_auth_url / oauth_exchange) ----
+
+    def oauth_auth_url(self, credentials, redirect_uri, code_challenge):
+        params = {
+            "client_id": credentials.get("client_id"),
+            "redirect_uri": redirect_uri,
+            "response_type": "code",
+            "scope": " ".join(SCOPES),
+            # offline + a forced consent screen is what makes Google hand
+            # back a refresh token rather than an access token alone.
+            "access_type": "offline",
+            "prompt": "consent",
+            "code_challenge": code_challenge,
+            "code_challenge_method": "S256",
+        }
+        return AUTH_URL + "?" + urllib.parse.urlencode(params)
+
+    def oauth_exchange(self, credentials, code, code_verifier, redirect_uri):
+        resp = requests.post(
+            TOKEN_URL,
+            data={
+                "client_id": credentials.get("client_id"),
+                "client_secret": credentials.get("client_secret"),
+                "code": code,
+                "code_verifier": code_verifier,
+                "grant_type": "authorization_code",
+                "redirect_uri": redirect_uri,
+            },
+            timeout=15,
+        )
+        if not resp.ok:
+            # Google says why in the body ("invalid_grant" for a stale or
+            # reused code); pass that through rather than a bare 400.
+            raise RuntimeError(f"Google rejected the authorization code: {resp.text}")
+        tokens = resp.json()
+        # Only the long-lived half is worth keeping - access tokens expire
+        # in an hour and every sync mints a fresh one anyway.
+        return {
+            "client_id": credentials.get("client_id"),
+            "client_secret": credentials.get("client_secret"),
+            "refresh_token": tokens.get("refresh_token"),
+        }
 
     def sync(self, conn, days: int) -> int:
         access_token = self._get_access_token(conn)

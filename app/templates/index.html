@@ -217,6 +217,9 @@ button{font-family:inherit;cursor:pointer;}
 .btn.sm{padding:6px 10px;font-size:12.5px;}
 .btn:disabled{opacity:.5;cursor:not-allowed;}
 .btn:disabled:hover{border-color:var(--border-strong);color:var(--ink);filter:none;}
+/* a link that acts as a button - the OAuth consent link, which has to be
+   a real anchor so it can open in a new tab */
+a.btn{display:inline-block;text-decoration:none;}
 .field{display:flex;flex-direction:column;gap:5px;}
 .field label{font-size:11.5px;text-transform:uppercase;letter-spacing:.8px;color:var(--muted);font-weight:600;}
 .input, select.input{
@@ -425,6 +428,11 @@ svg.chart{width:100%;height:auto;display:block;overflow:visible;}
     listConnectors:  ()            => getJSON('/api/connectors', []),
     addConnector:    (id, values)  => send('/api/connectors/'+encodeURIComponent(id), 'POST', values),
     removeConnector: id            => send('/api/connectors/'+encodeURIComponent(id), 'DELETE'),
+    /* OAuth connectors are added in two calls: start hands back a consent
+       URL (and keeps the PKCE verifier server-side), finish takes the code
+       the provider put in the address bar. */
+    oauthStart:      (id, values)  => send('/api/connectors/'+encodeURIComponent(id)+'/oauth/start', 'POST', values),
+    oauthFinish:     (id, code)    => send('/api/connectors/'+encodeURIComponent(id)+'/oauth/finish', 'POST', {code}),
     syncPlugin:   id             => send('/api/sync/'+encodeURIComponent(id)+'?days=7', 'POST'),
     getSetting:   async key      => (await getJSON('/api/settings/'+encodeURIComponent(key), {})).value ?? null,
     putSetting:   (key, value)   => send('/api/settings/'+encodeURIComponent(key), 'PUT', {value}),
@@ -454,7 +462,7 @@ svg.chart{width:100%;height:auto;display:block;overflow:visible;}
     tab:'home',
     weights:[],       // [{date, weight}] ascending. Always kilograms.
     activity:[],      // raw per-source rows from /api/activity?by_source=1
-    connectors:[],   // [{id, name, fields, add_flow, connected, configured}]
+    connectors:[],   // [{id, name, fields, add_flow, add_note, connected, configured}]
     tiles:Object.assign({}, DEFAULT_TILES),
     unit:readUnit(),  // display/entry unit - a per-browser preference
     addOpen:'weight', // which add-data row is expanded
@@ -1021,11 +1029,10 @@ svg.chart{width:100%;height:auto;display:block;overflow:visible;}
     return card;
   }
 
-  /* The picker at the foot of the card. OAuth connectors are declared by
-     their plugin but deliberately not offered yet - adding one means a
-     trip through a provider consent screen, which is its own flow. */
+  /* The picker at the foot of the card. Every connector the API offers
+     is addable here; add_flow decides which modal it opens. */
   function addDeviceRow(){
-    const addable = state.connectors.filter(c=> !c.connected && c.add_flow === 'credentials');
+    const addable = state.connectors.filter(c=> !c.connected);
     const wrap = el('div','src-add');
 
     if(!addable.length){
@@ -1050,33 +1057,20 @@ svg.chart{width:100%;height:auto;display:block;overflow:visible;}
     return wrap;
   }
 
-  /* Floating add-device modal, built from the connector's own manifest:
-     whatever fields the plugin declares are the fields rendered here. */
+  /* Add-device modals, built from the connector's own manifest: whatever
+     fields the plugin declares are the fields rendered, and add_flow picks
+     the shape. Neither knows what device it is looking at. */
   function openAddDevice(c){
-    const fields = Array.isArray(c.fields) ? c.fields : [];
-    const bg = el('div','modal-bg');
-    const box = el('div','modal', `
-      <h4>Add ${esc(c.name)}</h4>
-      <p class="hint">Stored encrypted on this container and never sent anywhere except ${esc(c.name)}.</p>
-      ${fields.map((f,i)=>`
-        <div class="field">
-          <label for="cf${i}">${esc(f.label || f.key)}</label>
-          <input class="input" id="cf${i}" data-key="${esc(f.key)}"
-                 type="${f.type === 'password' ? 'password' : 'text'}"
-                 autocomplete="${f.type === 'password' ? 'new-password' : 'off'}"
-                 autocapitalize="off" spellcheck="false">
-        </div>`).join('')}
-      <div class="form-msg bad" id="addMsg"></div>
-      <div class="modal-actions">
-        <button class="btn sm" data-act="cancel" type="button">Cancel</button>
-        <button class="btn sm primary" data-act="add" type="button">Add</button>
-      </div>`);
+    if(c.add_flow === 'oauth') return openOAuthDevice(c);
+    return openCredentialsDevice(c);
+  }
 
+  /* Modal chrome shared by both flows: backdrop, Escape, click-outside. */
+  function openModal(html){
+    const bg = el('div','modal-bg');
+    const box = el('div','modal', html);
     bg.appendChild(box);
     document.body.appendChild(bg);
-
-    const msg = box.querySelector('#addMsg');
-    const addBtn = box.querySelector('[data-act="add"]');
 
     function close(){
       document.removeEventListener('keydown', onKey);
@@ -1084,16 +1078,53 @@ svg.chart{width:100%;height:auto;display:block;overflow:visible;}
     }
     function onKey(e){ if(e.key === 'Escape') close(); }
     document.addEventListener('keydown', onKey);
-
-    box.querySelector('[data-act="cancel"]').onclick = close;
     // Clicking the backdrop cancels too; clicking inside the card must not.
     bg.onclick = e => { if(e.target === bg) close(); };
 
+    return {box, close};
+  }
+
+  /* The manifest rendered as inputs - the same markup for step one of
+     either flow. */
+  function manifestFields(c){
+    const fields = Array.isArray(c.fields) ? c.fields : [];
+    return fields.map((f,i)=>`
+        <div class="field">
+          <label for="cf${i}">${esc(f.label || f.key)}</label>
+          <input class="input" id="cf${i}" data-key="${esc(f.key)}"
+                 type="${f.type === 'password' ? 'password' : 'text'}"
+                 autocomplete="${f.type === 'password' ? 'new-password' : 'off'}"
+                 autocapitalize="off" spellcheck="false">
+        </div>`).join('');
+  }
+
+  function fieldValues(box){
+    const values = {};
+    box.querySelectorAll('input[data-key]').forEach(input=>{
+      values[input.dataset.key] = input.value;
+    });
+    return values;
+  }
+
+  function openCredentialsDevice(c){
+    const {box, close} = openModal(`
+      <h4>Add ${esc(c.name)}</h4>
+      <p class="hint">Stored encrypted on this container and never sent anywhere except ${esc(c.name)}.</p>
+      ${c.add_note ? `<p class="hint">${esc(c.add_note)}</p>` : ''}
+      ${manifestFields(c)}
+      <div class="form-msg bad" id="addMsg"></div>
+      <div class="modal-actions">
+        <button class="btn sm" data-act="cancel" type="button">Cancel</button>
+        <button class="btn sm primary" data-act="add" type="button">Add</button>
+      </div>`);
+
+    const msg = box.querySelector('#addMsg');
+    const addBtn = box.querySelector('[data-act="add"]');
+
+    box.querySelector('[data-act="cancel"]').onclick = close;
+
     addBtn.onclick = async ()=>{
-      const values = {};
-      box.querySelectorAll('input[data-key]').forEach(input=>{
-        values[input.dataset.key] = input.value;
-      });
+      const values = fieldValues(box);
       msg.textContent = '';
       addBtn.disabled = true; addBtn.textContent = 'Adding…';
       const res = await api.addConnector(c.id, values);
@@ -1105,6 +1136,85 @@ svg.chart{width:100%;height:auto;display:block;overflow:visible;}
         // the field that is actually missing - show it as-is.
         msg.textContent = res.error || 'Could not add this device';
         addBtn.disabled = false; addBtn.textContent = 'Add';
+      }
+    };
+
+    const first = box.querySelector('input');
+    if(first) first.focus();
+  }
+
+  /* The oauth flow, in two steps in one modal.
+     Step 1 collects the client details and asks the API for a consent URL;
+     step 2 takes back whatever the provider left in the address bar. The
+     redirect lands on a loopback port OpenFit doesn't serve, so that page
+     always fails to load - the code is still there to copy, which is the
+     whole trick and worth saying out loud on screen. */
+  function openOAuthDevice(c){
+    const {box, close} = openModal(`
+      <h4>Add ${esc(c.name)}</h4>
+      <div data-step="1">
+        <p class="hint">Stored encrypted on this container and never sent anywhere except ${esc(c.name)}.</p>
+        ${c.add_note ? `<p class="hint">${esc(c.add_note)}</p>` : ''}
+        ${manifestFields(c)}
+      </div>
+      <div data-step="2" hidden>
+        <p class="hint">Approve access. The page will fail to load - that's expected.
+           Paste the address it lands on (or just the code) below.</p>
+        <div class="field">
+          <a class="btn sm primary" id="authLink" target="_blank" rel="noopener noreferrer">Open the approval page</a>
+        </div>
+        <div class="field">
+          <label for="oauthCode">Pasted address or code</label>
+          <input class="input" id="oauthCode" type="text"
+                 autocomplete="off" autocapitalize="off" spellcheck="false">
+        </div>
+      </div>
+      <div class="form-msg bad" id="addMsg"></div>
+      <div class="modal-actions">
+        <button class="btn sm" data-act="cancel" type="button">Cancel</button>
+        <button class="btn sm primary" data-act="link" type="button">Get authorization link</button>
+        <button class="btn sm primary" data-act="connect" type="button" hidden>Connect</button>
+      </div>`);
+
+    const msg      = box.querySelector('#addMsg');
+    const stepOne  = box.querySelector('[data-step="1"]');
+    const stepTwo  = box.querySelector('[data-step="2"]');
+    const linkBtn  = box.querySelector('[data-act="link"]');
+    const connBtn  = box.querySelector('[data-act="connect"]');
+    const authLink = box.querySelector('#authLink');
+    const codeIn   = box.querySelector('#oauthCode');
+
+    // Cancel aborts at either step: nothing is stored until finish
+    // succeeds, so there is no half-added device to clean up.
+    box.querySelector('[data-act="cancel"]').onclick = close;
+
+    linkBtn.onclick = async ()=>{
+      msg.textContent = '';
+      linkBtn.disabled = true; linkBtn.textContent = 'Working…';
+      const res = await api.oauthStart(c.id, fieldValues(box));
+      if(res.ok && res.auth_url){
+        authLink.href = res.auth_url;
+        stepOne.hidden = true;
+        stepTwo.hidden = false;
+        linkBtn.hidden = true;
+        connBtn.hidden = false;
+        codeIn.focus();
+      }else{
+        msg.textContent = res.error || 'Could not build an authorization link';
+        linkBtn.disabled = false; linkBtn.textContent = 'Get authorization link';
+      }
+    };
+
+    connBtn.onclick = async ()=>{
+      msg.textContent = '';
+      connBtn.disabled = true; connBtn.textContent = 'Connecting…';
+      const res = await api.oauthFinish(c.id, codeIn.value);
+      if(res.ok){
+        close();
+        await refreshConnectors();
+      }else{
+        msg.textContent = res.error || 'Could not connect this device';
+        connBtn.disabled = false; connBtn.textContent = 'Connect';
       }
     };
 
