@@ -8,7 +8,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 
 from migrations import run_migrations
 from plugins import PLUGINS
-from secrets import encrypt
+from crypto import encrypt
 
 DB_PATH = os.getenv("DB_PATH", "/data/tracker.db")
 SYNC_INTERVAL_HOURS = int(os.getenv("SYNC_INTERVAL_HOURS", "6"))
@@ -237,7 +237,7 @@ def set_setting(key):
 # the form, validation and storage all follow.
 #
 # Credentials are encrypted before they touch the database - see
-# app/secrets.py. They are never read back out over the API: the UI shows
+# app/crypto.py. They are never read back out over the API: the UI shows
 # that a device is connected, not what it was connected with.
 
 

@@ -22,9 +22,7 @@ plugin's own calls to its own device API.
   declares a connector manifest (`fields`, `add_flow`) and reads its credentials
   via `self.get_credentials(conn)`; the UI's add-a-device form is built from that
   manifest, so adding a device needs no frontend code.
-- `app/secrets.py` — Fernet encrypt/decrypt for stored credentials. Shares a name
-  with the stdlib `secrets` module, which it shadows while `/app` leads `sys.path`;
-  don't import stdlib `secrets` from anything `main.py` reaches.
+- `app/crypto.py` — Fernet encrypt/decrypt for stored credentials.
 - `tests/` — pytest against a temp DB, no network (Garmin/Google are never called).
 - `docs/design/` — design references for the frontend.
 

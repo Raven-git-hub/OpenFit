@@ -125,7 +125,7 @@ app/
     garmin/plugin.py           Garmin Connect
     google_health/plugin.py    Google Health API (Pixel Watch / Fitbit)
     google_health/authorize.py one-time OAuth login for the above
-  secrets.py                  Encrypt/decrypt for stored device credentials
+  crypto.py                   Encrypt/decrypt for stored device credentials
   migrations/                 Versioned .sql schema migrations + runner
 tests/                        pytest suite (temp DB, no network)
 ```

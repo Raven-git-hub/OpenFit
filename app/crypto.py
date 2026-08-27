@@ -13,14 +13,6 @@ unrecoverable: re-adding the device in the UI is the fix.
 
 Nothing here reaches the network. Fernet is AES-128-CBC + HMAC-SHA256
 from `cryptography`, which is the only new dependency this needs.
-
-Note on the filename: this module shadows the stdlib `secrets` module for
-any import that runs with /app first on sys.path (i.e. `python main.py`).
-Nothing in the app or its dependencies imports stdlib `secrets` on that
-path - plugins/google_health/authorize.py does, but it runs as its own
-script, so its own directory leads sys.path and it gets the stdlib one.
-Keep it that way: don't import stdlib `secrets` from anything main.py
-reaches.
 """
 
 import os

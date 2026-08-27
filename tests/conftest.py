@@ -20,7 +20,7 @@ APP_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 if APP_DIR not in sys.path:
     sys.path.insert(0, APP_DIR)
 
-import secrets as openfit_secrets  # noqa: E402  (app/secrets.py, not the stdlib)
+import crypto as openfit_crypto  # noqa: E402
 from migrations import run_migrations  # noqa: E402
 
 
@@ -32,8 +32,8 @@ def secret_key_file(tmp_path, monkeypatch):
     would read - or worse, create - the real /data/.secret_key.
     """
     path = tmp_path / ".secret_key"
-    monkeypatch.delenv(openfit_secrets.KEY_ENV, raising=False)
-    monkeypatch.setenv(openfit_secrets.KEY_PATH_ENV, str(path))
+    monkeypatch.delenv(openfit_crypto.KEY_ENV, raising=False)
+    monkeypatch.setenv(openfit_crypto.KEY_PATH_ENV, str(path))
     return path
 
 

@@ -16,7 +16,7 @@ import sqlite3
 
 import pytest
 
-from secrets import decrypt
+from crypto import decrypt
 
 
 def connectors(client):

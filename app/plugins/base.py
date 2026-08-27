@@ -15,7 +15,7 @@ import json
 import os
 from abc import ABC, abstractmethod
 
-from secrets import decrypt
+from crypto import decrypt
 
 
 class SyncPlugin(ABC):

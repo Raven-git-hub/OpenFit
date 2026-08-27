@@ -10,7 +10,7 @@ import json
 import pytest
 
 from plugins.base import SyncPlugin
-from secrets import encrypt
+from crypto import encrypt
 
 
 class FakePlugin(SyncPlugin):

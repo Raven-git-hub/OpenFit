@@ -1,7 +1,7 @@
 """
 Encryption at rest for connector credentials.
 
-The point of app/secrets.py is that a copy of tracker.db is not a copy of
+The point of app/crypto.py is that a copy of tracker.db is not a copy of
 your Garmin password, so these tests care about two things: a round trip
 that works, and ciphertext that doesn't leak the plaintext.
 """
@@ -12,19 +12,17 @@ import stat
 import pytest
 from cryptography.fernet import Fernet, InvalidToken
 
-import secrets as openfit_secrets
-from secrets import decrypt, encrypt
+import crypto as openfit_crypto
+from crypto import decrypt, encrypt
 
 
 def test_the_app_module_is_the_one_under_test():
-    """Guard against the stdlib `secrets` shadowing this module, or vice versa.
+    """Pin which module these tests exercise.
 
-    app/secrets.py deliberately shares a name with the standard library's
-    `secrets`. That is fine while /app leads sys.path, but if it ever
-    stops being true these tests would silently exercise the wrong
-    module - so pin it explicitly.
+    `crypto` is a short, generic name; if an installed package ever
+    claimed it, these tests would silently pass against the wrong module.
     """
-    assert openfit_secrets.__file__.endswith(os.path.join("app", "secrets.py"))
+    assert openfit_crypto.__file__.endswith(os.path.join("app", "crypto.py"))
 
 
 def test_round_trip():
@@ -65,7 +63,7 @@ def test_generated_key_file_is_0600(secret_key_file):
 
 
 def test_env_key_wins_over_the_file(monkeypatch, secret_key_file):
-    monkeypatch.setenv(openfit_secrets.KEY_ENV, Fernet.generate_key().decode())
+    monkeypatch.setenv(openfit_crypto.KEY_ENV, Fernet.generate_key().decode())
 
     assert decrypt(encrypt("hunter2")) == "hunter2"
     # Nothing was written to disk - the env key is the whole story.
@@ -75,7 +73,7 @@ def test_env_key_wins_over_the_file(monkeypatch, secret_key_file):
 def test_a_different_key_cannot_decrypt(monkeypatch):
     token = encrypt("hunter2")
 
-    monkeypatch.setenv(openfit_secrets.KEY_ENV, Fernet.generate_key().decode())
+    monkeypatch.setenv(openfit_crypto.KEY_ENV, Fernet.generate_key().decode())
 
     with pytest.raises(InvalidToken):
         decrypt(token)
