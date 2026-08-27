@@ -93,9 +93,10 @@ docker compose run --rm tracker python3 first_login.py
 
 ### Google Health plugin (Pixel Watch / Fitbit)
 
-Uses standard Google OAuth rather than a password, so it isn't in the
-"Add a device" list yet — that flow is a separate piece of work. For now
-it is still set up from `.env` plus a one-time authorization:
+Uses standard Google OAuth rather than a password, so adding it is two
+steps instead of one — but it all happens in the UI.
+
+First, the one-off setup on Google's side:
 
 1. Create a project in [Google Cloud Console](https://console.cloud.google.com/)
    and enable the **Google Health API**.
@@ -104,14 +105,39 @@ it is still set up from `.env` plus a one-time authorization:
    for personal use.
 3. Add scopes: `googlehealth.activity_and_fitness.readonly`,
    `googlehealth.sleep.readonly`, `googlehealth.health_metrics_and_measurements.readonly`.
-4. Create an OAuth Client ID of type **Desktop app**, and put the ID/secret
-   into `.env` as `GOOGLE_HEALTH_CLIENT_ID` / `GOOGLE_HEALTH_CLIENT_SECRET`.
-5. Run the one-time authorization:
+4. Create an OAuth Client ID of type **Desktop app**, and note the client
+   ID and secret.
+
+Then, under **Configuration → Connected sources → Add a device →
+Google Health**:
+
+1. Paste the client ID and secret, and press **Get authorization link**.
+2. Open the link, approve access. Google redirects to
+   `http://127.0.0.1:9109/`, which OpenFit deliberately does not serve, so
+   **the page fails to load — that's expected**. The authorization code is
+   in the address bar.
+3. Paste that whole address (or just the code) back into the modal and
+   press **Connect**.
+
+The refresh token that comes back is stored encrypted alongside the client
+details, the same as any other device, and the background sync uses it from
+then on.
+
+<details>
+<summary>Authorizing from a terminal instead</summary>
+
+`plugins/google_health/authorize.py` does the same thing without the UI,
+saving the refresh token to a file on the data volume:
+
 ```bash
-   docker compose run --rm -p 8765:8765 tracker python3 plugins/google_health/authorize.py
+docker compose run --rm -p 8765:8765 tracker python3 plugins/google_health/authorize.py
 ```
-   Open the printed URL, approve access, and a refresh token is saved to
-   the data volume — no further interaction needed after that.
+
+It needs `GOOGLE_HEALTH_CLIENT_ID` / `GOOGLE_HEALTH_CLIENT_SECRET` in
+`.env`. Installs set up this way keep working — that token file is still
+read as a fallback when the stored account has no refresh token of its own.
+
+</details>
 
 ## Architecture
 
@@ -124,7 +150,7 @@ app/
     __init__.py                PLUGINS registry - one line per installed plugin
     garmin/plugin.py           Garmin Connect
     google_health/plugin.py    Google Health API (Pixel Watch / Fitbit)
-    google_health/authorize.py one-time OAuth login for the above
+    google_health/authorize.py terminal alternative to the in-UI OAuth flow
   crypto.py                   Encrypt/decrypt for stored device credentials
   migrations/                 Versioned .sql schema migrations + runner
 tests/                        pytest suite (temp DB, no network)

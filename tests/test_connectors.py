@@ -72,8 +72,8 @@ def test_garmin_manifest_is_a_credentials_form(client):
     ]
 
 
-def test_google_health_is_declared_but_oauth(client):
-    """Declared so the API describes it; the UI filters oauth out for now."""
+def test_google_health_is_an_oauth_connector(client):
+    """add_flow is what the UI switches on to show the two-step modal."""
     google = connectors(client)["google_health"]
 
     assert google["add_flow"] == "oauth"

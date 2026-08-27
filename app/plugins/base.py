@@ -17,6 +17,17 @@ from abc import ABC, abstractmethod
 
 from crypto import decrypt
 
+# Where a provider sends the browser back after consent, for every
+# add_flow="oauth" plugin.
+#
+# It is a loopback address this app deliberately does NOT serve: the
+# browser lands on a "can't connect" page with ?code=... sitting in the
+# address bar, which is exactly what the paste-the-code flow needs. That
+# keeps OpenFit self-hosted - no hosted redirect, no domain, no callback
+# route to secure - and desktop-app OAuth clients accept any loopback
+# port without registering it.
+OAUTH_REDIRECT_URI = "http://127.0.0.1:9109/"
+
 
 class SyncPlugin(ABC):
     # Short machine id, used in URLs and the activity.source column.
@@ -44,10 +55,23 @@ class SyncPlugin(ABC):
     fields: list[dict] = []
 
     # How the device is added: "credentials" (fill in the fields above)
-    # or "oauth" (bounce through a provider consent screen). The UI only
-    # offers credentials-type connectors for now; oauth lands with the
-    # Google Health flow.
+    # or "oauth" (fill in the fields above, then bounce through a
+    # provider consent screen - see the oauth_* methods below). The UI
+    # renders a one-step form for the first and a two-step one for the
+    # second, from this value alone.
     add_flow: str = "credentials"
+
+    # Optional guidance shown above the form when adding this device -
+    # e.g. what to set up at the provider before an OAuth client will
+    # work. Plain text; the UI escapes it. Declared here so setup notes
+    # stay with the plugin instead of hardcoded in the template.
+    add_note: str = ""
+
+    # Shown when an add_flow="oauth" provider completes the exchange but
+    # hands back no refresh token - the one failure whose fix is always
+    # provider-specific ("revoke access over there, then retry"). Left
+    # blank, main.py falls back to a generic version of the same advice.
+    oauth_refresh_help: str = ""
 
     # Env var names this plugin needs to function. Superseded by `fields`
     # for anything with a manifest; kept for plugins that have none.
@@ -107,6 +131,38 @@ class SyncPlugin(ABC):
             f for f in self.fields
             if f.get("required") and not credentials.get(f["key"])
         ]
+
+    # ---- oauth (add_flow == "oauth" only) ----
+    #
+    # Two methods are the whole flow. main.py owns the PKCE pair, the
+    # pending-state store and the encrypted storage; the plugin owns
+    # nothing but its provider's URLs, scopes and parameter names. A new
+    # OAuth device is these two methods plus a manifest - no route and
+    # no frontend code.
+
+    def oauth_auth_url(self, credentials: dict, redirect_uri: str, code_challenge: str) -> str:
+        """The provider consent URL to send the human to.
+
+        `credentials` holds the manifest fields just entered (client id,
+        secret, whatever this provider needs). `code_challenge` is the
+        S256 challenge for the PKCE verifier main.py is holding; put it
+        in the URL so the token exchange can prove it owns the code.
+        Ask for offline access - a refresh token is the point.
+        """
+        raise NotImplementedError(f"{self.id} does not implement oauth_auth_url")
+
+    def oauth_exchange(self, credentials: dict, code: str, code_verifier: str,
+                       redirect_uri: str) -> dict:
+        """Trade the authorization code for the credentials to store.
+
+        Returns the full dict that gets encrypted into the account row -
+        typically the manifest fields plus the refresh token. It MUST
+        contain a refresh_token: without one the connection dies the
+        moment the first access token expires, so main.py rejects the
+        add rather than storing something that will quietly stop
+        working. Raise on a failed exchange.
+        """
+        raise NotImplementedError(f"{self.id} does not implement oauth_exchange")
 
     def clear_cached_auth(self) -> None:
         """Drop any token/session this plugin cached on disk.

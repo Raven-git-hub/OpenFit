@@ -1,6 +1,11 @@
+import base64
+import hashlib
 import json
 import os
+import secrets
 import sqlite3
+import time
+import urllib.parse
 from datetime import date, datetime, timezone
 
 from flask import Flask, jsonify, request, send_from_directory
@@ -8,6 +13,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 
 from migrations import run_migrations
 from plugins import PLUGINS
+from plugins.base import OAUTH_REDIRECT_URI
 from crypto import encrypt
 
 DB_PATH = os.getenv("DB_PATH", "/data/tracker.db")
@@ -253,6 +259,7 @@ def list_connectors():
             "name": p.name,
             "fields": p.fields,
             "add_flow": p.add_flow,
+            "add_note": p.add_note,
             "connected": p.id in connected,
             # Whether it could actually sync right now - true for a
             # pre-UI install whose credentials are still in the env even
@@ -263,6 +270,37 @@ def list_connectors():
     ]
     conn.close()
     return jsonify(out)
+
+
+def _manifest_values(plugin, body):
+    """The manifest fields present in a request body, trimmed.
+
+    Only manifest fields are kept - anything else in the body is ignored
+    rather than quietly encrypted and kept forever.
+    """
+    values = {}
+    for field in plugin.fields:
+        raw = body.get(field["key"])
+        if raw is None:
+            continue
+        value = raw.strip() if isinstance(raw, str) else str(raw)
+        if value:
+            values[field["key"]] = value
+    return values
+
+
+def _store_account(plugin_id, credentials):
+    """Encrypt and upsert one plugin's credentials blob."""
+    conn = get_conn()
+    conn.execute(
+        "INSERT INTO accounts (plugin_id, credentials, created_at) VALUES (?, ?, ?) "
+        # Re-adding a device replaces the credentials but keeps the
+        # original created_at - it's the same connection, re-authorised.
+        "ON CONFLICT(plugin_id) DO UPDATE SET credentials=excluded.credentials",
+        (plugin_id, encrypt(json.dumps(credentials)), _now()),
+    )
+    conn.commit()
+    conn.close()
 
 
 @app.route("/api/connectors/<plugin_id>", methods=["POST"])
@@ -276,32 +314,181 @@ def connect_connector(plugin_id):
     if not isinstance(body, dict):
         return jsonify({"ok": False, "error": "expected a JSON object"}), 400
 
-    # Only manifest fields are stored - anything else in the body is
-    # ignored rather than quietly encrypted and kept forever.
-    values = {}
-    for field in plugin.fields:
-        raw = body.get(field["key"])
-        if raw is None:
-            continue
-        value = raw.strip() if isinstance(raw, str) else str(raw)
-        if value:
-            values[field["key"]] = value
+    if plugin.add_flow == "oauth":
+        # An oauth connector needs the consent round trip; storing the
+        # client details alone would look connected and never sync.
+        return jsonify({
+            "ok": False,
+            "error": (
+                f"{plugin.name} is added by authorization - "
+                f"use /api/connectors/{plugin_id}/oauth/start then .../oauth/finish"
+            ),
+        }), 400
 
+    values = _manifest_values(plugin, body)
     missing = plugin.missing_fields(values)
     if missing:
         names = ", ".join(f.get("label") or f["key"] for f in missing)
         return jsonify({"ok": False, "error": f"{names} required"}), 400
 
-    conn = get_conn()
-    conn.execute(
-        "INSERT INTO accounts (plugin_id, credentials, created_at) VALUES (?, ?, ?) "
-        # Re-adding a device replaces the credentials but keeps the
-        # original created_at - it's the same connection, re-authorised.
-        "ON CONFLICT(plugin_id) DO UPDATE SET credentials=excluded.credentials",
-        (plugin_id, encrypt(json.dumps(values)), _now()),
-    )
-    conn.commit()
-    conn.close()
+    _store_account(plugin_id, values)
+    return jsonify({"ok": True})
+
+
+# ---------- connectors: the oauth add flow ----------
+
+# Adding an OAuth device is two calls, because there is nowhere for the
+# provider to redirect back to: OpenFit is self-hosted, on whatever
+# address this container happens to have, with no domain and no hosted
+# callback. So consent lands on a loopback URL the app doesn't serve
+# (OAUTH_REDIRECT_URI - see plugins/base.py), the browser shows a
+# "can't connect" page with ?code=... in the address bar, and the human
+# pastes that back. No inbound callback, nothing registered with the
+# provider beyond a desktop-app client.
+#
+# Between the two calls sits the PKCE verifier, which must not go near
+# the browser. It waits here, in memory, keyed by plugin:
+
+OAUTH_PENDING_TTL_SECONDS = 600
+
+# {plugin_id: {"code_verifier": str, "credentials": dict, "expires_at": float}}
+#
+# Deliberately not a table: this is a few minutes of half-finished login,
+# not state worth persisting. A restart mid-flow just means starting the
+# add over, and nothing sensitive outlives the process.
+_oauth_pending = {}
+
+
+def _pkce_pair():
+    """A PKCE verifier and its S256 challenge, per RFC 7636."""
+    verifier = base64.urlsafe_b64encode(secrets.token_bytes(40)).rstrip(b"=").decode()
+    challenge = base64.urlsafe_b64encode(
+        hashlib.sha256(verifier.encode()).digest()
+    ).rstrip(b"=").decode()
+    return verifier, challenge
+
+
+def _oauth_plugin(plugin_id):
+    """(plugin, error_response) for an oauth-flow plugin id."""
+    plugin = PLUGINS.get(plugin_id)
+    if not plugin:
+        return None, (jsonify({"ok": False, "error": f"no such connector: {plugin_id}"}), 404)
+    if plugin.add_flow != "oauth":
+        return None, (jsonify({
+            "ok": False,
+            "error": f"{plugin.name} is not an OAuth connector - POST /api/connectors/{plugin_id}",
+        }), 400)
+    return plugin, None
+
+
+def _take_pending(plugin_id):
+    """Pop this plugin's pending authorization, if it hasn't expired."""
+    now = time.monotonic()
+    for key, pending in list(_oauth_pending.items()):
+        if pending["expires_at"] <= now:
+            del _oauth_pending[key]
+    return _oauth_pending.pop(plugin_id, None)
+
+
+def _authorization_code(raw):
+    """The code out of whatever got pasted in.
+
+    Accepts the bare code, the full redirect URL the browser failed to
+    load, or just its query string - people paste all three, and telling
+    them off for it would be a strange way to end a login.
+    """
+    text = (raw or "").strip()
+    if not text:
+        return None
+    if "code=" in text:
+        query = urllib.parse.urlsplit(text).query or text.split("?", 1)[-1]
+        found = urllib.parse.parse_qs(query).get("code")
+        return found[0] if found else None
+    if "://" in text or "?" in text:
+        # A URL with no code in it - a denied consent, most likely.
+        return None
+    return text
+
+
+@app.route("/api/connectors/<plugin_id>/oauth/start", methods=["POST"])
+def start_oauth(plugin_id):
+    """Step one: take the client details, hand back a consent URL."""
+    plugin, error = _oauth_plugin(plugin_id)
+    if error:
+        return error
+
+    body = request.get_json(force=True, silent=True) or {}
+    if not isinstance(body, dict):
+        return jsonify({"ok": False, "error": "expected a JSON object"}), 400
+
+    values = _manifest_values(plugin, body)
+    missing = plugin.missing_fields(values)
+    if missing:
+        names = ", ".join(f.get("label") or f["key"] for f in missing)
+        return jsonify({"ok": False, "error": f"{names} required"}), 400
+
+    verifier, challenge = _pkce_pair()
+    try:
+        auth_url = plugin.oauth_auth_url(values, OAUTH_REDIRECT_URI, challenge)
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+    # Nothing is written to the database yet: an abandoned consent screen
+    # must not leave a half-connected device behind.
+    _oauth_pending[plugin_id] = {
+        "code_verifier": verifier,
+        "credentials": values,
+        "expires_at": time.monotonic() + OAUTH_PENDING_TTL_SECONDS,
+    }
+    return jsonify({"ok": True, "auth_url": auth_url})
+
+
+@app.route("/api/connectors/<plugin_id>/oauth/finish", methods=["POST"])
+def finish_oauth(plugin_id):
+    """Step two: trade the pasted code for the credentials to store."""
+    plugin, error = _oauth_plugin(plugin_id)
+    if error:
+        return error
+
+    body = request.get_json(force=True, silent=True) or {}
+    if not isinstance(body, dict):
+        return jsonify({"ok": False, "error": "expected a JSON object"}), 400
+
+    code = _authorization_code(body.get("code"))
+    if not code:
+        return jsonify({
+            "ok": False,
+            "error": "No authorization code found - paste the address the consent "
+                     "screen sent you to, or the code itself",
+        }), 400
+
+    pending = _take_pending(plugin_id)
+    if not pending:
+        return jsonify({
+            "ok": False,
+            "error": "This authorization expired or was never started - "
+                     "get a new authorization link and try again",
+        }), 400
+
+    try:
+        credentials = plugin.oauth_exchange(
+            pending["credentials"], code, pending["code_verifier"], OAUTH_REDIRECT_URI
+        )
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 400
+
+    if not isinstance(credentials, dict) or not credentials.get("refresh_token"):
+        # Without a refresh token the device would sync for an hour and
+        # then quietly stop, so this is a failed add, not a warning.
+        return jsonify({
+            "ok": False,
+            "error": plugin.oauth_refresh_help or (
+                f"{plugin.name} didn't return a refresh token - revoke this app's "
+                "access with the provider and try again"
+            ),
+        }), 400
+
+    _store_account(plugin_id, credentials)
     return jsonify({"ok": True})
 
 
