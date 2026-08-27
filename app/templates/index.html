@@ -321,6 +321,16 @@ svg.chart{width:100%;height:auto;display:block;overflow:visible;}
 .pill.ok{color:var(--good);background:color-mix(in srgb,var(--good) 14%,transparent);}
 .pill.wait{color:var(--warn);background:color-mix(in srgb,var(--warn) 14%,transparent);}
 .addtab{border:1.5px dashed var(--border-strong);background:var(--inset);border-radius:var(--radius);padding:22px;text-align:center;}
+/* add-a-device row at the foot of Connected sources */
+.src-add{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding-top:16px;margin-top:2px;border-top:1px solid var(--border);}
+.src-add label{font-size:11.5px;text-transform:uppercase;letter-spacing:.8px;color:var(--muted);font-weight:600;}
+.src-add select.input{width:auto;min-width:200px;flex:0 1 260px;}
+/* ---------- floating add-device modal ---------- */
+.modal-bg{position:fixed;inset:0;z-index:80;background:color-mix(in srgb,var(--ink) 45%,transparent);display:grid;place-items:center;padding:20px;}
+.modal{background:var(--surface);border:1px solid var(--border-strong);border-radius:var(--radius);box-shadow:var(--shadow);padding:20px;width:min(420px,100%);max-height:88vh;overflow:auto;}
+.modal h4{font-family:var(--font-display);font-weight:700;font-size:16px;margin:0 0 3px;}
+.modal .field{margin-bottom:12px;}
+.modal-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:16px;}
 .tab-choose{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:14px;}
 .choose{border:1px solid var(--border);border-radius:var(--radius-sm);padding:16px;background:var(--surface);text-align:left;}
 .choose b{font-family:var(--font-display);display:block;margin-bottom:4px;}
@@ -409,7 +419,12 @@ svg.chart{width:100%;height:auto;display:block;overflow:visible;}
     /* by_source=1 keeps the per-device rows so each day can be tagged
        with what reported it; they are merged back per date below. */
     listActivity: days           => getJSON('/api/activity?days='+days+'&by_source=1', []),
-    listPlugins:  ()             => getJSON('/api/plugins', []),
+    /* Connectors = plugins + whatever account has been attached to them.
+       Credentials go one way only: they are posted here and never read
+       back, so nothing on this page can display a stored password. */
+    listConnectors:  ()            => getJSON('/api/connectors', []),
+    addConnector:    (id, values)  => send('/api/connectors/'+encodeURIComponent(id), 'POST', values),
+    removeConnector: id            => send('/api/connectors/'+encodeURIComponent(id), 'DELETE'),
     syncPlugin:   id             => send('/api/sync/'+encodeURIComponent(id)+'?days=7', 'POST'),
     getSetting:   async key      => (await getJSON('/api/settings/'+encodeURIComponent(key), {})).value ?? null,
     putSetting:   (key, value)   => send('/api/settings/'+encodeURIComponent(key), 'PUT', {value}),
@@ -439,7 +454,7 @@ svg.chart{width:100%;height:auto;display:block;overflow:visible;}
     tab:'home',
     weights:[],       // [{date, weight}] ascending. Always kilograms.
     activity:[],      // raw per-source rows from /api/activity?by_source=1
-    plugins:[],
+    connectors:[],   // [{id, name, fields, add_flow, connected, configured}]
     tiles:Object.assign({}, DEFAULT_TILES),
     unit:readUnit(),  // display/entry unit - a per-browser preference
     addOpen:'weight', // which add-data row is expanded
@@ -941,64 +956,167 @@ svg.chart{width:100%;height:auto;display:block;overflow:visible;}
     reflectTheme();
   }
 
-  /* Real plugin status from /api/plugins, each with a working sync. */
+  /* Connected devices, from /api/connectors. A device is "connected"
+     when an account has been stored for it; the credentials themselves
+     never come back over the API, only the fact that they exist. */
   function sourcesCard(){
     const card = el('div','card',
       `<h3>Connected sources</h3>
-       <p class="hint">Sync plugins installed in this container. One that needs environment variables is listed but can’t sync until they are set - see the README.</p>`);
+       <p class="hint">add fitness devices here</p>`);
 
-    if(!state.plugins.length){
+    const connected = state.connectors.filter(c=>c.connected);
+
+    if(!connected.length){
       card.appendChild(el('div','empty',
-        `<div style="font-weight:600;color:var(--ink-2)">No sync plugins installed</div>
-         <div style="font-size:12.5px;max-width:320px">OpenFit runs fine without one - you just log everything by hand.</div>`));
-      return card;
+        `<div style="font-weight:600;color:var(--ink-2)">No devices connected</div>
+         <div style="font-size:12.5px;max-width:320px">Add one below. OpenFit runs fine without one - you just log everything by hand.</div>`));
     }
 
-    state.plugins.forEach(p=>{
-      const missing = Array.isArray(p.missing_env) ? p.missing_env : [];
+    connected.forEach(c=>{
       const row = el('div','src', `
         <div class="src-l">
-          <div class="src-ic">${esc(initials(p.name))}</div>
           <div style="min-width:0;">
-            <div style="font-weight:600">${esc(p.name)}</div>
-            <div style="color:var(--muted);font-size:12.5px">${
-              p.configured
-                ? 'steps · resting HR · sleep'
-                : 'needs ' + esc(missing.join(', ') || 'configuration')
-            }</div>
+            <div style="font-weight:600">${esc(c.name)}</div>
+            <div style="color:var(--muted);font-size:12.5px">steps · resting HR · sleep</div>
           </div>
         </div>
         <div class="src-r">
-          <span class="pill ${p.configured?'ok':'wait'}">${p.configured?'● connected':'setup needed'}</span>
-          <button class="btn sm" ${p.configured?'':'disabled'}>Sync now</button>
+          <span class="pill ok">● connected</span>
+          <button class="btn sm" data-act="sync">Sync now</button>
+          <button class="btn sm" data-act="remove">Remove</button>
         </div>`);
 
-      const btn = row.querySelector('button');
-      if(p.configured){
-        btn.onclick = async ()=>{
-          btn.disabled = true; btn.title = ''; btn.textContent = 'Syncing…';
-          const res = await api.syncPlugin(p.id);
-          if(res.ok){
-            btn.textContent = 'Synced ✓';
-            state.activity = await api.listActivity(ACTIVITY_DAYS);
-            paintSync();
-          }else{
-            btn.textContent = 'Failed';
-            btn.title = res.error || 'Sync failed';
-          }
-          setTimeout(()=>{ btn.textContent = 'Sync now'; btn.disabled = false; }, 2200);
-        };
-      }
+      const syncBtn = row.querySelector('[data-act="sync"]');
+      syncBtn.onclick = async ()=>{
+        syncBtn.disabled = true; syncBtn.title = ''; syncBtn.textContent = 'Syncing…';
+        const res = await api.syncPlugin(c.id);
+        if(res.ok){
+          syncBtn.textContent = 'Synced ✓';
+          state.activity = await api.listActivity(ACTIVITY_DAYS);
+          paintSync();
+        }else{
+          syncBtn.textContent = 'Failed';
+          syncBtn.title = res.error || 'Sync failed';
+        }
+        setTimeout(()=>{ syncBtn.textContent = 'Sync now'; syncBtn.disabled = false; }, 2200);
+      };
+
+      const rmBtn = row.querySelector('[data-act="remove"]');
+      rmBtn.onclick = async ()=>{
+        rmBtn.disabled = true; rmBtn.title = ''; rmBtn.textContent = 'Removing…';
+        const res = await api.removeConnector(c.id);
+        if(res.ok){
+          await refreshConnectors();
+        }else{
+          rmBtn.textContent = 'Failed';
+          rmBtn.title = res.error || 'Could not remove this device';
+          setTimeout(()=>{ rmBtn.textContent = 'Remove'; rmBtn.disabled = false; }, 2200);
+        }
+      };
+
       card.appendChild(row);
     });
+
+    card.appendChild(addDeviceRow());
     return card;
   }
 
-  /* "Garmin Connect" -> GC, "Google Health (Pixel Watch / Fitbit)" -> GH */
-  function initials(name){
-    const words = String(name||'').replace(/[^A-Za-z ]/g,' ').trim().split(/\s+/).filter(Boolean);
-    return words.slice(0,2).map(w=>w[0]).join('').toUpperCase() || '?';
+  /* The picker at the foot of the card. OAuth connectors are declared by
+     their plugin but deliberately not offered yet - adding one means a
+     trip through a provider consent screen, which is its own flow. */
+  function addDeviceRow(){
+    const addable = state.connectors.filter(c=> !c.connected && c.add_flow === 'credentials');
+    const wrap = el('div','src-add');
+
+    if(!addable.length){
+      wrap.appendChild(el('div', null,
+        `<span style="color:var(--muted);font-size:12.5px">Every device OpenFit can add is already connected.</span>`));
+      return wrap;
+    }
+
+    wrap.innerHTML = `
+      <label for="addDevice">Add a device</label>
+      <select class="input" id="addDevice">
+        <option value="">Choose a device…</option>
+        ${addable.map(c=>`<option value="${esc(c.id)}">${esc(c.name)}</option>`).join('')}
+      </select>`;
+
+    const sel = wrap.querySelector('#addDevice');
+    sel.onchange = ()=>{
+      const chosen = addable.find(c=> c.id === sel.value);
+      sel.value = '';                       // the picker is an action, not a state
+      if(chosen) openAddDevice(chosen);
+    };
+    return wrap;
   }
+
+  /* Floating add-device modal, built from the connector's own manifest:
+     whatever fields the plugin declares are the fields rendered here. */
+  function openAddDevice(c){
+    const fields = Array.isArray(c.fields) ? c.fields : [];
+    const bg = el('div','modal-bg');
+    const box = el('div','modal', `
+      <h4>Add ${esc(c.name)}</h4>
+      <p class="hint">Stored encrypted on this container and never sent anywhere except ${esc(c.name)}.</p>
+      ${fields.map((f,i)=>`
+        <div class="field">
+          <label for="cf${i}">${esc(f.label || f.key)}</label>
+          <input class="input" id="cf${i}" data-key="${esc(f.key)}"
+                 type="${f.type === 'password' ? 'password' : 'text'}"
+                 autocomplete="${f.type === 'password' ? 'new-password' : 'off'}"
+                 autocapitalize="off" spellcheck="false">
+        </div>`).join('')}
+      <div class="form-msg bad" id="addMsg"></div>
+      <div class="modal-actions">
+        <button class="btn sm" data-act="cancel" type="button">Cancel</button>
+        <button class="btn sm primary" data-act="add" type="button">Add</button>
+      </div>`);
+
+    bg.appendChild(box);
+    document.body.appendChild(bg);
+
+    const msg = box.querySelector('#addMsg');
+    const addBtn = box.querySelector('[data-act="add"]');
+
+    function close(){
+      document.removeEventListener('keydown', onKey);
+      bg.remove();
+    }
+    function onKey(e){ if(e.key === 'Escape') close(); }
+    document.addEventListener('keydown', onKey);
+
+    box.querySelector('[data-act="cancel"]').onclick = close;
+    // Clicking the backdrop cancels too; clicking inside the card must not.
+    bg.onclick = e => { if(e.target === bg) close(); };
+
+    addBtn.onclick = async ()=>{
+      const values = {};
+      box.querySelectorAll('input[data-key]').forEach(input=>{
+        values[input.dataset.key] = input.value;
+      });
+      msg.textContent = '';
+      addBtn.disabled = true; addBtn.textContent = 'Adding…';
+      const res = await api.addConnector(c.id, values);
+      if(res.ok){
+        close();
+        await refreshConnectors();
+      }else{
+        // The API validates against the manifest, so its message names
+        // the field that is actually missing - show it as-is.
+        msg.textContent = res.error || 'Could not add this device';
+        addBtn.disabled = false; addBtn.textContent = 'Add';
+      }
+    };
+
+    const first = box.querySelector('input');
+    if(first) first.focus();
+  }
+
+  async function refreshConnectors(){
+    state.connectors = await api.listConnectors();
+    renderConfig();
+  }
+
 
   /* =========================================================
      shared bits
@@ -1063,16 +1181,16 @@ svg.chart{width:100%;height:auto;display:block;overflow:visible;}
      BOOT - paint the shell straight away, then fill it in
      ========================================================= */
   async function init(){
-    const [tiles, weights, activity, plugins] = await Promise.all([
+    const [tiles, weights, activity, connectors] = await Promise.all([
       loadTiles(),
       api.listWeights(),
       api.listActivity(ACTIVITY_DAYS),
-      api.listPlugins(),
+      api.listConnectors(),
     ]);
     state.tiles = tiles;
     state.weights = weights;
     state.activity = activity;
-    state.plugins = plugins;
+    state.connectors = connectors;
     paintSync();
     route();
   }

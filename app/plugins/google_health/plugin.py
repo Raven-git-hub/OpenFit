@@ -30,10 +30,40 @@ API_BASE = "https://health.googleapis.com/v4/users/me"
 class GoogleHealthPlugin(SyncPlugin):
     id = "google_health"
     name = "Google Health (Pixel Watch / Fitbit)"
+    # Declared now so the connector API can describe this plugin, but the
+    # UI deliberately doesn't offer oauth-type connectors yet: adding
+    # Google means bouncing through Google's consent screen, which is its
+    # own flow (authorize.py, for now) and its own PR.
+    add_flow = "oauth"
+    fields = [
+        {
+            "key": "client_id",
+            "label": "OAuth client ID",
+            "type": "text",
+            "required": True,
+            "env": "GOOGLE_HEALTH_CLIENT_ID",
+        },
+        {
+            "key": "client_secret",
+            "label": "OAuth client secret",
+            "type": "password",
+            "required": True,
+            "env": "GOOGLE_HEALTH_CLIENT_SECRET",
+        },
+    ]
     required_env = ["GOOGLE_HEALTH_CLIENT_ID", "GOOGLE_HEALTH_CLIENT_SECRET"]
 
     def _tokenstore_path(self):
         return os.getenv("GOOGLE_HEALTH_TOKENSTORE", "/data/.google_health_token.json")
+
+    def clear_cached_auth(self) -> None:
+        """Drop the saved refresh token when the device is removed."""
+        path = self._tokenstore_path()
+        if os.path.exists(path):
+            try:
+                os.remove(path)
+            except OSError as e:
+                print(f"[google_health] could not remove {path}: {e}")
 
     def _load_tokens(self):
         path = self._tokenstore_path()
@@ -45,10 +75,13 @@ class GoogleHealthPlugin(SyncPlugin):
         with open(path) as f:
             return json.load(f)
 
-    def _get_access_token(self):
+    def _get_access_token(self, conn=None):
         tokens = self._load_tokens()
-        client_id = os.getenv("GOOGLE_HEALTH_CLIENT_ID")
-        client_secret = os.getenv("GOOGLE_HEALTH_CLIENT_SECRET")
+        # Same source of truth as every other plugin: the stored account
+        # if there is one, the env vars otherwise.
+        creds = self.get_credentials(conn)
+        client_id = creds.get("client_id")
+        client_secret = creds.get("client_secret")
         resp = requests.post(
             TOKEN_URL,
             data={
@@ -63,7 +96,7 @@ class GoogleHealthPlugin(SyncPlugin):
         return resp.json()["access_token"]
 
     def sync(self, conn, days: int) -> int:
-        access_token = self._get_access_token()
+        access_token = self._get_access_token(conn)
         headers = {"Authorization": f"Bearer {access_token}", "Accept": "application/json"}
 
         today = date.today()

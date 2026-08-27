@@ -59,6 +59,10 @@ def table_sql(conn, name):
     return row[0] if row else None
 
 
+def column_names(conn, table):
+    return [r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()]
+
+
 def primary_key_columns(conn, table):
     return [
         r[1] for r in
@@ -82,7 +86,9 @@ def test_fresh_database_gets_all_tables(tmp_path):
     names = {
         r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
     }
-    assert {"weights", "workouts", "activity", "settings", "schema_migrations"} <= names
+    assert {
+        "weights", "workouts", "activity", "settings", "accounts", "schema_migrations"
+    } <= names
     assert primary_key_columns(conn, "activity") == ["date", "source"]
     conn.close()
 
@@ -259,5 +265,62 @@ def test_settings_migration_adopts_a_preexisting_table(tmp_path):
 
     assert conn.execute("SELECT key, value FROM settings").fetchall() == [
         ("home_tiles", "{}")
+    ]
+    conn.close()
+
+
+def test_accounts_table_is_added_without_disturbing_existing_data(tmp_path):
+    """004 must be safe against a populated production database."""
+    path = str(tmp_path / "populated.db")
+    old_shape_db(path, rows=[("2026-01-01", 9000, 52, 7.5, "garmin", "x")])
+    conn = sqlite3.connect(path)
+    conn.execute("INSERT INTO weights VALUES ('2026-01-01', 82.0)")
+    conn.execute("INSERT INTO workouts VALUES (1, 0, 1)")
+    conn.commit()
+
+    run_migrations(conn)
+
+    # The new table exists and starts empty...
+    assert conn.execute("SELECT COUNT(*) FROM accounts").fetchone()[0] == 0
+    assert primary_key_columns(conn, "accounts") == ["plugin_id"]
+    assert column_names(conn, "accounts") == ["plugin_id", "credentials", "created_at"]
+    # ...and nothing that was already there was touched.
+    assert conn.execute("SELECT * FROM weights").fetchall() == [("2026-01-01", 82.0)]
+    assert conn.execute("SELECT * FROM workouts").fetchall() == [(1, 0, 1)]
+    assert conn.execute("SELECT date, steps FROM activity").fetchall() == [("2026-01-01", 9000)]
+    conn.close()
+
+
+def test_accounts_migration_adopts_a_preexisting_table(tmp_path):
+    """CREATE TABLE IF NOT EXISTS: an existing accounts table survives."""
+    path = str(tmp_path / "has-accounts.db")
+    conn = sqlite3.connect(path)
+    conn.execute(
+        "CREATE TABLE accounts (plugin_id TEXT PRIMARY KEY, credentials TEXT, created_at TEXT)"
+    )
+    conn.execute("INSERT INTO accounts VALUES ('garmin', 'already-encrypted', '2026-01-01')")
+    conn.commit()
+
+    run_migrations(conn)
+
+    assert conn.execute("SELECT plugin_id, credentials FROM accounts").fetchall() == [
+        ("garmin", "already-encrypted")
+    ]
+    conn.close()
+
+
+def test_one_account_per_plugin(tmp_path):
+    """plugin_id is the primary key - re-adding a device replaces the row."""
+    conn = sqlite3.connect(str(tmp_path / "fresh.db"))
+    run_migrations(conn)
+
+    conn.execute("INSERT INTO accounts VALUES ('garmin', 'blob-1', 'then')")
+    conn.execute(
+        "INSERT INTO accounts VALUES ('garmin', 'blob-2', 'now') "
+        "ON CONFLICT(plugin_id) DO UPDATE SET credentials=excluded.credentials"
+    )
+
+    assert conn.execute("SELECT credentials, created_at FROM accounts").fetchall() == [
+        ("blob-2", "then")
     ]
     conn.close()

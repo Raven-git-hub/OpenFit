@@ -1,12 +1,14 @@
+import json
 import os
 import sqlite3
-from datetime import date
+from datetime import date, datetime, timezone
 
 from flask import Flask, jsonify, request, send_from_directory
 from apscheduler.schedulers.background import BackgroundScheduler
 
 from migrations import run_migrations
 from plugins import PLUGINS
+from secrets import encrypt
 
 DB_PATH = os.getenv("DB_PATH", "/data/tracker.db")
 SYNC_INTERVAL_HOURS = int(os.getenv("SYNC_INTERVAL_HOURS", "6"))
@@ -227,16 +229,115 @@ def set_setting(key):
     return jsonify({"ok": True})
 
 
+# ---------- connectors ----------
+
+# A "connector" is a plugin plus whatever account has been attached to it
+# through the UI. The manifest (fields / add_flow) lives on the plugin, so
+# adding a device to OpenFit stays a one-file job: declare the fields and
+# the form, validation and storage all follow.
+#
+# Credentials are encrypted before they touch the database - see
+# app/secrets.py. They are never read back out over the API: the UI shows
+# that a device is connected, not what it was connected with.
+
+
+@app.route("/api/connectors", methods=["GET"])
+def list_connectors():
+    conn = get_conn()
+    connected = {
+        row["plugin_id"] for row in conn.execute("SELECT plugin_id FROM accounts")
+    }
+    out = [
+        {
+            "id": p.id,
+            "name": p.name,
+            "fields": p.fields,
+            "add_flow": p.add_flow,
+            "connected": p.id in connected,
+            # Whether it could actually sync right now - true for a
+            # pre-UI install whose credentials are still in the env even
+            # though no account row exists yet.
+            "configured": p.status(conn)["configured"],
+        }
+        for p in PLUGINS.values()
+    ]
+    conn.close()
+    return jsonify(out)
+
+
+@app.route("/api/connectors/<plugin_id>", methods=["POST"])
+def connect_connector(plugin_id):
+    """Attach an account to a plugin from the values its manifest asks for."""
+    plugin = PLUGINS.get(plugin_id)
+    if not plugin:
+        return jsonify({"ok": False, "error": f"no such connector: {plugin_id}"}), 404
+
+    body = request.get_json(force=True, silent=True) or {}
+    if not isinstance(body, dict):
+        return jsonify({"ok": False, "error": "expected a JSON object"}), 400
+
+    # Only manifest fields are stored - anything else in the body is
+    # ignored rather than quietly encrypted and kept forever.
+    values = {}
+    for field in plugin.fields:
+        raw = body.get(field["key"])
+        if raw is None:
+            continue
+        value = raw.strip() if isinstance(raw, str) else str(raw)
+        if value:
+            values[field["key"]] = value
+
+    missing = plugin.missing_fields(values)
+    if missing:
+        names = ", ".join(f.get("label") or f["key"] for f in missing)
+        return jsonify({"ok": False, "error": f"{names} required"}), 400
+
+    conn = get_conn()
+    conn.execute(
+        "INSERT INTO accounts (plugin_id, credentials, created_at) VALUES (?, ?, ?) "
+        # Re-adding a device replaces the credentials but keeps the
+        # original created_at - it's the same connection, re-authorised.
+        "ON CONFLICT(plugin_id) DO UPDATE SET credentials=excluded.credentials",
+        (plugin_id, encrypt(json.dumps(values)), _now()),
+    )
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/connectors/<plugin_id>", methods=["DELETE"])
+def disconnect_connector(plugin_id):
+    """Remove the account AND any token the plugin cached on disk."""
+    plugin = PLUGINS.get(plugin_id)
+    if not plugin:
+        return jsonify({"ok": False, "error": f"no such connector: {plugin_id}"}), 404
+
+    conn = get_conn()
+    conn.execute("DELETE FROM accounts WHERE plugin_id = ?", (plugin_id,))
+    conn.commit()
+    conn.close()
+
+    # A leftover session token would mean the device still syncs after
+    # you removed it, so this is part of the delete, not a nicety.
+    plugin.clear_cached_auth()
+    return jsonify({"ok": True})
+
+
+def _now():
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
 # ---------- plugins ----------
 
 @app.route("/api/plugins", methods=["GET"])
 def list_plugins():
-    return jsonify(
-        [
-            {"id": p.id, "name": p.name, **p.status()}
-            for p in PLUGINS.values()
-        ]
-    )
+    conn = get_conn()
+    out = [
+        {"id": p.id, "name": p.name, **p.status(conn)}
+        for p in PLUGINS.values()
+    ]
+    conn.close()
+    return jsonify(out)
 
 
 @app.route("/api/sync/<plugin_id>", methods=["POST"])
@@ -255,12 +356,16 @@ def trigger_sync(plugin_id):
 
 def scheduled_sync():
     for plugin in PLUGINS.values():
-        if not plugin.status()["configured"]:
-            continue
         try:
             conn = get_conn()
-            n = plugin.sync(conn, 7)
-            conn.close()
+            try:
+                # Skip anything with no account and no env credentials -
+                # it would only fail with a "not connected" error.
+                if not plugin.status(conn)["configured"]:
+                    continue
+                n = plugin.sync(conn, 7)
+            finally:
+                conn.close()
             print(f"[scheduler] {plugin.id} wrote {n} day(s)")
         except Exception as e:
             print(f"[scheduler] {plugin.id} failed: {e}")
