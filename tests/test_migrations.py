@@ -13,6 +13,15 @@ from migrations import (
     run_migrations,
 )
 
+def all_versions():
+    """Every migration version on disk, in order.
+
+    Derived rather than hardcoded so adding a migration doesn't require
+    editing every assertion in this file.
+    """
+    return [v for v, _, _ in discover_migrations()]
+
+
 OLD_ACTIVITY_DDL = """
 CREATE TABLE activity (
     date TEXT PRIMARY KEY,
@@ -69,11 +78,11 @@ def test_fresh_database_gets_all_tables(tmp_path):
     conn = sqlite3.connect(str(tmp_path / "fresh.db"))
     applied = run_migrations(conn)
 
-    assert applied == [1, 2]
+    assert applied == all_versions()
     names = {
         r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
     }
-    assert {"weights", "workouts", "activity", "schema_migrations"} <= names
+    assert {"weights", "workouts", "activity", "settings", "schema_migrations"} <= names
     assert primary_key_columns(conn, "activity") == ["date", "source"]
     conn.close()
 
@@ -89,7 +98,7 @@ def test_old_shape_database_adopts_and_keeps_rows(tmp_path):
     )
 
     conn = sqlite3.connect(path)
-    assert run_migrations(conn) == [1, 2]
+    assert run_migrations(conn) == all_versions()
 
     assert primary_key_columns(conn, "activity") == ["date", "source"]
     rows = conn.execute(
@@ -138,7 +147,7 @@ def test_rerunning_is_a_no_op(tmp_path):
     old_shape_db(path, rows=[("2026-01-01", 9000, 52, 7.5, "garmin", "x")])
 
     conn = sqlite3.connect(path)
-    assert run_migrations(conn) == [1, 2]
+    assert run_migrations(conn) == all_versions()
 
     schema_before = table_sql(conn, "activity")
     rows_before = conn.execute("SELECT * FROM activity").fetchall()
@@ -167,7 +176,7 @@ def test_version_is_recorded(tmp_path):
 
 
 def test_partially_migrated_database_only_applies_the_rest(tmp_path):
-    """A DB already at version 1 gets 002 and nothing else."""
+    """A DB already at version 1 gets every later migration and nothing else."""
     path = str(tmp_path / "old.db")
     old_shape_db(path, rows=[("2026-01-01", 9000, 52, 7.5, "garmin", "x")])
 
@@ -178,7 +187,7 @@ def test_partially_migrated_database_only_applies_the_rest(tmp_path):
     conn.execute("INSERT INTO schema_migrations VALUES (1, 'earlier')")
     conn.commit()
 
-    assert run_migrations(conn) == [2]
+    assert run_migrations(conn) == all_versions()[1:]
     assert primary_key_columns(conn, "activity") == ["date", "source"]
     conn.close()
 
@@ -214,4 +223,41 @@ def test_non_migration_files_are_ignored(tmp_path):
 
     conn = sqlite3.connect(str(tmp_path / "db.db"))
     assert run_migrations(conn, migrations_dir=str(migrations_dir)) == [1]
+    conn.close()
+
+
+def test_settings_table_is_added_without_disturbing_existing_data(tmp_path):
+    """003 must be safe against a populated production database."""
+    path = str(tmp_path / "populated.db")
+    old_shape_db(path, rows=[("2026-01-01", 9000, 52, 7.5, "garmin", "x")])
+    conn = sqlite3.connect(path)
+    conn.execute("INSERT INTO weights VALUES ('2026-01-01', 82.0)")
+    conn.execute("INSERT INTO workouts VALUES (1, 0, 1)")
+    conn.commit()
+
+    run_migrations(conn)
+
+    # The new table exists and starts empty...
+    assert conn.execute("SELECT COUNT(*) FROM settings").fetchone()[0] == 0
+    assert primary_key_columns(conn, "settings") == ["key"]
+    # ...and nothing that was already there was touched.
+    assert conn.execute("SELECT * FROM weights").fetchall() == [("2026-01-01", 82.0)]
+    assert conn.execute("SELECT * FROM workouts").fetchall() == [(1, 0, 1)]
+    assert conn.execute("SELECT date, steps FROM activity").fetchall() == [("2026-01-01", 9000)]
+    conn.close()
+
+
+def test_settings_migration_adopts_a_preexisting_table(tmp_path):
+    """CREATE TABLE IF NOT EXISTS: an existing settings table survives."""
+    path = str(tmp_path / "has-settings.db")
+    conn = sqlite3.connect(path)
+    conn.execute("CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT)")
+    conn.execute("INSERT INTO settings VALUES ('home_tiles', '{}')")
+    conn.commit()
+
+    run_migrations(conn)
+
+    assert conn.execute("SELECT key, value FROM settings").fetchall() == [
+        ("home_tiles", "{}")
+    ]
     conn.close()

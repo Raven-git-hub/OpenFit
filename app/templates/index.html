@@ -4,573 +4,1082 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>OpenFit</title>
-</head>
-<body style="margin:0;">
-<div id="app-root"></div>
 <style>
-  :root{
-    --bg:#14171c;
-    --surface:#1c2029;
-    --surface2:#242a34;
-    --border:#2f3540;
-    --text:#edeef0;
-    --muted:#8b93a1;
-    --accent:#e8a33d;
-    --accent-dim:#7a5a24;
-    --good:#5fb88a;
-    --warn:#d96c5c;
-    --font-display: "Arial Narrow", "Helvetica Neue Condensed", Helvetica, Arial, sans-serif;
-    --font-body: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-    --font-mono: "SF Mono", "Menlo", "Consolas", monospace;
+/* ============================================================
+   CUSTOMISE OPENFIT HERE
+   Every colour, radius and font in the whole interface comes
+   from the tokens below. Change these and the entire app
+   re-skins - you never need to hunt through the markup.
+   The bare :root block is the LIGHT theme; the two blocks
+   after it are the DARK theme (OS-driven, then the toggle).
+
+   Fonts: the design uses Archivo + IBM Plex Sans/Mono, named
+   first in each stack so they are used when installed locally.
+   They are deliberately NOT fetched from a font CDN - OpenFit
+   makes no external calls, and a home server may well be
+   offline. To get them exactly, drop the .woff2 files beside
+   this file and add @font-face rules here.
+   ============================================================ */
+:root{
+  color-scheme:light;
+
+  /* neutrals - a slate biased very slightly toward the teal accent */
+  --bg:#eef1f0;
+  --surface:#ffffff;
+  --surface-2:#e9edec;
+  --inset:#f4f6f5;
+  --border:#d5dcda;
+  --border-strong:#c2cbc9;
+  --ink:#141c1b;
+  --ink-2:#3c4746;
+  --muted:#697472;
+
+  /* one accent, used only for interactive things */
+  --accent:#0e9c8b;
+  --accent-ink:#ffffff;
+  --accent-soft:#d4efeb;
+
+  /* metric hues - intuitive, and distinct from each other */
+  --m-weight:#0e9c8b;   /* teal   */
+  --m-steps:#c07d18;    /* amber  */
+  --m-sleep:#5b58c4;    /* indigo */
+  --m-heart:#c94f4a;    /* coral  */
+
+  /* status - reserved, never reused as a metric colour */
+  --good:#2f9e5b;
+  --warn:#c08a1a;
+  --crit:#c94f4a;
+
+  --radius:14px;
+  --radius-sm:9px;
+  --shadow:0 1px 2px rgba(20,28,27,.06), 0 8px 24px rgba(20,28,27,.05);
+
+  --font-display:'Archivo', system-ui, sans-serif;
+  --font-body:'IBM Plex Sans', system-ui, sans-serif;
+  --font-mono:'IBM Plex Mono', ui-monospace, monospace;
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    color-scheme:dark;
+    --bg:#0e1316;
+    --surface:#161d21;
+    --surface-2:#1d262b;
+    --inset:#121a1e;
+    --border:#2a343a;
+    --border-strong:#39454c;
+    --ink:#e9eeef;
+    --ink-2:#b3bec2;
+    --muted:#7f8c92;
+    --accent:#31d3bf;
+    --accent-ink:#052420;
+    --accent-soft:#123832;
+    --m-weight:#31d3bf;
+    --m-steps:#e0a83a;
+    --m-sleep:#8f8cf0;
+    --m-heart:#ea6a63;
+    --good:#46c06e;
+    --warn:#e0a83a;
+    --crit:#ea6a63;
+    --shadow:0 1px 2px rgba(0,0,0,.3), 0 10px 30px rgba(0,0,0,.35);
   }
-  *{box-sizing:border-box;}
-  #app-root{
-    background:var(--bg);
-    color:var(--text);
-    font-family:var(--font-body);
-    padding:16px 14px 40px;
-    min-height:100vh;
-    max-width:480px;
-    margin:0 auto;
-  }
-  .eyebrow{
-    font-family:var(--font-mono);
-    font-size:11px;
-    letter-spacing:2px;
-    text-transform:uppercase;
-    color:var(--muted);
-    margin:0 0 4px;
-  }
-  .scoreboard{
-    background:linear-gradient(180deg,var(--surface),var(--surface2));
-    border:1px solid var(--border);
-    border-radius:10px;
-    padding:18px 16px;
-    margin-bottom:14px;
-    position:relative;
-    overflow:hidden;
-  }
-  .scoreboard::before{
-    content:"";
-    position:absolute; top:0; left:0; right:0; height:3px;
-    background:var(--accent);
-  }
-  .days-left{
-    font-family:var(--font-display);
-    font-weight:800;
-    font-size:64px;
-    line-height:0.9;
-    color:var(--accent);
-    letter-spacing:-1px;
-  }
-  .days-label{
-    font-size:13px;
-    color:var(--muted);
-    margin-top:2px;
-  }
-  .row{display:flex; gap:10px;}
-  .stat-box{
-    flex:1;
-    background:var(--surface2);
-    border:1px solid var(--border);
-    border-radius:8px;
-    padding:10px 12px;
-  }
-  .stat-num{
-    font-family:var(--font-display);
-    font-weight:700;
-    font-size:22px;
-  }
-  .stat-label{
-    font-size:11px;
-    color:var(--muted);
-    text-transform:uppercase;
-    letter-spacing:0.5px;
-  }
-  section{
-    background:var(--surface);
-    border:1px solid var(--border);
-    border-radius:10px;
-    padding:14px;
-    margin-bottom:12px;
-  }
-  h2{
-    font-family:var(--font-display);
-    font-size:19px;
-    font-weight:800;
-    margin:0 0 10px;
-    letter-spacing:0.3px;
-  }
-  .log-form{display:flex; gap:8px; margin-bottom:10px;}
-  .log-form input{
-    flex:1;
-    background:var(--surface2);
-    border:1px solid var(--border);
-    color:var(--text);
-    border-radius:6px;
-    padding:9px 10px;
-    font-size:15px;
-    font-family:var(--font-body);
-  }
-  .log-form button, .primary-btn{
-    background:var(--accent);
-    color:#14171c;
-    border:none;
-    border-radius:6px;
-    padding:9px 14px;
-    font-weight:700;
-    font-size:14px;
-    cursor:pointer;
-  }
-  .log-form button:active, .primary-btn:active{opacity:0.8;}
-  svg{width:100%; display:block; margin-top:6px;}
-  .weight-list{list-style:none; padding:0; margin:10px 0 0; max-height:120px; overflow-y:auto;}
-  .weight-list li{
-    display:flex; justify-content:space-between;
-    font-size:13px; color:var(--muted);
-    padding:4px 0; border-bottom:1px solid var(--border);
-  }
-  .weight-list li span:last-child{color:var(--text); font-family:var(--font-mono);}
-  .phase-pill{
-    display:inline-block;
-    font-size:10px;
-    letter-spacing:1px;
-    text-transform:uppercase;
-    padding:3px 8px;
-    border-radius:20px;
-    font-weight:700;
-    margin-bottom:8px;
-  }
-  .phase-foundation{background:#2a3a4a; color:#8ec2f2;}
-  .phase-build{background:#2f3a26; color:#a8d97c;}
-  .phase-peak{background:#3a2a26; color:#e8a33d;}
-  .phase-taper{background:#3a2634; color:#e8859c;}
-  .week-tab{
-    display:flex; align-items:center; justify-content:space-between;
-    background:var(--surface2);
-    border:1px solid var(--border);
-    border-radius:8px;
-    padding:10px 12px;
-    margin-bottom:6px;
-    cursor:pointer;
-  }
-  .week-tab.active{border-color:var(--accent);}
-  .week-tab .wk-title{font-weight:700; font-size:14px;}
-  .week-tab .wk-dates{font-size:11px; color:var(--muted); font-family:var(--font-mono);}
-  .week-detail{
-    background:var(--surface2);
-    border:1px solid var(--border);
-    border-top:none;
-    border-radius:0 0 8px 8px;
-    margin:-8px 0 6px;
-    padding:12px;
-  }
-  .day-block{margin-bottom:10px;}
-  .day-block .day-name{font-weight:700; font-size:13px; color:var(--accent); margin-bottom:3px;}
-  .day-block ul{margin:0; padding-left:18px; font-size:13px; color:var(--text);}
-  .day-block ul li{margin-bottom:2px;}
-  .checklist{display:flex; flex-wrap:wrap; gap:6px; margin-top:8px;}
-  .check-item{
-    display:flex; align-items:center; gap:5px;
-    background:var(--bg);
-    border:1px solid var(--border);
-    border-radius:6px;
-    padding:5px 8px;
-    font-size:12px;
-    cursor:pointer;
-  }
-  .check-item.done{border-color:var(--good); color:var(--good);}
-  .note{font-size:12px; color:var(--muted); margin-top:8px; line-height:1.5;}
-  .back-flag{
-    background:rgba(217,108,92,0.12);
-    border:1px solid var(--warn);
-    color:#f2a89b;
-    border-radius:6px;
-    padding:8px 10px;
-    font-size:12px;
-    margin-top:8px;
-  }
-  .empty{color:var(--muted); font-size:13px; text-align:center; padding:10px 0;}
-  .reset-link{font-size:11px; color:var(--muted); text-decoration:underline; text-align:right; display:block; margin-top:8px; cursor:pointer;}
+}
+:root[data-theme="dark"]{
+  color-scheme:dark;
+  --bg:#0e1316;
+  --surface:#161d21;
+  --surface-2:#1d262b;
+  --inset:#121a1e;
+  --border:#2a343a;
+  --border-strong:#39454c;
+  --ink:#e9eeef;
+  --ink-2:#b3bec2;
+  --muted:#7f8c92;
+  --accent:#31d3bf;
+  --accent-ink:#052420;
+  --accent-soft:#123832;
+  --m-weight:#31d3bf;
+  --m-steps:#e0a83a;
+  --m-sleep:#8f8cf0;
+  --m-heart:#ea6a63;
+  --good:#46c06e;
+  --warn:#e0a83a;
+  --crit:#ea6a63;
+  --shadow:0 1px 2px rgba(0,0,0,.3), 0 10px 30px rgba(0,0,0,.35);
+}
+
+*{box-sizing:border-box;}
+html,body{margin:0;}
+body{
+  background:var(--bg);
+  color:var(--ink);
+  font-family:var(--font-body);
+  -webkit-font-smoothing:antialiased;
+  font-size:15px;
+  line-height:1.45;
+}
+button{font-family:inherit;cursor:pointer;}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:4px;}
+.tnum{font-variant-numeric:tabular-nums;}
+
+/* ---------- app shell: top bar + rhombus tab strip ---------- */
+.app{min-height:100vh;}
+.topbar{
+  display:flex;align-items:flex-start;justify-content:space-between;gap:16px;
+  padding:20px 30px 0;
+}
+.brand{display:flex;align-items:center;gap:11px;}
+.brand-mark{
+  width:32px;height:32px;border-radius:8px;flex:none;
+  background:
+    radial-gradient(circle at 50% 50%, var(--accent) 0 4px, transparent 5px),
+    conic-gradient(from -90deg, var(--accent) 0 72%, var(--border-strong) 72% 100%);
+  -webkit-mask:radial-gradient(circle at 50% 50%, transparent 6px, #000 7px);
+          mask:radial-gradient(circle at 50% 50%, transparent 6px, #000 7px);
+}
+.brand-name{font-family:var(--font-display);font-weight:800;letter-spacing:.5px;font-size:23px;}
+.brand-name b{color:var(--accent);}
+
+.status-stack{display:flex;flex-direction:column;align-items:flex-end;gap:8px;}
+.datesync{
+  display:flex;align-items:center;gap:12px;
+  background:var(--surface);border:1px solid var(--border);border-radius:22px;
+  padding:7px 15px;box-shadow:var(--shadow);
+}
+.datesync .ds-date{font-family:var(--font-display);font-weight:700;font-size:13px;color:var(--ink);}
+.datesync .ds-sep{width:1px;height:16px;background:var(--border-strong);}
+.datesync .ds-sync{display:flex;align-items:center;gap:7px;font-family:var(--font-mono);font-size:11.5px;color:var(--muted);}
+.dot{width:7px;height:7px;border-radius:50%;background:var(--good);flex:none;box-shadow:0 0 0 3px color-mix(in srgb,var(--good) 22%,transparent);}
+.dot.idle{background:var(--muted);box-shadow:0 0 0 3px color-mix(in srgb,var(--muted) 20%,transparent);}
+.theme-toggle{
+  border:1px solid var(--border);border-radius:20px;background:var(--surface);
+  color:var(--muted);font-size:11.5px;font-family:var(--font-mono);padding:6px 13px;
+}
+.theme-toggle:hover{border-color:var(--accent);color:var(--accent);}
+
+.tabstrip{
+  display:flex;gap:8px;align-items:flex-end;
+  padding:18px 30px 0;margin-top:8px;
+  border-bottom:1px solid var(--border);overflow-x:auto;scrollbar-width:none;
+}
+.tabstrip::-webkit-scrollbar{display:none;}
+.tab{
+  border:none;background:var(--surface-2);color:var(--ink-2);
+  font-family:var(--font-display);font-weight:700;font-size:13.5px;letter-spacing:.3px;
+  padding:11px 30px;transform:skewX(-14deg);border-radius:7px 7px 0 0;
+  white-space:nowrap;position:relative;top:1px;transition:background .12s,color .12s;
+}
+.tab>span{display:inline-block;transform:skewX(14deg);}
+.tab:hover{background:var(--surface);color:var(--ink);}
+.tab.active{background:var(--accent);color:var(--accent-ink);}
+.tab-add{margin-left:auto;background:transparent;border:1.5px dashed var(--border-strong);color:var(--muted);font-weight:600;}
+.tab-add:hover{background:transparent;border-color:var(--accent);color:var(--accent);}
+
+.main{padding:24px 30px 60px;min-width:0;}
+
+/* ---------- tile grid ---------- */
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:18px;}
+.tile{
+  background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);
+  box-shadow:var(--shadow);display:flex;flex-direction:column;min-height:270px;overflow:hidden;
+}
+.tile-head{
+  display:flex;align-items:center;justify-content:space-between;
+  padding:14px 16px 10px;
+}
+.tile-title{display:flex;align-items:center;gap:9px;font-family:var(--font-display);font-weight:700;font-size:15px;}
+.tile-title .swatch{width:9px;height:9px;border-radius:3px;flex:none;}
+.tile-menu-btn{
+  border:none;background:none;color:var(--muted);border-radius:7px;
+  width:30px;height:26px;font-size:19px;line-height:1;letter-spacing:1px;display:grid;place-items:center;
+}
+.tile-menu-btn:hover{background:var(--surface-2);color:var(--ink);}
+.tile-body{padding:2px 16px 16px;flex:1;display:flex;flex-direction:column;min-height:0;}
+.tile-foot{display:flex;justify-content:flex-end;padding-top:8px;}
+.linkish{border:none;background:none;color:var(--muted);font-family:var(--font-mono);font-size:11px;padding:2px 0;}
+.linkish:hover{color:var(--crit);}
+
+/* empty states */
+.empty{
+  flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;
+  text-align:center;color:var(--muted);padding:18px;
+}
+.empty svg{width:34px;height:34px;stroke:var(--border-strong);fill:none;stroke-width:1.6;}
+.empty .cta{color:var(--accent);font-weight:600;font-size:13.5px;}
+
+/* buttons + inputs */
+.btn{
+  border:1px solid var(--border-strong);background:var(--surface);color:var(--ink);
+  border-radius:var(--radius-sm);padding:9px 14px;font-weight:600;font-size:13.5px;
+}
+.btn:hover{border-color:var(--accent);color:var(--accent);}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-ink);}
+.btn.primary:hover{filter:brightness(1.05);color:var(--accent-ink);}
+.btn.sm{padding:6px 10px;font-size:12.5px;}
+.btn:disabled{opacity:.5;cursor:not-allowed;}
+.btn:disabled:hover{border-color:var(--border-strong);color:var(--ink);filter:none;}
+.field{display:flex;flex-direction:column;gap:5px;}
+.field label{font-size:11.5px;text-transform:uppercase;letter-spacing:.8px;color:var(--muted);font-weight:600;}
+.input, select.input{
+  background:var(--inset);border:1px solid var(--border);color:var(--ink);
+  border-radius:var(--radius-sm);padding:10px 11px;font-size:14px;font-family:var(--font-body);width:100%;
+}
+.input:focus{border-color:var(--accent);outline:none;}
+.seg{display:inline-flex;border:1px solid var(--border);border-radius:8px;overflow:hidden;}
+.seg button{border:none;background:var(--surface);color:var(--muted);padding:7px 12px;font-size:12.5px;font-weight:600;}
+.seg button.on{background:var(--accent-soft);color:var(--accent);}
+.form-msg{font-size:12px;font-family:var(--font-mono);margin-top:8px;min-height:16px;}
+.form-msg.ok{color:var(--good);}
+.form-msg.bad{color:var(--crit);}
+
+/* ---------- weight chart ---------- */
+.chart-wrap{flex:1;display:flex;flex-direction:column;min-height:0;}
+.chart-readout{display:flex;gap:18px;align-items:baseline;margin:2px 0 8px;flex-wrap:wrap;}
+.readout-big{font-family:var(--font-display);font-weight:800;font-size:30px;letter-spacing:-.5px;}
+.readout-big small{font-size:15px;font-weight:600;color:var(--muted);margin-left:2px;}
+.trend-good{color:var(--good);font-weight:700;font-size:13px;font-family:var(--font-mono);}
+.trend-up{color:var(--ink-2);font-weight:700;font-size:13px;font-family:var(--font-mono);}
+svg.chart{width:100%;height:auto;display:block;overflow:visible;}
+.chart-dot{cursor:pointer;}
+
+/* ---------- add-data accordion ---------- */
+.acc{display:flex;flex-direction:column;gap:8px;}
+.acc-row{border:1px solid var(--border);border-radius:var(--radius-sm);overflow:hidden;background:var(--inset);}
+.acc-btn{
+  width:100%;display:flex;align-items:center;justify-content:space-between;gap:10px;
+  padding:11px 13px;background:none;border:none;color:var(--ink);font-weight:600;font-size:14px;
+}
+.acc-btn .lead{display:flex;align-items:center;gap:10px;}
+.acc-btn .ic{width:17px;height:17px;stroke:var(--muted);fill:none;stroke-width:1.9;}
+.acc-btn .chev{color:var(--muted);transition:transform .15s;}
+.acc-row.open .acc-btn .chev{transform:rotate(90deg);}
+.acc-panel{display:none;padding:0 13px 13px;}
+.acc-row.open .acc-panel{display:block;}
+.add-grid{display:grid;grid-template-columns:1fr 1fr;gap:9px;margin-bottom:9px;}
+
+/* ---------- activity log ---------- */
+.act-list{display:flex;flex-direction:column;gap:7px;overflow-y:auto;}
+.act-item{
+  display:flex;align-items:center;justify-content:space-between;gap:10px;
+  padding:9px 11px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--inset);
+}
+.act-when{font-family:var(--font-mono);font-size:12px;color:var(--muted);flex:none;width:52px;}
+.act-main{flex:1;min-width:0;}
+.act-metrics{font-size:13.5px;color:var(--ink-2);}
+.act-tags{display:flex;gap:5px;flex:none;flex-wrap:wrap;justify-content:flex-end;}
+.tag{
+  font-family:var(--font-mono);font-size:10.5px;font-weight:500;letter-spacing:.2px;
+  padding:3px 7px;border-radius:20px;display:inline-flex;align-items:center;gap:5px;white-space:nowrap;flex:none;
+}
+.tag::before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor;opacity:.9;}
+.tag.garmin{color:#3aa2c9;background:color-mix(in srgb,#3aa2c9 15%,transparent);}
+.tag.pixel{color:var(--m-steps);background:color-mix(in srgb,var(--m-steps) 16%,transparent);}
+.tag.manual{color:var(--muted);background:var(--surface-2);}
+.totals{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:12px;padding-top:12px;border-top:1px solid var(--border);}
+.tot{display:flex;flex-direction:column;gap:1px;}
+.tot .n{font-family:var(--font-display);font-weight:700;font-size:18px;}
+.tot .l{font-size:10.5px;text-transform:uppercase;letter-spacing:.6px;color:var(--muted);}
+.cal-strip{margin-top:11px;padding-top:11px;border-top:1px dashed var(--border);display:flex;flex-direction:column;gap:8px;}
+.webhook{
+  display:flex;align-items:center;gap:8px;background:var(--inset);border:1px solid var(--border);
+  border-radius:var(--radius-sm);padding:4px 4px 4px 11px;
+}
+.webhook code{font-family:var(--font-mono);font-size:11.5px;color:var(--muted);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.soon{font-family:var(--font-mono);font-size:10px;text-transform:uppercase;letter-spacing:.6px;color:var(--muted);border:1px solid var(--border);border-radius:20px;padding:2px 7px;flex:none;}
+
+/* ---------- popover menu ---------- */
+.pop{
+  position:fixed;z-index:60;background:var(--surface);border:1px solid var(--border-strong);
+  border-radius:var(--radius-sm);box-shadow:var(--shadow);padding:6px;min-width:210px;
+}
+.pop-h{font-size:10.5px;text-transform:uppercase;letter-spacing:.9px;color:var(--muted);padding:6px 9px 4px;font-weight:700;}
+.pop-item{display:flex;align-items:center;gap:9px;width:100%;border:none;background:none;color:var(--ink);
+  padding:8px 9px;border-radius:7px;font-size:13.5px;text-align:left;}
+.pop-item:hover{background:var(--surface-2);}
+.pop-item .sw{width:9px;height:9px;border-radius:3px;flex:none;}
+.pop-item.cur{color:var(--accent);font-weight:600;}
+
+/* ---------- plan + config pages ---------- */
+.stack{display:flex;flex-direction:column;gap:18px;max-width:760px;}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow);padding:20px;}
+.card h3{font-family:var(--font-display);font-weight:700;font-size:17px;margin:0 0 3px;}
+.card .hint{color:var(--muted);font-size:13px;margin:0 0 16px;}
+.row2{display:grid;grid-template-columns:1fr 1fr;gap:12px;}
+.goal-type{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:14px;}
+.goal-type button{
+  border:1px solid var(--border);background:var(--inset);border-radius:var(--radius-sm);
+  padding:12px 10px;text-align:left;color:var(--ink-2);
+}
+.goal-type button.on{border-color:var(--accent);background:var(--accent-soft);color:var(--accent);}
+.goal-type b{display:block;font-family:var(--font-display);font-size:13.5px;margin-bottom:2px;color:inherit;}
+.goal-type span{font-size:11.5px;color:var(--muted);}
+.src{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 0;border-bottom:1px solid var(--border);}
+.src:last-child{border-bottom:none;}
+.src-l{display:flex;align-items:center;gap:12px;min-width:0;}
+.src-r{display:flex;align-items:center;gap:10px;flex:none;}
+.src-ic{width:38px;height:38px;border-radius:9px;display:grid;place-items:center;background:var(--inset);border:1px solid var(--border);font-family:var(--font-mono);font-weight:600;font-size:13px;flex:none;}
+.pill{font-size:11px;font-weight:600;padding:4px 9px;border-radius:20px;font-family:var(--font-mono);white-space:nowrap;}
+.pill.ok{color:var(--good);background:color-mix(in srgb,var(--good) 14%,transparent);}
+.pill.wait{color:var(--warn);background:color-mix(in srgb,var(--warn) 14%,transparent);}
+.addtab{border:1.5px dashed var(--border-strong);background:var(--inset);border-radius:var(--radius);padding:22px;text-align:center;}
+.tab-choose{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:14px;}
+.choose{border:1px solid var(--border);border-radius:var(--radius-sm);padding:16px;background:var(--surface);text-align:left;}
+.choose b{font-family:var(--font-display);display:block;margin-bottom:4px;}
+.choose span{font-size:12px;color:var(--muted);}
+.note-box{font-size:12.5px;color:var(--ink-2);background:var(--inset);border:1px solid var(--border);border-left:3px solid var(--accent);border-radius:8px;padding:11px 13px;line-height:1.55;}
+.mono{font-family:var(--font-mono);}
+
+/* ---------- responsive: phone ---------- */
+@media (max-width:860px){
+  .topbar{padding:14px 15px 0;}
+  .brand-name{font-size:20px;}
+  .tabstrip{padding:14px 15px 0;gap:6px;}
+  .tab{padding:10px 20px;font-size:12.5px;}
+  .main{padding:18px 15px 60px;}
+  .grid{grid-template-columns:1fr;}
+  .tile{min-height:auto;}
+  .row2, .add-grid, .tab-choose, .goal-type{grid-template-columns:1fr;}
+}
+@media (prefers-reduced-motion:reduce){*{transition:none!important;}}
 </style>
+</head>
+<body>
+
+<div class="app">
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-mark"></div>
+      <div class="brand-name">Open<b>Fit</b></div>
+    </div>
+    <div class="status-stack">
+      <div class="datesync">
+        <span class="ds-date" id="dsDate"></span>
+        <span class="ds-sep"></span>
+        <span class="ds-sync" id="dsSync"><span class="dot idle"></span> no sync yet</span>
+      </div>
+      <button class="theme-toggle" id="themeToggle">theme <span id="themeState">auto</span></button>
+    </div>
+  </header>
+
+  <nav class="tabstrip">
+    <button class="tab active" data-tab="home"><span>Home</span></button>
+    <button class="tab" data-tab="plan"><span>Plan</span></button>
+    <button class="tab" data-tab="config"><span>Configuration</span></button>
+    <button class="tab tab-add" id="addTabBtn"><span>＋ Add</span></button>
+  </nav>
+
+  <main class="main" id="main"></main>
+</div>
 
 <script>
 (function(){
-  const WEDDING = new Date("2026-12-05T00:00:00");
-  const START = new Date("2026-08-21T00:00:00");
-  const START_WEIGHT = 92;
-  const GOAL_WEIGHT = 85;
+  "use strict";
 
-  function fmtDate(d){
-    return d.toLocaleDateString('en-GB',{day:'numeric',month:'short'});
+  const $ = (s,r)=> (r||document).querySelector(s);
+  const el = (t,c,h)=>{const n=document.createElement(t); if(c)n.className=c; if(h!=null)n.innerHTML=h; return n;};
+  const num = n => Number(n).toLocaleString();
+  /* Anything that reaches innerHTML from the database (a plugin id, a
+     source name) goes through here first. */
+  const esc = s => String(s==null?'':s).replace(/[&<>"']/g, c =>
+    ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+  /* =========================================================
+     API - the only place that knows about URLs
+     ========================================================= */
+  async function getJSON(url, fallback){
+    try{ const r = await fetch(url); return r.ok ? await r.json() : fallback; }
+    catch(e){ return fallback; }
   }
-  function addDays(d,n){ const r=new Date(d); r.setDate(r.getDate()+n); return r; }
-  function todayMidnight(){ const t=new Date(); t.setHours(0,0,0,0); return t; }
+  async function send(url, method, body){
+    try{
+      const r = await fetch(url, {
+        method,
+        headers: body!==undefined ? {'Content-Type':'application/json'} : undefined,
+        body: body!==undefined ? JSON.stringify(body) : undefined,
+      });
+      const data = await r.json().catch(()=>({}));
+      return r.ok ? Object.assign({ok:true}, data) : Object.assign({ok:false}, data);
+    }catch(e){ return {ok:false, error:'network error'}; }
+  }
 
-  // Build 15 week structure
-  const phaseFor = (wk)=>{
-    if(wk<=5) return {key:'foundation',label:'Foundation'};
-    if(wk===6) return {key:'foundation',label:'Deload'};
-    if(wk<=10) return {key:'build',label:'Build'};
-    if(wk===11) return {key:'build',label:'Deload'};
-    if(wk<=14) return {key:'peak',label:'Peak'};
-    return {key:'taper',label:'Taper — wedding week'};
+  const ACTIVITY_DAYS = 14;
+  const api = {
+    listWeights:  ()             => getJSON('/api/weights', []),
+    addWeight:    (date, weight) => send('/api/weights', 'POST', {date, weight}),
+    clearWeights: ()             => send('/api/weights', 'DELETE'),
+    /* by_source=1 keeps the per-device rows so each day can be tagged
+       with what reported it; they are merged back per date below. */
+    listActivity: days           => getJSON('/api/activity?days='+days+'&by_source=1', []),
+    listPlugins:  ()             => getJSON('/api/plugins', []),
+    syncPlugin:   id             => send('/api/sync/'+encodeURIComponent(id)+'?days=7', 'POST'),
+    getSetting:   async key      => (await getJSON('/api/settings/'+encodeURIComponent(key), {})).value ?? null,
+    putSetting:   (key, value)   => send('/api/settings/'+encodeURIComponent(key), 'PUT', {value}),
   };
 
-  const programs = {
-    foundation:{
-      title:"Foundation",
-      cls:"phase-foundation",
-      note:"Build the habit, groove the movements, keep loads moderate. Every session ends with core/back work — this is what makes the back more resilient, not avoiding it.",
-      days:[
-        {name:"Strength A", items:["Goblet squat 3x10","DB row 3x10/side","Chest press (machine/DB) 3x10","Glute bridge 3x12","Plank 3x30s"]},
-        {name:"Strength B", items:["Leg press 3x10","Lat pulldown 3x10","Seated shoulder press 3x10","Hip thrust 3x12","Dead bug 3x8/side"]},
-        {name:"Strength C", items:["Walking lunges 3x10/leg","Seated cable row 3x10","Incline DB press 3x10","Light DB Romanian deadlift 3x10","Bird dog 3x8/side"]},
-        {name:"Cardio 1", items:["30 min brisk walk or bike, easy pace"]},
-        {name:"Cardio 2", items:["30 min steady state, easy-moderate pace"]}
-      ]
-    },
-    build:{
-      title:"Build",
-      cls:"phase-build",
-      note:"Same three lifting days, but add a rep or a bit of load each week if it felt solid last week. One cardio day becomes intervals. Keep the McGill-style back work in — it's paying off now.",
-      days:[
-        {name:"Strength A", items:["Goblet/DB squat 3x12, add load if easy","DB row 3x12/side","Chest press 3x12","Hip thrust 3x15","Side plank 3x20s/side"]},
-        {name:"Strength B", items:["Leg press 4x10, increase load","Lat pulldown 4x10","Seated shoulder press 3x10","Suitcase carry 3x30m","Bird dog 3x10/side"]},
-        {name:"Strength C", items:["Walking lunges 3x12/leg","Seated cable row 4x10","Incline DB press 3x12","DB Romanian deadlift 3x12, add load","Curl-up 3x8"]},
-        {name:"Cardio: Intervals", items:["8x 30s hard / 90s easy on bike or row"]},
-        {name:"Cardio: Steady", items:["35-40 min moderate pace"]}
-      ]
-    },
-    peak:{
-      title:"Peak",
-      cls:"phase-peak",
-      note:"Heaviest loads of the block, still pain-free range only. This is the highest-output phase — recovery (sleep, protein) matters as much as the sessions themselves.",
-      days:[
-        {name:"Strength A", items:["Squat pattern 4x8, heavier","DB row 4x10/side","Chest press 4x8","Hip thrust 4x12","Side plank 3x30s/side"]},
-        {name:"Strength B", items:["Leg press 4x8, heavier","Lat pulldown 4x8","Seated shoulder press 4x8","Suitcase carry 3x40m","Bird dog 3x10/side"]},
-        {name:"Strength C", items:["Walking lunges 4x10/leg","Seated cable row 4x8","Incline DB press 4x8","DB Romanian deadlift 4x10","Curl-up 3x10"]},
-        {name:"Cardio: Intervals", items:["10x 30s hard / 90s easy"]},
-        {name:"Cardio: Steady", items:["40 min moderate pace"]}
-      ]
-    },
-    taper:{
-      title:"Taper",
-      cls:"phase-taper",
-      note:"Wedding week. Volume drops ~40% — you're not losing fitness in one week, but soreness and puffiness are exactly what you don't want in photos. Nothing new, nothing to failure.",
-      days:[
-        {name:"Strength (light)", items:["Same movements as Peak, half the sets, moderate weight, stop well short of failure"]},
-        {name:"Mobility/back work", items:["Bird dog, dead bug, gentle walk, stretching — no loading"]},
-        {name:"Rest", items:["Full rest, hydrate well, prioritise sleep"]},
-      ]
-    }
+  /* =========================================================
+     Sources: activity.source -> a name a human recognises.
+     A new plugin needs one line here; anything unmapped still
+     shows up, labelled with its raw source id.
+     ========================================================= */
+  const SOURCES = {
+    garmin:        {name:'Garmin',        cls:'garmin'},
+    google_health: {name:'Google Health', cls:'pixel'},
+    // e.g. pixel_watch_4: {name:'Pixel Watch 4', cls:'pixel'},
+  };
+  const sourceInfo = id => SOURCES[id] || {name: id || 'Unknown', cls:'manual'};
+
+  /* =========================================================
+     STATE - all of it comes from the API. Nothing is seeded:
+     a fresh install starts genuinely blank.
+     ========================================================= */
+  const SLOTS = ['tl','tr','bl','br'];
+  const TILES_KEY = 'home_tiles';
+  const DEFAULT_TILES = {tl:'weight', tr:'adddata', bl:'activity', br:'today'};
+
+  const state = {
+    tab:'home',
+    weights:[],       // [{date, weight}] ascending. Always kilograms.
+    activity:[],      // raw per-source rows from /api/activity?by_source=1
+    plugins:[],
+    tiles:Object.assign({}, DEFAULT_TILES),
+    unit:readUnit(),  // display/entry unit - a per-browser preference
+    addOpen:'weight', // which add-data row is expanded
   };
 
-  const weeks = [];
-  for(let i=0;i<15;i++){
-    const wk = i+1;
-    const start = addDays(START, i*7);
-    const end = addDays(start, 6);
-    weeks.push({num:wk, start, end, phase:phaseFor(wk)});
+  const WIDGETS = {
+    weight:   {name:'Weight progress',      sw:'--m-weight', render:renderWeight},
+    adddata:  {name:'Add data',             sw:'--accent',   render:renderAddData},
+    activity: {name:'Activity log',         sw:'--m-steps',  render:renderActivity},
+    today:    {name:"Today's plan & goals", sw:'--m-heart',  render:renderToday},
+    steps:    {name:'Steps trend',          sw:'--m-steps',  render:renderStepsTrend},
+    sleep:    {name:'Sleep',                sw:'--m-sleep',  render:renderSleep},
+  };
+
+  /* ---------- units ----------
+     OpenFit stores kilograms; the API carries a bare number and has no
+     unit column. The kg/lb choice is therefore presentation only - it
+     lives in localStorage next to the theme, and pounds are converted
+     to kg on the way in and back on the way out. */
+  const KG_PER_LB = 0.45359237;
+  function readUnit(){ try{ return localStorage.getItem('of-unit')==='lb' ? 'lb' : 'kg'; }catch(e){ return 'kg'; } }
+  function setUnit(u){
+    state.unit = u;
+    try{ localStorage.setItem('of-unit', u); }catch(e){}
+    renderHome();
+  }
+  const toDisplay = kg => state.unit==='lb' ? kg/KG_PER_LB : kg;
+  const toKg      = v  => state.unit==='lb' ? v*KG_PER_LB : v;
+
+  /* ---------- dates ---------- */
+  const fmtDay = iso => new Date(iso+'T00:00:00').toLocaleDateString('en-GB',{day:'numeric',month:'short'});
+  const todayISO = () => {
+    const d = new Date();
+    return new Date(d.getTime() - d.getTimezoneOffset()*60000).toISOString().slice(0,10);
+  };
+  /* Plugins stamp synced_at with SQLite's datetime('now') - UTC, in
+     'YYYY-MM-DD HH:MM:SS' form, which Date() does not parse consistently.
+     Normalise to ISO/UTC so it can be shown in the viewer's local time. */
+  function parseStamp(s){
+    if(!s) return null;
+    const d = new Date(s.includes('T') ? s : s.replace(' ','T')+'Z');
+    return isNaN(d.getTime()) ? null : d;
   }
 
-  async function apiGetWeights(){
-    const r = await fetch('/api/weights'); return r.ok ? r.json() : [];
-  }
-  async function apiAddWeight(dateStr, weight){
-    await fetch('/api/weights', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({date:dateStr, weight})});
-  }
-  async function apiClearWeights(){
-    await fetch('/api/weights', {method:'DELETE'});
-  }
-  async function apiGetWorkouts(){
-    const r = await fetch('/api/workouts'); return r.ok ? r.json() : {};
-  }
-  async function apiSetWorkout(week, idx, done){
-    await fetch('/api/workouts', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({week, idx, done})});
-  }
-  async function apiGetActivity(days){
-    const r = await fetch('/api/activity?days='+(days||30)); return r.ok ? r.json() : [];
-  }
-  async function apiGetPlugins(){
-    const r = await fetch('/api/plugins'); return r.ok ? r.json() : [];
-  }
-  async function apiSyncPlugin(id){
-    const r = await fetch('/api/sync/'+id+'?days=7', {method:'POST'}); return r.ok ? r.json() : {ok:false};
-  }
-
-  let weightLog = [];
-  let workoutLog = {};
-  let activityLog = [];
-  let pluginList = [];
-  let openWeek = null;
-
-  function renderPlugins(){
-    const holder = document.getElementById('plugins-holder');
-    if(!holder) return;
-    if(!pluginList.length){
-      holder.innerHTML = '<div class="empty">No sync plugins installed.</div>';
-      return;
-    }
-    holder.innerHTML = `
-      <div style="display:flex; flex-wrap:wrap; gap:6px; margin-bottom:10px;">
-        ${pluginList.map(p=>`
-          <button class="check-item plugin-sync-btn ${p.configured?'':'done'}" data-plugin="${p.id}"
-            style="cursor:pointer; ${p.configured?'':'opacity:0.5;'}" ${p.configured?'':'disabled'}>
-            ${p.configured?'⟳':'⚠'} Sync ${p.name}
-          </button>
-        `).join('')}
-      </div>
-      ${pluginList.some(p=>!p.configured) ? '<div class="note">Plugins greyed out need env vars set - see README.</div>' : ''}
-    `;
-    holder.querySelectorAll('.plugin-sync-btn').forEach(btn=>{
-      btn.onclick = async ()=>{
-        const id = btn.getAttribute('data-plugin');
-        btn.textContent = 'Syncing…';
-        btn.disabled = true;
-        const res = await apiSyncPlugin(id);
-        activityLog = await apiGetActivity(14);
-        renderActivity();
-        btn.textContent = res.ok ? '✓ Synced' : '✗ Failed';
-      };
+  /* =========================================================
+     ACTIVITY: per-source rows -> one row per day
+     ========================================================= */
+  const METRICS = ['steps','resting_hr','sleep_hours'];
+  function activityByDay(rows){
+    const days = new Map();
+    rows.forEach(r=>{
+      let d = days.get(r.date);
+      if(!d){
+        d = {date:r.date, steps:null, resting_hr:null, sleep_hours:null, sources:[]};
+        days.set(r.date, d);
+      }
+      // First non-null wins, in the order the API returned the rows.
+      METRICS.forEach(m=>{ if(d[m]==null && r[m]!=null) d[m] = r[m]; });
+      if(r.source && !d.sources.includes(r.source)) d.sources.push(r.source);
     });
+    return Array.from(days.values());   // API orders date DESC
   }
-
-  function renderActivity(){
-    const holder = document.getElementById('activity-holder');
-    if(!holder) return;
-    if(!activityLog.length){
-      holder.innerHTML = '<div class="empty">No synced data yet — hit "Sync now" (auto-syncs every few hours in the background).</div>';
-      return;
-    }
-    holder.innerHTML = `
-      <ul class="weight-list">
-        ${activityLog.slice(0,7).map(a=>{
-          const d = new Date(a.date+"T00:00:00");
-          const parts = [];
-          if(a.steps!=null) parts.push(a.steps.toLocaleString()+' steps');
-          if(a.resting_hr!=null) parts.push(a.resting_hr+' bpm rest');
-          if(a.sleep_hours!=null) parts.push(a.sleep_hours+'h sleep');
-          return `<li><span>${fmtDate(d)}</span><span>${parts.join(' · ')||'—'}</span></li>`;
-        }).join('')}
-      </ul>
-    `;
-  }
-
-  function currentWeekNum(){
-    const diff = Math.floor((todayMidnight() - START)/(1000*60*60*24));
-    const wk = Math.floor(diff/7)+1;
-    return Math.min(Math.max(wk,1),15);
-  }
-
-  function render(){
-    const root = document.getElementById('app-root');
-    const daysLeft = Math.max(0, Math.ceil((WEDDING - todayMidnight())/(1000*60*60*24)));
-    const lastWeight = weightLog.length ? weightLog[weightLog.length-1].weight : START_WEIGHT;
-    const lost = (START_WEIGHT - lastWeight).toFixed(1);
-    const toGo = Math.max(0,(lastWeight - GOAL_WEIGHT)).toFixed(1);
-
-    root.innerHTML = `
-      <div style="display:flex; align-items:baseline; justify-content:space-between; margin-bottom:2px;">
-        <div style="font-family:var(--font-display); font-weight:800; font-size:15px; letter-spacing:0.5px;">OPENFIT</div>
-        <div style="font-size:10px; color:var(--muted); font-family:var(--font-mono);">self-hosted · plugin-synced</div>
-      </div>
-      <div class="eyebrow">Goal: wedding on Dec 5</div>
-      <div class="scoreboard">
-        <div class="days-left">${daysLeft}</div>
-        <div class="days-label">days until Dec 5</div>
-        <div class="row" style="margin-top:14px;">
-          <div class="stat-box">
-            <div class="stat-num">${lastWeight}kg</div>
-            <div class="stat-label">Current</div>
-          </div>
-          <div class="stat-box">
-            <div class="stat-num" style="color:var(--good)">${lost>0?'-'+lost:lost}kg</div>
-            <div class="stat-label">Lost so far</div>
-          </div>
-          <div class="stat-box">
-            <div class="stat-num" style="color:var(--accent)">${toGo}kg</div>
-            <div class="stat-label">To goal (85)</div>
-          </div>
-        </div>
-      </div>
-
-      <section>
-        <h2>Weight log</h2>
-        <div class="log-form">
-          <input type="number" step="0.1" id="weight-input" placeholder="Weight in kg" />
-          <button id="log-btn">Log</button>
-        </div>
-        <div id="chart-holder"></div>
-        <ul class="weight-list" id="weight-list"></ul>
-        ${weightLog.length ? '<span class="reset-link" id="reset-weight">clear weight log</span>' : ''}
-      </section>
-
-      <section>
-        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
-          <h2 style="margin:0;">Activity</h2>
-        </div>
-        <div id="plugins-holder"></div>
-        <div id="activity-holder"></div>
-      </section>
-
-      <section>
-        <h2>15-week program</h2>
-        <div id="weeks-holder"></div>
-      </section>
-    `;
-
-    renderChart();
-    renderWeightList();
-    renderWeeks();
-    renderActivity();
-    renderPlugins();
-
-    document.getElementById('log-btn').onclick = async ()=>{
-      const input = document.getElementById('weight-input');
-      const val = parseFloat(input.value);
-      if(!val || val<40 || val>250) return;
-      const today = todayMidnight().toISOString().slice(0,10);
-      await apiAddWeight(today, val);
-      weightLog = await apiGetWeights();
-      input.value='';
-      render();
+  function activityTotals(days){
+    const sum = k => days.reduce((a,d)=> a + (d[k]!=null ? d[k] : 0), 0);
+    const avg = k => {
+      const v = days.map(d=>d[k]).filter(x=>x!=null);
+      return v.length ? v.reduce((a,b)=>a+b,0)/v.length : null;
     };
-    const resetBtn = document.getElementById('reset-weight');
-    if(resetBtn){
-      resetBtn.onclick = async ()=>{
-        await apiClearWeights();
-        weightLog = [];
-        render();
-      };
-    }
+    return {steps:sum('steps'), sleep:avg('sleep_hours'), hr:avg('resting_hr'), days:days.length};
+  }
+  const compact = n => n>=10000 ? (n/1000).toFixed(1)+'k' : num(Math.round(n));
+
+  /* =========================================================
+     NAV
+     ========================================================= */
+  document.querySelectorAll('.tab[data-tab]').forEach(b=>{
+    b.onclick = ()=>{ state.tab = b.dataset.tab; syncNav(); route(); };
+  });
+  $('#addTabBtn').onclick = ()=>{ state.tab='config'; syncNav(); route(); };
+  function syncNav(){
+    document.querySelectorAll('.tab[data-tab]').forEach(b=>b.classList.toggle('active', b.dataset.tab===state.tab));
+  }
+  function route(){
+    closePop();
+    if(state.tab==='home') return renderHome();
+    if(state.tab==='plan') return renderPlan();
+    return renderConfig();
   }
 
-  function renderWeightList(){
-    const ul = document.getElementById('weight-list');
-    if(!weightLog.length){
-      ul.innerHTML = '<li class="empty" style="border:none;">No entries yet — log your first weigh-in above.</li>';
+  /* =========================================================
+     HOME - 2x2 tile grid
+     ========================================================= */
+  function renderHome(){
+    const m = $('#main'); m.innerHTML='';
+    const grid = el('div','grid');
+    SLOTS.forEach(slot=> grid.appendChild(makeTile(slot)));
+    m.appendChild(grid);
+  }
+
+  function makeTile(slot){
+    const w = WIDGETS[state.tiles[slot]] || WIDGETS[DEFAULT_TILES[slot]];
+    const tile = el('div','tile');
+    const head = el('div','tile-head',
+      `<div class="tile-title"><span class="swatch" style="background:var(${w.sw})"></span>${esc(w.name)}</div>`);
+    const menu = el('button','tile-menu-btn','⋯');
+    menu.setAttribute('aria-label','Change this tile');
+    menu.onclick = e => openTileMenu(e, slot);
+    head.appendChild(menu);
+    const body = el('div','tile-body');
+    tile.appendChild(head); tile.appendChild(body);
+    w.render(body);
+    return tile;
+  }
+
+  /* ---- WEIGHT tile ---- */
+  function renderWeight(body){
+    if(!state.weights.length){
+      body.appendChild(emptyState('scale', 'No weigh-ins yet',
+        'Add your first weight from the Add data tile - the line and your trend appear here.'));
       return;
     }
-    ul.innerHTML = weightLog.slice().reverse().slice(0,8).map(e=>{
-      const d = new Date(e.date+"T00:00:00");
-      return `<li><span>${fmtDate(d)}</span><span>${e.weight}kg</span></li>`;
-    }).join('');
+    const wrap = el('div','chart-wrap');
+    const first = toDisplay(state.weights[0].weight);
+    const cur   = toDisplay(state.weights[state.weights.length-1].weight);
+    const delta = cur - first;
+    const since = state.weights.length > 1
+      ? `<span class="${delta<=0?'trend-good':'trend-up'} tnum">${delta<=0?'▼':'▲'} ${Math.abs(delta).toFixed(1)} ${state.unit}</span>
+         <span style="color:var(--muted);font-size:12px;"> · since ${esc(fmtDay(state.weights[0].date))}</span>`
+      : `<span style="color:var(--muted);font-size:12px;">first weigh-in · ${esc(fmtDay(state.weights[0].date))}</span>`;
+
+    wrap.appendChild(el('div','chart-readout',
+      `<div class="readout-big tnum">${cur.toFixed(1)}<small>${state.unit}</small></div><div>${since}</div>`));
+    wrap.appendChild(buildWeightChart());
+    body.appendChild(wrap);
+
+    const foot = el('div','tile-foot');
+    const clear = el('button','linkish','Clear weight log');
+    clear.onclick = async ()=>{
+      if(!window.confirm('Delete every weigh-in? This cannot be undone.')) return;
+      await api.clearWeights();
+      state.weights = await api.listWeights();
+      renderHome();
+    };
+    foot.appendChild(clear);
+    body.appendChild(foot);
   }
 
-  function renderChart(){
-    const holder = document.getElementById('chart-holder');
-    const w=440,h=140,pad=28;
-    const x0=START.getTime(), x1=WEDDING.getTime();
-    const yTop=95, yBot=76; // weight range padding around 85-92
-    const yMax = Math.max(START_WEIGHT+2, ...weightLog.map(e=>e.weight))+1;
-    const yMin = Math.min(GOAL_WEIGHT-2, ...weightLog.map(e=>e.weight))-1;
+  function buildWeightChart(){
+    const W=440, H=150, pad=26;
+    const pts = state.weights.map(e=>({
+      t: Date.parse(e.date+'T00:00:00'),
+      w: toDisplay(e.weight),
+      label: fmtDay(e.date),
+    }));
+    const ws = pts.map(p=>p.w);
+    let lo = Math.min(...ws), hi = Math.max(...ws);
+    const padY = Math.max(0.5, (hi-lo)*0.15);   // a flat run still needs a band
+    lo -= padY; hi += padY;
 
-    function xPos(t){ return pad + (t-x0)/(x1-x0) * (w-pad*2); }
-    function yPos(v){ return h-pad - (v-yMin)/(yMax-yMin) * (h-pad*2); }
+    const t0 = pts[0].t, t1 = pts[pts.length-1].t;
+    const span = (t1 - t0) || 1;
+    const X = t => pts.length===1 ? W/2 : pad + ((t-t0)/span)*(W-pad*2);
+    const Y = w => H-pad - ((w-lo)/(hi-lo))*(H-pad*2);
 
-    const targetLine = `M${xPos(x0)},${yPos(START_WEIGHT)} L${xPos(x1)},${yPos(GOAL_WEIGHT)}`;
-
-    let actualLine = '';
-    let dots = '';
-    if(weightLog.length){
-      const pts = weightLog.map(e=>{
-        const t = new Date(e.date+"T00:00:00").getTime();
-        return [xPos(t), yPos(e.weight)];
-      });
-      actualLine = 'M'+pts.map(p=>p[0]+','+p[1]).join(' L');
-      dots = pts.map(p=>`<circle cx="${p[0]}" cy="${p[1]}" r="3" fill="var(--accent)"/>`).join('');
+    let line='', area='';
+    if(pts.length > 1){
+      line = pts.map((p,i)=>(i?'L':'M')+X(p.t).toFixed(1)+','+Y(p.w).toFixed(1)).join(' ');
+      area = `${line} L${X(t1).toFixed(1)},${H-pad} L${X(t0).toFixed(1)},${H-pad} Z`;
     }
+    const dots = pts.map(p=>
+      `<circle class="chart-dot" cx="${X(p.t).toFixed(1)}" cy="${Y(p.w).toFixed(1)}" r="3.4" fill="var(--surface)" stroke="var(--m-weight)" stroke-width="2"><title>${esc(p.label)}: ${p.w.toFixed(1)}${state.unit}</title></circle>`
+    ).join('');
+    const last = pts[pts.length-1];
 
-    holder.innerHTML = `
-      <svg viewBox="0 0 ${w} ${h}">
-        <line x1="${pad}" y1="${yPos(GOAL_WEIGHT)}" x2="${w-pad}" y2="${yPos(GOAL_WEIGHT)}" stroke="var(--border)" stroke-dasharray="3,3"/>
-        <text x="${w-pad}" y="${yPos(GOAL_WEIGHT)-4}" fill="var(--muted)" font-size="9" text-anchor="end">goal 85kg</text>
-        <path d="${targetLine}" stroke="var(--border)" stroke-width="1.5" fill="none" stroke-dasharray="4,3"/>
-        ${actualLine ? `<path d="${actualLine}" stroke="var(--good)" stroke-width="2" fill="none"/>` : ''}
+    return el('div','chart-wrap', `
+      <svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Weight over time">
+        <defs><linearGradient id="wg" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stop-color="var(--m-weight)" stop-opacity=".18"/>
+          <stop offset="1" stop-color="var(--m-weight)" stop-opacity="0"/>
+        </linearGradient></defs>
+        ${area ? `<path d="${area}" fill="url(#wg)"/>` : ''}
+        ${line ? `<path d="${line}" fill="none" stroke="var(--m-weight)" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round"/>` : ''}
         ${dots}
-        <text x="${pad}" y="${h-6}" fill="var(--muted)" font-size="9">21 Aug</text>
-        <text x="${w-pad}" y="${h-6}" fill="var(--muted)" font-size="9" text-anchor="end">5 Dec</text>
-      </svg>
-    `;
+        <circle cx="${X(last.t).toFixed(1)}" cy="${Y(last.w).toFixed(1)}" r="4.5" fill="var(--m-weight)"/>
+        ${pts.length>1 ? `<text x="${pad}" y="${H-6}" fill="var(--muted)" font-size="9" font-family="var(--font-mono)">${esc(pts[0].label)}</text>
+        <text x="${W-pad}" y="${H-6}" fill="var(--muted)" font-size="9" font-family="var(--font-mono)" text-anchor="end">${esc(last.label)}</text>` : ''}
+      </svg>`);
   }
 
-  function renderWeeks(){
-    const holder = document.getElementById('weeks-holder');
-    const curWk = currentWeekNum();
-    holder.innerHTML = weeks.map(w=>{
-      const prog = programs[w.phase.key];
-      const isOpen = openWeek===w.num;
-      const isCurrent = w.num===curWk;
-      return `
-        <div>
-          <div class="week-tab ${isOpen?'active':''}" data-week="${w.num}">
-            <div>
-              <div class="wk-title">Week ${w.num}${isCurrent?' • now':''} <span class="phase-pill ${prog.cls}" style="margin-left:6px;">${w.phase.label}</span></div>
-              <div class="wk-dates">${fmtDate(w.start)} – ${fmtDate(w.end)}</div>
-            </div>
-            <div style="color:var(--muted); font-size:18px;">${isOpen?'−':'+'}</div>
-          </div>
-          ${isOpen ? renderWeekDetail(w, prog) : ''}
-        </div>
-      `;
-    }).join('');
+  /* ---- ADD DATA tile ----
+     Only the weight form is wired this release; the rest are the
+     prototype's stubs, and land with the metrics they belong to. */
+  function renderAddData(body){
+    const rows = [
+      {id:'weight',   name:'Add weight',   ic:'<path d="M4 7h16l-2 13H6z"/><path d="M9 7a3 3 0 016 0"/>'},
+      {id:'activity', name:'Add activity', ic:'<path d="M4 12h4l2-6 4 12 2-6h4"/>'},
+      {id:'sleep',    name:'Add sleep',    ic:'<path d="M20 14a7 7 0 11-9-9 6 6 0 009 9z"/>'},
+      {id:'note',     name:'Add note',     ic:'<path d="M5 4h14v13l-4 4H5z"/><path d="M15 17h4"/>'},
+    ];
+    const acc = el('div','acc');
 
-    holder.querySelectorAll('.week-tab').forEach(el=>{
-      el.onclick = ()=>{
-        const wk = parseInt(el.getAttribute('data-week'));
-        openWeek = openWeek===wk ? null : wk;
-        render();
+    rows.forEach(r=>{
+      const row = el('div','acc-row' + (state.addOpen===r.id ? ' open' : ''));
+      row.appendChild(el('button','acc-btn',
+        `<span class="lead"><svg class="ic" viewBox="0 0 24 24">${r.ic}</svg>${esc(r.name)}</span><span class="chev">›</span>`));
+      const panel = el('div','acc-panel');
+
+      if(r.id==='weight'){
+        panel.innerHTML = `
+          <div class="add-grid">
+            <div class="field"><label>Weight</label>
+              <input class="input" id="wIn" type="number" step="0.1" inputmode="decimal" placeholder="e.g. 90.4"></div>
+            <div class="field"><label>Unit</label>
+              <div class="seg" id="unitSeg">
+                <button type="button" data-u="kg" class="${state.unit==='kg'?'on':''}">kg</button>
+                <button type="button" data-u="lb" class="${state.unit==='lb'?'on':''}">lb</button>
+              </div></div>
+          </div>
+          <div class="field" style="margin-bottom:10px;"><label>When</label>
+            <input class="input" id="wWhen" type="date" max="${todayISO()}"></div>
+          <button class="btn primary" id="wAdd" style="width:100%;">Add weigh-in</button>
+          <div class="form-msg" id="wMsg"></div>`;
+      }else{
+        panel.innerHTML = `<p style="color:var(--muted);font-size:13px;margin:2px 0 0;">
+          Manual entry for ${esc(r.name.toLowerCase().replace('add ',''))} is not wired up yet.
+          Most of this arrives automatically from your devices; this form is for filling gaps.</p>`;
+      }
+
+      row.appendChild(panel);
+      row.querySelector('.acc-btn').onclick = ()=>{
+        state.addOpen = state.addOpen===r.id ? null : r.id;
+        row.classList.toggle('open');
       };
+      acc.appendChild(row);
+    });
+    body.appendChild(acc);
+    wireWeightForm(acc);
+  }
+
+  function wireWeightForm(acc){
+    const when = acc.querySelector('#wWhen');
+    if(when) when.value = todayISO();
+
+    acc.querySelectorAll('#unitSeg button').forEach(b=>{
+      b.onclick = ()=> setUnit(b.dataset.u);
     });
 
-    if(openWeek){
-      const checks = holder.querySelectorAll('.check-item');
-      checks.forEach(el=>{
-        el.onclick = async ()=>{
-          const wk = el.getAttribute('data-week');
-          const idx = parseInt(el.getAttribute('data-idx'));
-          if(!workoutLog[wk]) workoutLog[wk] = {};
-          const newVal = !workoutLog[wk][idx];
-          workoutLog[wk][idx] = newVal;
-          await apiSetWorkout(parseInt(wk), idx, newVal);
-          render();
-        };
-      });
+    const add = acc.querySelector('#wAdd');
+    if(!add) return;
+    add.onclick = async ()=>{
+      const input = acc.querySelector('#wIn');
+      const msg = acc.querySelector('#wMsg');
+      const entered = parseFloat(input.value);
+      const kg = toKg(entered);
+      // Sanity range in kg, so a slipped decimal or a lb/kg mix-up
+      // cannot quietly wreck the chart.
+      if(!isFinite(kg) || kg < 20 || kg > 400){
+        msg.className = 'form-msg bad';
+        msg.textContent = 'Enter a weight between ' + toDisplay(20).toFixed(0) + ' and ' + toDisplay(400).toFixed(0) + ' ' + state.unit + '.';
+        input.focus();
+        return;
+      }
+      add.disabled = true;
+      const res = await api.addWeight(when.value || todayISO(), Math.round(kg*100)/100);
+      add.disabled = false;
+      if(!res.ok){
+        msg.className = 'form-msg bad';
+        msg.textContent = res.error || 'Could not save that weigh-in.';
+        return;
+      }
+      state.weights = await api.listWeights();
+      renderHome();   // repaints the weight tile with the new point
+    };
+  }
+
+  /* ---- ACTIVITY tile ---- */
+  function renderActivity(body){
+    const days = activityByDay(state.activity);
+    if(!days.length){
+      body.appendChild(emptyState('pulse', 'No activity synced yet',
+        'Connect a source in Configuration and hit Sync - steps, resting HR and sleep land here.'));
+      body.appendChild(calStrip());
+      return;
     }
+
+    const list = el('div','act-list');
+    days.forEach(d=>{
+      const parts = [];
+      if(d.steps!=null)       parts.push(`${num(d.steps)} steps`);
+      if(d.resting_hr!=null)  parts.push(`${d.resting_hr} bpm rest`);
+      if(d.sleep_hours!=null) parts.push(`${d.sleep_hours} h sleep`);
+      const tags = d.sources.map(s=>{
+        const info = sourceInfo(s);
+        return `<span class="tag ${esc(info.cls)}">${esc(info.name)}</span>`;
+      }).join('');
+      list.appendChild(el('div','act-item',
+        `<span class="act-when">${esc(fmtDay(d.date))}</span>
+         <span class="act-main"><span class="act-metrics">${parts.join(' · ') || '—'}</span></span>
+         <span class="act-tags">${tags}</span>`));
+    });
+    body.appendChild(list);
+
+    const t = activityTotals(days);
+    body.appendChild(el('div','totals',
+      `<div class="tot"><span class="n tnum" style="color:var(--m-steps)">${t.steps ? compact(t.steps) : '—'}</span><span class="l">Steps</span></div>
+       <div class="tot"><span class="n tnum" style="color:var(--m-sleep)">${t.sleep!=null ? t.sleep.toFixed(1)+'h' : '—'}</span><span class="l">Avg sleep</span></div>
+       <div class="tot"><span class="n tnum" style="color:var(--m-heart)">${t.hr!=null ? Math.round(t.hr) : '—'}</span><span class="l">Avg rest HR</span></div>
+       <div class="tot"><span class="n tnum">${t.days}</span><span class="l">Days logged</span></div>`));
+
+    body.appendChild(calStrip());
   }
 
-  function renderWeekDetail(w, prog){
-    const done = workoutLog[w.num] || {};
-    const checklist = prog.days.map((d,i)=>`
-      <div class="check-item ${done[i]?'done':''}" data-week="${w.num}" data-idx="${i}">
-        ${done[i]?'✓':'○'} ${d.name}
+  /* Calendar import and the webhook endpoint are both planned, not built -
+     shown here as the prototype does, but inert and labelled as such so
+     nothing offers a URL that does not exist yet. */
+  function calStrip(){
+    return el('div','cal-strip',
+      `<div style="display:flex;gap:8px;align-items:center;">
+         <button class="btn sm" disabled>＋ Import calendar (.ics)</button>
+         <span class="soon">planned</span>
+       </div>
+       <div class="webhook">
+         <code>/api/webhook/&lt;token&gt; — push weigh-ins straight in</code>
+         <span class="soon">planned</span>
+       </div>`);
+  }
+
+  /* ---- TODAY (plan &amp; goals) tile ----
+     Goals are set on the Plan tab, which is not wired up yet, so this
+     tile is always its own blank state this release. */
+  function renderToday(body){
+    body.appendChild(emptyState('flag', 'No plan yet',
+      'Set a goal and a weekly plan on the Plan tab - today’s targets and progress show up here.'));
+  }
+
+  /* ---- STEPS TREND tile ---- */
+  function renderStepsTrend(body){
+    const days = activityByDay(state.activity).filter(d=>d.steps!=null).slice(0,7).reverse();
+    if(!days.length){
+      body.appendChild(emptyState('pulse','No step data yet','Steps arrive from a connected source - set one up in Configuration.'));
+      return;
+    }
+    const latest = days[days.length-1];
+    const wrap = el('div','chart-wrap');
+    wrap.appendChild(el('div','chart-readout',
+      `<div class="readout-big tnum" style="color:var(--m-steps)">${num(latest.steps)}<small>steps · ${esc(fmtDay(latest.date))}</small></div>`));
+
+    const W=440, H=120, pad=20;
+    const mx = Math.max(...days.map(d=>d.steps)) || 1;
+    const bw = (W-pad*2)/days.length;
+    const bars = days.map((d,i)=>{
+      const h = (d.steps/mx)*(H-pad*2);
+      return `<rect x="${(pad+i*bw+3).toFixed(1)}" y="${(H-pad-h).toFixed(1)}" width="${Math.max(1,bw-6).toFixed(1)}" height="${h.toFixed(1)}" rx="4" fill="var(--m-steps)" opacity="${i===days.length-1?1:.5}"><title>${esc(fmtDay(d.date))}: ${num(d.steps)} steps</title></rect>`;
+    }).join('');
+    wrap.appendChild(el('div', null, `<svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Steps per day">${bars}</svg>`));
+    body.appendChild(wrap);
+  }
+
+  /* ---- SLEEP tile ---- */
+  function renderSleep(body){
+    const days = activityByDay(state.activity).slice(0,7);
+    const withSleep = days.filter(d=>d.sleep_hours!=null);
+    if(!withSleep.length){
+      body.appendChild(emptyState('moon','No sleep data yet','Sleep arrives from a connected source - set one up in Configuration.'));
+      return;
+    }
+    const latest = withSleep[0];
+    const avg = withSleep.reduce((a,d)=>a+d.sleep_hours,0)/withSleep.length;
+    const missing = days.length - withSleep.length;
+    body.appendChild(el('div','chart-readout',
+      `<div class="readout-big tnum" style="color:var(--m-sleep)">${latest.sleep_hours.toFixed(1)}<small>h · ${esc(fmtDay(latest.date))}</small></div>`));
+    body.appendChild(el('div','note-box',
+      `Averaging <b class="tnum">${avg.toFixed(1)} h</b> over the last ${withSleep.length} night${withSleep.length===1?'':'s'} with data.` +
+      (missing>0 ? ` ${missing} of the last ${days.length} day${days.length===1?'':'s'} reported no sleep - another source would fill the gaps.` : '')));
+  }
+
+  /* =========================================================
+     TILE ⋯ MENU - swap what is in a slot, and remember it
+     ========================================================= */
+  let popEl = null;
+  function openTileMenu(e, slot){
+    e.stopPropagation(); closePop();
+    const cur = state.tiles[slot];
+    const p = el('div','pop');
+    p.appendChild(el('div','pop-h','Show in this tile'));
+    Object.entries(WIDGETS).forEach(([id,w])=>{
+      const b = el('button','pop-item'+(id===cur?' cur':''),
+        `<span class="sw" style="background:var(${w.sw})"></span>${esc(w.name)}${id===cur?' ✓':''}`);
+      b.onclick = ()=>{
+        state.tiles[slot] = id;
+        saveTiles();
+        closePop();
+        renderHome();
+      };
+      p.appendChild(b);
+    });
+    document.body.appendChild(p);
+    const r = e.currentTarget.getBoundingClientRect();
+    p.style.top = (r.bottom+6)+'px';
+    p.style.left = Math.max(10, Math.min(r.right-p.offsetWidth, window.innerWidth-p.offsetWidth-10))+'px';
+    popEl = p;
+    setTimeout(()=>document.addEventListener('click', closePop, {once:true}), 0);
+  }
+  function closePop(){ if(popEl){ popEl.remove(); popEl=null; } }
+
+  /* ---- layout persistence ---- */
+  function normaliseTiles(raw){
+    const out = Object.assign({}, DEFAULT_TILES);
+    if(raw && typeof raw === 'object'){
+      // Per-slot validation: a slot naming a widget this build does not
+      // have (an older or newer layout) falls back rather than blanking.
+      SLOTS.forEach(s=>{ if(WIDGETS[raw[s]]) out[s] = raw[s]; });
+    }
+    return out;
+  }
+  async function loadTiles(){
+    const value = await api.getSetting(TILES_KEY);
+    if(!value) return Object.assign({}, DEFAULT_TILES);
+    try{ return normaliseTiles(JSON.parse(value)); }
+    catch(e){ return Object.assign({}, DEFAULT_TILES); }
+  }
+  function saveTiles(){ api.putSetting(TILES_KEY, JSON.stringify(state.tiles)); }
+
+  /* =========================================================
+     PLAN - static for now; goals and sessions are a later release
+     ========================================================= */
+  function renderPlan(){
+    const m = $('#main'); m.innerHTML='';
+    const stack = el('div','stack');
+
+    stack.appendChild(el('div','card', `
+      <h3>Overall goal</h3>
+      <p class="hint">Nothing here saves yet - the goal engine lands in a later release.</p>
+      <div class="goal-type" id="goalType">
+        <button type="button" class="on"><b>Reach a target</b><span>a target value, no deadline</span></button>
+        <button type="button"><b>Target by a date</b><span>a target, by a date you pick</span></button>
+        <button type="button"><b>Maintain weekly</b><span>a weekly figure to keep hitting</span></button>
       </div>
-    `).join('');
-    return `
-      <div class="week-detail">
-        <span class="phase-pill ${prog.cls}">${prog.title}</span>
-        ${prog.days.map(d=>`
-          <div class="day-block">
-            <div class="day-name">${d.name}</div>
-            <ul>${d.items.map(it=>`<li>${it}</li>`).join('')}</ul>
+      <div class="row2">
+        <div class="field"><label>Metric</label>
+          <select class="input"><option>Body weight</option><option>Steps</option><option>Resting HR</option><option>Sleep</option></select></div>
+        <div class="field"><label>Target value</label><input class="input" placeholder="target"></div>
+        <div class="field"><label>By date <span style="text-transform:none;color:var(--muted)">(optional)</span></label><input class="input" type="date"></div>
+        <div class="field"><label>Starting from</label><input class="input" placeholder="today’s value"></div>
+      </div>
+      <div style="margin-top:16px;"><button class="btn primary" disabled>Save goal</button></div>`));
+
+    stack.appendChild(el('div','card', `
+      <h3>Weekly plan</h3>
+      <div class="empty" style="min-height:120px;border:1.5px dashed var(--border-strong);border-radius:12px;">
+        <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
+        <div>No sessions yet</div>
+        <button class="btn primary sm" style="margin-top:6px;" disabled>＋ Add a session</button>
+      </div>`));
+
+    m.appendChild(stack);
+    // Selection is visual only until the goal engine exists.
+    stack.querySelectorAll('#goalType button').forEach(b=> b.onclick = ()=>{
+      stack.querySelectorAll('#goalType button').forEach(x=>x.classList.remove('on'));
+      b.classList.add('on');
+    });
+  }
+
+  /* =========================================================
+     CONFIGURATION
+     ========================================================= */
+  function renderConfig(){
+    const m = $('#main'); m.innerHTML='';
+    const stack = el('div','stack');
+
+    stack.appendChild(sourcesCard());
+
+    stack.appendChild(el('div','card', `
+      <h3>Custom tabs</h3>
+      <p class="hint">Not built yet - the widget system lands in a later release.</p>
+      <div class="addtab">
+        <div style="font-family:var(--font-display);font-weight:700;font-size:15px;">Add a tab</div>
+        <div style="color:var(--muted);font-size:13px;margin-top:3px;">Two ways in:</div>
+        <div class="tab-choose">
+          <button class="choose" disabled><b>Paste a definition</b><span>A small YAML/JSON widget spec for data tiles, or a self-contained HTML/JS widget for a full custom console.</span></button>
+          <button class="choose" disabled><b>Upload from file</b><span>Drop in a <span class="mono">.yaml</span> or <span class="mono">.html</span> widget. Runs sandboxed - it can read your data but can’t reach the network.</span></button>
+        </div>
+      </div>`));
+
+    stack.appendChild(el('div','card', `
+      <h3>Appearance</h3>
+      <p class="hint">Remembered in this browser only - it is not stored with your data.</p>
+      <div class="seg" id="cfgTheme">
+        <button type="button" data-t="auto">Auto</button><button type="button" data-t="light">Light</button><button type="button" data-t="dark">Dark</button>
+      </div>
+      <div class="note-box" style="margin-top:14px;">
+        Want to go further than the theme? Every colour, font and radius is a CSS variable in the
+        <span class="mono">CUSTOMISE OPENFIT HERE</span> block at the top of <span class="mono">index.html</span>.
+        Change a handful of tokens and the whole interface re-skins - no hunting through markup.
+      </div>`));
+
+    m.appendChild(stack);
+    stack.querySelectorAll('#cfgTheme button').forEach(b=> b.onclick = ()=> setTheme(b.dataset.t));
+    reflectTheme();
+  }
+
+  /* Real plugin status from /api/plugins, each with a working sync. */
+  function sourcesCard(){
+    const card = el('div','card',
+      `<h3>Connected sources</h3>
+       <p class="hint">Sync plugins installed in this container. One that needs environment variables is listed but can’t sync until they are set - see the README.</p>`);
+
+    if(!state.plugins.length){
+      card.appendChild(el('div','empty',
+        `<div style="font-weight:600;color:var(--ink-2)">No sync plugins installed</div>
+         <div style="font-size:12.5px;max-width:320px">OpenFit runs fine without one - you just log everything by hand.</div>`));
+      return card;
+    }
+
+    state.plugins.forEach(p=>{
+      const missing = Array.isArray(p.missing_env) ? p.missing_env : [];
+      const row = el('div','src', `
+        <div class="src-l">
+          <div class="src-ic">${esc(initials(p.name))}</div>
+          <div style="min-width:0;">
+            <div style="font-weight:600">${esc(p.name)}</div>
+            <div style="color:var(--muted);font-size:12.5px">${
+              p.configured
+                ? 'steps · resting HR · sleep'
+                : 'needs ' + esc(missing.join(', ') || 'configuration')
+            }</div>
           </div>
-        `).join('')}
-        <div class="note">${prog.note}</div>
-        <div class="back-flag">Back flares up? Drop that session's loaded lifts, keep the core/mobility work, and don't push through pain — swap in a walk instead.</div>
-        <div class="checklist">${checklist}</div>
-      </div>
-    `;
+        </div>
+        <div class="src-r">
+          <span class="pill ${p.configured?'ok':'wait'}">${p.configured?'● connected':'setup needed'}</span>
+          <button class="btn sm" ${p.configured?'':'disabled'}>Sync now</button>
+        </div>`);
+
+      const btn = row.querySelector('button');
+      if(p.configured){
+        btn.onclick = async ()=>{
+          btn.disabled = true; btn.title = ''; btn.textContent = 'Syncing…';
+          const res = await api.syncPlugin(p.id);
+          if(res.ok){
+            btn.textContent = 'Synced ✓';
+            state.activity = await api.listActivity(ACTIVITY_DAYS);
+            paintSync();
+          }else{
+            btn.textContent = 'Failed';
+            btn.title = res.error || 'Sync failed';
+          }
+          setTimeout(()=>{ btn.textContent = 'Sync now'; btn.disabled = false; }, 2200);
+        };
+      }
+      card.appendChild(row);
+    });
+    return card;
   }
 
-  async function init(){
-    weightLog = await apiGetWeights();
-    workoutLog = await apiGetWorkouts();
-    activityLog = await apiGetActivity(14);
-    pluginList = await apiGetPlugins();
-    openWeek = currentWeekNum();
-    render();
+  /* "Garmin Connect" -> GC, "Google Health (Pixel Watch / Fitbit)" -> GH */
+  function initials(name){
+    const words = String(name||'').replace(/[^A-Za-z ]/g,' ').trim().split(/\s+/).filter(Boolean);
+    return words.slice(0,2).map(w=>w[0]).join('').toUpperCase() || '?';
   }
+
+  /* =========================================================
+     shared bits
+     ========================================================= */
+  function emptyState(icon, title, sub){
+    const icons = {
+      scale:'<path d="M4 7h16l-2 13H6z"/><path d="M9 7a3 3 0 016 0"/><path d="M12 11v4"/>',
+      flag: '<path d="M5 21V4M5 4h11l-2 4 2 4H5"/>',
+      pulse:'<path d="M3 12h4l2-6 4 12 2-6h6"/>',
+      moon: '<path d="M20 14a7 7 0 11-9-9 6 6 0 009 9z"/>',
+    };
+    return el('div','empty',
+      `<svg viewBox="0 0 24 24">${icons[icon]||''}</svg>
+       <div style="font-weight:600;color:var(--ink-2)">${esc(title)}</div>
+       <div style="font-size:12.5px;max-width:250px">${sub}</div>`);
+  }
+
+  /* ---- theme (per browser, like the unit choice) ---- */
+  function setTheme(t){
+    if(t==='auto'){
+      document.documentElement.removeAttribute('data-theme');
+      try{ localStorage.removeItem('of-theme'); }catch(e){}
+    }else{
+      document.documentElement.setAttribute('data-theme', t);
+      try{ localStorage.setItem('of-theme', t); }catch(e){}
+    }
+    reflectTheme();
+  }
+  function curTheme(){ try{ return localStorage.getItem('of-theme') || 'auto'; }catch(e){ return 'auto'; } }
+  function reflectTheme(){
+    const t = curTheme();
+    const st = $('#themeState'); if(st) st.textContent = t;
+    document.querySelectorAll('#cfgTheme button').forEach(b=>b.classList.toggle('on', b.dataset.t===t));
+  }
+  $('#themeToggle').onclick = ()=>{
+    const order = ['auto','light','dark'];
+    setTheme(order[(order.indexOf(curTheme())+1) % order.length]);
+  };
+  (function initTheme(){
+    const t = curTheme();
+    if(t!=='auto') document.documentElement.setAttribute('data-theme', t);
+    reflectTheme();
+  })();
+
+  /* ---- top bar: today's date, and the most recent sync ---- */
+  function paintDate(){
+    $('#dsDate').textContent = new Date().toLocaleDateString('en-GB',{weekday:'short',day:'numeric',month:'short'});
+  }
+  function paintSync(){
+    let best = null;
+    state.activity.forEach(r=>{
+      if(r.synced_at && (!best || r.synced_at > best.synced_at)) best = r;
+    });
+    const holder = $('#dsSync');
+    const when = best && parseStamp(best.synced_at);
+    holder.innerHTML = when
+      ? `<span class="dot"></span> ${esc(sourceInfo(best.source).name)} · ${esc(when.toLocaleTimeString('en-GB', {hour:'2-digit', minute:'2-digit'}))}`
+      : `<span class="dot idle"></span> no sync yet`;
+  }
+
+  /* =========================================================
+     BOOT - paint the shell straight away, then fill it in
+     ========================================================= */
+  async function init(){
+    const [tiles, weights, activity, plugins] = await Promise.all([
+      loadTiles(),
+      api.listWeights(),
+      api.listActivity(ACTIVITY_DAYS),
+      api.listPlugins(),
+    ]);
+    state.tiles = tiles;
+    state.weights = weights;
+    state.activity = activity;
+    state.plugins = plugins;
+    paintSync();
+    route();
+  }
+
+  window.addEventListener('resize', closePop);
+  paintDate();
+  route();
   init();
 })();
 </script>

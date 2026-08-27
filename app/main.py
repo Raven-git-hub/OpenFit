@@ -187,6 +187,46 @@ def get_activity():
     return jsonify(_merge_by_date(rows))
 
 
+# ---------- settings ----------
+
+# A tiny key/value store for UI preferences that belong to the install
+# rather than to one browser - the home tile layout is the first user.
+# Per-browser choices (theme, display unit) deliberately stay in
+# localStorage and never come near this table.
+#
+# The value is an opaque JSON string: the API stores and returns exactly
+# what the client PUT, and the client decides what it means. That keeps
+# a new preference from needing a migration or a route of its own.
+
+
+@app.route("/api/settings/<key>", methods=["GET"])
+def get_setting(key):
+    conn = get_conn()
+    row = conn.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
+    conn.close()
+    # An unset key is not an error - it means "no preference saved", and
+    # the caller falls back to its own default. 404 would force every
+    # caller to special-case a perfectly normal first run.
+    return jsonify({"key": key, "value": row["value"] if row else None})
+
+
+@app.route("/api/settings/<key>", methods=["PUT"])
+def set_setting(key):
+    body = request.get_json(force=True, silent=True) or {}
+    value = body.get("value")
+    if not isinstance(value, str):
+        return jsonify({"error": "value must be a JSON string"}), 400
+    conn = get_conn()
+    conn.execute(
+        "INSERT INTO settings (key, value) VALUES (?, ?) "
+        "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        (key, value),
+    )
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True})
+
+
 # ---------- plugins ----------
 
 @app.route("/api/plugins", methods=["GET"])
