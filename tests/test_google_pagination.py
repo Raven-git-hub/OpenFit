@@ -74,10 +74,8 @@ def sleep_on(d):
 
 
 def hr_point(d):
-    # The discovery doc names the value beatsPerMinute, which the
-    # fetcher's generic field walk doesn't recognise yet - a separate fix.
-    # These tests are about pages, so they use `bpm`, which it does.
-    return {"dailyRestingHeartRate": {"date": civil(d), "bpm": hr_on(d)}}
+    # beatsPerMinute is an int64, which Google sends as a JSON string.
+    return {"dailyRestingHeartRate": {"date": civil(d), "beatsPerMinute": str(hr_on(d))}}
 
 
 def hr_on(d):

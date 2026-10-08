@@ -16,7 +16,8 @@ that were set up that way; its on-disk token file is still read as a
 fallback when the stored account has no refresh token of its own.
 
 Data types used (Google Health API v4):
-  - steps                     -> dailyRollUp (clean daily sums)
+  - steps                     -> dailyRollUp (clean daily sums), at most
+                                 MAX_ROLLUP_DAYS per request
   - sleep                     -> list, summed per civil day from session summaries;
                                  each data point is also stored as a sleep session
   - daily-resting-heart-rate  -> list (no rollup available for this type)
@@ -24,6 +25,11 @@ Data types used (Google Health API v4):
 Every fetch reads all its pages (see _all_pages): Google answers a page at
 a time, newest first, and a sleep page holds at most 25 points, so a
 backfill longer than that spans several.
+
+Field names - list filters and the fields read back - follow the v4
+discovery document (https://health.googleapis.com/$discovery/rest?version=v4).
+A filter on a field it doesn't list for that data type gets nothing back,
+so a wrong name here costs that data type quietly.
 """
 
 import json
@@ -56,6 +62,10 @@ SLEEP_STAGE_KEYS = {
 # Google hands back a nextPageToken while more pages remain; this only
 # stops one that never runs out. 100 pages of sleep is years of nights.
 MAX_PAGES = 100
+
+# The longest range dailyRollUp takes for steps (DailyRollUpDataPointsRequest.
+# range in the discovery doc); a longer one is rejected outright.
+MAX_ROLLUP_DAYS = 90
 
 SCOPES = [
     "https://www.googleapis.com/auth/googlehealth.activity_and_fitness.readonly",
@@ -233,8 +243,22 @@ class GoogleHealthPlugin(SyncPlugin):
 
     def _fetch_steps(self, headers, start, end):
         """Daily step totals via the dailyRollUp endpoint - clean sums, no
-        manual aggregation needed. Its page token goes in the body, beside
-        the rest of the request repeated unchanged."""
+        manual aggregation needed.
+
+        dailyRollUp rejects a range longer than MAX_ROLLUP_DAYS, so a
+        longer backfill asks for it a window at a time and merges the
+        days. The windows don't overlap, and one that fails costs only
+        its own days.
+        """
+        out = {}
+        for window_start, window_end in _windows(start, end, MAX_ROLLUP_DAYS):
+            out.update(self._fetch_steps_window(headers, window_start, window_end))
+        return out
+
+    def _fetch_steps_window(self, headers, start, end):
+        """One dailyRollUp request, start to end inclusive. Its page token
+        goes in the body, beside the rest of the request repeated
+        unchanged."""
         body = {
             "range": {
                 "start": {"date": {"year": start.year, "month": start.month, "day": start.day}},
@@ -258,7 +282,7 @@ class GoogleHealthPlugin(SyncPlugin):
                     out[d_str] = int(count)
             return out
         except Exception as e:
-            print(f"[google_health] steps fetch failed: {e}")
+            print(f"[google_health] steps fetch failed for {start} to {end}: {e}")
             return {}
 
     def _fetch_sleep(self, headers, start, end):
@@ -269,7 +293,12 @@ class GoogleHealthPlugin(SyncPlugin):
         same points independently, so a session that can't be parsed
         never costs the daily total.
         """
-        params = {"filter": f'sleep.interval.civil_start_time >= "{start.isoformat()}"'}
+        # Sleep can't be filtered on when it starts - the discovery doc
+        # rules sleep out of interval.civil_start_time - so this asks by
+        # civil end date, which it lists for sleep. That also brings back
+        # a night that began the evening before `start`, filed as always
+        # under the day it began.
+        params = {"filter": f'sleep.interval.civil_end_time >= "{start.isoformat()}"'}
         try:
             points = _all_pages("sleep", "dataPoints", lambda token: requests.get(
                 f"{API_BASE}/dataTypes/sleep/dataPoints",
@@ -301,16 +330,15 @@ class GoogleHealthPlugin(SyncPlugin):
             return {}, []
 
     def _fetch_resting_hr(self, headers, start, end):
-        """Daily resting heart rate via the list endpoint.
+        """Daily resting heart rate via the list endpoint (the type has no
+        rollup).
 
-        NOTE: Google's docs don't publish a full example response for
-        daily-resting-heart-rate (only list/reconcile are supported, no
-        rollup). This walks the response generically looking for a numeric
-        bpm-shaped field. If it comes back empty, print the raw response
-        once (see the try/except below) and adjust the key name here -
-        it's a couple of line change.
+        A daily type, so it filters on `.date` like the doc's other daily
+        summaries. Each point's dailyRestingHeartRate carries the day as
+        `date` and the reading as `beatsPerMinute` - an int64, so Google
+        sends it as a JSON string.
         """
-        params = {"filter": f'daily_resting_heart_rate.civil_date >= "{start.isoformat()}"'}
+        params = {"filter": f'daily_resting_heart_rate.date >= "{start.isoformat()}"'}
         try:
             points = _all_pages("resting HR", "dataPoints", lambda token: requests.get(
                 f"{API_BASE}/dataTypes/daily-resting-heart-rate/dataPoints",
@@ -319,21 +347,14 @@ class GoogleHealthPlugin(SyncPlugin):
             out = {}
             for point in points:
                 payload = point.get("dailyRestingHeartRate", {})
-                civil = payload.get("civilDate") or payload.get("date")
-                bpm = None
-                for key, val in payload.items():
-                    if "heartrate" in key.lower() or key.lower() in ("bpm", "value"):
-                        try:
-                            bpm = int(val)
-                            break
-                        except (TypeError, ValueError):
-                            continue
+                civil = payload.get("date")
+                bpm = _int_or_none(payload.get("beatsPerMinute"))
                 if civil and bpm is not None:
                     d_str = f"{civil['year']:04d}-{civil['month']:02d}-{civil['day']:02d}"
                     out[d_str] = bpm
             if not out and points:
-                print(f"[google_health] resting HR: got data but couldn't parse bpm field. "
-                      f"Sample point: {points[0]}")
+                print(f"[google_health] resting HR: got data but no date and beatsPerMinute "
+                      f"in dailyRestingHeartRate. Sample point: {points[0]}")
             return out
         except Exception as e:
             print(f"[google_health] resting HR fetch failed: {e}")
@@ -445,3 +466,14 @@ def _int_or_none(value):
 def _next_day_dict(d):
     nxt = d + timedelta(days=1)
     return {"year": nxt.year, "month": nxt.month, "day": nxt.day}
+
+
+def _windows(start, end, max_days):
+    """start to end, both inclusive, as consecutive (first, last) date
+    pairs of at most max_days days each, oldest first."""
+    windows = []
+    while start <= end:
+        last = min(start + timedelta(days=max_days - 1), end)
+        windows.append((start, last))
+        start = last + timedelta(days=1)
+    return windows
