@@ -101,7 +101,7 @@ def test_fresh_database_gets_all_tables(tmp_path):
         r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
     }
     assert {
-        "workouts", "metrics", "settings", "accounts", "schema_migrations"
+        "workouts", "metrics", "sessions", "settings", "accounts", "schema_migrations"
     } <= names
     assert "activity" not in names  # unpivoted into metrics by 005
     assert "weights" not in names   # folded into metrics by 006
@@ -594,4 +594,130 @@ def test_weight_migration_leaves_other_tables_alone(db_at_version):
     assert conn.execute("SELECT * FROM workouts").fetchall() == [(1, 0, 1)]
     assert conn.execute("SELECT * FROM settings").fetchall() == [("home_tiles", "{}")]
     assert conn.execute("SELECT * FROM accounts").fetchall() == [("garmin", "blob", "then")]
+    conn.close()
+
+
+# ---------- 007: the sessions table ----------
+
+
+SESSION_COLUMNS = ["id", "source", "kind", "start", "end", "summary_json", "synced_at"]
+
+
+def index_columns(conn, index):
+    return [r[2] for r in conn.execute(f"PRAGMA index_info({index})").fetchall()]
+
+
+def everything_but_sessions(conn):
+    """Every other table's schema and rows - what 007 must not touch."""
+    tables = [
+        r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' "
+            "AND name NOT IN ('sessions', 'schema_migrations') ORDER BY name"
+        )
+    ]
+    return {
+        table: (
+            table_sql(conn, table),
+            sorted(conn.execute(f"SELECT * FROM {table}").fetchall(), key=repr),
+        )
+        for table in tables
+    }
+
+
+def populated_at_version_6(db_at_version):
+    """A version-6 database - where production sits before 007 - with data in it."""
+    path = db_at_version(6)
+    conn = sqlite3.connect(path)
+    conn.executemany(
+        "INSERT INTO metrics (date, source, metric, value, unit, synced_at) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        [
+            ("2026-01-01", "garmin", "steps", 9000, "count", "x"),
+            ("2026-01-01", "garmin", "sleep_minutes", 443, "min", "x"),
+            ("2026-01-01", "google_health", "sleep_minutes", 421, "min", "y"),
+            ("2026-01-01", "manual", "weight_kg", 82.0, "kg", None),
+        ],
+    )
+    conn.execute("INSERT INTO workouts VALUES (1, 0, 1)")
+    conn.execute("INSERT INTO settings VALUES ('home_tiles', '{}')")
+    conn.execute("INSERT INTO accounts VALUES ('garmin', 'blob', 'then')")
+    conn.commit()
+    return conn
+
+
+def test_sessions_table_on_a_fresh_database(tmp_path):
+    conn = sqlite3.connect(str(tmp_path / "fresh.db"))
+    run_migrations(conn)
+
+    assert column_names(conn, "sessions") == SESSION_COLUMNS
+    assert primary_key_columns(conn, "sessions") == ["id"]
+    assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
+    # source, kind and start are required; end, the summary and synced_at aren't.
+    not_null = {r[1] for r in conn.execute("PRAGMA table_info(sessions)") if r[3]}
+    assert not_null == {"source", "kind", "start"}
+    assert index_columns(conn, "idx_sessions_kind_start") == ["kind", "start"]
+    conn.close()
+
+
+def test_sessions_migration_is_additive(db_at_version):
+    """007 adds a table and its index, and nothing already there changes."""
+    conn = populated_at_version_6(db_at_version)
+    before = everything_but_sessions(conn)
+
+    assert run_migrations(conn) == versions_from(7)
+
+    assert column_names(conn, "sessions") == SESSION_COLUMNS
+    assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
+    assert everything_but_sessions(conn) == before
+    # The daily sleep total is untouched: sessions sit beside it.
+    assert conn.execute(
+        "SELECT source, value FROM metrics WHERE metric = 'sleep_minutes' ORDER BY source"
+    ).fetchall() == [("garmin", 443), ("google_health", 421)]
+    conn.close()
+
+
+def test_sessions_migration_is_idempotent(db_at_version):
+    conn = populated_at_version_6(db_at_version)
+    assert run_migrations(conn) == versions_from(7)
+    conn.execute(
+        'INSERT INTO sessions (id, source, kind, "start", "end", summary_json, synced_at) '
+        "VALUES ('garmin:sleep:2026-01-01T22:30:00Z', 'garmin', 'sleep', "
+        "'2026-01-01T22:30:00Z', '2026-01-02T06:20:00Z', '{\"asleep_minutes\": 443}', 'x')"
+    )
+    conn.commit()
+    schema_before = table_sql(conn, "sessions")
+    rows_before = conn.execute("SELECT * FROM sessions").fetchall()
+    others_before = everything_but_sessions(conn)
+
+    assert run_migrations(conn) == []
+    assert run_migrations(conn) == []
+
+    assert table_sql(conn, "sessions") == schema_before
+    assert conn.execute("SELECT * FROM sessions").fetchall() == rows_before
+    assert everything_but_sessions(conn) == others_before
+    assert conn.execute(
+        "SELECT COUNT(*) FROM schema_migrations WHERE version = 7"
+    ).fetchone()[0] == 1
+    conn.close()
+
+
+def test_sessions_migration_adopts_a_preexisting_table(tmp_path):
+    """CREATE TABLE IF NOT EXISTS: an existing sessions table survives."""
+    path = str(tmp_path / "has-sessions.db")
+    conn = sqlite3.connect(path)
+    conn.execute(
+        'CREATE TABLE sessions (id TEXT PRIMARY KEY, source TEXT NOT NULL, kind TEXT NOT NULL, '
+        '"start" TEXT NOT NULL, "end" TEXT, summary_json TEXT, synced_at TEXT)'
+    )
+    conn.execute(
+        "INSERT INTO sessions VALUES ('garmin:sleep:s', 'garmin', 'sleep', 's', 'e', '{}', 'x')"
+    )
+    conn.commit()
+
+    run_migrations(conn)
+
+    assert conn.execute("SELECT * FROM sessions").fetchall() == [
+        ("garmin:sleep:s", "garmin", "sleep", "s", "e", "{}", "x")
+    ]
+    assert index_columns(conn, "idx_sessions_kind_start") == ["kind", "start"]
     conn.close()

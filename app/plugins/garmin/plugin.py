@@ -10,13 +10,23 @@ scheduled sync.
 
 import os
 import shutil
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 from garminconnect import Garmin, GarminConnectAuthenticationError
 
 from metrics import RESTING_HR_BPM, SLEEP_MINUTES, STEPS
 
-from ..base import SyncPlugin, write_metric
+from ..base import SyncPlugin, iso_utc, write_metric, write_session
+
+# dailySleepDTO stage fields (seconds) -> the sleep session summary keys
+# (minutes). A field the device doesn't report - remSleepSeconds on a
+# watch without REM tracking - is simply left out of the summary.
+SLEEP_STAGE_FIELDS = {
+    "lightSleepSeconds": "light_minutes",
+    "deepSleepSeconds": "deep_minutes",
+    "remSleepSeconds": "rem_minutes",
+    "awakeSleepSeconds": "awake_minutes",
+}
 
 
 class GarminPlugin(SyncPlugin):
@@ -89,6 +99,7 @@ class GarminPlugin(SyncPlugin):
             steps = None
             resting_hr = None
             sleep_minutes = None
+            sleep_session = None
 
             try:
                 stats = client.get_stats(d_str)
@@ -99,9 +110,14 @@ class GarminPlugin(SyncPlugin):
 
             try:
                 sleep = client.get_sleep_data(d_str)
-                seconds = (sleep.get("dailySleepDTO") or {}).get("sleepTimeSeconds")
+                dto = sleep.get("dailySleepDTO") or {}
+                seconds = dto.get("sleepTimeSeconds")
                 if seconds:
                     sleep_minutes = round(seconds / 60)
+                    # The same response carries the night as an interval
+                    # with its stages. Never raises - a shape mismatch
+                    # costs the session, not the metric.
+                    sleep_session = _sleep_session(dto, sleep_minutes, d_str)
             except Exception as e:
                 print(f"[garmin] sleep fetch failed for {d_str}: {e}")
 
@@ -113,7 +129,58 @@ class GarminPlugin(SyncPlugin):
             write_metric(conn, d_str, self.id, STEPS, steps)
             write_metric(conn, d_str, self.id, RESTING_HR_BPM, resting_hr)
             write_metric(conn, d_str, self.id, SLEEP_MINUTES, sleep_minutes)
+            if sleep_session:
+                write_session(conn, self.id, "sleep", *sleep_session)
             written += 1
 
         conn.commit()
         return written
+
+
+def _sleep_session(dto, asleep_minutes, d_str):
+    """The night in a dailySleepDTO as a (start, end, summary) session, or None.
+
+    The interval comes from sleepStartTimestampGMT/sleepEndTimestampGMT
+    (epoch milliseconds, real UTC - the *Local pair is shifted by the
+    timezone and garminconnect warns it can be shifted twice), and each
+    stage from its *SleepSeconds field, rounded to whole minutes.
+    asleep_minutes is the night's sleep_minutes reading, so the session
+    and the daily total always agree.
+
+    Defensive throughout: a missing stage is left out of the summary, a
+    missing start means no session (logged), and nothing here raises.
+    """
+    try:
+        start = _gmt_iso(dto.get("sleepStartTimestampGMT"))
+        if start is None:
+            print(
+                f"[garmin] sleep on {d_str} has no usable sleepStartTimestampGMT - "
+                f"no session written. dailySleepDTO keys: {sorted(dto)}"
+            )
+            return None
+
+        summary = {"asleep_minutes": asleep_minutes}
+        for field, key in SLEEP_STAGE_FIELDS.items():
+            seconds = dto.get(field)
+            if isinstance(seconds, (int, float)):
+                summary[key] = round(seconds / 60)
+        if len(summary) == 1:
+            print(
+                f"[garmin] sleep on {d_str} has no stage fields - session written "
+                f"with asleep_minutes only. dailySleepDTO keys: {sorted(dto)}"
+            )
+
+        return start, _gmt_iso(dto.get("sleepEndTimestampGMT")), summary
+    except Exception as e:
+        print(f"[garmin] could not read the sleep session for {d_str}: {e}")
+        return None
+
+
+def _gmt_iso(millis):
+    """Garmin's epoch-milliseconds GMT timestamp as an iso_utc() string."""
+    if not isinstance(millis, (int, float)):
+        return None
+    try:
+        return iso_utc(datetime.fromtimestamp(millis / 1000, tz=timezone.utc))
+    except (OverflowError, OSError, ValueError):
+        return None

@@ -2,19 +2,21 @@
 OpenFit plugin interface.
 
 A "sync plugin" is anything that pulls data from an external device/service
-and writes it into OpenFit's metrics table as canonical readings. To add a
+and writes it into OpenFit's metrics table as canonical readings (and,
+for interval data like a night's sleep, into the sessions table). To add a
 new source (Google Health, Oura, Whoop, a spreadsheet, whatever), subclass
 SyncPlugin and drop the module in app/plugins/<your_plugin>/.
 
 Plugins are intentionally dumb: they get a database connection and a date
-range, and they write readings through write_metric(). All the scheduling,
-API routes, and UI wiring already exist in main.py and don't need to change
-per-plugin.
+range, and they write readings through write_metric() and sessions through
+write_session(). All the scheduling, API routes, and UI wiring already
+exist in main.py and don't need to change per-plugin.
 """
 
 import json
 import os
 from abc import ABC, abstractmethod
+from datetime import timezone
 
 from crypto import decrypt
 from metrics import unit_for
@@ -59,6 +61,58 @@ def write_metric(conn, date, source, metric, value):
             synced_at=datetime('now')
         """,
         (date, source, metric, value, unit_for(metric)),
+    )
+    return True
+
+
+def iso_utc(moment):
+    """A datetime as the timestamp sessions store: ISO 8601 UTC, whole seconds.
+
+    e.g. 2026-01-01T22:30:00Z. Every source formats its session times
+    through here, so starts from different devices sort and compare as
+    plain strings, and a re-sync of the same night rebuilds the same
+    session id. A naive datetime is taken to be UTC already.
+    """
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    return moment.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def write_session(conn, source, kind, start, end, summary):
+    """Upsert one session into the sessions table. Returns whether it wrote.
+
+    A session is an interval with a shape - a night's sleep and its stage
+    breakdown - where a metric is one number per day. `start` and `end`
+    are timestamps from iso_utc(); `summary` is a dict, stored as JSON,
+    whose keys belong to the kind (for sleep: asleep_minutes plus
+    whichever of light/deep/rem/awake_minutes the source reports).
+
+    The id is source:kind:start, so a re-sync of the same night lands on
+    the same row and replaces its end and summary instead of adding a
+    second session. A start of None is no session at all and writes
+    nothing, like a None value in write_metric().
+
+    Doesn't commit - sync() commits once at the end of its batch.
+    """
+    if start is None:
+        return False
+    conn.execute(
+        """
+        INSERT INTO sessions (id, source, kind, "start", "end", summary_json, synced_at)
+        VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
+        ON CONFLICT(id) DO UPDATE SET
+            "end"=excluded."end",
+            summary_json=excluded.summary_json,
+            synced_at=datetime('now')
+        """,
+        (
+            f"{source}:{kind}:{start}",
+            source,
+            kind,
+            start,
+            end,
+            None if summary is None else json.dumps(summary),
+        ),
     )
     return True
 
@@ -220,8 +274,12 @@ class SyncPlugin(ABC):
         unit first - minutes of sleep, not hours or seconds. The metrics
         table is keyed on (date, source, metric), so each plugin owns its
         own rows, two sources covering the same day never contend, and a
-        metric you didn't fetch this time keeps its earlier value. Commit
-        before returning. See plugins/garmin/plugin.py for the reference
+        metric you didn't fetch this time keeps its earlier value.
+
+        Interval data - a night's sleep - also goes in as a session with
+        write_session(conn, self.id, kind, start, end, summary), beside
+        the daily metric rather than instead of it. Commit before
+        returning. See plugins/garmin/plugin.py for the reference
         implementation.
 
         Returns the number of days written (for logging/UI feedback).

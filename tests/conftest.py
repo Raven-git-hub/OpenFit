@@ -3,8 +3,9 @@ Shared test fixtures.
 
 Every test runs against a fresh temp SQLite file - never the real
 /data/tracker.db - and nothing here touches the network: Garmin and
-Google Health are never contacted, only the fake plugin in
-test_plugin_contract.py writes rows.
+Google Health are never contacted. Rows are written by the fake plugin
+in test_plugin_contract.py, or by the real plugins with their network
+calls stubbed (test_sleep_sessions.py).
 
 The same goes for the encryption key: every test gets a throwaway one in
 its tmp_path, so nothing can read or create /data/.secret_key.
