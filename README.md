@@ -1,58 +1,55 @@
 # OpenFit
 
-A self-hosted, plugin-based fitness tracker. Log weight, follow a training
-program, and pull in activity data — steps, heart rate, sleep — from
-whatever devices you actually own, via small isolated plugins. Runs in a
-single Docker container on your own hardware. Nothing leaves your network
-except each plugin's own calls to fetch your own data from its source
-(e.g. Garmin's servers).
+Self-hosted middleware for your health and fitness data. OpenFit pulls data from
+the devices you own (Garmin, Google Health / Fitbit, soon Oura and others),
+normalises it into one dataset you own — the **OpenFit Derived Data** — and
+exposes it to apps that read it. It runs in a single Docker container on your own
+hardware; nothing leaves your network except each connector's own call to its
+device's API.
 
-Built by, and currently used by, one person on their own home server —
-see [ROADMAP.md](ROADMAP.md) for where it's headed.
+OpenFit is **not a tracker, and ships no tracking apps.** It is a *database
+manager* and a *host for apps*. Weight logs, training planners, dashboards — those
+are external apps that read the data; the platform itself just owns, derives and
+serves the data. Think of it as an open, self-hosted Apple HealthKit / Google
+Health Connect.
+
+Built and run by one person on a home server — see [ROADMAP.md](ROADMAP.md) for
+where it's headed, and
+[docs/architecture/openfit-overview-and-design-pathway.md](docs/architecture/openfit-overview-and-design-pathway.md)
+for the full design.
 
 ## Why this exists
 
-Most fitness trackers lock you into one app tied to one
-device brand; most device brands lock your data into their own cloud.
+Most trackers lock you into one app tied to one device brand, and most brands
+lock your data in their cloud. Your health history should be yours — stored where
+you choose, usable how you choose. OpenFit keeps it on your hardware and makes it
+available to whatever apps you point at it, including ones you write yourself.
 
-Health data should be owned by you, and it should be your choice where it is stored and what you do with it.
+## Status
 
-OpenFit is a tracker with its own UI, built on a plugin
-architecture for device data, so switching devices doesn't mean losing
-your history.
-It also allows you to develop your own plugins which allows you to interpret your own data in a way that is most useful to you.
+Early, and the current focus is the **data engine**: ingestion plugins, a
+normalised derived dataset with per-source provenance, and the API that exposes
+it. The web UI in this repo is a legacy/interim viewer — it will be replaced and
+is not the product.
 
 ## What's here today
 
-- **Weight log** with a chart against a goal
-- **Training program** with per-session checkbox tracking
-- **Garmin Connect plugin** — steps, resting heart rate, sleep
-- **Google Health plugin** — same three metrics, sourced from Pixel Watch
-  / Fitbit devices (built against Google's newer Health API rather than
-  the legacy Fitbit API, which Google is retiring in September 2026)
-- Both plugins auto-sync on a schedule, plus a manual sync button each
+- A versioned SQLite data store with a hand-rolled migration runner.
+- **Garmin Connect** plugin — steps, resting HR, sleep.
+- **Google Health** plugin — the same, from Pixel Watch / Fitbit via Google's
+  cloud Health API (not the legacy Fitbit Web API, retired September 2026).
+- Scheduled background sync plus a manual sync, with device connections managed
+  in-app and credentials encrypted at rest.
+- An interim web viewer (being replaced).
 
-## Planned: webhook input (push, not pull)
+## Planned: webhook input (push)
 
-In addition to pull-based plugins (polling a device's API on a schedule)
-and manual entry, a third input path is planned: a webhook endpoint that
-external automations can push to the moment an event happens - no polling
-delay. Motivating use case: a Home Assistant automation firing on every
-Eufy smart-scale weigh-in, hitting OpenFit directly instead of waiting for
-a scheduled sync.
-
-Design shape:
-- A single generic endpoint (`/api/webhook/<token>`) rather than one per
-  metric, taking `{"metric": "weight", "value": 91.5}` in the body - one
-  URL to copy into any automation tool (Home Assistant, IFTTT, Shortcuts,
-  a script), regardless of what metric it's pushing.
-- The token in the URL *is* the auth - copy it once from Settings into an
-  automation, no separate auth header needed.
-- Regeneratable token if it ever leaks, and sanity-range checks on
-  incoming values so a misfired automation can't silently corrupt a
-  chart with a garbage reading.
-
-See [ROADMAP.md](ROADMAP.md) for where this sits relative to other work.
+Beside pull plugins and manual entry, a webhook endpoint external automations can
+push to: `POST /api/webhook/<token>` with `{"metric": "weight", "value": 91.5}`.
+The token in the URL *is* the auth (regeneratable), with sanity-range checks. One
+URL to drop into Home Assistant, a Shortcut or a script — and the path by which
+on-device sources (e.g. Apple HealthKit) will reach OpenFit. See
+[ROADMAP.md](ROADMAP.md).
 
 ## Quick start
 
@@ -63,29 +60,21 @@ cp .env.example .env
 docker compose up -d --build
 ```
 
-Visit `http://<your-server-ip>:8080`. It runs fine with zero plugins
-configured — you'll just be logging weight and workouts manually until
-you set one up.
+Visit `http://<your-server-ip>:8080`. It runs fine with zero plugins configured.
 
 ### Connecting a device
 
-Devices are added in the app, not in a config file: **Configuration →
-Connected sources → Add a device**. Pick the device, fill in what it
-asks for, and hit Add. Credentials are encrypted before they're stored
-(see [Credential storage](#credential-storage)), and **Remove** deletes
-them along with any cached session token.
-
-An install that predates this flow keeps working: the `.env` variables
-below are still read as a fallback until you re-add the device through
-the UI.
+Devices are added in the app, not a config file: **Configuration → Connected
+sources → Add a device**. Pick the device, fill in what it asks for, hit Add.
+Credentials are encrypted before they're stored, and **Remove** deletes them
+along with any cached session token. An install that predates this flow keeps
+working: the `.env` variables are read as a fallback until you re-add the device.
 
 ### Garmin Connect plugin
 
-Add it under **Configuration → Connected sources**, entering the email
-and password for your Garmin Connect account.
-
-If your account has MFA/2FA enabled, run the one-time interactive login
-first so the background sync never has to handle the prompt:
+Add it under **Connected sources** with your Garmin email and password. If your
+account has MFA/2FA, run the one-time interactive login first so the background
+sync never has to handle the prompt:
 
 ```bash
 docker compose run --rm tracker python3 first_login.py
@@ -93,129 +82,51 @@ docker compose run --rm tracker python3 first_login.py
 
 ### Google Health plugin (Pixel Watch / Fitbit)
 
-Uses standard Google OAuth rather than a password, so adding it is two
-steps instead of one — but it all happens in the UI.
-
-First, the one-off setup on Google's side:
-
-1. Create a project in [Google Cloud Console](https://console.cloud.google.com/)
-   and enable the **Google Health API**.
-2. Configure the OAuth consent screen as "External", **Testing** mode,
-   with your own account added as a test user — no Google review needed
-   for personal use.
-3. Add scopes: `googlehealth.activity_and_fitness.readonly`,
-   `googlehealth.sleep.readonly`, `googlehealth.health_metrics_and_measurements.readonly`.
-4. Create an OAuth Client ID of type **Desktop app**, and note the client
-   ID and secret.
-
-Then, under **Configuration → Connected sources → Add a device →
-Google Health**:
-
-1. Paste the client ID and secret, and press **Get authorization link**.
-2. Open the link, approve access. Google redirects to
-   `http://127.0.0.1:9109/`, which OpenFit deliberately does not serve, so
-   **the page fails to load — that's expected**. The authorization code is
-   in the address bar.
-3. Paste that whole address (or just the code) back into the modal and
-   press **Connect**.
-
-The refresh token that comes back is stored encrypted alongside the client
-details, the same as any other device, and the background sync uses it from
+Uses Google OAuth, so adding it is two steps, all in the UI. First, the one-off
+Google-side setup: create a project in Google Cloud Console, enable the **Google
+Health API**, set the OAuth consent screen to External/Testing with your account
+as a test user, add the `googlehealth.*.readonly` scopes, and create an OAuth
+Client ID of type **Desktop app**. Then, under **Add a device → Google Health**:
+paste the client ID and secret, press **Get authorization link**, approve on
+Google (it redirects to `http://127.0.0.1:9109/`, which OpenFit deliberately does
+not serve — the page fails to load, that's expected), and paste the address (or
+the code) back. The refresh token is stored encrypted and the sync uses it from
 then on.
-
-<details>
-<summary>Authorizing from a terminal instead</summary>
-
-`plugins/google_health/authorize.py` does the same thing without the UI,
-saving the refresh token to a file on the data volume:
-
-```bash
-docker compose run --rm -p 8765:8765 tracker python3 plugins/google_health/authorize.py
-```
-
-It needs `GOOGLE_HEALTH_CLIENT_ID` / `GOOGLE_HEALTH_CLIENT_SECRET` in
-`.env`. Installs set up this way keep working — that token file is still
-read as a fallback when the stored account has no refresh token of its own.
-
-</details>
 
 ## Architecture
 
 ```
 app/
   main.py                     Flask API + scheduler, loads plugins from plugins/
-  templates/index.html        Frontend (vanilla JS, fetches the API)
+  templates/index.html        Interim web viewer (vanilla JS) — being replaced
   plugins/
-    base.py                   SyncPlugin interface every plugin implements
-    __init__.py                PLUGINS registry - one line per installed plugin
-    garmin/plugin.py           Garmin Connect
-    google_health/plugin.py    Google Health API (Pixel Watch / Fitbit)
-    google_health/authorize.py terminal alternative to the in-UI OAuth flow
+    base.py                   SyncPlugin interface every pull plugin implements
+    __init__.py               PLUGINS registry — one line per installed plugin
+    garmin/plugin.py          Garmin Connect
+    google_health/plugin.py   Google Health API (Pixel Watch / Fitbit)
   crypto.py                   Encrypt/decrypt for stored device credentials
   migrations/                 Versioned .sql schema migrations + runner
 tests/                        pytest suite (temp DB, no network)
+docs/architecture/            Design direction (read these first)
 ```
 
-Data lives in SQLite, on a persistent Docker volume, in tables
-`weights`, `workouts`, `activity`, `settings` and `accounts`. Every plugin writes into the same
-`activity` table, which is keyed by `(date, source)` — one row per day
-*per source*, so Garmin and Google Health never overwrite each other.
-`GET /api/activity` merges those rows back into one flat row per date
-before returning them, so the frontend doesn't care which plugin a given
-day's steps came from. When two sources report the same metric for the
-same day, the fixed precedence is `garmin` > `google_health`; pass
-`?by_source=1` to get the raw per-source rows instead.
-
-### Credential storage
-
-Device credentials entered in the UI are stored in the `accounts` table
-as a Fernet-encrypted JSON blob, one row per plugin — so a copy of
-`tracker.db` (a backup, a snapshot, a stray volume mount) is not a copy
-of your Garmin password. They are never read back out over the API: the
-UI can see *that* a device is connected, not what it was connected with.
-
-The key comes from `$OPENFIT_SECRET_KEY` if you set one, otherwise it is
-generated on first use and kept at `/data/.secret_key` with mode `0600`,
-alongside the database on the persistent volume. Back it up with the
-database — lose the key and the stored credentials can't be decrypted,
-at which point re-adding the device in the UI is the fix.
-
-What a plugin needs is declared by the plugin itself, as a manifest on
-its `SyncPlugin` subclass:
-
-```python
-add_flow = "credentials"          # or "oauth"
-fields = [
-    {"key": "email",    "label": "Email",    "type": "text",     "required": True},
-    {"key": "password", "label": "Password", "type": "password", "required": True},
-]
-```
-
-The form, its validation and the storage all follow from that list — the
-UI has no per-device code in it.
+Data lives in SQLite on a persistent Docker volume. Devices sync through plugins
+into a per-source store, and OpenFit derives a single value per metric per day
+from it while keeping every source's raw rows. Today that store is the
+`activity` table keyed `(date, source)` with a fixed precedence; it is being
+generalised into a tidy metric model (`metrics` / `sessions` + a canonical
+vocabulary) so a new metric needs no migration — see
+[docs/architecture](docs/architecture/). Device credentials entered in the UI are
+stored as a Fernet-encrypted JSON blob (one row per plugin) and never returned
+over the API; the key comes from `$OPENFIT_SECRET_KEY` or is generated at
+`/data/.secret_key` — back it up with the database.
 
 ### Schema migrations
 
-The schema is versioned by numbered `.sql` files in `app/migrations/`,
-applied in order and recorded in a `schema_migrations` table. Each one
-runs exactly once, inside a transaction. Migrations run automatically at
-startup, and can be run by hand — do this against a *copy* of the
-database first when a migration touches real data:
-
-```bash
-# 1. back up the DB from the volume (stop first so nothing is mid-write)
-docker compose stop tracker
-docker compose run --rm -v "$PWD":/backup tracker \
-  cp /data/tracker.db /backup/tracker-backup.db
-docker compose start tracker
-
-# 2. dry-run the migration against the copy before deploying
-cd app && python -m migrations ../tracker-backup.db
-```
-
-To add a migration, drop a new `NNN_name.sql` in `app/migrations/`. There
-is deliberately no Alembic/SQLAlchemy here — this is ~100 lines of
-stdlib `sqlite3`, which is the right weight for a single-container app.
+Numbered `.sql` files in `app/migrations/`, applied in order, each once, inside a
+transaction, recorded in `schema_migrations`. They run at startup and can be run
+by hand against a *copy* first when a migration touches real data. There is
+deliberately no Alembic/SQLAlchemy — it's ~100 lines of stdlib `sqlite3`.
 
 ### Tests
 
@@ -224,72 +135,33 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-The suite runs against a temporary SQLite file and never makes a network
-call — the plugin contract is tested with a fake in-process plugin, not
-against Garmin or Google.
-
-**Multi-user approach:** not row-level multi-tenancy. If this ever runs
-for more than one person, the plan is one isolated container per user
-behind a shared "Host" layer, not `user_id` columns and auth bolted onto
-this app. See [ROADMAP.md](ROADMAP.md) for the reasoning.
+Runs against a temporary SQLite file with no network calls — the plugin contract
+is tested with a fake in-process plugin, never against Garmin or Google.
 
 ## Writing a plugin
 
-A plugin is a class implementing `SyncPlugin` (see `app/plugins/base.py`):
-
-```python
-from ..base import SyncPlugin
-
-class MyServicePlugin(SyncPlugin):
-    id = "my_service"
-    name = "My Service"
-    add_flow = "credentials"
-    fields = [
-        {"key": "token", "label": "API token", "type": "password", "required": True},
-    ]
-
-    def sync(self, conn, days: int) -> int:
-        # self.get_credentials(conn) returns what the user typed in the UI
-        # fetch data from your source, upsert into `activity` with
-        # source = your plugin id, using
-        # INSERT ... ON CONFLICT(date, source) DO UPDATE with COALESCE
-        # (see plugins/garmin/plugin.py for the exact pattern)
-        ...
-        return days_written
-```
-
-Then register it in `app/plugins/__init__.py`. That's the entire
-integration surface — no changes needed to `main.py`, the API, or the
-frontend. The plugin shows up in `/api/plugins`, gets a sync button in
-the UI, and joins the scheduled background sync automatically.
-
-Good candidates for a next plugin: Oura (clean public API), Whoop, manual
-CSV import.
-
-## Roadmap
-
-Full project map — phases, the insights/dashboards work in progress, and
-the reasoning behind the multi-user approach — is in
-[ROADMAP.md](ROADMAP.md).
+A plugin is a class implementing `SyncPlugin` (`app/plugins/base.py`): declare a
+connector manifest (`fields`, `add_flow`), read credentials via
+`self.get_credentials(conn)`, and implement `sync(conn, days)` to fetch from your
+source and write readings. Register it with one line in
+`app/plugins/__init__.py` — no changes to `main.py`, the API, or the UI. (The
+`sync()` write target is moving from the `activity` table to canonical metric
+rows as the data model is generalised — see `docs/architecture/`.) Oura's clean
+public API makes it the natural next plugin.
 
 ## Privacy & security
 
-- Everything lives in the SQLite volume on your machine. Nothing leaves
-  your network except each plugin's own calls to its own data source.
-- Garmin: password used only for the very first login, then a cached
-  session token is reused.
-- Google Health: no password ever touches this app — a standard OAuth
-  refresh token, revocable anytime from
-  [your Google account permissions](https://myaccount.google.com/permissions).
-- No login on the tracker's own web UI. Fine on a trusted home network;
-  don't port-forward this to the public internet without adding auth in
-  front of it (reverse proxy with basic auth, or a VPN).
+- Everything lives in the SQLite volume on your machine. Nothing leaves your
+  network except each plugin's own calls to its own data source.
+- Google Health uses a standard OAuth refresh token, revocable anytime from your
+  Google account permissions; Garmin uses the password only for the first login,
+  then a cached session token.
+- No login on the web UI. Fine on a trusted home network; don't expose it to the
+  public internet without auth in front (reverse proxy or VPN).
 
-## Contributing
-
-Early-stage, single-maintainer project — issues and PRs welcome,
-especially new plugins. No CI or contribution template yet; that's on the
-roadmap.
+**Multi-user:** not row-level multi-tenancy. If this ever runs for more than one
+person, the plan is one isolated container per user behind a shared "Host" layer
+(see [ROADMAP.md](ROADMAP.md)).
 
 ## License
 
