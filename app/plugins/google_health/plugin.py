@@ -20,6 +20,10 @@ Data types used (Google Health API v4):
   - sleep                     -> list, summed per civil day from session summaries;
                                  each data point is also stored as a sleep session
   - daily-resting-heart-rate  -> list (no rollup available for this type)
+
+Every fetch reads all its pages (see _all_pages): Google answers a page at
+a time, newest first, and a sleep page holds at most 25 points, so a
+backfill longer than that spans several.
 """
 
 import json
@@ -48,6 +52,10 @@ SLEEP_STAGE_KEYS = {
     "REM": "rem_minutes",
     "AWAKE": "awake_minutes",
 }
+
+# Google hands back a nextPageToken while more pages remain; this only
+# stops one that never runs out. 100 pages of sleep is years of nights.
+MAX_PAGES = 100
 
 SCOPES = [
     "https://www.googleapis.com/auth/googlehealth.activity_and_fitness.readonly",
@@ -225,7 +233,8 @@ class GoogleHealthPlugin(SyncPlugin):
 
     def _fetch_steps(self, headers, start, end):
         """Daily step totals via the dailyRollUp endpoint - clean sums, no
-        manual aggregation needed."""
+        manual aggregation needed. Its page token goes in the body, beside
+        the rest of the request repeated unchanged."""
         body = {
             "range": {
                 "start": {"date": {"year": start.year, "month": start.month, "day": start.day}},
@@ -234,13 +243,12 @@ class GoogleHealthPlugin(SyncPlugin):
             "windowSizeDays": 1,
         }
         try:
-            resp = requests.post(
+            points = _all_pages("steps", "rollupDataPoints", lambda token: requests.post(
                 f"{API_BASE}/dataTypes/steps/dataPoints:dailyRollUp",
-                headers=headers, json=body, timeout=20,
-            )
-            resp.raise_for_status()
+                headers=headers, json=_with_page_token(body, token), timeout=20,
+            ))
             out = {}
-            for point in resp.json().get("rollupDataPoints", []):
+            for point in points:
                 d = point.get("civilStartTime", {}).get("date", {})
                 if not d:
                     continue
@@ -261,18 +269,15 @@ class GoogleHealthPlugin(SyncPlugin):
         same points independently, so a session that can't be parsed
         never costs the daily total.
         """
+        params = {"filter": f'sleep.interval.civil_start_time >= "{start.isoformat()}"'}
         try:
-            resp = requests.get(
+            points = _all_pages("sleep", "dataPoints", lambda token: requests.get(
                 f"{API_BASE}/dataTypes/sleep/dataPoints",
-                headers=headers,
-                params={"filter": f'sleep.interval.civil_start_time >= "{start.isoformat()}"'},
-                timeout=20,
-            )
-            resp.raise_for_status()
-            data = resp.json()
+                headers=headers, params=_with_page_token(params, token), timeout=20,
+            ))
             out = {}
             sessions = []
-            for point in data.get("dataPoints", []):
+            for point in points:
                 sleep = point.get("sleep", {})
                 session = _sleep_session(sleep)
                 if session:
@@ -287,7 +292,7 @@ class GoogleHealthPlugin(SyncPlugin):
             # not one had a stage in it, so the stage fields are probably
             # not where this expects - show what a summary looks like.
             if sessions and all(len(summary) == 1 for _, _, summary in sessions):
-                sample = data["dataPoints"][0].get("sleep", {}).get("summary")
+                sample = points[0].get("sleep", {}).get("summary")
                 print(f"[google_health] sleep: got sessions but no stage breakdown in "
                       f"summary.stagesSummary. Sample summary: {sample}")
             return out, sessions
@@ -305,17 +310,14 @@ class GoogleHealthPlugin(SyncPlugin):
         once (see the try/except below) and adjust the key name here -
         it's a couple of line change.
         """
+        params = {"filter": f'daily_resting_heart_rate.civil_date >= "{start.isoformat()}"'}
         try:
-            resp = requests.get(
+            points = _all_pages("resting HR", "dataPoints", lambda token: requests.get(
                 f"{API_BASE}/dataTypes/daily-resting-heart-rate/dataPoints",
-                headers=headers,
-                params={"filter": f'daily_resting_heart_rate.civil_date >= "{start.isoformat()}"'},
-                timeout=20,
-            )
-            resp.raise_for_status()
-            data = resp.json()
+                headers=headers, params=_with_page_token(params, token), timeout=20,
+            ))
             out = {}
-            for point in data.get("dataPoints", []):
+            for point in points:
                 payload = point.get("dailyRestingHeartRate", {})
                 civil = payload.get("civilDate") or payload.get("date")
                 bpm = None
@@ -329,13 +331,52 @@ class GoogleHealthPlugin(SyncPlugin):
                 if civil and bpm is not None:
                     d_str = f"{civil['year']:04d}-{civil['month']:02d}-{civil['day']:02d}"
                     out[d_str] = bpm
-            if not out and data.get("dataPoints"):
+            if not out and points:
                 print(f"[google_health] resting HR: got data but couldn't parse bpm field. "
-                      f"Sample point: {data['dataPoints'][0]}")
+                      f"Sample point: {points[0]}")
             return out
         except Exception as e:
             print(f"[google_health] resting HR fetch failed: {e}")
             return {}
+
+
+def _all_pages(label, items_key, request_page):
+    """Every item under items_key, following nextPageToken to the last page.
+
+    request_page(token) makes one request and returns the response, token
+    None for the first page. Where the token goes is up to the caller: the
+    list GETs take it as a query param, dailyRollUp in the request body.
+
+    A failed first page raises, for the fetcher to handle as it always
+    has. A failed later page is logged and what came before is kept - the
+    pages run newest first, so a partial backfill beats none. Stops after
+    MAX_PAGES, logged, should a token never run out.
+    """
+    items = []
+    token = None
+    for page in range(1, MAX_PAGES + 1):
+        try:
+            resp = request_page(token)
+            resp.raise_for_status()
+            data = resp.json()
+            items.extend(data.get(items_key) or [])
+            token = data.get("nextPageToken")
+        except Exception as e:
+            if page == 1:
+                raise
+            print(f"[google_health] {label}: page {page} failed, keeping the "
+                  f"{len(items)} points from earlier pages: {e}")
+            return items
+        if not token:
+            return items
+    print(f"[google_health] {label}: stopped after {MAX_PAGES} pages with more still "
+          f"to come, keeping the {len(items)} points read so far")
+    return items
+
+
+def _with_page_token(fields, token):
+    """A request's params or body, plus the page token once there is one."""
+    return {**fields, "pageToken": token} if token else fields
 
 
 def _sleep_session(sleep):
