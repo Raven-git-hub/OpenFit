@@ -9,19 +9,21 @@ mean the same thing.
 
 Adding a metric is adding an entry below - the metrics table is tidy, so
 there is no schema change. Keys carry their unit when it isn't obvious
-(resting_hr_bpm, sleep_minutes), and each key has exactly one unit:
-sources convert on the way in.
+(resting_hr_bpm, sleep_minutes, weight_kg), and each key has exactly one
+unit: sources convert on the way in.
 """
 
 STEPS = "steps"
 RESTING_HR_BPM = "resting_hr_bpm"
 SLEEP_MINUTES = "sleep_minutes"
+WEIGHT_KG = "weight_kg"
 
 # Canonical key -> the unit its value is stored in.
 METRICS = {
     STEPS: "count",
     RESTING_HR_BPM: "bpm",
     SLEEP_MINUTES: "min",
+    WEIGHT_KG: "kg",
 }
 
 

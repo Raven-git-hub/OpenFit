@@ -1,5 +1,10 @@
 """API route tests - the shape the frontend depends on."""
 
+import sqlite3
+from datetime import date
+
+from migrations import run_migrations
+
 
 def test_weights_round_trip(client):
     assert client.get("/api/weights").get_json() == []
@@ -32,6 +37,87 @@ def test_weights_delete_clears_all(client):
     client.post("/api/weights", json={"date": "2026-01-01", "weight": 82.0})
     assert client.delete("/api/weights").status_code == 200
     assert client.get("/api/weights").get_json() == []
+
+
+def test_weights_are_manual_weight_kg_readings(client, conn):
+    client.post("/api/weights", json={"date": "2026-01-01", "weight": 82})
+
+    assert [tuple(r) for r in conn.execute(
+        "SELECT date, source, metric, value, unit FROM metrics"
+    )] == [("2026-01-01", "manual", "weight_kg", 82.0, "kg")]
+    # Read back as stored - a float, as the old REAL column gave - not
+    # cast to a whole number the way steps are.
+    rows = client.get("/api/weights").get_json()
+    assert rows == [{"date": "2026-01-01", "weight": 82.0}]
+    assert isinstance(rows[0]["weight"], float)
+
+
+def test_weights_post_defaults_to_today(client):
+    client.post("/api/weights", json={"weight": 80.5})
+
+    assert client.get("/api/weights").get_json() == [
+        {"date": date.today().isoformat(), "weight": 80.5}
+    ]
+
+
+def test_weights_are_manual_weight_only(client, conn):
+    # Other sources' weight and other manual metrics share the table:
+    # /api/weights neither lists them nor clears them.
+    others = [
+        ("2026-01-01", "manual", "steps", 9000, "count"),
+        ("2026-01-01", "scale", "weight_kg", 83.0, "kg"),
+        ("2026-01-02", "garmin", "steps", 8000, "count"),
+    ]
+    conn.executemany(
+        "INSERT INTO metrics (date, source, metric, value, unit) VALUES (?, ?, ?, ?, ?)",
+        others,
+    )
+    conn.commit()
+    client.post("/api/weights", json={"date": "2026-01-02", "weight": 82.0})
+
+    assert client.get("/api/weights").get_json() == [{"date": "2026-01-02", "weight": 82.0}]
+
+    client.delete("/api/weights")
+
+    assert client.get("/api/weights").get_json() == []
+    assert [tuple(r) for r in conn.execute(
+        "SELECT date, source, metric, value, unit FROM metrics ORDER BY date, source"
+    )] == others
+
+
+def test_weights_migrated_by_006_read_back_unchanged(db_at_version, monkeypatch):
+    """Weigh-ins stored before 006 come out of the API byte for byte as before.
+
+    Seeded at version 5 - the shape a production database is in - and
+    the old route's answer taken straight from the weights table, then
+    migrated and read back through the new one.
+    """
+    import main
+
+    path = db_at_version(5)
+    conn = sqlite3.connect(path)
+    conn.row_factory = sqlite3.Row
+    conn.executemany(
+        "INSERT INTO weights (date, weight) VALUES (?, ?)",
+        [("2026-01-02", 81.5), ("2026-01-01", 82), ("2026-01-03", 80.25)],
+    )
+    conn.commit()
+    with main.app.app_context():
+        before = main.jsonify([
+            dict(r) for r in conn.execute("SELECT date, weight FROM weights ORDER BY date")
+        ]).get_data()
+    assert 6 in run_migrations(conn)
+    conn.close()
+
+    monkeypatch.setitem(main.app.config, "DB_PATH", path)
+    after = main.app.test_client().get("/api/weights")
+
+    assert after.get_data() == before
+    assert after.get_json() == [
+        {"date": "2026-01-01", "weight": 82.0},
+        {"date": "2026-01-02", "weight": 81.5},
+        {"date": "2026-01-03", "weight": 80.25},
+    ]
 
 
 def test_workouts_round_trip(client):

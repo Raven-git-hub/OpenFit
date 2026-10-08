@@ -22,6 +22,20 @@ def all_versions():
     return [v for v, _, _ in discover_migrations()]
 
 
+def versions_from(version):
+    """Every migration from `version` on - what a database one short of
+    it gets applied. Derived for the same reason as all_versions()."""
+    return [v for v in all_versions() if v >= version]
+
+
+def weight_readings(conn):
+    """The weight_kg rows in metrics, as 006 and /api/weights file them."""
+    return conn.execute(
+        "SELECT date, source, metric, value, unit, synced_at "
+        "FROM metrics WHERE metric = 'weight_kg' ORDER BY date, source"
+    ).fetchall()
+
+
 OLD_ACTIVITY_DDL = """
 CREATE TABLE activity (
     date TEXT PRIMARY KEY,
@@ -87,9 +101,10 @@ def test_fresh_database_gets_all_tables(tmp_path):
         r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
     }
     assert {
-        "weights", "workouts", "metrics", "settings", "accounts", "schema_migrations"
+        "workouts", "metrics", "settings", "accounts", "schema_migrations"
     } <= names
     assert "activity" not in names  # unpivoted into metrics by 005
+    assert "weights" not in names   # folded into metrics by 006
     assert primary_key_columns(conn, "metrics") == ["date", "source", "metric"]
     conn.close()
 
@@ -137,7 +152,11 @@ def test_rows_without_a_source_become_unknown_not_dropped(tmp_path, source):
 
 
 def test_baseline_does_not_disturb_existing_data(tmp_path):
-    """001 uses CREATE TABLE IF NOT EXISTS, so populated tables survive."""
+    """001 uses CREATE TABLE IF NOT EXISTS, so populated tables survive.
+
+    Weights then move into metrics at 006 - still there, just filed as
+    a manual weight_kg reading.
+    """
     path = str(tmp_path / "old.db")
     old_shape_db(path)
     conn = sqlite3.connect(path)
@@ -147,7 +166,9 @@ def test_baseline_does_not_disturb_existing_data(tmp_path):
 
     run_migrations(conn)
 
-    assert conn.execute("SELECT * FROM weights").fetchall() == [("2026-01-01", 82.0)]
+    assert weight_readings(conn) == [
+        ("2026-01-01", "manual", "weight_kg", 82.0, "kg", None)
+    ]
     assert conn.execute("SELECT * FROM workouts").fetchall() == [(1, 0, 1)]
     conn.close()
 
@@ -250,8 +271,11 @@ def test_settings_table_is_added_without_disturbing_existing_data(tmp_path):
     # The new table exists and starts empty...
     assert conn.execute("SELECT COUNT(*) FROM settings").fetchone()[0] == 0
     assert primary_key_columns(conn, "settings") == ["key"]
-    # ...and nothing that was already there was touched.
-    assert conn.execute("SELECT * FROM weights").fetchall() == [("2026-01-01", 82.0)]
+    # ...and nothing that was already there was lost - the weigh-in is
+    # in metrics now, where 006 moved it.
+    assert weight_readings(conn) == [
+        ("2026-01-01", "manual", "weight_kg", 82.0, "kg", None)
+    ]
     assert conn.execute("SELECT * FROM workouts").fetchall() == [(1, 0, 1)]
     assert conn.execute(
         "SELECT date, value FROM metrics WHERE metric = 'steps'"
@@ -290,8 +314,11 @@ def test_accounts_table_is_added_without_disturbing_existing_data(tmp_path):
     assert conn.execute("SELECT COUNT(*) FROM accounts").fetchone()[0] == 0
     assert primary_key_columns(conn, "accounts") == ["plugin_id"]
     assert column_names(conn, "accounts") == ["plugin_id", "credentials", "created_at"]
-    # ...and nothing that was already there was touched.
-    assert conn.execute("SELECT * FROM weights").fetchall() == [("2026-01-01", 82.0)]
+    # ...and nothing that was already there was lost - the weigh-in is
+    # in metrics now, where 006 moved it.
+    assert weight_readings(conn) == [
+        ("2026-01-01", "manual", "weight_kg", 82.0, "kg", None)
+    ]
     assert conn.execute("SELECT * FROM workouts").fetchall() == [(1, 0, 1)]
     assert conn.execute(
         "SELECT date, value FROM metrics WHERE metric = 'steps'"
@@ -365,7 +392,7 @@ def test_metrics_migration_unpivots_activity(db_at_version):
         ("2026-01-04", None, None, 6.6000000000000005, "google_health", "x"),
     ])
 
-    assert run_migrations(conn) == [5]
+    assert run_migrations(conn) == versions_from(5)
 
     rows = conn.execute(
         "SELECT date, source, metric, value, unit, synced_at "
@@ -415,7 +442,7 @@ def test_metrics_migration_is_idempotent(db_at_version):
         ("2026-01-01", 9000, 52, 7.5, "garmin", "x"),
         ("2026-01-01", 8000, None, None, "google_health", "y"),
     ])
-    assert run_migrations(conn) == [5]
+    assert run_migrations(conn) == versions_from(5)
     rows_before = conn.execute("SELECT * FROM metrics ORDER BY date, source, metric").fetchall()
 
     assert run_migrations(conn) == []
@@ -432,7 +459,8 @@ def test_metrics_migration_is_idempotent(db_at_version):
 
 
 def test_metrics_migration_leaves_other_tables_alone(db_at_version):
-    """005 rewrites activity only - weights, workouts and the rest survive."""
+    """005 rewrites activity only - workouts and the rest survive, and
+    the weigh-in carries on into metrics at 006."""
     conn = activity_at_version_4(db_at_version, [
         ("2026-01-01", 9000, None, None, "garmin", "x"),
     ])
@@ -444,7 +472,9 @@ def test_metrics_migration_leaves_other_tables_alone(db_at_version):
 
     run_migrations(conn)
 
-    assert conn.execute("SELECT * FROM weights").fetchall() == [("2026-01-01", 82.0)]
+    assert weight_readings(conn) == [
+        ("2026-01-01", "manual", "weight_kg", 82.0, "kg", None)
+    ]
     assert conn.execute("SELECT * FROM workouts").fetchall() == [(1, 0, 1)]
     assert conn.execute("SELECT * FROM settings").fetchall() == [("home_tiles", "{}")]
     assert conn.execute("SELECT * FROM accounts").fetchall() == [("garmin", "blob", "then")]
@@ -458,3 +488,110 @@ def test_a_metric_reading_cannot_be_null(conn):
             "INSERT INTO metrics (date, source, metric, value, unit) "
             "VALUES ('2026-01-01', 'garmin', 'steps', NULL, 'count')"
         )
+
+
+# ---------- 006: weights -> the weight_kg metric ----------
+
+
+def weights_at_version_5(db_at_version, rows):
+    """A version-5 database - where production sits before 006 - holding weigh-ins."""
+    path = db_at_version(5)
+    conn = sqlite3.connect(path)
+    conn.executemany("INSERT INTO weights (date, weight) VALUES (?, ?)", rows)
+    conn.commit()
+    return conn
+
+
+def test_weight_migration_moves_weights_into_metrics(db_at_version):
+    """006 files each weigh-in as a manual weight_kg reading, in kg as stored."""
+    conn = weights_at_version_5(db_at_version, [
+        ("2026-01-01", 82.0),
+        ("2026-01-02", 81.55),
+        # Nothing weighed: no row at all, rather than an empty one.
+        ("2026-01-03", None),
+        # Whatever was stored comes across untouched - no unit
+        # conversion, no rounding.
+        ("2026-01-04", 80.123),
+    ])
+    # A reading 005 already put in metrics sits beside the weigh-ins.
+    conn.execute(
+        "INSERT INTO metrics VALUES ('2026-01-01', 'garmin', 'steps', 9000, 'count', 'x')"
+    )
+    conn.commit()
+
+    assert run_migrations(conn) == versions_from(6)
+
+    rows = conn.execute(
+        "SELECT date, source, metric, value, unit, synced_at "
+        "FROM metrics ORDER BY date, source, metric"
+    ).fetchall()
+    assert rows == [
+        ("2026-01-01", "garmin", "steps", 9000, "count", "x"),
+        ("2026-01-01", "manual", "weight_kg", 82.0, "kg", None),
+        ("2026-01-02", "manual", "weight_kg", 81.55, "kg", None),
+        ("2026-01-04", "manual", "weight_kg", 80.123, "kg", None),
+    ]
+    conn.close()
+
+
+def test_weight_migration_drops_weights(db_at_version):
+    conn = weights_at_version_5(db_at_version, [("2026-01-01", 82.0)])
+
+    run_migrations(conn)
+
+    assert table_sql(conn, "weights") is None
+    # The rest of the schema is as 005 left it.
+    assert column_names(conn, "metrics") == [
+        "date", "source", "metric", "value", "unit", "synced_at"
+    ]
+    assert primary_key_columns(conn, "metrics") == ["date", "source", "metric"]
+    conn.close()
+
+
+def test_weight_migration_of_an_empty_weights_table(db_at_version):
+    """No weigh-ins yet: weights still goes, and nothing is written."""
+    conn = weights_at_version_5(db_at_version, [])
+
+    run_migrations(conn)
+
+    assert table_sql(conn, "weights") is None
+    assert weight_readings(conn) == []
+    conn.close()
+
+
+def test_weight_migration_is_idempotent(db_at_version):
+    """Re-running after 006 changes nothing - and can't re-read weights."""
+    conn = weights_at_version_5(db_at_version, [
+        ("2026-01-01", 82.0),
+        ("2026-01-02", 81.5),
+    ])
+    assert run_migrations(conn) == versions_from(6)
+    rows_before = conn.execute("SELECT * FROM metrics ORDER BY date, source, metric").fetchall()
+
+    assert run_migrations(conn) == []
+    assert run_migrations(conn) == []
+
+    assert conn.execute(
+        "SELECT * FROM metrics ORDER BY date, source, metric"
+    ).fetchall() == rows_before
+    assert len(rows_before) == 2
+    assert conn.execute(
+        "SELECT COUNT(*) FROM schema_migrations WHERE version = 6"
+    ).fetchone()[0] == 1
+    conn.close()
+
+
+def test_weight_migration_leaves_other_tables_alone(db_at_version):
+    """006 moves weights only - workouts and the rest survive."""
+    conn = weights_at_version_5(db_at_version, [("2026-01-01", 82.0)])
+    conn.execute("INSERT INTO workouts VALUES (1, 0, 1)")
+    conn.execute("INSERT INTO settings VALUES ('home_tiles', '{}')")
+    conn.execute("INSERT INTO accounts VALUES ('garmin', 'blob', 'then')")
+    conn.commit()
+
+    run_migrations(conn)
+
+    assert conn.execute("SELECT * FROM workouts").fetchall() == [(1, 0, 1)]
+    assert conn.execute("SELECT * FROM settings").fetchall() == [("home_tiles", "{}")]
+    assert conn.execute("SELECT * FROM accounts").fetchall() == [("garmin", "blob", "then")]
+    conn.close()
