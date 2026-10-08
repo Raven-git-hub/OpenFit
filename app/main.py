@@ -13,9 +13,9 @@ from apscheduler.schedulers.background import BackgroundScheduler
 
 from migrations import run_migrations
 from plugins import PLUGINS
-from plugins.base import OAUTH_REDIRECT_URI
+from plugins.base import OAUTH_REDIRECT_URI, write_metric
 from crypto import encrypt
-from metrics import RESTING_HR_BPM, SLEEP_MINUTES, STEPS
+from metrics import RESTING_HR_BPM, SLEEP_MINUTES, STEPS, WEIGHT_KG
 
 DB_PATH = os.getenv("DB_PATH", "/data/tracker.db")
 SYNC_INTERVAL_HOURS = int(os.getenv("SYNC_INTERVAL_HOURS", "6"))
@@ -58,10 +58,25 @@ def index():
 
 # ---------- weights ----------
 
+# /api/weights predates the metrics table and keeps its shape for the
+# interim UI: [{date, weight}] in kilograms. Weight is now the weight_kg
+# metric, and these routes read and write the hand-entered readings
+# only - source 'manual'. Any other source's weight_kg readings (a
+# scale plugin, one day) sit beside them and are never touched here.
+MANUAL_SOURCE = "manual"
+
+
 @app.route("/api/weights", methods=["GET"])
 def get_weights():
     conn = get_conn()
-    rows = conn.execute("SELECT date, weight FROM weights ORDER BY date").fetchall()
+    # The value comes back as stored - a REAL, as the old weights.weight
+    # column was - so 82 still reads as 82.0. No whole-number cast:
+    # unlike steps, weight was never an INTEGER field.
+    rows = conn.execute(
+        "SELECT date, value AS weight FROM metrics "
+        "WHERE metric = ? AND source = ? ORDER BY date",
+        (WEIGHT_KG, MANUAL_SOURCE),
+    ).fetchall()
     conn.close()
     return jsonify([dict(r) for r in rows])
 
@@ -74,11 +89,7 @@ def add_weight():
     if w is None:
         return jsonify({"error": "weight required"}), 400
     conn = get_conn()
-    conn.execute(
-        "INSERT INTO weights (date, weight) VALUES (?, ?) "
-        "ON CONFLICT(date) DO UPDATE SET weight=excluded.weight",
-        (d, w),
-    )
+    write_metric(conn, d, MANUAL_SOURCE, WEIGHT_KG, w)
     conn.commit()
     conn.close()
     return jsonify({"ok": True})
@@ -87,7 +98,10 @@ def add_weight():
 @app.route("/api/weights", methods=["DELETE"])
 def clear_weights():
     conn = get_conn()
-    conn.execute("DELETE FROM weights")
+    conn.execute(
+        "DELETE FROM metrics WHERE metric = ? AND source = ?",
+        (WEIGHT_KG, MANUAL_SOURCE),
+    )
     conn.commit()
     conn.close()
     return jsonify({"ok": True})

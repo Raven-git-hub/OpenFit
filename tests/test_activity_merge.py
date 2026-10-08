@@ -194,7 +194,7 @@ def test_activity_migrated_by_005_reads_back_unchanged(db_at_version, monkeypatc
         ],
     )
     conn.commit()
-    assert run_migrations(conn) == [5]
+    assert 5 in run_migrations(conn)
     conn.close()
 
     monkeypatch.setitem(main.app.config, "DB_PATH", path)

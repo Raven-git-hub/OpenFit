@@ -35,14 +35,15 @@ own calls to its device API. Full direction:
 - Current: a tidy `metrics(date, source, metric, value, unit, synced_at)` keyed
   `(date, source, metric)` — one row per reading, so a new metric is data not a
   migration. Keys and units come from `app/metrics.py` (`steps`/count,
-  `resting_hr_bpm`/bpm, `sleep_minutes`/min). Migration `005` unpivoted the old
-  wide `activity` table into it and dropped `activity`. Alongside: `weights`;
-  `workouts` (orphaned — slated for removal); `settings`; `accounts`;
-  `schema_migrations`.
+  `resting_hr_bpm`/bpm, `sleep_minutes`/min, `weight_kg`/kg). Migration `005`
+  unpivoted the old wide `activity` table into it and dropped `activity`;
+  migration `006` moved the old `weights` table in as `weight_kg` readings under
+  source `manual` (hand entry; `synced_at` NULL for migrated rows) and dropped
+  `weights`. Alongside: `workouts` (orphaned — slated for removal); `settings`;
+  `accounts`; `schema_migrations`.
 - Target (in progress — see Direction): a `sessions` model beside `metrics`;
-  weight folds in as a metric; per-metric source roles pick a controlling source
-  (user-overridable) and a derived value tagged with its source; full history
-  retained.
+  per-metric source roles pick a controlling source (user-overridable) and a
+  derived value tagged with its source; full history retained.
 
 ## Hard constraints
 - No multi-tenancy in core. No `user_id`, no auth on core. Multi-user is a future
@@ -63,13 +64,14 @@ These are NOT yet in the code — don't assume they exist until a PR lands them,
 when you implement one, update the Data model section above and the README in the
 same PR:
 - **The engine:** the `metrics` table + canonical vocabulary landed in migration
-  `005`. Still to come: `sessions`, folding weight in, per-metric source roles +
-  stored derived value + history.
+  `005`; weight folded in as `weight_kg` in `006`. Still to come: `sessions`,
+  per-metric source roles + stored derived value + history.
 - **Webhook / push ingestion:** `POST /api/webhook/<token>` (token-as-auth,
   `{metric, value}` body, sanity checks, idempotent) beside pull plugins and
   manual entry.
 - **The access contract:** a stable read API (metric discovery + range queries
   with provenance) that external apps use.
-Keep `GET /api/activity` returning its current flat shape as a compatibility shim
+Keep `GET /api/activity` returning its current flat shape, and `/api/weights` its
+`[{date, weight}]` shape (manual `weight_kg` readings only), as compatibility shims
 during the data-model change. Remove the orphaned `workouts` table +
 `/api/workouts` when convenient (unused by the UI).

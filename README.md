@@ -115,13 +115,15 @@ Data lives in SQLite on a persistent Docker volume. Devices sync through plugins
 into a per-source store, and OpenFit derives a single value per metric per day
 from it while keeping every source's raw rows. That store is the tidy `metrics`
 table — one row per `(date, source, metric)` reading, filed under a canonical
-vocabulary (`steps`, `resting_hr_bpm`, `sleep_minutes`, ... in `app/metrics.py`)
-— so a new metric needs no migration. Today the per-day value comes from a fixed
-source precedence; `sessions` and per-metric source roles are next — see
-[docs/architecture](docs/architecture/). Device credentials entered in the UI are
-stored as a Fernet-encrypted JSON blob (one row per plugin) and never returned
-over the API; the key comes from `$OPENFIT_SECRET_KEY` or is generated at
-`/data/.secret_key` — back it up with the database.
+vocabulary (`steps`, `resting_hr_bpm`, `sleep_minutes`, `weight_kg`, ... in
+`app/metrics.py`) — so a new metric needs no migration. Weight is one of those
+metrics: hand-entered weigh-ins are `weight_kg` readings (in kg) under the source
+`manual`, and there is no separate weights table any more. Today the per-day
+value comes from a fixed source precedence; `sessions` and per-metric source
+roles are next — see [docs/architecture](docs/architecture/). Device credentials
+entered in the UI are stored as a Fernet-encrypted JSON blob (one row per plugin)
+and never returned over the API; the key comes from `$OPENFIT_SECRET_KEY` or is
+generated at `/data/.secret_key` — back it up with the database.
 
 ### Schema migrations
 
