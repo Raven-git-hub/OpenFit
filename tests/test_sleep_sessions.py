@@ -414,6 +414,77 @@ def test_google_asks_for_sleep_by_its_civil_end_date(conn, google):
     ]
 
 
+def google_sleep(start, end, asleep):
+    """A bare sleep data point from start to end - RFC 3339 UTC, with the
+    same civil times - and `asleep` minutes asleep."""
+    def civil(stamp):
+        d = date.fromisoformat(stamp[:10])
+        return {"date": {"year": d.year, "month": d.month, "day": d.day}}
+
+    return {"sleep": {
+        "interval": {
+            "startTime": start, "endTime": end,
+            "civilStartTime": civil(start), "civilEndTime": civil(end),
+        },
+        "type": "CLASSIC",
+        "summary": {"minutesAsleep": str(asleep)},
+    }}
+
+
+def session_of(point):
+    interval = point["sleep"]["interval"]
+    asleep = int(point["sleep"]["summary"]["minutesAsleep"])
+    return (f"google_health:sleep:{interval['startTime']}", interval["startTime"],
+            interval["endTime"], {"asleep_minutes": asleep})
+
+
+# The day before a 2-day sync on 2026-01-02, which starts on the 1st: the
+# night that began that evening ends inside the window, so asking by end
+# date brings it back; the nap that afternoon stands in for anything else
+# from that day a looser answer might carry.
+PRE_WINDOW_NIGHT = google_sleep("2025-12-31T23:10:00Z", "2026-01-01T07:02:00Z", 452)
+PRE_WINDOW_NAP = google_sleep("2025-12-31T15:20:00Z", "2025-12-31T15:58:00Z", 35)
+# ...and a nap on the window's second day, today.
+TODAY_NAP = google_sleep("2026-01-02T13:10:00Z", "2026-01-02T13:40:00Z", 28)
+
+
+def test_google_drops_sleep_that_began_before_the_window(conn, google):
+    """Filtered by end date, the answer runs back past the window's first
+    day. What began before it is dropped from the daily total and the
+    sessions both; every day inside keeps its full total and sessions."""
+    google(TODAY_NAP, GOOGLE_NIGHT, GOOGLE_NAP, PRE_WINDOW_NIGHT, PRE_WINDOW_NAP, days=2)
+
+    assert google.sleep_requests == [
+        {"filter": 'sleep.interval.civil_end_time >= "2026-01-01"'}
+    ]
+    # Nothing for the 31st - neither a total nor a session...
+    assert sleep_readings(conn, "google_health") == [
+        ("2026-01-01", 421 + 44), ("2026-01-02", 28),
+    ]
+    assert sleep_sessions(conn, "google_health") == [
+        NAP_SESSION,
+        (f"google_health:sleep:{NIGHT_START}", NIGHT_START, NIGHT_END, NIGHT_SUMMARY),
+        session_of(TODAY_NAP),
+    ]
+
+
+def test_a_day_that_leaves_the_window_keeps_its_full_total(conn, google):
+    """The daily sync this guards: a day's total, written whole while it
+    was inside the window, isn't cut back to its night alone once the
+    window moves past it."""
+    # A 7-day sync has all of the 1st: its night and its afternoon nap.
+    google(GOOGLE_NIGHT, GOOGLE_NAP, days=7)
+    # A 1-day sync starts on the 2nd. Google sends the night that began
+    # on the 1st, which ended on the 2nd, but not the nap, which didn't.
+    google(GOOGLE_NIGHT, days=1)
+
+    assert sleep_readings(conn, "google_health") == [("2026-01-01", 421 + 44)]
+    assert sleep_sessions(conn, "google_health") == [
+        NAP_SESSION,
+        (f"google_health:sleep:{NIGHT_START}", NIGHT_START, NIGHT_END, NIGHT_SUMMARY),
+    ]
+
+
 def test_google_resync_of_the_same_sleep_upserts(conn, google):
     google(google_night(minutesAsleep="400"), GOOGLE_NAP)
     google(GOOGLE_NIGHT, GOOGLE_NAP)

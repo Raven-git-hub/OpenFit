@@ -19,7 +19,9 @@ Data types used (Google Health API v4):
   - steps                     -> dailyRollUp (clean daily sums), at most
                                  MAX_ROLLUP_DAYS per request
   - sleep                     -> list, summed per civil day from session summaries;
-                                 each data point is also stored as a sleep session
+                                 each data point is also stored as a sleep session.
+                                 Asked for by end date; sleep that began before
+                                 the sync window is dropped (see _fetch_sleep)
   - daily-resting-heart-rate  -> list (no rollup available for this type)
 
 Every fetch reads all its pages (see _all_pages): Google answers a page at
@@ -291,14 +293,24 @@ class GoogleHealthPlugin(SyncPlugin):
 
         Returns (minutes_by_date, sessions). The two are read from the
         same points independently, so a session that can't be parsed
-        never costs the daily total.
+        never costs the daily total. Both leave out sleep that began
+        before `start` (see below).
         """
         # Sleep can't be filtered on when it starts - the discovery doc
         # rules sleep out of interval.civil_start_time - so this asks by
         # civil end date, which it lists for sleep. That also brings back
-        # a night that began the evening before `start`, filed as always
-        # under the day it began.
-        params = {"filter": f'sleep.interval.civil_end_time >= "{start.isoformat()}"'}
+        # the night that began the evening before `start` and ended inside
+        # the window. Filed under the day it began, that night alone would
+        # replace the day's total - dropping any nap from earlier that day,
+        # which ended before `start` and so isn't in this answer. So sleep
+        # whose civil start day is before `start` is skipped, for the
+        # total and the session alike: that day keeps the full total an
+        # earlier sync wrote while it was inside the window, and every day
+        # this sync does write has all its sleep here. (A point with no
+        # civil start day can't be placed; it is kept, and as before
+        # gives a session but no daily total.)
+        first_day = start.isoformat()
+        params = {"filter": f'sleep.interval.civil_end_time >= "{first_day}"'}
         try:
             points = _all_pages("sleep", "dataPoints", lambda token: requests.get(
                 f"{API_BASE}/dataTypes/sleep/dataPoints",
@@ -308,14 +320,18 @@ class GoogleHealthPlugin(SyncPlugin):
             sessions = []
             for point in points:
                 sleep = point.get("sleep", {})
+                civil = sleep.get("interval", {}).get("civilStartTime", {}).get("date")
+                d_str = (f"{civil['year']:04d}-{civil['month']:02d}-{civil['day']:02d}"
+                         if civil else None)
+                # ISO dates compare in date order as strings.
+                if d_str is not None and d_str < first_day:
+                    continue
                 session = _sleep_session(sleep)
                 if session:
                     sessions.append(session)
-                civil = sleep.get("interval", {}).get("civilStartTime", {}).get("date")
                 minutes = sleep.get("summary", {}).get("minutesAsleep")
-                if not civil or minutes is None:
+                if d_str is None or minutes is None:
                     continue
-                d_str = f"{civil['year']:04d}-{civil['month']:02d}-{civil['day']:02d}"
                 out[d_str] = out.get(d_str, 0) + int(minutes)
             # Same idea as the resting-HR fetcher: sessions came back but
             # not one had a stage in it, so the stage fields are probably

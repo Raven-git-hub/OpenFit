@@ -28,8 +28,21 @@ from metrics import RESTING_HR_BPM, SLEEP_MINUTES, STEPS
 from plugins.google_health.plugin import MAX_PAGES
 
 # The newest day in every fixture; the points run back from it, newest
-# first, as Google sends them.
+# first, as Google sends them. Syncs run on this day too.
 NEWEST = date(2026, 3, 1)
+
+# How many days a sync covers unless a test says otherwise.
+SYNC_DAYS = 60
+
+
+class FrozenDate(date):
+    """date, with today pinned to NEWEST - sleep is only kept from the
+    sync window's first day on, so the window has to be where the points
+    are."""
+
+    @classmethod
+    def today(cls):
+        return cls(NEWEST.year, NEWEST.month, NEWEST.day)
 
 
 def days_back(n, skip=0):
@@ -187,9 +200,11 @@ class FakeGoogle:
 
 @pytest.fixture
 def google(conn, monkeypatch):
-    """A FakeGoogle behind the real Google Health plugin, and its sync."""
+    """A FakeGoogle behind the real Google Health plugin, and its sync,
+    run on NEWEST."""
     from plugins import PLUGINS
 
+    monkeypatch.setattr("plugins.google_health.plugin.date", FrozenDate)
     for var in ("GOOGLE_HEALTH_CLIENT_ID", "GOOGLE_HEALTH_CLIENT_SECRET"):
         monkeypatch.delenv(var, raising=False)
     conn.execute(
@@ -203,7 +218,7 @@ def google(conn, monkeypatch):
     fake = FakeGoogle()
     monkeypatch.setattr("plugins.google_health.plugin.requests.post", fake.post)
     monkeypatch.setattr("plugins.google_health.plugin.requests.get", fake.get)
-    fake.sync = lambda days=60: PLUGINS["google_health"].sync(conn, days)
+    fake.sync = lambda days=SYNC_DAYS: PLUGINS["google_health"].sync(conn, days)
     return fake
 
 
@@ -286,8 +301,12 @@ def test_a_token_that_never_runs_out_stops_at_the_page_cap(conn, google, fetcher
     google.sync()
 
     assert len(google.requests_for(fetcher)) == MAX_PAGES
-    # Each page's day was kept on the way.
-    assert readings(conn, fetcher.metric) == expected(fetcher, days_back(MAX_PAGES))
+    # Each page's day was kept on the way - for sleep, only those inside
+    # the sync window. This fake pages out 100 days of nights whatever the
+    # filter; a real account's would stop at the window, and the plugin
+    # drops any night that began before it.
+    kept = days_back(SYNC_DAYS) if fetcher is FETCHERS["sleep"] else days_back(MAX_PAGES)
+    assert readings(conn, fetcher.metric) == expected(fetcher, kept)
     assert f"stopped after {MAX_PAGES} pages" in capsys.readouterr().out
 
 
