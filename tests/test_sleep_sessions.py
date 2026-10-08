@@ -315,14 +315,17 @@ NAP_SESSION = (
 
 @pytest.fixture
 def google(conn, monkeypatch):
-    """The real Google Health plugin, its HTTP calls stubbed.
+    """The real Google Health plugin, its HTTP calls stubbed, syncing on
+    2026-01-02.
 
     The token refresh answers with an access token; the sleep list
-    answers with the data points the test passes; steps and resting HR
-    come back empty, so sleep is all that's written.
+    answers with the data points the test passes, and records the query
+    params it was asked with in google.sleep_requests; steps and resting
+    HR come back empty, so sleep is all that's written.
     """
     from plugins import PLUGINS
 
+    monkeypatch.setattr("plugins.google_health.plugin.date", FrozenDate)
     for var in ("GOOGLE_HEALTH_CLIENT_ID", "GOOGLE_HEALTH_CLIENT_SECRET"):
         monkeypatch.delenv(var, raising=False)
     conn.execute(
@@ -344,6 +347,7 @@ def google(conn, monkeypatch):
             pass
 
     sleep_points = []
+    sleep_requests = []
 
     def fake_post(url, data=None, json=None, headers=None, timeout=None):
         if "oauth2" in url:
@@ -352,6 +356,7 @@ def google(conn, monkeypatch):
 
     def fake_get(url, headers=None, params=None, timeout=None):
         if "/dataTypes/sleep/" in url:
+            sleep_requests.append(params)
             return FakeResponse({"dataPoints": sleep_points})
         return FakeResponse({"dataPoints": []})
 
@@ -362,6 +367,7 @@ def google(conn, monkeypatch):
         sleep_points[:] = points
         return PLUGINS["google_health"].sync(conn, days)
 
+    sync_with.sleep_requests = sleep_requests
     return sync_with
 
 
@@ -383,6 +389,25 @@ def test_google_writes_each_sleep_as_a_session_beside_sleep_minutes(conn, google
     # start day, night and nap together.
     assert sleep_readings(conn, "google_health") == [("2026-01-01", 421 + 44)]
     # ...and each sleep as its own session, stages mapped to minutes.
+    assert sleep_sessions(conn, "google_health") == [
+        NAP_SESSION,
+        (f"google_health:sleep:{NIGHT_START}", NIGHT_START, NIGHT_END, NIGHT_SUMMARY),
+    ]
+
+
+def test_google_asks_for_sleep_by_its_civil_end_date(conn, google):
+    """The discovery doc rules sleep out of interval.civil_start_time -
+    the filter this used to send, which got nothing back from a real
+    account - and lists interval.civil_end_time for it instead."""
+    google(GOOGLE_NIGHT, GOOGLE_NAP, days=7)
+
+    # A 7-day sync on 2026-01-02 starts on 2025-12-27.
+    assert google.sleep_requests == [
+        {"filter": 'sleep.interval.civil_end_time >= "2025-12-27"'}
+    ]
+    # Asked the documented way, the same realistic answer still files the
+    # daily total and both sessions.
+    assert sleep_readings(conn, "google_health") == [("2026-01-01", 421 + 44)]
     assert sleep_sessions(conn, "google_health") == [
         NAP_SESSION,
         (f"google_health:sleep:{NIGHT_START}", NIGHT_START, NIGHT_END, NIGHT_SUMMARY),
