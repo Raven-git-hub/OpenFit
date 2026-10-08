@@ -28,7 +28,9 @@ from datetime import date, timedelta
 
 import requests
 
-from ..base import SyncPlugin
+from metrics import RESTING_HR_BPM, SLEEP_MINUTES, STEPS
+
+from ..base import SyncPlugin, write_metric
 
 AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 TOKEN_URL = "https://oauth2.googleapis.com/token"
@@ -192,23 +194,11 @@ class GoogleHealthPlugin(SyncPlugin):
         all_dates = set(steps_by_date) | set(sleep_by_date) | set(hr_by_date)
         written = 0
         for d_str in all_dates:
-            conn.execute(
-                """
-                INSERT INTO activity (date, steps, resting_hr, sleep_hours, source, synced_at)
-                VALUES (?, ?, ?, ?, 'google_health', datetime('now'))
-                ON CONFLICT(date, source) DO UPDATE SET
-                    steps=COALESCE(excluded.steps, activity.steps),
-                    resting_hr=COALESCE(excluded.resting_hr, activity.resting_hr),
-                    sleep_hours=COALESCE(excluded.sleep_hours, activity.sleep_hours),
-                    synced_at=datetime('now')
-                """,
-                (
-                    d_str,
-                    steps_by_date.get(d_str),
-                    hr_by_date.get(d_str),
-                    sleep_by_date.get(d_str),
-                ),
-            )
+            # Every date here has at least one reading; the metrics it
+            # lacks come back None and are left as they were.
+            write_metric(conn, d_str, self.id, STEPS, steps_by_date.get(d_str))
+            write_metric(conn, d_str, self.id, RESTING_HR_BPM, hr_by_date.get(d_str))
+            write_metric(conn, d_str, self.id, SLEEP_MINUTES, sleep_by_date.get(d_str))
             written += 1
 
         conn.commit()
@@ -247,7 +237,7 @@ class GoogleHealthPlugin(SyncPlugin):
             return {}
 
     def _fetch_sleep(self, headers, start, end):
-        """Sleep sessions via the list endpoint, summed per civil day."""
+        """Minutes asleep via the list endpoint, summed per civil day."""
         try:
             resp = requests.get(
                 f"{API_BASE}/dataTypes/sleep/dataPoints",
@@ -264,7 +254,7 @@ class GoogleHealthPlugin(SyncPlugin):
                 if not civil or minutes is None:
                     continue
                 d_str = f"{civil['year']:04d}-{civil['month']:02d}-{civil['day']:02d}"
-                out[d_str] = out.get(d_str, 0) + round(int(minutes) / 60, 1)
+                out[d_str] = out.get(d_str, 0) + int(minutes)
             return out
         except Exception as e:
             print(f"[google_health] sleep fetch failed: {e}")

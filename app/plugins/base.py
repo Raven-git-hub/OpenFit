@@ -2,13 +2,14 @@
 OpenFit plugin interface.
 
 A "sync plugin" is anything that pulls data from an external device/service
-and writes it into OpenFit's activity table. To add a new source (Google
-Health, Oura, Whoop, a spreadsheet, whatever), subclass SyncPlugin and drop
-the module in app/plugins/<your_plugin>/.
+and writes it into OpenFit's metrics table as canonical readings. To add a
+new source (Google Health, Oura, Whoop, a spreadsheet, whatever), subclass
+SyncPlugin and drop the module in app/plugins/<your_plugin>/.
 
 Plugins are intentionally dumb: they get a database connection and a date
-range, and they write rows. All the scheduling, API routes, and UI wiring
-already exist in main.py and don't need to change per-plugin.
+range, and they write readings through write_metric(). All the scheduling,
+API routes, and UI wiring already exist in main.py and don't need to change
+per-plugin.
 """
 
 import json
@@ -16,6 +17,7 @@ import os
 from abc import ABC, abstractmethod
 
 from crypto import decrypt
+from metrics import unit_for
 
 # Where a provider sends the browser back after consent, for every
 # add_flow="oauth" plugin.
@@ -29,8 +31,40 @@ from crypto import decrypt
 OAUTH_REDIRECT_URI = "http://127.0.0.1:9109/"
 
 
+def write_metric(conn, date, source, metric, value):
+    """Upsert one reading into the metrics table. Returns whether it wrote.
+
+    `metric` is a canonical key from metrics.py and `value` must already
+    be in that metric's unit - the unit column is filled in from the
+    vocabulary, never by the caller. A value of None is no reading at
+    all and writes nothing, so a plugin can hand over whatever it fetched
+    without checking each field first.
+
+    Each (date, source, metric) is its own row, so writing the readings
+    you have never touches the ones you don't: a later partial sync
+    can't blank out a metric an earlier one filled in. A re-sync of the
+    same day replaces the value and bumps synced_at.
+
+    Doesn't commit - sync() commits once at the end of its batch.
+    """
+    if value is None:
+        return False
+    conn.execute(
+        """
+        INSERT INTO metrics (date, source, metric, value, unit, synced_at)
+        VALUES (?, ?, ?, ?, ?, datetime('now'))
+        ON CONFLICT(date, source, metric) DO UPDATE SET
+            value=excluded.value,
+            unit=excluded.unit,
+            synced_at=datetime('now')
+        """,
+        (date, source, metric, value, unit_for(metric)),
+    )
+    return True
+
+
 class SyncPlugin(ABC):
-    # Short machine id, used in URLs and the activity.source column.
+    # Short machine id, used in URLs and the metrics.source column.
     # e.g. "garmin", "google_health", "oura"
     id: str
 
@@ -176,16 +210,19 @@ class SyncPlugin(ABC):
     @abstractmethod
     def sync(self, conn, days: int) -> int:
         """
-        Pull the last `days` days of data from the source and upsert into
-        the `activity` table on the given sqlite3 connection.
+        Pull the last `days` days of data from the source and upsert it
+        into the `metrics` table on the given sqlite3 connection, as
+        canonical readings.
 
-        The activity table is keyed on (date, source), so each plugin owns
-        its own rows and two sources covering the same day never contend.
-        Write your own `id` into the source column and use
-        INSERT ... ON CONFLICT(date, source) DO UPDATE, COALESCE-ing
-        against the existing columns so a later partial sync doesn't blank
-        out fields an earlier one filled in. See
-        plugins/garmin/plugin.py for the reference implementation.
+        Write each reading with write_metric(conn, date, self.id, metric,
+        value): `metric` is a key from metrics.py (steps, resting_hr_bpm,
+        sleep_minutes, ...) and `value` is converted to that metric's
+        unit first - minutes of sleep, not hours or seconds. The metrics
+        table is keyed on (date, source, metric), so each plugin owns its
+        own rows, two sources covering the same day never contend, and a
+        metric you didn't fetch this time keeps its earlier value. Commit
+        before returning. See plugins/garmin/plugin.py for the reference
+        implementation.
 
         Returns the number of days written (for logging/UI feedback).
         Should raise on hard failure (bad credentials, network error) -

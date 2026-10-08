@@ -23,20 +23,26 @@ own calls to its device API. Full direction:
 - `app/plugins/` — sync (pull) plugins. Each `app/plugins/<name>/plugin.py`
   subclasses `SyncPlugin` (`app/plugins/base.py`), registered in `__init__.py`,
   declares a connector manifest (`fields`, `add_flow`), reads creds via
-  `self.get_credentials(conn)`. Never bypass this pattern.
+  `self.get_credentials(conn)`, writes readings via `write_metric()`. Never
+  bypass this pattern.
+- `app/metrics.py` — the canonical metric vocabulary (key → unit). Import keys
+  from here; never spell metric strings out in plugins or the API.
 - `app/crypto.py` — Fernet encrypt/decrypt for stored credentials.
 - `tests/` — pytest, temp DB, no network.
 - `docs/architecture/` — design direction (read first). `docs/design/` — frontend references.
 
 ## Data model
-- Current (being generalised): `weights`; `workouts` (orphaned — slated for
-  removal); `activity(date, source, steps, resting_hr, sleep_hours)`; `settings`;
-  `accounts`; `schema_migrations`.
-- Target (in progress — see Direction): a tidy
-  `metrics(date, source, metric, value, unit, synced_at)` + `sessions` model with
-  a canonical vocabulary, so a new metric is data not a migration; weight folds in
-  as a metric; per-metric source roles pick a controlling source (user-overridable)
-  and a derived value tagged with its source; full history retained.
+- Current: a tidy `metrics(date, source, metric, value, unit, synced_at)` keyed
+  `(date, source, metric)` — one row per reading, so a new metric is data not a
+  migration. Keys and units come from `app/metrics.py` (`steps`/count,
+  `resting_hr_bpm`/bpm, `sleep_minutes`/min). Migration `005` unpivoted the old
+  wide `activity` table into it and dropped `activity`. Alongside: `weights`;
+  `workouts` (orphaned — slated for removal); `settings`; `accounts`;
+  `schema_migrations`.
+- Target (in progress — see Direction): a `sessions` model beside `metrics`;
+  weight folds in as a metric; per-metric source roles pick a controlling source
+  (user-overridable) and a derived value tagged with its source; full history
+  retained.
 
 ## Hard constraints
 - No multi-tenancy in core. No `user_id`, no auth on core. Multi-user is a future
@@ -56,9 +62,9 @@ See `docs/architecture/openfit-overview-and-design-pathway.md` and `ROADMAP.md`.
 These are NOT yet in the code — don't assume they exist until a PR lands them, and
 when you implement one, update the Data model section above and the README in the
 same PR:
-- **The engine:** the `metrics` + `sessions` model + canonical vocabulary
-  (migration `005`), folding weight in; per-metric source roles + stored derived
-  value + history.
+- **The engine:** the `metrics` table + canonical vocabulary landed in migration
+  `005`. Still to come: `sessions`, folding weight in, per-metric source roles +
+  stored derived value + history.
 - **Webhook / push ingestion:** `POST /api/webhook/<token>` (token-as-auth,
   `{metric, value}` body, sanity checks, idempotent) beside pull plugins and
   manual entry.
