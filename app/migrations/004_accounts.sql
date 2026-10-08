@@ -1,7 +1,7 @@
 -- Device connector credentials, entered through the UI instead of .env.
 --
 -- One row per plugin: `credentials` is a Fernet-encrypted JSON blob of
--- that connector's manifest fields (see app/secrets.py), so a copy of
+-- that connector's manifest fields (see app/crypto.py), so a copy of
 -- tracker.db is not a copy of your Garmin password. The schema stays
 -- deliberately opaque - a connector that grows a field needs no
 -- migration, because the shape lives in the plugin's manifest.
