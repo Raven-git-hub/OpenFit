@@ -23,8 +23,8 @@ own calls to its device API. Full direction:
 - `app/plugins/` — sync (pull) plugins. Each `app/plugins/<name>/plugin.py`
   subclasses `SyncPlugin` (`app/plugins/base.py`), registered in `__init__.py`,
   declares a connector manifest (`fields`, `add_flow`), reads creds via
-  `self.get_credentials(conn)`, writes readings via `write_metric()`. Never
-  bypass this pattern.
+  `self.get_credentials(conn)`, writes readings via `write_metric()` and
+  interval records via `write_session()`. Never bypass this pattern.
 - `app/metrics.py` — the canonical metric vocabulary (key → unit). Import keys
   from here; never spell metric strings out in plugins or the API.
 - `app/crypto.py` — Fernet encrypt/decrypt for stored credentials.
@@ -39,11 +39,23 @@ own calls to its device API. Full direction:
   unpivoted the old wide `activity` table into it and dropped `activity`;
   migration `006` moved the old `weights` table in as `weight_kg` readings under
   source `manual` (hand entry; `synced_at` NULL for migrated rows) and dropped
-  `weights`. Alongside: `workouts` (orphaned — slated for removal); `settings`;
-  `accounts`; `schema_migrations`.
-- Target (in progress — see Direction): a `sessions` model beside `metrics`;
-  per-metric source roles pick a controlling source (user-overridable) and a
-  derived value tagged with its source; full history retained.
+  `weights`.
+- Beside it, `sessions(id, source, kind, "start", "end", summary_json, synced_at)`
+  (migration `007`, purely additive) for interval records: `id` is
+  `source:kind:start` so a re-sync upserts, `start`/`end` are ISO 8601 UTC
+  (`iso_utc()` in `app/plugins/base.py`), `summary_json` is the kind's
+  breakdown as JSON. Quote `"start"`/`"end"` in SQL (`end` is a keyword).
+  Written via `write_session()`. Only kind so far is `sleep`: one session per
+  night/nap from Garmin and Google, summary in minutes — `asleep_minutes` plus
+  whichever of `light_minutes`/`deep_minutes`/`rem_minutes`/`awake_minutes` the
+  source gives. Sleep is dual-track: the daily `sleep_minutes` metric is
+  written exactly as before and the session sits beside it. No read endpoint
+  for sessions yet (the access contract owns reads).
+- Also: `workouts` (orphaned — slated for removal); `settings`; `accounts`;
+  `schema_migrations`.
+- Target (in progress — see Direction): workout sessions; per-metric source
+  roles pick a controlling source (user-overridable) and a derived value tagged
+  with its source; full history retained.
 
 ## Hard constraints
 - No multi-tenancy in core. No `user_id`, no auth on core. Multi-user is a future
@@ -64,8 +76,9 @@ These are NOT yet in the code — don't assume they exist until a PR lands them,
 when you implement one, update the Data model section above and the README in the
 same PR:
 - **The engine:** the `metrics` table + canonical vocabulary landed in migration
-  `005`; weight folded in as `weight_kg` in `006`. Still to come: `sessions`,
-  per-metric source roles + stored derived value + history.
+  `005`; weight folded in as `weight_kg` in `006`; `sessions` in `007` (sleep
+  only). Still to come: workout sessions, per-metric source roles + stored
+  derived value + history.
 - **Webhook / push ingestion:** `POST /api/webhook/<token>` (token-as-auth,
   `{metric, value}` body, sanity checks, idempotent) beside pull plugins and
   manual entry.

@@ -6,12 +6,13 @@ contract every SyncPlugin has to honour, not any particular vendor API.
 """
 
 import json
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from plugins.base import SyncPlugin, write_metric
+from plugins.base import SyncPlugin, iso_utc, write_metric, write_session
 from crypto import encrypt
-from metrics import METRICS, STEPS
+from metrics import METRICS, SLEEP_MINUTES, STEPS
 
 
 class FakePlugin(SyncPlugin):
@@ -134,6 +135,93 @@ def test_resync_refreshes_synced_at(conn):
     FakePlugin("fake", [{"date": "2026-01-01", "steps": 9000}]).sync(conn, 7)
 
     assert conn.execute("SELECT synced_at FROM metrics").fetchone()[0] > "2000-01-01 00:00:00"
+
+
+# ---------- write_session: interval records beside the metrics ----------
+
+
+NIGHT = {"asleep_minutes": 443, "light_minutes": 255, "deep_minutes": 91,
+         "rem_minutes": 97, "awake_minutes": 27}
+
+
+def sessions_for(conn, source):
+    """Every session a source has, summary decoded, in start order."""
+    return [
+        (r["id"], r["kind"], r["start"], r["end"], json.loads(r["summary_json"]))
+        for r in conn.execute(
+            'SELECT id, kind, "start", "end", summary_json FROM sessions '
+            'WHERE source = ? ORDER BY "start"',
+            (source,),
+        )
+    ]
+
+
+def test_write_session_writes_a_row(conn):
+    wrote = write_session(conn, "fake", "sleep", "2026-01-01T22:30:00Z",
+                          "2026-01-02T06:20:00Z", NIGHT)
+    conn.commit()
+
+    assert wrote is True
+    row = conn.execute('SELECT id, source, kind, "start", "end", synced_at FROM sessions').fetchone()
+    assert tuple(row)[:5] == (
+        "fake:sleep:2026-01-01T22:30:00Z", "fake", "sleep",
+        "2026-01-01T22:30:00Z", "2026-01-02T06:20:00Z",
+    )
+    assert row["synced_at"]
+
+
+def test_write_session_summary_round_trips_as_json(conn):
+    write_session(conn, "fake", "sleep", "2026-01-01T22:30:00Z", "2026-01-02T06:20:00Z", NIGHT)
+
+    stored = conn.execute("SELECT summary_json FROM sessions").fetchone()[0]
+    assert isinstance(stored, str)
+    assert json.loads(stored) == NIGHT
+
+
+def test_rewriting_a_session_upserts_rather_than_duplicating(conn):
+    """A re-sync of the same night replaces its end and summary in place."""
+    start = "2026-01-01T22:30:00Z"
+    write_session(conn, "fake", "sleep", start, "2026-01-02T05:00:00Z", {"asleep_minutes": 380})
+    conn.execute("UPDATE sessions SET synced_at = '2000-01-01 00:00:00'")
+    write_session(conn, "fake", "sleep", start, "2026-01-02T06:20:00Z", NIGHT)
+
+    assert sessions_for(conn, "fake") == [
+        (f"fake:sleep:{start}", "sleep", start, "2026-01-02T06:20:00Z", NIGHT)
+    ]
+    assert conn.execute("SELECT synced_at FROM sessions").fetchone()[0] > "2000-01-01 00:00:00"
+
+
+def test_sessions_are_keyed_by_source_kind_and_start(conn):
+    """Two sources' sessions for the same night never contend."""
+    start = "2026-01-01T22:30:00Z"
+    write_session(conn, "garmin", "sleep", start, None, {"asleep_minutes": 443})
+    write_session(conn, "google_health", "sleep", start, None, {"asleep_minutes": 421})
+    write_session(conn, "garmin", "sleep", "2026-01-02T22:45:00Z", None, {"asleep_minutes": 410})
+
+    assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 3
+    assert [s[4] for s in sessions_for(conn, "google_health")] == [{"asleep_minutes": 421}]
+
+
+def test_write_session_skips_a_missing_start(conn):
+    assert write_session(conn, "fake", "sleep", None, "2026-01-02T06:20:00Z", NIGHT) is False
+
+    assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
+
+
+def test_write_session_leaves_metrics_alone(conn):
+    """Dual-track: a session is written beside the daily total, never into it."""
+    write_metric(conn, "2026-01-02", "fake", SLEEP_MINUTES, 443)
+    write_session(conn, "fake", "sleep", "2026-01-01T22:30:00Z", "2026-01-02T06:20:00Z", NIGHT)
+
+    assert readings_for(conn, "fake") == [("2026-01-02", "sleep_minutes", 443, "min")]
+
+
+def test_iso_utc_is_one_shape_for_every_source():
+    """Whole seconds, always UTC, Z suffix - so starts compare as strings."""
+    moment = datetime(2026, 1, 1, 23, 30, 0, 999_000, tzinfo=timezone(timedelta(hours=1)))
+
+    assert iso_utc(moment) == "2026-01-01T22:30:00Z"
+    assert iso_utc(datetime(2026, 1, 1, 22, 30)) == "2026-01-01T22:30:00Z"  # naive = UTC
 
 
 def test_real_plugins_implement_the_interface():

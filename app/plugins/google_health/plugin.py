@@ -17,24 +17,37 @@ fallback when the stored account has no refresh token of its own.
 
 Data types used (Google Health API v4):
   - steps                     -> dailyRollUp (clean daily sums)
-  - sleep                     -> list, summed per civil day from session summaries
+  - sleep                     -> list, summed per civil day from session summaries;
+                                 each data point is also stored as a sleep session
   - daily-resting-heart-rate  -> list (no rollup available for this type)
 """
 
 import json
 import os
+import re
 import urllib.parse
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 import requests
 
 from metrics import RESTING_HR_BPM, SLEEP_MINUTES, STEPS
 
-from ..base import SyncPlugin, write_metric
+from ..base import SyncPlugin, iso_utc, write_metric, write_session
 
 AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 TOKEN_URL = "https://oauth2.googleapis.com/token"
 API_BASE = "https://health.googleapis.com/v4/users/me"
+
+# Sleep stage types in summary.stagesSummary -> the sleep session summary
+# keys. STAGES sleep reports LIGHT/DEEP/REM/AWAKE; CLASSIC sleep (naps,
+# older trackers) reports ASLEEP/RESTLESS/AWAKE instead, and its ASLEEP is
+# already counted in minutesAsleep, so only AWAKE carries over from it.
+SLEEP_STAGE_KEYS = {
+    "LIGHT": "light_minutes",
+    "DEEP": "deep_minutes",
+    "REM": "rem_minutes",
+    "AWAKE": "awake_minutes",
+}
 
 SCOPES = [
     "https://www.googleapis.com/auth/googlehealth.activity_and_fitness.readonly",
@@ -188,7 +201,7 @@ class GoogleHealthPlugin(SyncPlugin):
         start = today - timedelta(days=days - 1)
 
         steps_by_date = self._fetch_steps(headers, start, today)
-        sleep_by_date = self._fetch_sleep(headers, start, today)
+        sleep_by_date, sleep_sessions = self._fetch_sleep(headers, start, today)
         hr_by_date = self._fetch_resting_hr(headers, start, today)
 
         all_dates = set(steps_by_date) | set(sleep_by_date) | set(hr_by_date)
@@ -200,6 +213,10 @@ class GoogleHealthPlugin(SyncPlugin):
             write_metric(conn, d_str, self.id, RESTING_HR_BPM, hr_by_date.get(d_str))
             write_metric(conn, d_str, self.id, SLEEP_MINUTES, sleep_by_date.get(d_str))
             written += 1
+
+        # Each night (and nap) as its own session, beside the daily total.
+        for session in sleep_sessions:
+            write_session(conn, self.id, "sleep", *session)
 
         conn.commit()
         return written
@@ -237,7 +254,13 @@ class GoogleHealthPlugin(SyncPlugin):
             return {}
 
     def _fetch_sleep(self, headers, start, end):
-        """Minutes asleep via the list endpoint, summed per civil day."""
+        """Minutes asleep via the list endpoint, summed per civil day, plus
+        each data point as a (start, end, summary) sleep session.
+
+        Returns (minutes_by_date, sessions). The two are read from the
+        same points independently, so a session that can't be parsed
+        never costs the daily total.
+        """
         try:
             resp = requests.get(
                 f"{API_BASE}/dataTypes/sleep/dataPoints",
@@ -246,19 +269,31 @@ class GoogleHealthPlugin(SyncPlugin):
                 timeout=20,
             )
             resp.raise_for_status()
+            data = resp.json()
             out = {}
-            for point in resp.json().get("dataPoints", []):
+            sessions = []
+            for point in data.get("dataPoints", []):
                 sleep = point.get("sleep", {})
+                session = _sleep_session(sleep)
+                if session:
+                    sessions.append(session)
                 civil = sleep.get("interval", {}).get("civilStartTime", {}).get("date")
                 minutes = sleep.get("summary", {}).get("minutesAsleep")
                 if not civil or minutes is None:
                     continue
                 d_str = f"{civil['year']:04d}-{civil['month']:02d}-{civil['day']:02d}"
                 out[d_str] = out.get(d_str, 0) + int(minutes)
-            return out
+            # Same idea as the resting-HR fetcher: sessions came back but
+            # not one had a stage in it, so the stage fields are probably
+            # not where this expects - show what a summary looks like.
+            if sessions and all(len(summary) == 1 for _, _, summary in sessions):
+                sample = data["dataPoints"][0].get("sleep", {}).get("summary")
+                print(f"[google_health] sleep: got sessions but no stage breakdown in "
+                      f"summary.stagesSummary. Sample summary: {sample}")
+            return out, sessions
         except Exception as e:
             print(f"[google_health] sleep fetch failed: {e}")
-            return {}
+            return {}, []
 
     def _fetch_resting_hr(self, headers, start, end):
         """Daily resting heart rate via the list endpoint.
@@ -301,6 +336,69 @@ class GoogleHealthPlugin(SyncPlugin):
         except Exception as e:
             print(f"[google_health] resting HR fetch failed: {e}")
             return {}
+
+
+def _sleep_session(sleep):
+    """One sleep data point as a (start, end, summary) session, or None.
+
+    Reads interval.startTime/endTime (RFC 3339) and, from summary,
+    minutesAsleep plus each stage's minutes in stagesSummary - falling
+    back to minutesAwake if the AWAKE stage isn't listed. Google sends
+    these int64 counts as JSON strings.
+
+    Defensive throughout: a stage that isn't there is left out of the
+    summary, a point with no minutesAsleep is no session (the daily total
+    skips it too), a point with no usable start is logged and skipped,
+    and nothing here raises.
+    """
+    try:
+        sleep_summary = sleep.get("summary") or {}
+        asleep = _int_or_none(sleep_summary.get("minutesAsleep"))
+        if asleep is None:
+            return None
+
+        interval = sleep.get("interval") or {}
+        start = _rfc3339_iso(interval.get("startTime"))
+        if start is None:
+            print(f"[google_health] sleep point has no usable interval.startTime - "
+                  f"no session written. interval: {interval}")
+            return None
+
+        summary = {"asleep_minutes": asleep}
+        for stage in sleep_summary.get("stagesSummary") or []:
+            key = SLEEP_STAGE_KEYS.get(stage.get("type"))
+            minutes = _int_or_none(stage.get("minutes"))
+            if key and minutes is not None:
+                summary[key] = summary.get(key, 0) + minutes
+        awake = _int_or_none(sleep_summary.get("minutesAwake"))
+        if "awake_minutes" not in summary and awake is not None:
+            summary["awake_minutes"] = awake
+
+        return start, _rfc3339_iso(interval.get("endTime")), summary
+    except Exception as e:
+        print(f"[google_health] could not read a sleep session: {e}")
+        return None
+
+
+def _rfc3339_iso(value):
+    """An RFC 3339 timestamp from Google as an iso_utc() string, or None.
+
+    Fractional seconds are dropped before parsing: Google may send 0, 3,
+    6 or 9 digits of them, and sessions are stored to the whole second.
+    """
+    if not isinstance(value, str):
+        return None
+    try:
+        return iso_utc(datetime.fromisoformat(re.sub(r"\.\d+", "", value)))
+    except ValueError:
+        return None
+
+
+def _int_or_none(value):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _next_day_dict(d):
