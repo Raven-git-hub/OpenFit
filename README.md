@@ -36,7 +36,7 @@ is not the product.
 
 - A versioned SQLite data store with a hand-rolled migration runner.
 - **Garmin Connect** plugin — steps, resting HR, sleep (daily total plus a
-  per-night session with stages).
+  per-night session with stages), and workouts (a session per activity).
 - **Google Health** plugin — the same, from Pixel Watch / Fitbit via Google's
   cloud Health API (not the legacy Fitbit Web API, retired September 2026).
 - Scheduled background sync plus a manual sync, with device connections managed
@@ -120,13 +120,17 @@ vocabulary (`steps`, `resting_hr_bpm`, `sleep_minutes`, `weight_kg`, ... in
 `app/metrics.py`) — so a new metric needs no migration. Weight is one of those
 metrics: hand-entered weigh-ins are `weight_kg` readings (in kg) under the source
 `manual`, and there is no separate weights table any more. Beside `metrics`, a
-`sessions` table holds interval records — so far one `sleep` session per night
-(and nap) from each device, with its start/end and stage breakdown in minutes
+`sessions` table holds interval records, each with a start/end and a summary,
+filed under a session kind from the same vocabulary. A `sleep` session is one
+night (or nap) from each device, with its stage breakdown in minutes
 (`asleep_minutes`, plus `light_minutes`/`deep_minutes`/`rem_minutes`/
-`awake_minutes` where the device reports them). Sleep is dual-track: the daily
+`awake_minutes` where the device reports them); sleep is dual-track: the daily
 `sleep_minutes` total is filed exactly as before, and the session is written
-beside it. Today the per-day value comes from a fixed source precedence;
-workout sessions and per-metric source roles are next — see
+beside it. A `workout` session is one activity, with no daily metric beside it:
+its `type` (the device's activity type, lowercased), `duration_minutes`,
+`distance_m`, `avg_hr_bpm` and `calories_kcal`, whichever the device reports.
+Today the per-day value comes from a fixed source precedence; per-metric source
+roles are next — see
 [docs/architecture](docs/architecture/). Device credentials entered in the UI
 are stored as a Fernet-encrypted JSON blob (one row per plugin) and never
 returned over the API; the key comes from `$OPENFIT_SECRET_KEY` or is generated
@@ -157,9 +161,10 @@ connector manifest (`fields`, `add_flow`), read credentials via
 source and write each reading with
 `write_metric(conn, date, self.id, metric, value)` — a canonical key from
 `app/metrics.py`, with the value already in that metric's unit. Interval data
-(a night's sleep) also goes in as a session with
-`write_session(conn, self.id, kind, start, end, summary)`, beside the daily
-metric. Register it with one line in `app/plugins/__init__.py` — no changes to
+goes in as a session with `write_session(conn, self.id, kind, start, end,
+summary)`, `kind` a session kind from the same module: a night's sleep
+(`SLEEP`) beside the daily metric, a workout (`WORKOUT`) on its own. Register
+it with one line in `app/plugins/__init__.py` — no changes to
 `main.py`, the API, or the UI. Oura's clean public API makes it the natural next
 plugin.
 

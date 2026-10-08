@@ -6,6 +6,10 @@ then caches a session token on disk (GARMIN_TOKENSTORE) so subsequent syncs
 reuse it instead of logging in with the password again. If your account has
 MFA enabled, run first_login.py once (see repo README) before starting the
 scheduled sync.
+
+Fetched per day: get_stats (steps, resting HR) and get_sleep_data (the
+daily sleep total plus the night as a sleep session). Fetched once over
+the whole range: get_activities_by_date, each activity a workout session.
 """
 
 import os
@@ -14,7 +18,7 @@ from datetime import date, datetime, timedelta, timezone
 
 from garminconnect import Garmin, GarminConnectAuthenticationError
 
-from metrics import RESTING_HR_BPM, SLEEP_MINUTES, STEPS
+from metrics import RESTING_HR_BPM, SLEEP, SLEEP_MINUTES, STEPS, WORKOUT
 
 from ..base import SyncPlugin, iso_utc, write_metric, write_session
 
@@ -26,6 +30,18 @@ SLEEP_STAGE_FIELDS = {
     "deepSleepSeconds": "deep_minutes",
     "remSleepSeconds": "rem_minutes",
     "awakeSleepSeconds": "awake_minutes",
+}
+
+# Activity fields from get_activities_by_date -> the workout session
+# summary keys, each with its conversion to the canonical unit. duration
+# is the timer time (pauses excluded), in seconds; distance is already
+# metres. A field the activity doesn't carry - distance on a strength
+# session, averageHR without a heart-rate sensor - is left out.
+WORKOUT_FIELDS = {
+    "duration": ("duration_minutes", lambda seconds: round(seconds / 60)),
+    "distance": ("distance_m", float),
+    "averageHR": ("avg_hr_bpm", round),
+    "calories": ("calories_kcal", round),
 }
 
 
@@ -130,11 +146,38 @@ class GarminPlugin(SyncPlugin):
             write_metric(conn, d_str, self.id, RESTING_HR_BPM, resting_hr)
             write_metric(conn, d_str, self.id, SLEEP_MINUTES, sleep_minutes)
             if sleep_session:
-                write_session(conn, self.id, "sleep", *sleep_session)
+                write_session(conn, self.id, SLEEP, *sleep_session)
             written += 1
+
+        # Workouts are sessions only - no daily metric - fetched in one go
+        # for the whole range rather than a request per day.
+        for session in self._fetch_workouts(client, today - timedelta(days=days - 1), today):
+            write_session(conn, self.id, WORKOUT, *session)
 
         conn.commit()
         return written
+
+    def _fetch_workouts(self, client, start, end):
+        """Every activity from `start` to `end` (dates, both inclusive) as
+        a (start, end, summary) workout session.
+
+        One get_activities_by_date call covers the range: the library
+        pages through Garmin's activity search 20 at a time until a page
+        comes back empty, and raises rather than loop forever should one
+        never do so. A failed fetch is logged and costs the workouts
+        only - the day loop's metrics and sleep are already written.
+        """
+        try:
+            activities = client.get_activities_by_date(start.isoformat(), end.isoformat())
+        except Exception as e:
+            print(f"[garmin] activities fetch failed for {start} to {end}: {e}")
+            return []
+        sessions = []
+        for activity in activities or []:
+            session = _workout_session(activity)
+            if session:
+                sessions.append(session)
+        return sessions
 
 
 def _sleep_session(dto, asleep_minutes, d_str):
@@ -173,6 +216,65 @@ def _sleep_session(dto, asleep_minutes, d_str):
         return start, _gmt_iso(dto.get("sleepEndTimestampGMT")), summary
     except Exception as e:
         print(f"[garmin] could not read the sleep session for {d_str}: {e}")
+        return None
+
+
+def _workout_session(activity):
+    """One activity from get_activities_by_date as a (start, end, summary)
+    workout session, or None.
+
+    The interval starts at startTimeGMT ("YYYY-MM-DD HH:MM:SS", real UTC
+    - startTimeLocal is wall-clock time) and runs for elapsedDuration
+    seconds, pauses included, falling back to duration where that's all
+    there is. The summary is activityType.typeKey, lowercased, plus each
+    field in WORKOUT_FIELDS.
+
+    Defensive throughout: a field that isn't there (or isn't a number) is
+    left out of the summary, no duration at all means no end, an
+    activity with no usable start is logged and skipped, and nothing here
+    raises.
+    """
+    try:
+        start = _gmt_datetime(activity.get("startTimeGMT"))
+        if start is None:
+            print(
+                f"[garmin] activity {activity.get('activityId')} has no usable "
+                f"startTimeGMT - no session written. activity keys: {sorted(activity)}"
+            )
+            return None
+
+        summary = {}
+        type_key = (activity.get("activityType") or {}).get("typeKey")
+        if isinstance(type_key, str) and type_key:
+            summary["type"] = type_key.lower()
+        for field, (key, convert) in WORKOUT_FIELDS.items():
+            value = activity.get(field)
+            if isinstance(value, (int, float)):
+                summary[key] = convert(value)
+
+        elapsed = activity.get("elapsedDuration")
+        if not isinstance(elapsed, (int, float)):
+            elapsed = activity.get("duration")
+        end = None
+        if isinstance(elapsed, (int, float)):
+            end = iso_utc(start + timedelta(seconds=elapsed))
+        return iso_utc(start), end, summary
+    except Exception as e:
+        print(f"[garmin] could not read a workout: {e}")
+        return None
+
+
+def _gmt_datetime(value):
+    """Garmin's "YYYY-MM-DD HH:MM:SS" GMT timestamp as a datetime, or None.
+
+    It carries no offset, so it parses naive, and iso_utc() takes a
+    naive datetime to be UTC already.
+    """
+    if not isinstance(value, str):
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
         return None
 
 
