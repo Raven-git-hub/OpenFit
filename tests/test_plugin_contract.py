@@ -9,12 +9,17 @@ import json
 
 import pytest
 
-from plugins.base import SyncPlugin
+from plugins.base import SyncPlugin, write_metric
 from crypto import encrypt
+from metrics import METRICS, STEPS
 
 
 class FakePlugin(SyncPlugin):
-    """A minimal SyncPlugin that writes whatever rows it's handed."""
+    """A minimal SyncPlugin that writes whatever readings it's handed.
+
+    Each row is a date plus any canonical metrics, e.g.
+    {"date": "2026-01-01", "steps": 9000, "sleep_minutes": 450}.
+    """
 
     name = "Fake source"
     required_env = []
@@ -26,74 +31,72 @@ class FakePlugin(SyncPlugin):
     def sync(self, conn, days: int) -> int:
         written = 0
         for row in self.rows[:days] if days else self.rows:
-            conn.execute(
-                """
-                INSERT INTO activity (date, steps, resting_hr, sleep_hours, source, synced_at)
-                VALUES (?, ?, ?, ?, ?, datetime('now'))
-                ON CONFLICT(date, source) DO UPDATE SET
-                    steps=COALESCE(excluded.steps, activity.steps),
-                    resting_hr=COALESCE(excluded.resting_hr, activity.resting_hr),
-                    sleep_hours=COALESCE(excluded.sleep_hours, activity.sleep_hours),
-                    synced_at=datetime('now')
-                """,
-                (
-                    row["date"],
-                    row.get("steps"),
-                    row.get("resting_hr"),
-                    row.get("sleep_hours"),
-                    self.id,
-                ),
-            )
+            for metric in METRICS:
+                write_metric(conn, row["date"], self.id, metric, row.get(metric))
             written += 1
         conn.commit()
         return written
 
 
-def rows_for(conn, source):
-    return conn.execute(
-        "SELECT date, steps, resting_hr, sleep_hours FROM activity "
-        "WHERE source = ? ORDER BY date",
-        (source,),
-    ).fetchall()
+def readings_for(conn, source):
+    """Every (date, metric, value, unit) a source has, in a stable order."""
+    return [
+        tuple(r)
+        for r in conn.execute(
+            "SELECT date, metric, value, unit FROM metrics "
+            "WHERE source = ? ORDER BY date, metric",
+            (source,),
+        )
+    ]
 
 
 def test_sync_writes_rows_and_returns_count(conn):
     plugin = FakePlugin("fake", [{"date": "2026-01-01", "steps": 9000}])
 
     assert plugin.sync(conn, 7) == 1
-    assert [tuple(r) for r in rows_for(conn, "fake")] == [("2026-01-01", 9000, None, None)]
+    assert readings_for(conn, "fake") == [("2026-01-01", "steps", 9000, "count")]
 
 
 def test_resync_upserts_rather_than_duplicating(conn):
     FakePlugin("fake", [{"date": "2026-01-01", "steps": 9000}]).sync(conn, 7)
     FakePlugin("fake", [{"date": "2026-01-01", "steps": 9500}]).sync(conn, 7)
 
-    assert [tuple(r) for r in rows_for(conn, "fake")] == [("2026-01-01", 9500, None, None)]
+    assert readings_for(conn, "fake") == [("2026-01-01", "steps", 9500, "count")]
 
 
-def test_upsert_coalesces_missing_fields(conn):
-    """A later partial sync must not blank out fields an earlier one filled."""
-    FakePlugin("fake", [{"date": "2026-01-01", "steps": 9000, "sleep_hours": 7.5}]).sync(conn, 7)
-    FakePlugin("fake", [{"date": "2026-01-01", "resting_hr": 52}]).sync(conn, 7)
+def test_partial_sync_keeps_metrics_it_did_not_fetch(conn):
+    """A later partial sync must not blank out metrics an earlier one filled."""
+    FakePlugin("fake", [{"date": "2026-01-01", "steps": 9000, "sleep_minutes": 450}]).sync(conn, 7)
+    FakePlugin("fake", [{"date": "2026-01-01", "resting_hr_bpm": 52}]).sync(conn, 7)
 
-    assert [tuple(r) for r in rows_for(conn, "fake")] == [("2026-01-01", 9000, 52, 7.5)]
+    assert readings_for(conn, "fake") == [
+        ("2026-01-01", "resting_hr_bpm", 52, "bpm"),
+        ("2026-01-01", "sleep_minutes", 450, "min"),
+        ("2026-01-01", "steps", 9000, "count"),
+    ]
 
 
 def test_two_sources_same_date_do_not_contend(conn):
-    """The regression the (date, source) reshape fixes.
+    """The regression the per-source key fixes.
 
     Under the old date-only primary key the second sync overwrote the
     first source's row for the day; now each source keeps its own.
     """
     day = "2026-01-01"
-    FakePlugin("garmin", [{"date": day, "steps": 9000, "resting_hr": 52}]).sync(conn, 7)
-    FakePlugin("google_health", [{"date": day, "steps": 8000, "sleep_hours": 6.5}]).sync(conn, 7)
+    FakePlugin("garmin", [{"date": day, "steps": 9000, "resting_hr_bpm": 52}]).sync(conn, 7)
+    FakePlugin("google_health", [{"date": day, "steps": 8000, "sleep_minutes": 390}]).sync(conn, 7)
 
-    assert [tuple(r) for r in rows_for(conn, "garmin")] == [(day, 9000, 52, None)]
-    assert [tuple(r) for r in rows_for(conn, "google_health")] == [(day, 8000, None, 6.5)]
+    assert readings_for(conn, "garmin") == [
+        (day, "resting_hr_bpm", 52, "bpm"),
+        (day, "steps", 9000, "count"),
+    ]
+    assert readings_for(conn, "google_health") == [
+        (day, "sleep_minutes", 390, "min"),
+        (day, "steps", 8000, "count"),
+    ]
 
-    total = conn.execute("SELECT COUNT(*) FROM activity WHERE date = ?", (day,)).fetchone()[0]
-    assert total == 2
+    total = conn.execute("SELECT COUNT(*) FROM metrics WHERE date = ?", (day,)).fetchone()[0]
+    assert total == 4
 
 
 def test_sources_stay_independent_across_repeated_syncs(conn):
@@ -105,8 +108,32 @@ def test_sources_stay_independent_across_repeated_syncs(conn):
         garmin.sync(conn, 7)
         google.sync(conn, 7)
 
-    assert conn.execute("SELECT COUNT(*) FROM activity").fetchone()[0] == 2
-    assert [tuple(r) for r in rows_for(conn, "garmin")] == [(day, 9000, None, None)]
+    assert conn.execute("SELECT COUNT(*) FROM metrics").fetchone()[0] == 2
+    assert readings_for(conn, "garmin") == [(day, "steps", 9000, "count")]
+
+
+def test_write_metric_skips_a_missing_value(conn):
+    assert write_metric(conn, "2026-01-01", "fake", STEPS, None) is False
+    assert write_metric(conn, "2026-01-01", "fake", STEPS, 0) is True
+
+    assert readings_for(conn, "fake") == [("2026-01-01", "steps", 0, "count")]
+
+
+def test_write_metric_rejects_a_metric_outside_the_vocabulary(conn):
+    with pytest.raises(ValueError, match="unknown metric"):
+        write_metric(conn, "2026-01-01", "fake", "stepz", 9000)
+
+    assert readings_for(conn, "fake") == []
+
+
+def test_resync_refreshes_synced_at(conn):
+    FakePlugin("fake", [{"date": "2026-01-01", "steps": 9000}]).sync(conn, 7)
+    conn.execute("UPDATE metrics SET synced_at = '2000-01-01 00:00:00'")
+    conn.commit()
+
+    FakePlugin("fake", [{"date": "2026-01-01", "steps": 9000}]).sync(conn, 7)
+
+    assert conn.execute("SELECT synced_at FROM metrics").fetchone()[0] > "2000-01-01 00:00:00"
 
 
 def test_real_plugins_implement_the_interface():
@@ -156,12 +183,7 @@ class ManifestPlugin(SyncPlugin):
         credentials = self.get_credentials(conn)
         if not credentials.get("username") or not credentials.get("token"):
             raise RuntimeError("not connected")
-        conn.execute(
-            "INSERT INTO activity (date, steps, source, synced_at) "
-            "VALUES (?, ?, ?, datetime('now')) "
-            "ON CONFLICT(date, source) DO UPDATE SET steps=excluded.steps",
-            ("2026-01-01", 1234, self.id),
-        )
+        write_metric(conn, "2026-01-01", self.id, STEPS, 1234)
         conn.commit()
         return 1
 
@@ -199,9 +221,7 @@ def test_stored_credentials_reach_sync(conn, clean_env):
     store_account(conn, plugin.id, {"username": "sam", "token": "t0ken"})
 
     assert plugin.sync(conn, 7) == 1
-    assert conn.execute(
-        "SELECT steps FROM activity WHERE source = ?", (plugin.id,)
-    ).fetchone()[0] == 1234
+    assert readings_for(conn, plugin.id) == [("2026-01-01", "steps", 1234, "count")]
 
 
 def test_credentials_fall_back_to_the_env_when_there_is_no_account(conn, monkeypatch):

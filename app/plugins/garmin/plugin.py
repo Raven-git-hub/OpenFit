@@ -14,7 +14,9 @@ from datetime import date, timedelta
 
 from garminconnect import Garmin, GarminConnectAuthenticationError
 
-from ..base import SyncPlugin
+from metrics import RESTING_HR_BPM, SLEEP_MINUTES, STEPS
+
+from ..base import SyncPlugin, write_metric
 
 
 class GarminPlugin(SyncPlugin):
@@ -86,7 +88,7 @@ class GarminPlugin(SyncPlugin):
 
             steps = None
             resting_hr = None
-            sleep_hours = None
+            sleep_minutes = None
 
             try:
                 stats = client.get_stats(d_str)
@@ -99,25 +101,18 @@ class GarminPlugin(SyncPlugin):
                 sleep = client.get_sleep_data(d_str)
                 seconds = (sleep.get("dailySleepDTO") or {}).get("sleepTimeSeconds")
                 if seconds:
-                    sleep_hours = round(seconds / 3600, 1)
+                    sleep_minutes = round(seconds / 60)
             except Exception as e:
                 print(f"[garmin] sleep fetch failed for {d_str}: {e}")
 
-            if steps is None and resting_hr is None and sleep_hours is None:
+            if steps is None and resting_hr is None and sleep_minutes is None:
                 continue
 
-            conn.execute(
-                """
-                INSERT INTO activity (date, steps, resting_hr, sleep_hours, source, synced_at)
-                VALUES (?, ?, ?, ?, 'garmin', datetime('now'))
-                ON CONFLICT(date, source) DO UPDATE SET
-                    steps=COALESCE(excluded.steps, activity.steps),
-                    resting_hr=COALESCE(excluded.resting_hr, activity.resting_hr),
-                    sleep_hours=COALESCE(excluded.sleep_hours, activity.sleep_hours),
-                    synced_at=datetime('now')
-                """,
-                (d_str, steps, resting_hr, sleep_hours),
-            )
+            # A None (that fetch failed, or Garmin had nothing) writes
+            # nothing and leaves any earlier reading in place.
+            write_metric(conn, d_str, self.id, STEPS, steps)
+            write_metric(conn, d_str, self.id, RESTING_HR_BPM, resting_hr)
+            write_metric(conn, d_str, self.id, SLEEP_MINUTES, sleep_minutes)
             written += 1
 
         conn.commit()

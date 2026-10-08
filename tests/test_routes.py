@@ -61,9 +61,14 @@ def test_activity_empty(client):
 
 
 def test_activity_returns_flat_rows(client, conn):
-    conn.execute(
-        "INSERT INTO activity (date, steps, resting_hr, sleep_hours, source, synced_at) "
-        "VALUES ('2026-01-01', 9000, 52, 7.5, 'garmin', 'now')"
+    conn.executemany(
+        "INSERT INTO metrics (date, source, metric, value, unit, synced_at) "
+        "VALUES ('2026-01-01', 'garmin', ?, ?, ?, 'now')",
+        [
+            ("steps", 9000, "count"),
+            ("resting_hr_bpm", 52, "bpm"),
+            ("sleep_minutes", 450, "min"),
+        ],
     )
     conn.commit()
 
@@ -80,13 +85,16 @@ def test_activity_returns_flat_rows(client, conn):
 
 
 def test_activity_days_limit_counts_dates_not_rows(client, conn):
-    # Two sources per day: limiting rows instead of dates would return
-    # one day here rather than two.
+    # Two sources and two metrics per day: limiting rows instead of
+    # dates would return one day here rather than two.
     for d in ("2026-01-01", "2026-01-02", "2026-01-03"):
         for src in ("garmin", "google_health"):
-            conn.execute(
-                "INSERT INTO activity (date, steps, source) VALUES (?, 1, ?)", (d, src)
-            )
+            for metric, unit in (("steps", "count"), ("resting_hr_bpm", "bpm")):
+                conn.execute(
+                    "INSERT INTO metrics (date, source, metric, value, unit) "
+                    "VALUES (?, ?, ?, 1, ?)",
+                    (d, src, metric, unit),
+                )
     conn.commit()
 
     rows = client.get("/api/activity?days=2").get_json()

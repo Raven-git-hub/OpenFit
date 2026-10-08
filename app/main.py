@@ -15,6 +15,7 @@ from migrations import run_migrations
 from plugins import PLUGINS
 from plugins.base import OAUTH_REDIRECT_URI
 from crypto import encrypt
+from metrics import RESTING_HR_BPM, SLEEP_MINUTES, STEPS
 
 DB_PATH = os.getenv("DB_PATH", "/data/tracker.db")
 SYNC_INTERVAL_HOURS = int(os.getenv("SYNC_INTERVAL_HOURS", "6"))
@@ -124,7 +125,34 @@ def set_workout():
 
 # ---------- activity ----------
 
-ACTIVITY_METRICS = ("steps", "resting_hr", "sleep_hours")
+# /api/activity predates the metrics table and keeps its flat shape for
+# the interim UI: one field per metric, in the old field names and units.
+# Each field maps to the canonical metric it is now read from, and how to
+# turn the stored value back into what the field used to hold.
+
+
+def _whole(value):
+    """A stored REAL as the old INTEGER column returned it.
+
+    SQLite's INTEGER affinity kept a whole number as an int and anything
+    else as it was, so 9000.0 reads as 9000 again, as it did before.
+    """
+    return int(value) if float(value).is_integer() else value
+
+
+ACTIVITY_FIELDS = {
+    # field: (canonical metric, stored value -> field value)
+    "steps": (STEPS, _whole),
+    "resting_hr": (RESTING_HR_BPM, _whole),
+    "sleep_hours": (SLEEP_MINUTES, lambda minutes: round(minutes / 60, 1)),
+}
+
+ACTIVITY_METRICS = tuple(ACTIVITY_FIELDS)
+
+# Canonical metric -> (field, convert), for pivoting readings back.
+_ACTIVITY_BY_METRIC = {
+    metric: (field, convert) for field, (metric, convert) in ACTIVITY_FIELDS.items()
+}
 
 
 def _source_rank(source):
@@ -133,6 +161,33 @@ def _source_rank(source):
         return (SOURCE_PRIORITY.index(source), "")
     except ValueError:
         return (len(SOURCE_PRIORITY), source or "")
+
+
+def _pivot_by_source(readings):
+    """Fold tidy metric readings back into one wide row per (date, source).
+
+    The rows come out in the order the readings arrive in, with the old
+    activity columns: a metric the source didn't report is None, and
+    synced_at is the most recent write to any of the row's metrics -
+    what the old row's synced_at, bumped by every upsert, would hold.
+    """
+    wide = {}
+    for reading in readings:
+        key = (reading["date"], reading["source"])
+        row = wide.get(key)
+        if row is None:
+            row = wide[key] = {
+                "date": reading["date"],
+                **{field: None for field in ACTIVITY_FIELDS},
+                "source": reading["source"],
+                "synced_at": None,
+            }
+        field, convert = _ACTIVITY_BY_METRIC[reading["metric"]]
+        row[field] = convert(reading["value"])
+        stamp = reading["synced_at"]
+        if stamp is not None and (row["synced_at"] is None or stamp > row["synced_at"]):
+            row["synced_at"] = stamp
+    return list(wide.values())
 
 
 def _merge_by_date(rows):
@@ -175,21 +230,33 @@ def get_activity():
     days = int(request.args.get("days", 30))
     by_source = request.args.get("by_source", "").lower() in ("1", "true", "yes")
 
+    # Only the metrics this endpoint has fields for: a date that holds
+    # nothing but some other metric is not an activity day, and must not
+    # use up one of the `days` asked for.
+    keys = [metric for metric, _ in ACTIVITY_FIELDS.values()]
+    marks = ", ".join("?" * len(keys))
+
     conn = get_conn()
-    # LIMIT applies to distinct dates, not rows: with several sources per
-    # day, limiting rows would silently return fewer days than asked for.
-    rows = conn.execute(
-        "SELECT date, steps, resting_hr, sleep_hours, source, synced_at FROM activity "
-        "WHERE date IN (SELECT DISTINCT date FROM activity ORDER BY date DESC LIMIT ?) "
+    # LIMIT applies to distinct dates, not rows: with several sources and
+    # metrics per day, limiting rows would silently return fewer days
+    # than asked for.
+    readings = conn.execute(
+        "SELECT date, source, metric, value, synced_at FROM metrics "
+        f"WHERE metric IN ({marks}) AND date IN ("
+        f"SELECT DISTINCT date FROM metrics WHERE metric IN ({marks}) "
+        "ORDER BY date DESC LIMIT ?"
+        ") "
         "ORDER BY date DESC, source",
-        (days,),
+        (*keys, *keys, days),
     ).fetchall()
     conn.close()
+
+    rows = _pivot_by_source(readings)
 
     if by_source:
         # Additive: raw per-source rows, for anything that wants to see
         # which device said what.
-        return jsonify([dict(r) for r in rows])
+        return jsonify(rows)
 
     # Default stays the flat one-row-per-date shape the frontend expects.
     return jsonify(_merge_by_date(rows))

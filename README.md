@@ -104,6 +104,7 @@ app/
     __init__.py               PLUGINS registry — one line per installed plugin
     garmin/plugin.py          Garmin Connect
     google_health/plugin.py   Google Health API (Pixel Watch / Fitbit)
+  metrics.py                  Canonical metric vocabulary (key -> unit)
   crypto.py                   Encrypt/decrypt for stored device credentials
   migrations/                 Versioned .sql schema migrations + runner
 tests/                        pytest suite (temp DB, no network)
@@ -112,10 +113,11 @@ docs/architecture/            Design direction (read these first)
 
 Data lives in SQLite on a persistent Docker volume. Devices sync through plugins
 into a per-source store, and OpenFit derives a single value per metric per day
-from it while keeping every source's raw rows. Today that store is the
-`activity` table keyed `(date, source)` with a fixed precedence; it is being
-generalised into a tidy metric model (`metrics` / `sessions` + a canonical
-vocabulary) so a new metric needs no migration — see
+from it while keeping every source's raw rows. That store is the tidy `metrics`
+table — one row per `(date, source, metric)` reading, filed under a canonical
+vocabulary (`steps`, `resting_hr_bpm`, `sleep_minutes`, ... in `app/metrics.py`)
+— so a new metric needs no migration. Today the per-day value comes from a fixed
+source precedence; `sessions` and per-metric source roles are next — see
 [docs/architecture](docs/architecture/). Device credentials entered in the UI are
 stored as a Fernet-encrypted JSON blob (one row per plugin) and never returned
 over the API; the key comes from `$OPENFIT_SECRET_KEY` or is generated at
@@ -143,11 +145,11 @@ is tested with a fake in-process plugin, never against Garmin or Google.
 A plugin is a class implementing `SyncPlugin` (`app/plugins/base.py`): declare a
 connector manifest (`fields`, `add_flow`), read credentials via
 `self.get_credentials(conn)`, and implement `sync(conn, days)` to fetch from your
-source and write readings. Register it with one line in
-`app/plugins/__init__.py` — no changes to `main.py`, the API, or the UI. (The
-`sync()` write target is moving from the `activity` table to canonical metric
-rows as the data model is generalised — see `docs/architecture/`.) Oura's clean
-public API makes it the natural next plugin.
+source and write each reading with
+`write_metric(conn, date, self.id, metric, value)` — a canonical key from
+`app/metrics.py`, with the value already in that metric's unit. Register it with
+one line in `app/plugins/__init__.py` — no changes to `main.py`, the API, or the
+UI. Oura's clean public API makes it the natural next plugin.
 
 ## Privacy & security
 

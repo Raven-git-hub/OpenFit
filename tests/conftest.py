@@ -11,6 +11,7 @@ its tmp_path, so nothing can read or create /data/.secret_key.
 """
 
 import os
+import shutil
 import sqlite3
 import sys
 
@@ -21,7 +22,7 @@ if APP_DIR not in sys.path:
     sys.path.insert(0, APP_DIR)
 
 import crypto as openfit_crypto  # noqa: E402
-from migrations import run_migrations  # noqa: E402
+from migrations import discover_migrations, run_migrations  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
@@ -45,6 +46,30 @@ def db_path(tmp_path):
     run_migrations(conn)
     conn.close()
     return path
+
+
+@pytest.fixture
+def db_at_version(tmp_path):
+    """Factory: path to a database migrated up to `version` and no further.
+
+    For testing a migration against the schema it really runs on - a
+    production database sits at the previous version, holding data in
+    the shape that version left it.
+    """
+
+    def make(version, name="at-version.db"):
+        partial = tmp_path / f"migrations-upto-{version}"
+        partial.mkdir()
+        for v, filename, path in discover_migrations():
+            if v <= version:
+                shutil.copy(path, partial / filename)
+        path = str(tmp_path / name)
+        conn = sqlite3.connect(path)
+        run_migrations(conn, migrations_dir=str(partial))
+        conn.close()
+        return path
+
+    return make
 
 
 @pytest.fixture
