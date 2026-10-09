@@ -66,19 +66,28 @@ own calls to its device API. Full direction:
   metric per day, every metric including `weight_kg`. `source` is the winning
   source (provenance); value/unit/synced_at are the winning reading's. Written
   only by `recompute_derived(conn, since=None)` in `app/derived.py`: the
-  highest-ranked source with a reading wins (`DEFAULT_PRIORITY` = garmin >
-  google_health, unlisted sources last, then by name); a `(date, metric)` in
+  highest-ranked source with a reading wins — the metric's configured primary
+  (its source role) if it has one, then `DEFAULT_PRIORITY` = garmin >
+  google_health, unlisted sources last, then by name; a `(date, metric)` in
   range with no readings left loses its row; dates before `since` are untouched.
   Refreshed after every sync for that sync's window (`today - (days-1)` on), and
   backfilled once by `serve()` only while the table is empty — never a blanket
-  re-derive (a later policy change must be forward-only). The default
+  re-derive (a policy change is forward-only). The default
   `/api/activity` reads it; `?by_source=1` still reads `metrics`. Manual
   `/api/weights` writes don't re-derive yet.
+- Source roles: the `settings` row `source_roles` (no migration) holds JSON
+  `{metric: primary_source}`, e.g. `{"steps": "google_health"}`; a metric absent
+  from it uses the default precedence. Read by `load_source_roles()`, written by
+  `set_source_role()` (both `app/derived.py`; a malformed value reads as no
+  overrides). `GET /api/source-roles` lists every canonical metric's effective
+  `primary`, whether it's `configured`, and the `sources` that have reported it
+  (in pick order); `PUT /api/source-roles/<metric>` `{"primary": "<source>"}`
+  sets it, `null`/empty clears it. Forward-only: a change re-derives nothing —
+  it applies from the next sync's window.
 - Also: `workouts` (orphaned — slated for removal); `settings`; `accounts`;
   `schema_migrations`.
-- Target (in progress — see Direction): per-metric source roles pick a
-  controlling source (user-overridable) for the derived value; full history
-  retained.
+- Target (in progress — see Direction): the other source roles (sources that
+  verify the primary) and full history retained.
 
 ## Hard constraints
 - No multi-tenancy in core. No `user_id`, no auth on core. Multi-user is a future
@@ -101,7 +110,9 @@ same PR:
 - **The engine:** the `metrics` table + canonical vocabulary landed in migration
   `005`; weight folded in as `weight_kg` in `006`; `sessions` in `007` (sleep,
   then workouts with no further migration); the stored derived value in `008`
-  (fixed precedence for now). Still to come: per-metric source roles + history.
+  (fixed precedence) and the user-overridable per-metric primary in
+  `settings.source_roles` (no migration). Still to come: verifying sources +
+  history.
 - **Webhook / push ingestion:** `POST /api/webhook/<token>` (token-as-auth,
   `{metric, value}` body, sanity checks, idempotent) beside pull plugins and
   manual entry.

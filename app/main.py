@@ -15,8 +15,14 @@ from migrations import run_migrations
 from plugins import PLUGINS
 from plugins.base import OAUTH_REDIRECT_URI, write_metric
 from crypto import encrypt
-from derived import backfill_derived, recompute_derived, source_rank
-from metrics import RESTING_HR_BPM, SLEEP_MINUTES, STEPS, WEIGHT_KG
+from derived import (
+    backfill_derived,
+    load_source_roles,
+    recompute_derived,
+    set_source_role,
+    source_rank,
+)
+from metrics import METRICS, RESTING_HR_BPM, SLEEP_MINUTES, STEPS, WEIGHT_KG
 
 DB_PATH = os.getenv("DB_PATH", "/data/tracker.db")
 SYNC_INTERVAL_HOURS = int(os.getenv("SYNC_INTERVAL_HOURS", "6"))
@@ -316,6 +322,76 @@ def set_setting(key):
         (key, value),
     )
     conn.commit()
+    conn.close()
+    return jsonify({"ok": True})
+
+
+# ---------- source roles ----------
+
+# Which source is primary for each metric - the engine's config for the
+# pick in derived.py. By default every metric follows DEFAULT_PRIORITY;
+# setting a metric's primary puts that source first for it, and the rest
+# keep the default order (so on a day the primary didn't report, the
+# default picks). Stored as the source_roles settings row.
+#
+# Forward-only: changing a role re-derives nothing. Values already in
+# derived_metrics keep the source they were picked with; the new primary
+# applies from the next sync, over the window that sync re-derives.
+
+
+@app.route("/api/source-roles", methods=["GET"])
+def get_source_roles():
+    """Every canonical metric's primary, and the sources it could be.
+
+    {metric: {"primary", "configured", "sources"}}: `primary` is the
+    configured source if `configured`, otherwise the default's pick -
+    the highest-ranked source that has reported the metric, or None if
+    none has yet. `sources` is every source with a reading of the metric,
+    in the order the pick tries them.
+    """
+    conn = get_conn()
+    roles = load_source_roles(conn)
+    reported = {}
+    for row in conn.execute("SELECT DISTINCT metric, source FROM metrics"):
+        reported.setdefault(row["metric"], []).append(row["source"])
+    conn.close()
+
+    out = {}
+    for metric in METRICS:
+        configured = roles.get(metric)
+        sources = sorted(
+            reported.get(metric, []), key=lambda s: source_rank(s, configured)
+        )
+        out[metric] = {
+            "primary": configured or (sources[0] if sources else None),
+            "configured": configured is not None,
+            "sources": sources,
+        }
+    return jsonify(out)
+
+
+@app.route("/api/source-roles/<metric>", methods=["PUT"])
+def set_source_role_route(metric):
+    """Set a metric's primary source: {"primary": "<source>"}.
+
+    A null or empty primary clears the override, and the metric reverts
+    to the default. The source isn't checked against what has reported:
+    a device can be made primary before its first sync.
+
+    Stores the config only - see above: nothing already derived changes
+    until the next sync re-derives its window.
+    """
+    if metric not in METRICS:
+        return jsonify({"ok": False, "error": f"unknown metric: {metric}"}), 400
+    body = request.get_json(force=True, silent=True)
+    if not isinstance(body, dict) or "primary" not in body:
+        return jsonify({"ok": False, "error": 'expected {"primary": "<source>"}'}), 400
+    primary = body["primary"]
+    if primary is not None and not isinstance(primary, str):
+        return jsonify({"ok": False, "error": "primary must be a source id, or null"}), 400
+
+    conn = get_conn()
+    set_source_role(conn, metric, (primary or "").strip() or None)
     conn.close()
     return jsonify({"ok": True})
 
