@@ -41,16 +41,42 @@ is not the product.
   cloud Health API (not the legacy Fitbit Web API, retired September 2026).
 - Scheduled background sync plus a manual sync, with device connections managed
   in-app and credentials encrypted at rest.
+- A **webhook** any automation can push a reading to, guarded by a
+  regeneratable token and per-metric sanity ranges.
 - An interim web viewer (being replaced).
 
-## Planned: webhook input (push)
+## Webhook input (push)
 
-Beside pull plugins and manual entry, a webhook endpoint external automations can
-push to: `POST /api/webhook/<token>` with `{"metric": "weight", "value": 91.5}`.
-The token in the URL *is* the auth (regeneratable), with sanity-range checks. One
-URL to drop into Home Assistant, a Shortcut or a script — and the path by which
-on-device sources (e.g. Apple HealthKit) will reach OpenFit. See
-[ROADMAP.md](ROADMAP.md).
+Beside pull plugins and manual entry, automations can push a reading the moment
+it happens — Home Assistant on each smart-scale weigh-in, a Shortcut, a script.
+One URL for every metric:
+
+```bash
+curl -X POST http://<your-server-ip>:8080/api/webhook/<token> \
+  -H 'Content-Type: application/json' \
+  -d '{"metric": "weight_kg", "value": 82.4, "source": "eufy"}'
+```
+
+- `metric` is a canonical key (`steps`, `resting_hr_bpm`, `sleep_minutes`,
+  `weight_kg`) and `value` a number in its unit (`app/metrics.py`).
+- `date` (`YYYY-MM-DD`) is optional and defaults to today; `source` is optional
+  and defaults to `webhook`. Name your device (`"eufy"`) and it takes part in
+  source roles like any other source — make it a metric's primary and it wins.
+  A pull plugin's id (`garmin`, `google_health`) is refused: its syncs own those
+  readings.
+- A value outside the metric's plausible range is refused (400), so a misfired
+  automation can't corrupt your data: steps 0–200000, resting HR 20–250 bpm,
+  sleep 0–1440 min, weight 20–400 kg.
+- Pushing the same metric and source for a day again replaces the reading, and
+  the day's derived value is updated at once.
+
+The token in the URL **is** the auth — the only route that has any. Get it (and
+the full URL) from `GET /api/webhook-token`; it's made on first ask. If it leaks
+(it sits in your automation's config and in OpenFit's request log),
+`POST /api/webhook-token/regenerate` replaces it, and the old one stops working
+immediately. This is also the path by which on-device sources (e.g. Apple
+HealthKit) will reach OpenFit. Interval data (sleep, workouts) can't be pushed
+yet.
 
 ## Quick start
 
@@ -133,7 +159,8 @@ its `type` (the device's activity type, lowercased), `duration_minutes`,
 The per-day value is stored, not worked out on each read: a `derived_metrics`
 table holds one value per `(date, metric)`, tagged with the source it came from,
 picked by `app/derived.py` after every sync (for the days that sync covered) and
-once on the first boot of an upgraded database. `GET /api/activity` reads it.
+once on the first boot of an upgraded database; a webhook reading re-derives
+its own day as it lands. `GET /api/activity` reads it.
 By default the pick is a fixed source precedence (Garmin, then Google Health, then
 any other source); per metric, you can name a different primary source — e.g.
 Google for steps, Garmin for everything else — with

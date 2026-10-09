@@ -65,12 +65,14 @@ own calls to its device API. Full direction:
   `(date, metric)` (migration `008`, purely additive): the one trusted value per
   metric per day, every metric including `weight_kg`. `source` is the winning
   source (provenance); value/unit/synced_at are the winning reading's. Written
-  only by `recompute_derived(conn, since=None)` in `app/derived.py`: the
+  only by `recompute_derived(conn, since=None, until=None)` in `app/derived.py`: the
   highest-ranked source with a reading wins — the metric's configured primary
   (its source role) if it has one, then `DEFAULT_PRIORITY` = garmin >
   google_health, unlisted sources last, then by name; a `(date, metric)` in
-  range with no readings left loses its row; dates before `since` are untouched.
-  Refreshed after every sync for that sync's window (`today - (days-1)` on), and
+  range with no readings left loses its row; dates outside `since`..`until`
+  are untouched.
+  Refreshed after every sync for that sync's window (`today - (days-1)` on),
+  after every webhook reading for its one day (`since=until=date`), and
   backfilled once by `serve()` only while the table is empty — never a blanket
   re-derive (a policy change is forward-only). The default
   `/api/activity` reads it; `?by_source=1` still reads `metrics`. Manual
@@ -84,14 +86,27 @@ own calls to its device API. Full direction:
   (in pick order); `PUT /api/source-roles/<metric>` `{"primary": "<source>"}`
   sets it, `null`/empty clears it. Forward-only: a change re-derives nothing —
   it applies from the next sync's window.
+- Webhook (push input, no migration): `POST /api/webhook/<token>` with
+  `{"metric", "value", "date"?, "source"?}` writes one reading via
+  `write_metric()` then `recompute_derived(since=date, until=date)`, in one
+  transaction. Token-as-auth — the only authed route: the `settings` row
+  `webhook_token` (`secrets.token_urlsafe`), compared with
+  `hmac.compare_digest`; none stored or a mismatch → 401. `GET
+  /api/webhook-token` returns it (made on first ask) with its `path`/`url`;
+  `POST /api/webhook-token/regenerate` replaces it. 400 unless `metric` is a
+  canonical key, `value` a finite number (not a bool) within the metric's
+  `PLAUSIBLE_RANGES` (`app/metrics.py`; inclusive; no entry = any number),
+  `date` is `YYYY-MM-DD` (default today), and `source` a non-empty string
+  (default `webhook`) that isn't a pull plugin's id. Idempotent per
+  `(date, source, metric)`. Metrics only — no session ingest yet.
 - Also: `workouts` (orphaned — slated for removal); `settings`; `accounts`;
   `schema_migrations`.
 - Target (in progress — see Direction): the other source roles (sources that
   verify the primary) and full history retained.
 
 ## Hard constraints
-- No multi-tenancy in core. No `user_id`, no auth on core. Multi-user is a future
-  per-container Host layer.
+- No multi-tenancy in core. No `user_id`, no auth on core (the webhook's URL
+  token is the one exception). Multi-user is a future per-container Host layer.
 - Privacy-first: no telemetry, no external calls except a plugin's own device API.
   Credentials encrypted at rest, never returned over the API.
 - Ships no tracking apps. `app/templates/index.html` is a legacy/disposable UI
@@ -113,9 +128,8 @@ same PR:
   (fixed precedence) and the user-overridable per-metric primary in
   `settings.source_roles` (no migration). Still to come: verifying sources +
   history.
-- **Webhook / push ingestion:** `POST /api/webhook/<token>` (token-as-auth,
-  `{metric, value}` body, sanity checks, idempotent) beside pull plugins and
-  manual entry.
+- **Webhook / push ingestion:** landed for metrics (see Data model); still to
+  come: pushing sessions (sleep, workouts) through it.
 - **The access contract:** a stable read API (metric discovery + range queries
   with provenance) that external apps use.
 Keep `GET /api/activity` returning its current flat shape, and `/api/weights` its

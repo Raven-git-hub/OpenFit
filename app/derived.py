@@ -9,8 +9,10 @@ This module is the only place that pick is made - /api/activity reads
 the stored result rather than choosing again.
 
 When it runs: after each sync, over the window that sync wrote
-(recompute_derived(conn, since=...)), and once on first boot to fill a
-database whose readings predate derived_metrics (backfill_derived()).
+(recompute_derived(conn, since=...)), after each webhook reading, over
+that reading's day (since=until=its date), and once on first boot to
+fill a database whose readings predate derived_metrics
+(backfill_derived()).
 Never as a blanket re-derive of all history on startup: the policy is
 configurable, and changing it is forward-only, so values already derived
 must not be rewritten under a policy they weren't picked with.
@@ -53,10 +55,13 @@ def source_rank(source, primary=None):
         return (len(DEFAULT_PRIORITY), source or "")
 
 
-def recompute_derived(conn, since=None):
-    """Re-pick the derived value of every (date, metric) from `since` on.
+def recompute_derived(conn, since=None, until=None):
+    """Re-pick the derived value of every (date, metric) from `since` to `until`.
 
-    `since` is an ISO date ('YYYY-MM-DD'); None means every date. For
+    `since` and `until` are ISO dates ('YYYY-MM-DD'), both inclusive;
+    None leaves that end open, so neither means every date. A sync
+    passes only `since` (its window runs to today); a single pushed
+    reading passes the same date as both, re-deriving just its day. For
     each (date, metric) in metrics within that range, the reading from
     the highest-ranked source wins - the metric's configured primary
     (load_source_roles()) if it has one, then DEFAULT_PRIORITY - and is
@@ -68,12 +73,14 @@ def recompute_derived(conn, since=None):
 
     A derived row in range whose readings have all gone - every source's
     row deleted - is deleted too, so nothing derived outlives its data.
-    Dates before `since` are left exactly as they are.
+    Dates outside the range are left exactly as they are.
 
     Commits, like sync(): it's a batch of its own. Returns the number of
     derived values written.
     """
-    in_range, params = ("date >= ?", (since,)) if since is not None else ("1", ())
+    bounds = [("date >= ?", since), ("date <= ?", until)]
+    in_range = " AND ".join(clause for clause, d in bounds if d is not None) or "1"
+    params = tuple(d for _, d in bounds if d is not None)
 
     # The delete goes first: it opens the write transaction, so the read
     # below and the upsert after it see the same readings, and another
