@@ -2,18 +2,23 @@
 The metrics reshape must stay invisible to the frontend: GET /api/activity
 still returns one flat row per date in the old field names and units,
 with garmin winning over google_health per metric.
+
+The flat rows are read from derived_metrics, so seeding re-derives after
+writing the readings - as a sync does.
 """
 
 import sqlite3
 
 import pytest
 
+from derived import backfill_derived, recompute_derived
 from metrics import METRICS
 from migrations import run_migrations
 
 
 def insert(conn, date, source, synced_at=None, **readings):
-    """Seed one source's readings for a day, keyed by canonical metric."""
+    """Seed one source's readings for a day, keyed by canonical metric,
+    and re-derive."""
     for metric, value in readings.items():
         conn.execute(
             "INSERT INTO metrics (date, source, metric, value, unit, synced_at) "
@@ -21,6 +26,7 @@ def insert(conn, date, source, synced_at=None, **readings):
             (date, source, metric, value, METRICS[metric], synced_at),
         )
     conn.commit()
+    recompute_derived(conn)
 
 
 def test_garmin_wins_over_google_health(client, conn):
@@ -108,6 +114,7 @@ def test_metrics_outside_the_activity_fields_are_ignored(client, conn):
         "VALUES ('2026-01-02', 'garmin', 'weight_kg', 82.0, 'kg', datetime('now'))"
     )
     conn.commit()
+    recompute_derived(conn)
 
     assert [r["date"] for r in client.get("/api/activity?days=1").get_json()] == ["2026-01-01"]
     by_source = client.get("/api/activity?by_source=1").get_json()
@@ -195,6 +202,8 @@ def test_activity_migrated_by_005_reads_back_unchanged(db_at_version, monkeypatc
     )
     conn.commit()
     assert 5 in run_migrations(conn)
+    # As serve() does on the first boot after 008.
+    assert backfill_derived(conn)
     conn.close()
 
     monkeypatch.setitem(main.app.config, "DB_PATH", path)

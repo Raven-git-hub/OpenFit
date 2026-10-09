@@ -16,7 +16,8 @@ own calls to its device API. Full direction:
 
 ## Layout
 - `app/main.py` — Flask API + APScheduler. `serve()` runs migrations, then the
-  scheduler, then the app; the scheduler must NOT start on import (tests import it).
+  one-time derived backfill, then the scheduler, then the app; none of that may
+  run on import (tests import it).
 - `app/migrations/` — hand-rolled runner. Numbered `NNN_name.sql`, applied once,
   tracked in `schema_migrations`. New schema change = a new numbered migration;
   migrations must be additive and safe against a populated production DB.
@@ -28,6 +29,8 @@ own calls to its device API. Full direction:
 - `app/metrics.py` — the canonical metric vocabulary (key → unit), plus the
   session kinds (`SLEEP`, `WORKOUT` in `SESSION_KINDS`). Import keys and kinds
   from here; never spell metric or kind strings out in plugins or the API.
+- `app/derived.py` — the one place a source is picked per `(date, metric)`:
+  `recompute_derived()` writes `derived_metrics`. Never pick a source anywhere else.
 - `app/crypto.py` — Fernet encrypt/decrypt for stored credentials.
 - `tests/` — pytest, temp DB, no network.
 - `docs/architecture/` — design direction (read first). `docs/design/` — frontend references.
@@ -58,11 +61,24 @@ own calls to its device API. Full direction:
     source's activity type, lowercased — not yet mapped across sources),
     `duration_minutes`, `distance_m`, `avg_hr_bpm`, `calories_kcal`.
   No read endpoint for sessions yet (the access contract owns reads).
+- `derived_metrics(date, metric, value, unit, source, synced_at)` keyed
+  `(date, metric)` (migration `008`, purely additive): the one trusted value per
+  metric per day, every metric including `weight_kg`. `source` is the winning
+  source (provenance); value/unit/synced_at are the winning reading's. Written
+  only by `recompute_derived(conn, since=None)` in `app/derived.py`: the
+  highest-ranked source with a reading wins (`DEFAULT_PRIORITY` = garmin >
+  google_health, unlisted sources last, then by name); a `(date, metric)` in
+  range with no readings left loses its row; dates before `since` are untouched.
+  Refreshed after every sync for that sync's window (`today - (days-1)` on), and
+  backfilled once by `serve()` only while the table is empty — never a blanket
+  re-derive (a later policy change must be forward-only). The default
+  `/api/activity` reads it; `?by_source=1` still reads `metrics`. Manual
+  `/api/weights` writes don't re-derive yet.
 - Also: `workouts` (orphaned — slated for removal); `settings`; `accounts`;
   `schema_migrations`.
 - Target (in progress — see Direction): per-metric source roles pick a
-  controlling source (user-overridable) and a derived value tagged with its
-  source; full history retained.
+  controlling source (user-overridable) for the derived value; full history
+  retained.
 
 ## Hard constraints
 - No multi-tenancy in core. No `user_id`, no auth on core. Multi-user is a future
@@ -84,8 +100,8 @@ when you implement one, update the Data model section above and the README in th
 same PR:
 - **The engine:** the `metrics` table + canonical vocabulary landed in migration
   `005`; weight folded in as `weight_kg` in `006`; `sessions` in `007` (sleep,
-  then workouts with no further migration). Still to come: per-metric source
-  roles + stored derived value + history.
+  then workouts with no further migration); the stored derived value in `008`
+  (fixed precedence for now). Still to come: per-metric source roles + history.
 - **Webhook / push ingestion:** `POST /api/webhook/<token>` (token-as-auth,
   `{metric, value}` body, sanity checks, idempotent) beside pull plugins and
   manual entry.

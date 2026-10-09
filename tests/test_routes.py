@@ -3,6 +3,7 @@
 import sqlite3
 from datetime import date
 
+from derived import recompute_derived
 from migrations import run_migrations
 
 
@@ -157,6 +158,7 @@ def test_activity_returns_flat_rows(client, conn):
         ],
     )
     conn.commit()
+    recompute_derived(conn)
 
     rows = client.get("/api/activity").get_json()
     assert rows == [
@@ -182,6 +184,7 @@ def test_activity_days_limit_counts_dates_not_rows(client, conn):
                     (d, src, metric, unit),
                 )
     conn.commit()
+    recompute_derived(conn)
 
     rows = client.get("/api/activity?days=2").get_json()
     assert [r["date"] for r in rows] == ["2026-01-03", "2026-01-02"]

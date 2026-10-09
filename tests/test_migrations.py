@@ -101,7 +101,8 @@ def test_fresh_database_gets_all_tables(tmp_path):
         r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
     }
     assert {
-        "workouts", "metrics", "sessions", "settings", "accounts", "schema_migrations"
+        "workouts", "metrics", "sessions", "derived_metrics", "settings", "accounts",
+        "schema_migrations",
     } <= names
     assert "activity" not in names  # unpivoted into metrics by 005
     assert "weights" not in names   # folded into metrics by 006
@@ -607,21 +608,31 @@ def index_columns(conn, index):
     return [r[2] for r in conn.execute(f"PRAGMA index_info({index})").fetchall()]
 
 
-def everything_but_sessions(conn):
-    """Every other table's schema and rows - what 007 must not touch."""
+def everything_but(conn, added, only=None):
+    """Every other table's schema and rows - what the migration that
+    adds `added` must not touch.
+
+    `only` narrows it to the tables named there - the ones that existed
+    before the migration ran - so a table a later migration adds doesn't
+    count as a change, while one dropped or altered still does.
+    """
     tables = [
         r[0] for r in conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table' "
-            "AND name NOT IN ('sessions', 'schema_migrations') ORDER BY name"
+            "AND name NOT IN (?, 'schema_migrations') ORDER BY name",
+            (added,),
         )
     ]
-    return {
+    snapshot = {
         table: (
             table_sql(conn, table),
             sorted(conn.execute(f"SELECT * FROM {table}").fetchall(), key=repr),
         )
         for table in tables
     }
+    if only is not None:
+        return {table: snapshot.get(table) for table in only}
+    return snapshot
 
 
 def populated_at_version_6(db_at_version):
@@ -662,13 +673,13 @@ def test_sessions_table_on_a_fresh_database(tmp_path):
 def test_sessions_migration_is_additive(db_at_version):
     """007 adds a table and its index, and nothing already there changes."""
     conn = populated_at_version_6(db_at_version)
-    before = everything_but_sessions(conn)
+    before = everything_but(conn, "sessions")
 
     assert run_migrations(conn) == versions_from(7)
 
     assert column_names(conn, "sessions") == SESSION_COLUMNS
     assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
-    assert everything_but_sessions(conn) == before
+    assert everything_but(conn, "sessions", only=before) == before
     # The daily sleep total is untouched: sessions sit beside it.
     assert conn.execute(
         "SELECT source, value FROM metrics WHERE metric = 'sleep_minutes' ORDER BY source"
@@ -687,14 +698,14 @@ def test_sessions_migration_is_idempotent(db_at_version):
     conn.commit()
     schema_before = table_sql(conn, "sessions")
     rows_before = conn.execute("SELECT * FROM sessions").fetchall()
-    others_before = everything_but_sessions(conn)
+    others_before = everything_but(conn, "sessions")
 
     assert run_migrations(conn) == []
     assert run_migrations(conn) == []
 
     assert table_sql(conn, "sessions") == schema_before
     assert conn.execute("SELECT * FROM sessions").fetchall() == rows_before
-    assert everything_but_sessions(conn) == others_before
+    assert everything_but(conn, "sessions") == others_before
     assert conn.execute(
         "SELECT COUNT(*) FROM schema_migrations WHERE version = 7"
     ).fetchone()[0] == 1
@@ -721,3 +732,134 @@ def test_sessions_migration_adopts_a_preexisting_table(tmp_path):
     ]
     assert index_columns(conn, "idx_sessions_kind_start") == ["kind", "start"]
     conn.close()
+
+
+# ---------- 008: the derived_metrics table ----------
+
+
+DERIVED_COLUMNS = ["date", "metric", "value", "unit", "source", "synced_at"]
+
+
+def populated_at_version_7(db_at_version):
+    """A version-7 database - where production sits before 008 - with data in it."""
+    path = db_at_version(7)
+    conn = sqlite3.connect(path)
+    conn.executemany(
+        "INSERT INTO metrics (date, source, metric, value, unit, synced_at) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        [
+            ("2026-01-01", "garmin", "steps", 9000, "count", "x"),
+            ("2026-01-01", "google_health", "steps", 8000, "count", "y"),
+            ("2026-01-01", "google_health", "sleep_minutes", 421, "min", "y"),
+            ("2026-01-01", "manual", "weight_kg", 82.0, "kg", None),
+        ],
+    )
+    conn.execute(
+        'INSERT INTO sessions (id, source, kind, "start", "end", summary_json, synced_at) '
+        "VALUES ('garmin:sleep:s', 'garmin', 'sleep', 's', 'e', '{}', 'x')"
+    )
+    conn.execute("INSERT INTO workouts VALUES (1, 0, 1)")
+    conn.execute("INSERT INTO settings VALUES ('home_tiles', '{}')")
+    conn.execute("INSERT INTO accounts VALUES ('garmin', 'blob', 'then')")
+    conn.commit()
+    return conn
+
+
+def test_derived_metrics_table_on_a_fresh_database(tmp_path):
+    conn = sqlite3.connect(str(tmp_path / "fresh.db"))
+    run_migrations(conn)
+
+    assert column_names(conn, "derived_metrics") == DERIVED_COLUMNS
+    # One derived value per (date, metric) - the source is a column, not
+    # part of the key.
+    assert primary_key_columns(conn, "derived_metrics") == ["date", "metric"]
+    assert conn.execute("SELECT COUNT(*) FROM derived_metrics").fetchone()[0] == 0
+    # A derived value always has a value and the source it came from.
+    not_null = {r[1] for r in conn.execute("PRAGMA table_info(derived_metrics)") if r[3]}
+    assert not_null == {"date", "metric", "value", "source"}
+    assert index_columns(conn, "idx_derived_metric_date") == ["metric", "date"]
+    conn.close()
+
+
+def test_derived_metrics_migration_is_additive(db_at_version):
+    """008 adds a table and its index, and nothing already there changes."""
+    conn = populated_at_version_7(db_at_version)
+    before = everything_but(conn, "derived_metrics")
+
+    assert run_migrations(conn) == versions_from(8)
+
+    assert column_names(conn, "derived_metrics") == DERIVED_COLUMNS
+    assert everything_but(conn, "derived_metrics", only=before) == before
+    # The migration reads nothing: deriving the existing readings is the
+    # app's first-boot backfill (derived.backfill_derived), not 008's.
+    assert conn.execute("SELECT COUNT(*) FROM derived_metrics").fetchone()[0] == 0
+    conn.close()
+
+
+def test_derived_metrics_migration_is_idempotent(db_at_version):
+    conn = populated_at_version_7(db_at_version)
+    assert run_migrations(conn) == versions_from(8)
+    conn.execute(
+        "INSERT INTO derived_metrics (date, metric, value, unit, source, synced_at) "
+        "VALUES ('2026-01-01', 'steps', 9000, 'count', 'garmin', 'x')"
+    )
+    conn.commit()
+    schema_before = table_sql(conn, "derived_metrics")
+    rows_before = conn.execute("SELECT * FROM derived_metrics").fetchall()
+    others_before = everything_but(conn, "derived_metrics")
+
+    assert run_migrations(conn) == []
+    assert run_migrations(conn) == []
+
+    assert table_sql(conn, "derived_metrics") == schema_before
+    assert conn.execute("SELECT * FROM derived_metrics").fetchall() == rows_before
+    assert everything_but(conn, "derived_metrics") == others_before
+    assert conn.execute(
+        "SELECT COUNT(*) FROM schema_migrations WHERE version = 8"
+    ).fetchone()[0] == 1
+    conn.close()
+
+
+def test_derived_metrics_migration_adopts_a_preexisting_table(tmp_path):
+    """CREATE TABLE IF NOT EXISTS: an existing derived_metrics table survives."""
+    path = str(tmp_path / "has-derived.db")
+    conn = sqlite3.connect(path)
+    conn.execute(
+        "CREATE TABLE derived_metrics (date TEXT NOT NULL, metric TEXT NOT NULL, "
+        "value REAL NOT NULL, unit TEXT, source TEXT NOT NULL, synced_at TEXT, "
+        "PRIMARY KEY (date, metric))"
+    )
+    conn.execute(
+        "INSERT INTO derived_metrics VALUES ('2026-01-01', 'steps', 9000, 'count', 'garmin', 'x')"
+    )
+    conn.commit()
+
+    run_migrations(conn)
+
+    assert conn.execute("SELECT * FROM derived_metrics").fetchall() == [
+        ("2026-01-01", "steps", 9000, "count", "garmin", "x")
+    ]
+    assert index_columns(conn, "idx_derived_metric_date") == ["metric", "date"]
+    conn.close()
+
+
+def test_one_derived_value_per_date_and_metric(conn):
+    conn.execute(
+        "INSERT INTO derived_metrics (date, metric, value, unit, source) "
+        "VALUES ('2026-01-01', 'steps', 9000, 'count', 'garmin')"
+    )
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute(
+            "INSERT INTO derived_metrics (date, metric, value, unit, source) "
+            "VALUES ('2026-01-01', 'steps', 8000, 'count', 'google_health')"
+        )
+
+
+@pytest.mark.parametrize("value, source", [(None, "garmin"), (9000, None)])
+def test_a_derived_value_needs_a_value_and_a_source(conn, value, source):
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute(
+            "INSERT INTO derived_metrics (date, metric, value, unit, source) "
+            "VALUES ('2026-01-01', 'steps', ?, 'count', ?)",
+            (value, source),
+        )
