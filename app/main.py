@@ -28,6 +28,7 @@ from metrics import (
     METRICS,
     PLAUSIBLE_RANGES,
     RESTING_HR_BPM,
+    SESSION_KINDS,
     SLEEP_MINUTES,
     STEPS,
     WEIGHT_KG,
@@ -116,7 +117,11 @@ def add_weight():
         return jsonify({"error": "weight required"}), 400
     conn = get_conn()
     write_metric(conn, d, MANUAL_SOURCE, WEIGHT_KG, w)
-    conn.commit()
+    # Re-derive the day, as the webhook does, so the weigh-in is in the
+    # derived profile - and the access contract - at once rather than
+    # after the next sync. The commit in recompute_derived() lands the
+    # reading and its pick together.
+    recompute_derived(conn, since=d, until=d)
     conn.close()
     return jsonify({"ok": True})
 
@@ -124,10 +129,19 @@ def add_weight():
 @app.route("/api/weights", methods=["DELETE"])
 def clear_weights():
     conn = get_conn()
-    conn.execute(
-        "DELETE FROM metrics WHERE metric = ? AND source = ?",
+    # RETURNING, so the days re-derived are exactly the rows deleted -
+    # a weigh-in posted in between can't be cleared without its day
+    # being re-derived too.
+    cleared = conn.execute(
+        "DELETE FROM metrics WHERE metric = ? AND source = ? RETURNING date",
         (WEIGHT_KG, MANUAL_SOURCE),
-    )
+    ).fetchall()
+    # Each cleared day re-derived on its own, never one span over all of
+    # them: that would re-pick every other metric in between under the
+    # current source roles, which are forward-only. The first commits the
+    # delete along with its day's pick.
+    for row in cleared:
+        recompute_derived(conn, since=row["date"], until=row["date"])
     conn.commit()
     conn.close()
     return jsonify({"ok": True})
@@ -293,6 +307,193 @@ def get_activity():
         rows = _pivot_by_date(_recent_activity(conn, "derived_metrics", days))
     conn.close()
     return jsonify(rows)
+
+
+# ---------- the access contract ----------
+
+# The stable read API apps build on: discovery (/api/catalog), then range
+# queries - one metric's series (/api/metric/<metric>) or one kind of
+# session (/api/sessions/<kind>). Read-only, on the same trusted-network
+# model as everything else.
+#
+# Metrics are served from derived_metrics - the one value per metric per
+# day picked in derived.py, each point tagged with the source it came
+# from - never the raw per-source rows in metrics, so an app gets one
+# trusted answer and never reconciles sources itself. Sessions have no
+# derived pick yet: every source's session is served, each tagged with
+# its source.
+#
+# Unlike /api/activity and /api/weights, these shapes were made for apps,
+# not kept for the interim UI: keys and units are the canonical ones from
+# metrics.py, and a value is the number as stored.
+
+
+def _date_range(args):
+    """((from, to), None) for a contract read's query args, or (None, what's wrong).
+
+    ?from= and ?to= are optional YYYY-MM-DD dates, both inclusive; one
+    that is missing or empty is None, leaving that end open.
+    """
+    bounds = []
+    for name in ("from", "to"):
+        raw = args.get(name, "")
+        if not raw:
+            bounds.append(None)
+            continue
+        try:
+            # As the webhook reads its date: strptime rather than
+            # date.fromisoformat, which also takes '20260101' and week
+            # dates. Normalised, so it compares with stored dates as text.
+            bounds.append(datetime.strptime(raw, "%Y-%m-%d").date().isoformat())
+        except ValueError:
+            return None, f"{name} must be YYYY-MM-DD"
+    since, until = bounds
+    if since and until and since > until:
+        return None, "from must not be after to"
+    return (since, until), None
+
+
+def _in_range(column, since, until):
+    """SQL for `since <= column <= until`, an end of None left open, and its params.
+
+    `column` is always an expression written here, never request input.
+    """
+    bounds = [(f"{column} >= ?", since), (f"{column} <= ?", until)]
+    clause = " AND ".join(c for c, d in bounds if d is not None) or "1"
+    return clause, [d for _, d in bounds if d is not None]
+
+
+@app.route("/api/catalog", methods=["GET"])
+def get_catalog():
+    """What this install has: every metric and session kind with any data.
+
+    {"metrics": [...], "sessions": [...]}. A metric entry is {metric,
+    unit, sources, first, last, count, last_value, last_date}: `sources`
+    are those that have won any day, in the order the pick tries them;
+    first/last bound its derived days and `count` is how many there are;
+    last_value is the value on last_date, its latest day. A session entry
+    is {kind, count, first, last}, first/last being the earliest and
+    latest start. Metrics are in vocabulary order, kinds by name; one with
+    no data is left out, so an empty install has two empty lists.
+    """
+    conn = get_conn()
+    roles = load_source_roles(conn)
+    # One statement, so the coverage and the last value are one snapshot
+    # even if a sync commits while this runs.
+    coverage = {
+        row["metric"]: row
+        for row in conn.execute(
+            "SELECT c.metric, c.first, c.last, c.count, c.sources, d.value AS last_value "
+            "FROM ("
+            "SELECT metric, MIN(date) AS first, MAX(date) AS last, COUNT(*) AS count, "
+            # JSON rather than GROUP_CONCAT: a pushed source can be any
+            # string, commas included.
+            "json_group_array(DISTINCT source) AS sources "
+            "FROM derived_metrics GROUP BY metric"
+            ") c "
+            "JOIN derived_metrics d ON d.metric = c.metric AND d.date = c.last"
+        )
+    }
+    kinds = {
+        row["kind"]: row
+        for row in conn.execute(
+            'SELECT kind, COUNT(*) AS count, MIN("start") AS first, MAX("start") AS last '
+            "FROM sessions GROUP BY kind"
+        )
+    }
+    conn.close()
+
+    metrics = []
+    for metric, unit in METRICS.items():
+        row = coverage.get(metric)
+        if row is None:
+            continue
+        metrics.append({
+            "metric": metric,
+            "unit": unit,
+            "sources": sorted(
+                json.loads(row["sources"]),
+                key=lambda s: source_rank(s, roles.get(metric)),
+            ),
+            "first": row["first"],
+            "last": row["last"],
+            "count": row["count"],
+            "last_value": row["last_value"],
+            "last_date": row["last"],
+        })
+    sessions = [
+        {"kind": kind, "count": kinds[kind]["count"],
+         "first": kinds[kind]["first"], "last": kinds[kind]["last"]}
+        for kind in sorted(SESSION_KINDS)
+        if kind in kinds
+    ]
+    return jsonify({"metrics": metrics, "sessions": sessions})
+
+
+@app.route("/api/metric/<metric>", methods=["GET"])
+def get_metric_series(metric):
+    """One metric's derived series: {metric, unit, points: [{date, value, source}]}.
+
+    One point per day with a derived value, oldest first, `source` naming
+    the source it was picked from. ?from= and ?to= (YYYY-MM-DD, inclusive)
+    narrow it. 404 for a metric outside the vocabulary; a known one with
+    no data in range has no points.
+    """
+    if metric not in METRICS:
+        return jsonify({"ok": False, "error": f"unknown metric: {metric}"}), 404
+    bounds, error = _date_range(request.args)
+    if error:
+        return jsonify({"ok": False, "error": error}), 400
+
+    in_range, params = _in_range("date", *bounds)
+    conn = get_conn()
+    points = [
+        dict(row)
+        for row in conn.execute(
+            "SELECT date, value, source FROM derived_metrics "
+            f"WHERE metric = ? AND {in_range} ORDER BY date",
+            (metric, *params),
+        )
+    ]
+    conn.close()
+    return jsonify({"metric": metric, "unit": METRICS[metric], "points": points})
+
+
+@app.route("/api/sessions/<kind>", methods=["GET"])
+def get_sessions(kind):
+    """One kind's sessions: [{start, end, source, summary}], by start.
+
+    start/end are ISO 8601 UTC (end may be null) and `summary` the kind's
+    breakdown (see SESSION_KINDS in metrics.py) - {} when the source gave
+    none. ?from= and ?to= (YYYY-MM-DD, inclusive) match the start's UTC
+    date. Every source's sessions are listed, so a night two devices both
+    tracked appears twice, each with its source. 404 for an unknown kind.
+    """
+    if kind not in SESSION_KINDS:
+        return jsonify({"ok": False, "error": f"unknown session kind: {kind}"}), 404
+    bounds, error = _date_range(request.args)
+    if error:
+        return jsonify({"ok": False, "error": error}), 400
+
+    # start is YYYY-MM-DDTHH:MM:SSZ (iso_utc()), so its first ten
+    # characters are its UTC date.
+    in_range, params = _in_range('substr("start", 1, 10)', *bounds)
+    conn = get_conn()
+    rows = conn.execute(
+        'SELECT "start", "end", source, summary_json FROM sessions '
+        f'WHERE kind = ? AND {in_range} ORDER BY "start", source',
+        (kind, *params),
+    ).fetchall()
+    conn.close()
+    return jsonify([
+        {
+            "start": row["start"],
+            "end": row["end"],
+            "source": row["source"],
+            "summary": json.loads(row["summary_json"]) if row["summary_json"] else {},
+        }
+        for row in rows
+    ])
 
 
 # ---------- settings ----------
