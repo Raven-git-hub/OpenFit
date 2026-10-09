@@ -3,9 +3,10 @@ OpenFit plugin interface.
 
 A "sync plugin" is anything that pulls data from an external device/service
 and writes it into OpenFit's metrics table as canonical readings (and,
-for interval data like a night's sleep, into the sessions table). To add a
-new source (Google Health, Oura, Whoop, a spreadsheet, whatever), subclass
-SyncPlugin and drop the module in app/plugins/<your_plugin>/.
+for interval data like a night's sleep or a workout, into the sessions
+table). To add a new source (Google Health, Oura, Whoop, a spreadsheet,
+whatever), subclass SyncPlugin and drop the module in
+app/plugins/<your_plugin>/.
 
 Plugins are intentionally dumb: they get a database connection and a date
 range, and they write readings through write_metric() and sessions through
@@ -19,7 +20,7 @@ from abc import ABC, abstractmethod
 from datetime import timezone
 
 from crypto import decrypt
-from metrics import unit_for
+from metrics import SESSION_KINDS, unit_for
 
 # Where a provider sends the browser back after consent, for every
 # add_flow="oauth" plugin.
@@ -82,10 +83,15 @@ def write_session(conn, source, kind, start, end, summary):
     """Upsert one session into the sessions table. Returns whether it wrote.
 
     A session is an interval with a shape - a night's sleep and its stage
-    breakdown - where a metric is one number per day. `start` and `end`
-    are timestamps from iso_utc(); `summary` is a dict, stored as JSON,
-    whose keys belong to the kind (for sleep: asleep_minutes plus
-    whichever of light/deep/rem/awake_minutes the source reports).
+    breakdown, a workout and its distance and heart rate - where a metric
+    is one number per day. `kind` is a session kind from metrics.py
+    (SLEEP, WORKOUT); `start` and `end` are timestamps from iso_utc();
+    `summary` is a dict, stored as JSON, whose keys belong to the kind
+    (listed beside SESSION_KINDS in metrics.py).
+
+    Raises ValueError for a kind outside SESSION_KINDS, as write_metric()
+    does for an unknown metric, so a typo fails the sync loudly instead
+    of filing sessions under a kind nothing will ever read.
 
     The id is source:kind:start, so a re-sync of the same night lands on
     the same row and replaces its end and summary instead of adding a
@@ -94,6 +100,8 @@ def write_session(conn, source, kind, start, end, summary):
 
     Doesn't commit - sync() commits once at the end of its batch.
     """
+    if kind not in SESSION_KINDS:
+        raise ValueError(f"unknown session kind: {kind!r}")
     if start is None:
         return False
     conn.execute(
@@ -276,10 +284,11 @@ class SyncPlugin(ABC):
         own rows, two sources covering the same day never contend, and a
         metric you didn't fetch this time keeps its earlier value.
 
-        Interval data - a night's sleep - also goes in as a session with
-        write_session(conn, self.id, kind, start, end, summary), beside
-        the daily metric rather than instead of it. Commit before
-        returning. See plugins/garmin/plugin.py for the reference
+        Interval data goes in as a session with write_session(conn,
+        self.id, kind, start, end, summary), `kind` a session kind from
+        metrics.py: a night's sleep (SLEEP) beside the daily metric rather
+        than instead of it, a workout (WORKOUT) as a session only. Commit
+        before returning. See plugins/garmin/plugin.py for the reference
         implementation.
 
         Returns the number of days written (for logging/UI feedback).

@@ -12,7 +12,7 @@ import pytest
 
 from plugins.base import SyncPlugin, iso_utc, write_metric, write_session
 from crypto import encrypt
-from metrics import METRICS, SLEEP_MINUTES, STEPS
+from metrics import METRICS, SESSION_KINDS, SLEEP, SLEEP_MINUTES, STEPS, WORKOUT
 
 
 class FakePlugin(SyncPlugin):
@@ -200,6 +200,31 @@ def test_sessions_are_keyed_by_source_kind_and_start(conn):
 
     assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 3
     assert [s[4] for s in sessions_for(conn, "google_health")] == [{"asleep_minutes": 421}]
+
+
+def test_the_session_kinds_are_sleep_and_workout():
+    assert SESSION_KINDS == {SLEEP, WORKOUT} == {"sleep", "workout"}
+
+
+@pytest.mark.parametrize("kind", [SLEEP, WORKOUT])
+def test_write_session_accepts_each_session_kind(conn, kind):
+    start = "2026-01-01T22:30:00Z"
+    assert write_session(conn, "fake", kind, start, None, {}) is True
+
+    assert sessions_for(conn, "fake") == [(f"fake:{kind}:{start}", kind, start, None, {})]
+
+
+def test_write_session_rejects_a_kind_outside_the_vocabulary(conn):
+    with pytest.raises(ValueError, match="unknown session kind"):
+        write_session(conn, "fake", "sleeep", "2026-01-01T22:30:00Z", None, NIGHT)
+
+    assert sessions_for(conn, "fake") == []
+
+
+def test_an_unknown_kind_fails_even_without_a_start(conn):
+    """A typo shows on the first call, not only once a session has a start."""
+    with pytest.raises(ValueError, match="unknown session kind"):
+        write_session(conn, "fake", "run", None, None, {})
 
 
 def test_write_session_skips_a_missing_start(conn):

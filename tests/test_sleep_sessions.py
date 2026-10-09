@@ -106,7 +106,8 @@ GARMIN_SUMMARY = {
 
 
 class FakeGarmin:
-    """Stands in for garminconnect.Garmin: canned stats and sleep by date."""
+    """Stands in for garminconnect.Garmin: canned stats and sleep by date,
+    and no activities (workouts are test_workout_sessions.py's)."""
 
     def __init__(self, sleep_by_date, stats_by_date=None):
         self.sleep_by_date = sleep_by_date
@@ -121,6 +122,9 @@ class FakeGarmin:
         return self.sleep_by_date.get(
             cdate, {"dailySleepDTO": {"calendarDate": cdate, "sleepTimeSeconds": None}}
         )
+
+    def get_activities_by_date(self, startdate, enddate=None):
+        return []
 
 
 @pytest.fixture

@@ -23,10 +23,13 @@ Data types used (Google Health API v4):
                                  Asked for by end date; sleep that began before
                                  the sync window is dropped (see _fetch_sleep)
   - daily-resting-heart-rate  -> list (no rollup available for this type)
+  - exercise                  -> list, each data point stored as a workout
+                                 session (no daily metric). Asked for by civil
+                                 start date; every point that comes back is kept
 
 Every fetch reads all its pages (see _all_pages): Google answers a page at
-a time, newest first, and a sleep page holds at most 25 points, so a
-backfill longer than that spans several.
+a time, newest first, and a sleep or exercise page holds at most 25
+points, so a backfill longer than that spans several.
 
 Field names - list filters and the fields read back - follow the v4
 discovery document (https://health.googleapis.com/$discovery/rest?version=v4).
@@ -42,7 +45,7 @@ from datetime import date, datetime, timedelta
 
 import requests
 
-from metrics import RESTING_HR_BPM, SLEEP_MINUTES, STEPS
+from metrics import RESTING_HR_BPM, SLEEP, SLEEP_MINUTES, STEPS, WORKOUT
 
 from ..base import SyncPlugin, iso_utc, write_metric, write_session
 
@@ -223,6 +226,7 @@ class GoogleHealthPlugin(SyncPlugin):
         steps_by_date = self._fetch_steps(headers, start, today)
         sleep_by_date, sleep_sessions = self._fetch_sleep(headers, start, today)
         hr_by_date = self._fetch_resting_hr(headers, start, today)
+        workouts = self._fetch_workouts(headers, start)
 
         all_dates = set(steps_by_date) | set(sleep_by_date) | set(hr_by_date)
         written = 0
@@ -236,7 +240,10 @@ class GoogleHealthPlugin(SyncPlugin):
 
         # Each night (and nap) as its own session, beside the daily total.
         for session in sleep_sessions:
-            write_session(conn, self.id, "sleep", *session)
+            write_session(conn, self.id, SLEEP, *session)
+        # Workouts are sessions only - there is no daily workout metric.
+        for session in workouts:
+            write_session(conn, self.id, WORKOUT, *session)
 
         conn.commit()
         return written
@@ -376,6 +383,38 @@ class GoogleHealthPlugin(SyncPlugin):
             print(f"[google_health] resting HR fetch failed: {e}")
             return {}
 
+    def _fetch_workouts(self, headers, start):
+        """Each exercise data point that began on or after `start` as a
+        (start, end, summary) workout session.
+
+        Unlike sleep, exercise can be filtered on its civil start date -
+        the discovery doc's "session civil start time" filter names it as
+        the example. And a workout is filed as a session keyed by its own
+        start, with no daily total to keep whole, so there is nothing like
+        sleep's window trim: every point that comes back is written.
+        """
+        params = {"filter": f'exercise.interval.civil_start_time >= "{start.isoformat()}"'}
+        try:
+            points = _all_pages("exercise", "dataPoints", lambda token: requests.get(
+                f"{API_BASE}/dataTypes/exercise/dataPoints",
+                headers=headers, params=_with_page_token(params, token), timeout=20,
+            ))
+        except Exception as e:
+            print(f"[google_health] exercise fetch failed: {e}")
+            return []
+        sessions = []
+        for point in points:
+            session = _workout_session(point)
+            if session:
+                sessions.append(session)
+        # Same idea as the sleep fetcher: workouts came back but not one
+        # had a number in its summary, so the metric fields are probably
+        # not where this expects - show what a point looks like.
+        if sessions and all(set(summary) <= {"type"} for _, _, summary in sessions):
+            print(f"[google_health] exercise: got sessions but no duration, distance, "
+                  f"heart rate or calories in any. Sample point: {points[0]}")
+        return sessions
+
 
 def _all_pages(label, items_key, request_page):
     """Every item under items_key, following nextPageToken to the last page.
@@ -458,6 +497,63 @@ def _sleep_session(sleep):
         return None
 
 
+def _workout_session(point):
+    """One exercise data point as a (start, end, summary) workout session,
+    or None.
+
+    Reads, under the point's `exercise`: interval.startTime/endTime (RFC
+    3339); exerciseType, an enum like RUNNING, lowercased; activeDuration,
+    a duration string like "1830s" that excludes pauses; and from
+    metricsSummary, distanceMillimeters, averageHeartRateBeatsPerMinute
+    (an int64, so a JSON string) and caloriesKcal - each converted to the
+    workout summary's unit.
+
+    Defensive throughout: a field that isn't there is left out of the
+    summary, a point with no usable start is logged and skipped, and
+    nothing here raises.
+    """
+    try:
+        exercise = point.get("exercise") or {}
+        interval = exercise.get("interval") or {}
+        start = _rfc3339_iso(interval.get("startTime"))
+        if start is None:
+            print(f"[google_health] exercise point has no usable interval.startTime - "
+                  f"no session written. interval: {interval}")
+            return None
+
+        summary = {}
+        exercise_type = exercise.get("exerciseType")
+        if exercise_type == "EXERCISE_TYPE_UNSPECIFIED":
+            exercise_type = None
+        if isinstance(exercise_type, str) and exercise_type:
+            summary["type"] = exercise_type.lower()
+        seconds = _duration_seconds(exercise.get("activeDuration"))
+        if seconds is not None:
+            summary["duration_minutes"] = round(seconds / 60)
+        metrics = exercise.get("metricsSummary") or {}
+        millimetres = _float_or_none(metrics.get("distanceMillimeters"))
+        if millimetres is not None:
+            summary["distance_m"] = millimetres / 1000
+        bpm = _int_or_none(metrics.get("averageHeartRateBeatsPerMinute"))
+        if bpm is not None:
+            summary["avg_hr_bpm"] = bpm
+        kcal = _float_or_none(metrics.get("caloriesKcal"))
+        if kcal is not None:
+            summary["calories_kcal"] = round(kcal)
+
+        return start, _rfc3339_iso(interval.get("endTime")), summary
+    except Exception as e:
+        print(f"[google_health] could not read an exercise session: {e}")
+        return None
+
+
+def _duration_seconds(value):
+    """A Google duration ("1830s", "1830.5s") in seconds, or None."""
+    if not isinstance(value, str) or not value.endswith("s"):
+        return None
+    return _float_or_none(value[:-1])
+
+
 def _rfc3339_iso(value):
     """An RFC 3339 timestamp from Google as an iso_utc() string, or None.
 
@@ -475,6 +571,13 @@ def _rfc3339_iso(value):
 def _int_or_none(value):
     try:
         return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _float_or_none(value):
+    try:
+        return float(value)
     except (TypeError, ValueError):
         return None
 
