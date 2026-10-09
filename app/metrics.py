@@ -44,6 +44,20 @@ def unit_for(metric):
         raise ValueError(f"unknown metric: {metric!r}") from None
 
 
+# Canonical key -> the (low, high) a reading of it can plausibly be, in
+# its unit, both ends inclusive. A pushed reading (the webhook in main.py)
+# outside its metric's range is refused rather than stored, so a misfired
+# automation - a sensor sending 0, a scale reporting grams - can't file
+# nonsense as a reading. Deliberately wide: these catch garbage, not
+# unusual days. A metric with no entry accepts any number.
+PLAUSIBLE_RANGES = {
+    STEPS: (0, 200_000),
+    RESTING_HR_BPM: (20, 250),
+    SLEEP_MINUTES: (0, 1440),
+    WEIGHT_KG: (20, 400),
+}
+
+
 # ---- session kinds ----
 #
 # A session is an interval with a shape - a night's sleep, a workout -

@@ -164,6 +164,23 @@ def test_since_leaves_earlier_dates_alone(conn):
     assert picked(conn, "2026-01-01", STEPS) == (1, "garmin")
 
 
+def test_until_leaves_later_dates_alone(conn):
+    for d in ("2026-01-01", "2026-01-02", "2026-01-03"):
+        insert(conn, d, "garmin", steps=1)
+    recompute_derived(conn)
+
+    conn.execute("UPDATE metrics SET value = 2")
+    conn.execute("DELETE FROM metrics WHERE date = '2026-01-03'")
+    conn.commit()
+    # One day, as a webhook push re-derives.
+    recompute_derived(conn, since="2026-01-02", until="2026-01-02")
+
+    assert picked(conn, "2026-01-02", STEPS) == (2, "garmin")
+    # Outside the range on either side: neither updated nor deleted.
+    assert picked(conn, "2026-01-01", STEPS) == (1, "garmin")
+    assert picked(conn, "2026-01-03", STEPS) == (1, "garmin")
+
+
 def test_recompute_is_stable_and_counts_what_it_wrote(conn):
     insert(conn, "2026-01-01", "garmin", steps=9000, sleep_minutes=450)
     insert(conn, "2026-01-01", "google_health", steps=8000)

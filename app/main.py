@@ -1,6 +1,8 @@
 import base64
 import hashlib
+import hmac
 import json
+import math
 import os
 import secrets
 import sqlite3
@@ -22,7 +24,14 @@ from derived import (
     set_source_role,
     source_rank,
 )
-from metrics import METRICS, RESTING_HR_BPM, SLEEP_MINUTES, STEPS, WEIGHT_KG
+from metrics import (
+    METRICS,
+    PLAUSIBLE_RANGES,
+    RESTING_HR_BPM,
+    SLEEP_MINUTES,
+    STEPS,
+    WEIGHT_KG,
+)
 
 DB_PATH = os.getenv("DB_PATH", "/data/tracker.db")
 SYNC_INTERVAL_HOURS = int(os.getenv("SYNC_INTERVAL_HOURS", "6"))
@@ -394,6 +403,183 @@ def set_source_role_route(metric):
     set_source_role(conn, metric, (primary or "").strip() or None)
     conn.close()
     return jsonify({"ok": True})
+
+
+# ---------- webhook ----------
+
+# The push input, beside pull plugins and manual entry: an automation
+# (Home Assistant on a smart-scale weigh-in, a Shortcut, a script) POSTs
+# one reading to /api/webhook/<token> the moment it happens. One URL for
+# every metric - the body names which.
+#
+# The token in the URL is the auth, and this is the one route that has
+# any: everything else stays on the trusted-network model. The token is
+# the webhook_token settings row, made on first ask and regenerated to
+# revoke a leaked one.
+
+WEBHOOK_TOKEN_KEY = "webhook_token"
+
+# The source a pushed reading is filed under when the body names none.
+# An automation can name its device instead (e.g. "eufy"), which then
+# takes part in source roles and the derived pick like any other source.
+WEBHOOK_SOURCE = "webhook"
+
+
+def _stored_webhook_token(conn):
+    """The stored token, or None if there isn't one yet."""
+    row = conn.execute(
+        "SELECT value FROM settings WHERE key = ?", (WEBHOOK_TOKEN_KEY,)
+    ).fetchone()
+    return row["value"] if row and row["value"] else None
+
+
+def _webhook_token(conn):
+    """The current token, making and storing one if there isn't one yet."""
+    token = _stored_webhook_token(conn)
+    if token:
+        return token
+    # Only fills an empty slot, never replaces a token: two first asks at
+    # once both read back whichever landed first, not one that was then
+    # overwritten.
+    conn.execute(
+        "INSERT INTO settings (key, value) VALUES (?, ?) "
+        "ON CONFLICT(key) DO UPDATE SET value=excluded.value "
+        "WHERE settings.value IS NULL OR settings.value = ''",
+        (WEBHOOK_TOKEN_KEY, secrets.token_urlsafe(32)),
+    )
+    conn.commit()
+    return _stored_webhook_token(conn)
+
+
+def _webhook_address(token):
+    """The token, and where to POST with it - for pasting into an automation."""
+    path = f"/api/webhook/{token}"
+    return {"token": token, "path": path, "url": request.host_url.rstrip("/") + path}
+
+
+@app.route("/api/webhook-token", methods=["GET"])
+def get_webhook_token():
+    """The webhook's token and URL; the token is made on the first ask."""
+    conn = get_conn()
+    token = _webhook_token(conn)
+    conn.close()
+    return jsonify(_webhook_address(token))
+
+
+@app.route("/api/webhook-token/regenerate", methods=["POST"])
+def regenerate_webhook_token():
+    """Replace the token: the old one stops working at once."""
+    token = secrets.token_urlsafe(32)
+    conn = get_conn()
+    conn.execute(
+        "INSERT INTO settings (key, value) VALUES (?, ?) "
+        "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        (WEBHOOK_TOKEN_KEY, token),
+    )
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True, **_webhook_address(token)})
+
+
+def _webhook_reading(body):
+    """(reading, None) for a valid webhook body, or (None, what's wrong).
+
+    The reading is {date, source, metric, value}, ready for write_metric().
+    """
+    if not isinstance(body, dict):
+        return None, 'expected a JSON object: {"metric": "<key>", "value": <number>}'
+
+    metric = body.get("metric")
+    if not isinstance(metric, str) or metric not in METRICS:
+        return None, f"unknown metric: {metric!r} - expected one of {', '.join(METRICS)}"
+
+    raw = body.get("value")
+    value = _finite_number(raw)
+    if value is None:
+        return None, "value must be a number"
+
+    low, high = PLAUSIBLE_RANGES.get(metric, (-math.inf, math.inf))
+    if not low <= value <= high:
+        return None, (
+            f"{metric} must be between {low} and {high} {METRICS[metric]}, got {raw}"
+        )
+
+    day = body.get("date") or date.today().isoformat()
+    try:
+        # strptime rather than date.fromisoformat, which also takes
+        # '20260101' and week dates: dates are stored as YYYY-MM-DD.
+        day = datetime.strptime(day, "%Y-%m-%d").date().isoformat()
+    except (TypeError, ValueError):
+        return None, "date must be YYYY-MM-DD"
+
+    source = body.get("source") or WEBHOOK_SOURCE
+    if not isinstance(source, str) or not source.strip():
+        return None, "source must be a source id string"
+    source = source.strip()
+    if source in PLUGINS:
+        # Its syncs own those readings: a pushed one would overwrite the
+        # device's own, then be overwritten by the next sync.
+        return None, (
+            f"source {source!r} is the {PLUGINS[source].name} plugin's - "
+            "name your device instead"
+        )
+
+    return {"date": day, "source": source, "metric": metric, "value": value}, None
+
+
+def _finite_number(raw):
+    """`raw` as a float, or None if it isn't a finite number.
+
+    bool is an int to Python, but true is not a reading; float() can't
+    hold an integer too big to store; and the JSON parser lets NaN and
+    Infinity through.
+    """
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        return None
+    try:
+        value = float(raw)
+    except OverflowError:
+        return None
+    return value if math.isfinite(value) else None
+
+
+# No token in the URL at all is a 401 like a wrong one, not a 404.
+@app.route("/api/webhook/", defaults={"token": ""}, methods=["POST"])
+@app.route("/api/webhook/<token>", methods=["POST"])
+def webhook(token):
+    """Take one pushed reading: {"metric", "value", "date"?, "source"?}.
+
+    `metric` is a canonical key and `value` a number in its unit, within
+    its plausible range (PLAUSIBLE_RANGES); `date` is YYYY-MM-DD and
+    defaults to today; `source` defaults to "webhook". Idempotent: it's
+    an upsert, so a repeat of the same (date, source, metric) replaces
+    the reading - one value per source per day, the latest push wins.
+
+    401 for a wrong token, or when none has been made yet; 400 for a body
+    that fails a check, with nothing written.
+    """
+    conn = get_conn()
+    try:
+        stored = _stored_webhook_token(conn)
+        # Constant-time, so response timing can't leak how much of a
+        # guess was right. As bytes: compare_digest refuses a non-ASCII
+        # str, and the URL can hold anything.
+        if stored is None or not hmac.compare_digest(token.encode(), stored.encode()):
+            return jsonify({"ok": False, "error": "unknown webhook token"}), 401
+
+        reading, error = _webhook_reading(request.get_json(force=True, silent=True))
+        if error:
+            return jsonify({"ok": False, "error": error}), 400
+
+        write_metric(conn, reading["date"], reading["source"], reading["metric"], reading["value"])
+        # Like a sync, re-derive what was written - here its one day - so
+        # the derived value is current at once. Same transaction: the
+        # commit in recompute_derived() lands the reading and its pick
+        # together.
+        recompute_derived(conn, since=reading["date"], until=reading["date"])
+    finally:
+        conn.close()
+    return jsonify({"ok": True, "stored": {**reading, "unit": METRICS[reading["metric"]]}})
 
 
 # ---------- connectors ----------
