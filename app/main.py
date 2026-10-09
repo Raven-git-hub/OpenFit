@@ -6,7 +6,7 @@ import secrets
 import sqlite3
 import time
 import urllib.parse
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from flask import Flask, jsonify, request, send_from_directory
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -15,16 +15,11 @@ from migrations import run_migrations
 from plugins import PLUGINS
 from plugins.base import OAUTH_REDIRECT_URI, write_metric
 from crypto import encrypt
+from derived import backfill_derived, recompute_derived, source_rank
 from metrics import RESTING_HR_BPM, SLEEP_MINUTES, STEPS, WEIGHT_KG
 
 DB_PATH = os.getenv("DB_PATH", "/data/tracker.db")
 SYNC_INTERVAL_HOURS = int(os.getenv("SYNC_INTERVAL_HOURS", "6"))
-
-# Order of trust when two sources report the same metric for the same day.
-# Earlier wins. Sources not listed here (e.g. 'unknown' rows migrated from
-# before the source column was populated) rank last, ordered by name so the
-# result is deterministic.
-SOURCE_PRIORITY = ["garmin", "google_health"]
 
 app = Flask(__name__, static_folder=None)
 
@@ -45,6 +40,22 @@ def migrate():
     conn = get_conn()
     try:
         return run_migrations(conn, verbose=True)
+    finally:
+        conn.close()
+
+
+def backfill():
+    """Derive the existing readings, on the first boot after 008 only.
+
+    derived_metrics starts out empty on an upgraded database, and syncs
+    only refresh their own recent window - so without this, history
+    would never be derived. A no-op once anything has been derived: see
+    backfill_derived() for why this is never a re-derive on every start.
+    """
+    conn = get_conn()
+    try:
+        if backfill_derived(conn):
+            print("[derived] backfilled derived_metrics from the existing readings")
     finally:
         conn.close()
 
@@ -141,6 +152,8 @@ def set_workout():
 
 # /api/activity predates the metrics table and keeps its flat shape for
 # the interim UI: one field per metric, in the old field names and units.
+# By default each field is the stored derived value (derived_metrics -
+# see derived.py); ?by_source=1 lists every source's readings instead.
 # Each field maps to the canonical metric it is now read from, and how to
 # turn the stored value back into what the field used to hold.
 
@@ -161,20 +174,38 @@ ACTIVITY_FIELDS = {
     "sleep_hours": (SLEEP_MINUTES, lambda minutes: round(minutes / 60, 1)),
 }
 
-ACTIVITY_METRICS = tuple(ACTIVITY_FIELDS)
-
 # Canonical metric -> (field, convert), for pivoting readings back.
 _ACTIVITY_BY_METRIC = {
     metric: (field, convert) for field, (metric, convert) in ACTIVITY_FIELDS.items()
 }
 
 
-def _source_rank(source):
-    """Sort key for a source: priority order first, then name."""
-    try:
-        return (SOURCE_PRIORITY.index(source), "")
-    except ValueError:
-        return (len(SOURCE_PRIORITY), source or "")
+def _recent_activity(conn, table, days):
+    """The activity readings in `table` for its `days` latest activity dates.
+
+    `table` is metrics (every source's reading) or derived_metrics (the
+    one picked per metric) - both have date, source, metric, value and
+    synced_at - and is always one of those two names, never request
+    input. Newest date first, then by source.
+
+    Only the metrics this endpoint has fields for: a date that holds
+    nothing but some other metric is not an activity day, and must not
+    use up one of the `days` asked for.
+    """
+    keys = [metric for metric, _ in ACTIVITY_FIELDS.values()]
+    marks = ", ".join("?" * len(keys))
+    # LIMIT applies to distinct dates, not rows: with several sources and
+    # metrics per day, limiting rows would silently return fewer days
+    # than asked for.
+    return conn.execute(
+        f"SELECT date, source, metric, value, synced_at FROM {table} "
+        f"WHERE metric IN ({marks}) AND date IN ("
+        f"SELECT DISTINCT date FROM {table} WHERE metric IN ({marks}) "
+        "ORDER BY date DESC LIMIT ?"
+        ") "
+        "ORDER BY date DESC, source",
+        (*keys, *keys, days),
+    ).fetchall()
 
 
 def _pivot_by_source(readings):
@@ -204,39 +235,31 @@ def _pivot_by_source(readings):
     return list(wide.values())
 
 
-def _merge_by_date(rows):
-    """Collapse per-source rows into one flat row per date.
+def _pivot_by_date(derived):
+    """Fold derived readings - one per (date, metric) - into one flat row per date.
 
-    Each metric is taken from the highest-priority source that actually
-    reported a value for that day, so a day with steps from Garmin and
-    sleep from Google Health keeps both. `source` names the
-    highest-priority source that contributed anything to the merged row -
-    per-metric provenance is available via ?by_source=1.
+    Each field is the stored derived value: the source for each metric
+    was picked in derived.py, not here, so a day with steps from Garmin
+    and sleep from Google Health keeps both. A metric nothing reported
+    is None. `source` names the highest-ranked source behind any of the
+    day's fields, as the merged row always has - per-metric provenance
+    is available via ?by_source=1. Rows come out in the order the
+    readings arrive in.
     """
-    by_date = {}
-    for row in rows:
-        by_date.setdefault(row["date"], []).append(row)
-
-    merged = []
-    for d in sorted(by_date, reverse=True):
-        candidates = sorted(by_date[d], key=lambda r: _source_rank(r["source"]))
-        out = {"date": d}
-        for metric in ACTIVITY_METRICS:
-            out[metric] = next(
-                (c[metric] for c in candidates if c[metric] is not None), None
-            )
-        # `source` is the best-ranked source that contributed any value,
-        # falling back to the best-ranked row for an all-empty day.
-        out["source"] = next(
-            (
-                c["source"]
-                for c in candidates
-                if any(c[m] is not None for m in ACTIVITY_METRICS)
-            ),
-            candidates[0]["source"],
-        )
-        merged.append(out)
-    return merged
+    flat = {}
+    for reading in derived:
+        row = flat.get(reading["date"])
+        if row is None:
+            row = flat[reading["date"]] = {
+                "date": reading["date"],
+                **{field: None for field in ACTIVITY_FIELDS},
+                "source": reading["source"],
+            }
+        field, convert = _ACTIVITY_BY_METRIC[reading["metric"]]
+        row[field] = convert(reading["value"])
+        if source_rank(reading["source"]) < source_rank(row["source"]):
+            row["source"] = reading["source"]
+    return list(flat.values())
 
 
 @app.route("/api/activity", methods=["GET"])
@@ -244,36 +267,17 @@ def get_activity():
     days = int(request.args.get("days", 30))
     by_source = request.args.get("by_source", "").lower() in ("1", "true", "yes")
 
-    # Only the metrics this endpoint has fields for: a date that holds
-    # nothing but some other metric is not an activity day, and must not
-    # use up one of the `days` asked for.
-    keys = [metric for metric, _ in ACTIVITY_FIELDS.values()]
-    marks = ", ".join("?" * len(keys))
-
     conn = get_conn()
-    # LIMIT applies to distinct dates, not rows: with several sources and
-    # metrics per day, limiting rows would silently return fewer days
-    # than asked for.
-    readings = conn.execute(
-        "SELECT date, source, metric, value, synced_at FROM metrics "
-        f"WHERE metric IN ({marks}) AND date IN ("
-        f"SELECT DISTINCT date FROM metrics WHERE metric IN ({marks}) "
-        "ORDER BY date DESC LIMIT ?"
-        ") "
-        "ORDER BY date DESC, source",
-        (*keys, *keys, days),
-    ).fetchall()
-    conn.close()
-
-    rows = _pivot_by_source(readings)
-
     if by_source:
         # Additive: raw per-source rows, for anything that wants to see
         # which device said what.
-        return jsonify(rows)
-
-    # Default stays the flat one-row-per-date shape the frontend expects.
-    return jsonify(_merge_by_date(rows))
+        rows = _pivot_by_source(_recent_activity(conn, "metrics", days))
+    else:
+        # Default stays the flat one-row-per-date shape the frontend
+        # expects, read from the stored derived values.
+        rows = _pivot_by_date(_recent_activity(conn, "derived_metrics", days))
+    conn.close()
+    return jsonify(rows)
 
 
 # ---------- settings ----------
@@ -608,6 +612,20 @@ def list_plugins():
     return jsonify(out)
 
 
+def _sync(plugin, conn, days):
+    """Run one plugin's sync, then re-derive the window it wrote.
+
+    A `days`-day sync covers today and the days - 1 before it, as every
+    plugin counts it, so that is the window recomputed - nothing older.
+    Its start is taken before the sync runs: one that crosses midnight
+    then starts its own window a day later, still inside this one.
+    """
+    since = (date.today() - timedelta(days=days - 1)).isoformat()
+    n = plugin.sync(conn, days)
+    recompute_derived(conn, since=since)
+    return n
+
+
 @app.route("/api/sync/<plugin_id>", methods=["POST"])
 def trigger_sync(plugin_id):
     plugin = PLUGINS.get(plugin_id)
@@ -615,7 +633,7 @@ def trigger_sync(plugin_id):
         return jsonify({"ok": False, "error": f"no such plugin: {plugin_id}"}), 404
     try:
         conn = get_conn()
-        n = plugin.sync(conn, int(request.args.get("days", 7)))
+        n = _sync(plugin, conn, int(request.args.get("days", 7)))
         conn.close()
         return jsonify({"ok": True, "days_written": n})
     except Exception as e:
@@ -631,7 +649,7 @@ def scheduled_sync():
                 # it would only fail with a "not connected" error.
                 if not plugin.status(conn)["configured"]:
                     continue
-                n = plugin.sync(conn, 7)
+                n = _sync(plugin, conn, 7)
             finally:
                 conn.close()
             print(f"[scheduler] {plugin.id} wrote {n} day(s)")
@@ -654,6 +672,7 @@ def start_scheduler():
 
 def serve():
     migrate()
+    backfill()
     start_scheduler()
     app.run(host="0.0.0.0", port=80)
 

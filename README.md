@@ -106,6 +106,7 @@ app/
     garmin/plugin.py          Garmin Connect
     google_health/plugin.py   Google Health API (Pixel Watch / Fitbit)
   metrics.py                  Canonical metric vocabulary (key -> unit)
+  derived.py                  Picks the one derived value per metric per day
   crypto.py                   Encrypt/decrypt for stored device credentials
   migrations/                 Versioned .sql schema migrations + runner
 tests/                        pytest suite (temp DB, no network)
@@ -129,8 +130,12 @@ night (or nap) from each device, with its stage breakdown in minutes
 beside it. A `workout` session is one activity, with no daily metric beside it:
 its `type` (the device's activity type, lowercased), `duration_minutes`,
 `distance_m`, `avg_hr_bpm` and `calories_kcal`, whichever the device reports.
-Today the per-day value comes from a fixed source precedence; per-metric source
-roles are next — see
+The per-day value is stored, not worked out on each read: a `derived_metrics`
+table holds one value per `(date, metric)`, tagged with the source it came from,
+picked by `app/derived.py` after every sync (for the days that sync covered) and
+once on the first boot of an upgraded database. `GET /api/activity` reads it.
+Today the pick is a fixed source precedence (Garmin, then Google Health, then any
+other source); per-metric source roles are next — see
 [docs/architecture](docs/architecture/). Device credentials entered in the UI
 are stored as a Fernet-encrypted JSON blob (one row per plugin) and never
 returned over the API; the key comes from `$OPENFIT_SECRET_KEY` or is generated
