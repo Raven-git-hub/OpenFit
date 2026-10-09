@@ -134,8 +134,14 @@ The per-day value is stored, not worked out on each read: a `derived_metrics`
 table holds one value per `(date, metric)`, tagged with the source it came from,
 picked by `app/derived.py` after every sync (for the days that sync covered) and
 once on the first boot of an upgraded database. `GET /api/activity` reads it.
-Today the pick is a fixed source precedence (Garmin, then Google Health, then any
-other source); per-metric source roles are next — see
+By default the pick is a fixed source precedence (Garmin, then Google Health, then
+any other source); per metric, you can name a different primary source — e.g.
+Google for steps, Garmin for everything else — with
+`PUT /api/source-roles/<metric>` `{"primary": "google_health"}` (`null` reverts
+to the default; `GET /api/source-roles` shows each metric's primary and the
+sources that have reported it). On a day the primary didn't report, the default
+order picks. A change is forward-only: it applies from the next sync, over the
+days that sync covers, and never rewrites values already derived. See
 [docs/architecture](docs/architecture/). Device credentials entered in the UI
 are stored as a Fernet-encrypted JSON blob (one row per plugin) and never
 returned over the API; the key comes from `$OPENFIT_SECRET_KEY` or is generated
