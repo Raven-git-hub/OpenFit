@@ -60,7 +60,7 @@ own calls to its device API. Full direction:
   - `workout` — one session per activity, and no daily metric: `type` (the
     source's activity type, lowercased — not yet mapped across sources),
     `duration_minutes`, `distance_m`, `avg_hr_bpm`, `calories_kcal`.
-  No read endpoint for sessions yet (the access contract owns reads).
+  Read through the access contract (`GET /api/sessions/<kind>`, below).
 - `derived_metrics(date, metric, value, unit, source, synced_at)` keyed
   `(date, metric)` (migration `008`, purely additive): the one trusted value per
   metric per day, every metric including `weight_kg`. `source` is the winning
@@ -72,11 +72,12 @@ own calls to its device API. Full direction:
   range with no readings left loses its row; dates outside `since`..`until`
   are untouched.
   Refreshed after every sync for that sync's window (`today - (days-1)` on),
-  after every webhook reading for its one day (`since=until=date`), and
-  backfilled once by `serve()` only while the table is empty — never a blanket
-  re-derive (a policy change is forward-only). The default
-  `/api/activity` reads it; `?by_source=1` still reads `metrics`. Manual
-  `/api/weights` writes don't re-derive yet.
+  after every webhook reading and manual `POST /api/weights` for its one day
+  (`since=until=date`), after `DELETE /api/weights` for each day it cleared
+  (one day at a time), and backfilled once by `serve()` only while the table
+  is empty — never a blanket re-derive (a policy change is forward-only). The
+  access contract and the default `/api/activity` read it; `?by_source=1`
+  still reads `metrics`.
 - Source roles: the `settings` row `source_roles` (no migration) holds JSON
   `{metric: primary_source}`, e.g. `{"steps": "google_health"}`; a metric absent
   from it uses the default precedence. Read by `load_source_roles()`, written by
@@ -99,6 +100,26 @@ own calls to its device API. Full direction:
   `date` is `YYYY-MM-DD` (default today), and `source` a non-empty string
   (default `webhook`) that isn't a pull plugin's id. Idempotent per
   `(date, source, metric)`. Metrics only — no session ingest yet.
+- The access contract — the app-facing read API (read-only, no auth, no
+  migration; in `app/main.py`). Apps read the DERIVED profile from
+  `derived_metrics`, never raw per-source `metrics` rows, so they never
+  reconcile sources:
+  - `GET /api/catalog` → `{"metrics": [{metric, unit, sources, first, last,
+    count, last_value, last_date}], "sessions": [{kind, count, first, last}]}`
+    — only metrics/kinds with data (vocabulary order; kinds by name).
+    `sources` = sources that have won any day, in pick order; session
+    `first`/`last` are start timestamps.
+  - `GET /api/metric/<metric>?from=&to=` → `{metric, unit, points: [{date,
+    value, source}]}` ascending; `value` as stored (a float). Unknown metric
+    404; known with no data → `points: []`.
+  - `GET /api/sessions/<kind>?from=&to=` → `[{start, end, source, summary}]`
+    ascending by start (then source); `summary` parsed from `summary_json`
+    (`{}` if none), `end` may be null. Sessions have no derived pick: each
+    source's session is listed, tagged with its source. `from`/`to` match the
+    start's UTC date. Unknown kind 404.
+  - `from`/`to`: optional, inclusive `YYYY-MM-DD` (empty = omitted); malformed,
+    or `from` after `to` → 400. Errors are `{"ok": false, "error"}`.
+  These shapes are the stable contract: change them additively only.
 - Also: `workouts` (orphaned — slated for removal); `settings`; `accounts`;
   `schema_migrations`.
 - Target (in progress — see Direction): the other source roles (sources that
@@ -130,8 +151,10 @@ same PR:
   history.
 - **Webhook / push ingestion:** landed for metrics (see Data model); still to
   come: pushing sessions (sleep, workouts) through it.
-- **The access contract:** a stable read API (metric discovery + range queries
-  with provenance) that external apps use.
+- **The access contract:** landed (see Data model): discovery, range queries
+  with provenance, sessions. Still to come: a `?by_source` option for raw
+  per-source reads, and a derived pick for sessions (one per night across
+  devices).
 Keep `GET /api/activity` returning its current flat shape, and `/api/weights` its
 `[{date, weight}]` shape (manual `weight_kg` readings only), as compatibility shims
 during the data-model change. Remove the orphaned `workouts` table +

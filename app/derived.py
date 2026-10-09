@@ -5,13 +5,15 @@ metrics keeps every source's reading, so a day can hold steps from both
 Garmin and Google Health. Apps shouldn't have to reconcile that
 themselves: OpenFit picks one reading per (date, metric) and stores it in
 derived_metrics (migration 008), tagged with the source it came from.
-This module is the only place that pick is made - /api/activity reads
-the stored result rather than choosing again.
+This module is the only place that pick is made - /api/activity and the
+access contract (/api/catalog, /api/metric/<metric>) read the stored
+result rather than choosing again.
 
 When it runs: after each sync, over the window that sync wrote
-(recompute_derived(conn, since=...)), after each webhook reading, over
-that reading's day (since=until=its date), and once on first boot to
-fill a database whose readings predate derived_metrics
+(recompute_derived(conn, since=...)), after each webhook reading or
+manual weigh-in, over that reading's day (since=until=its date), after
+manual weigh-ins are cleared, over each cleared day, and once on first
+boot to fill a database whose readings predate derived_metrics
 (backfill_derived()).
 Never as a blanket re-derive of all history on startup: the policy is
 configurable, and changing it is forward-only, so values already derived

@@ -43,6 +43,9 @@ is not the product.
   in-app and credentials encrypted at rest.
 - A **webhook** any automation can push a reading to, guarded by a
   regeneratable token and per-metric sanity ranges.
+- The **access contract** — a small, stable read API apps build on: what data
+  there is, one metric over a date range (with which source each value came
+  from), and sleep/workout sessions.
 - An interim web viewer (being replaced).
 
 ## Webhook input (push)
@@ -77,6 +80,68 @@ the full URL) from `GET /api/webhook-token`; it's made on first ask. If it leaks
 immediately. This is also the path by which on-device sources (e.g. Apple
 HealthKit) will reach OpenFit. Interval data (sleep, workouts) can't be pushed
 yet.
+
+## Reading the data (the access contract)
+
+Apps read OpenFit through three read-only endpoints. They serve the **derived**
+profile — the one value OpenFit picked per metric per day, each tagged with the
+source it came from — never the raw per-source readings, so an app gets one
+trusted answer and never has to reconcile devices itself. Same trusted-network
+model as the rest of the API: no auth. These shapes are the stable contract;
+the `/api/activity` and `/api/weights` routes are interim-UI shims, not for apps.
+
+**Discovery — `GET /api/catalog`.** Every metric and session kind that has data:
+
+```json
+{
+  "metrics": [
+    {"metric": "steps", "unit": "count", "sources": ["garmin", "google_health"],
+     "first": "2026-10-07", "last": "2026-10-08", "count": 2,
+     "last_value": 10450.0, "last_date": "2026-10-08"}
+  ],
+  "sessions": [
+    {"kind": "sleep", "count": 1,
+     "first": "2026-10-07T22:41:00Z", "last": "2026-10-07T22:41:00Z"}
+  ]
+}
+```
+
+`sources` are the sources that have supplied the picked value on any day, in the
+order the pick tries them; `first`/`last`/`count` are the metric's derived days,
+and `last_value` the value on `last_date`. A session kind's `first`/`last` are
+its earliest and latest start. An empty install returns two empty lists.
+
+**One metric — `GET /api/metric/<metric>?from=YYYY-MM-DD&to=YYYY-MM-DD`.**
+
+```json
+{"metric": "steps", "unit": "count", "points": [
+  {"date": "2026-10-07", "value": 9120.0, "source": "garmin"},
+  {"date": "2026-10-08", "value": 10450.0, "source": "google_health"}
+]}
+```
+
+Oldest first, one point per day, in the metric's canonical unit
+(`app/metrics.py`). An unknown metric is a 404; a known one with no data has
+`"points": []`.
+
+**Sessions — `GET /api/sessions/<kind>?from=YYYY-MM-DD&to=YYYY-MM-DD`**
+(`sleep` or `workout`).
+
+```json
+[{"start": "2026-10-07T22:41:00Z", "end": "2026-10-08T06:12:00Z",
+  "source": "garmin",
+  "summary": {"asleep_minutes": 431, "deep_minutes": 78, "light_minutes": 251,
+              "rem_minutes": 102, "awake_minutes": 20}}]
+```
+
+Oldest start first; times are ISO 8601 UTC, and `summary` holds the kind's
+fields that the device reported (`{}` if none). Sessions aren't picked between
+sources yet, so a night both devices tracked appears once per device. An unknown
+kind is a 404.
+
+`from` and `to` are optional and inclusive; leave one out for an open end. For
+sessions they match the start's UTC date. A malformed date, or `from` after
+`to`, is a 400.
 
 ## Quick start
 
@@ -159,8 +224,10 @@ its `type` (the device's activity type, lowercased), `duration_minutes`,
 The per-day value is stored, not worked out on each read: a `derived_metrics`
 table holds one value per `(date, metric)`, tagged with the source it came from,
 picked by `app/derived.py` after every sync (for the days that sync covered) and
-once on the first boot of an upgraded database; a webhook reading re-derives
-its own day as it lands. `GET /api/activity` reads it.
+once on the first boot of an upgraded database; a webhook reading or a
+hand-entered weight re-derives its own day as it lands (and clearing weights
+re-derives the days cleared). The access contract and `GET /api/activity` read
+it.
 By default the pick is a fixed source precedence (Garmin, then Google Health, then
 any other source); per metric, you can name a different primary source — e.g.
 Google for steps, Garmin for everything else — with
