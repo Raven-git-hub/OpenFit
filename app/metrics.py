@@ -14,7 +14,8 @@ unit: sources convert on the way in.
 
 Session kinds (the bottom of this module) are governed the same way: a
 kind is a constant here, and the sessions table holds any kind, so a new
-one is an entry in SESSION_KINDS rather than a migration.
+one is an entry in SESSION_KINDS rather than a migration. So are series
+metrics - intraday samples, in the samples table - in SERIES_METRICS.
 """
 
 STEPS = "steps"
@@ -56,6 +57,25 @@ PLAUSIBLE_RANGES = {
     SLEEP_MINUTES: (0, 1440),
     WEIGHT_KG: (20, 400),
 }
+
+
+# ---- series metrics (intraday samples) ----
+# Stored in the `samples` table, NOT the daily `metrics` table. Keys are
+# distinct from daily metrics even where the quantity overlaps: the heart_rate
+# sample stream is a different thing from the resting_hr_bpm daily summary.
+HEART_RATE = "heart_rate"
+
+SERIES_METRICS = {
+    HEART_RATE: "bpm",
+}
+
+
+def series_unit_for(metric):
+    """The unit for a series metric, or ValueError if it isn't one."""
+    try:
+        return SERIES_METRICS[metric]
+    except KeyError:
+        raise ValueError(f"unknown series metric: {metric!r}") from None
 
 
 # ---- session kinds ----

@@ -4,8 +4,9 @@ OpenFit plugin interface.
 A "sync plugin" is anything that pulls data from an external device/service
 and writes it into OpenFit's metrics table as canonical readings (and,
 for interval data like a night's sleep or a workout, into the sessions
-table). To add a new source (Google Health, Oura, Whoop, a spreadsheet,
-whatever), subclass SyncPlugin and drop the module in
+table; for intraday readings like heart rate every few minutes, into the
+samples table). To add a new source (Google Health, Oura, Whoop, a
+spreadsheet, whatever), subclass SyncPlugin and drop the module in
 app/plugins/<your_plugin>/.
 
 Plugins are intentionally dumb: they get a database connection and a date
@@ -20,7 +21,7 @@ from abc import ABC, abstractmethod
 from datetime import timezone
 
 from crypto import decrypt
-from metrics import SESSION_KINDS, unit_for
+from metrics import SERIES_METRICS, SESSION_KINDS, series_unit_for, unit_for
 
 # Where a provider sends the browser back after consent, for every
 # add_flow="oauth" plugin.
@@ -121,6 +122,40 @@ def write_session(conn, source, kind, start, end, summary):
             end,
             None if summary is None else json.dumps(summary),
         ),
+    )
+    return True
+
+
+def write_sample(conn, source, metric, ts, value):
+    """Upsert one intraday sample into the samples table. Returns whether it wrote.
+
+    The series counterpart of write_metric(): where a metric is one value per
+    day, a sample is one value at an instant. `metric` is a series key from
+    metrics.py (SERIES_METRICS); `ts` is an iso_utc() timestamp; the unit is
+    filled from the vocabulary, never by the caller.
+
+    A value of None is no reading and writes nothing - so a plugin can pass a
+    source's nulls (non-wear gaps) straight through. Each (source, metric, ts)
+    is its own row, so a re-sync replaces the value and bumps synced_at rather
+    than duplicating.
+
+    Raises ValueError for a metric outside SERIES_METRICS, as write_session()
+    does for an unknown kind. Doesn't commit - sync() commits once per batch.
+    """
+    if metric not in SERIES_METRICS:
+        raise ValueError(f"unknown series metric: {metric!r}")
+    if value is None:
+        return False
+    conn.execute(
+        """
+        INSERT INTO samples (source, metric, ts, value, unit, synced_at)
+        VALUES (?, ?, ?, ?, ?, datetime('now'))
+        ON CONFLICT(source, metric, ts) DO UPDATE SET
+            value=excluded.value,
+            unit=excluded.unit,
+            synced_at=datetime('now')
+        """,
+        (source, metric, ts, value, series_unit_for(metric)),
     )
     return True
 
