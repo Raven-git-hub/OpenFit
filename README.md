@@ -35,12 +35,13 @@ is not the product.
 ## What's here today
 
 - A versioned SQLite data store with a hand-rolled migration runner.
-- **Garmin Connect** plugin — steps, resting HR, sleep (daily total plus a
-  per-night session with stages), workouts (a session per activity), and
-  intraday heart rate (a sample every couple of minutes).
-- **Google Health** plugin — the same bar intraday heart rate, from Pixel Watch /
-  Fitbit via Google's cloud Health API (not the legacy Fitbit Web API, retired
-  September 2026).
+- **Garmin Connect** plugin — steps, resting HR, daily distance, active and
+  total calories, floors climbed, moderate and vigorous intensity minutes, sleep
+  (daily total plus a per-night session with stages), workouts (a session per
+  activity), and intraday heart rate (a sample every couple of minutes).
+- **Google Health** plugin — steps, resting HR, sleep and workouts, from Pixel
+  Watch / Fitbit via Google's cloud Health API (not the legacy Fitbit Web API,
+  retired September 2026).
 - Scheduled background sync plus a manual sync, with device connections managed
   in-app and credentials encrypted at rest.
 - A **webhook** any automation can push a reading to, guarded by a
@@ -63,7 +64,9 @@ curl -X POST http://<your-server-ip>:8080/api/webhook/<token> \
 ```
 
 - `metric` is a canonical key (`steps`, `resting_hr_bpm`, `sleep_minutes`,
-  `weight_kg`) and `value` a number in its unit (`app/metrics.py`).
+  `weight_kg`, `distance_m`, `active_kcal`, `total_kcal`, `floors`,
+  `intensity_moderate_min`, `intensity_vigorous_min`) and `value` a number in
+  its unit (`app/metrics.py`).
 - `date` (`YYYY-MM-DD`) is optional and defaults to today; `source` is optional
   and defaults to `webhook`. Name your device (`"eufy"`) and it takes part in
   source roles like any other source — make it a metric's primary and it wins.
@@ -71,7 +74,9 @@ curl -X POST http://<your-server-ip>:8080/api/webhook/<token> \
   readings.
 - A value outside the metric's plausible range is refused (400), so a misfired
   automation can't corrupt your data: steps 0–200000, resting HR 20–250 bpm,
-  sleep 0–1440 min, weight 20–400 kg.
+  sleep 0–1440 min, weight 20–400 kg, distance 0–500000 m, active and total
+  calories 0–30000 kcal each, floors 0–10000, and each kind of intensity minutes
+  0–1440.
 - Pushing the same metric and source for a day again replaces the reading, and
   the day's derived value is updated at once.
 

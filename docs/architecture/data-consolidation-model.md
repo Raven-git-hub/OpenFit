@@ -245,11 +245,14 @@ vocabulary — not a home for app context (rosters, calendars). See §1 scope.
   per-source passthrough).
 - Four Google data types fetched (steps via daily roll-up, daily resting HR,
   sleep sessions, exercise sessions) + Garmin equivalents + manual weight.
+- Garmin daily metrics beyond steps + resting HR — the first of the cross-vendor
+  daily core: distance, active/total calories, floors, and moderate/vigorous
+  intensity minutes, from the `get_stats` response it already fetches.
 
 **Designed, to-build:**
 - The **series stitch** (compute-on-read priority pick in `GET /api/series`,
   pending a second series source) and further series sources.
-- **Wide expansion** — more daily/session types beyond the current four, each a
+- **Wide expansion** — more daily/session types (daily vitals next), each a
   fetcher + a canonical key/kind (a new metric is data, not a migration).
 - **Per-event session dedup** + preferred-source-per-kind selection view.
 - **Source tiers** (device/manual/app) with app-tier as opt-in.

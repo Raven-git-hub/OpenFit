@@ -7,21 +7,50 @@ reuse it instead of logging in with the password again. If your account has
 MFA enabled, run first_login.py once (see repo README) before starting the
 scheduled sync.
 
-Fetched per day: get_stats (steps, resting HR), get_sleep_data (the
+Fetched per day: get_stats (steps, resting HR, distance, calories,
+floors and intensity minutes), get_sleep_data (the
 daily sleep total plus the night as a sleep session) and get_heart_rates
 (the intraday heart-rate series, as samples). Fetched once over the
 whole range: get_activities_by_date, each activity a workout session.
 """
 
+import math
 import os
 import shutil
 from datetime import date, datetime, timedelta, timezone
 
 from garminconnect import Garmin, GarminConnectAuthenticationError
 
-from metrics import HEART_RATE, RESTING_HR_BPM, SLEEP, SLEEP_MINUTES, STEPS, WORKOUT
+from metrics import (
+    ACTIVE_KCAL,
+    DISTANCE_M,
+    FLOORS,
+    HEART_RATE,
+    INTENSITY_MODERATE_MIN,
+    INTENSITY_VIGOROUS_MIN,
+    RESTING_HR_BPM,
+    SLEEP,
+    SLEEP_MINUTES,
+    STEPS,
+    TOTAL_KCAL,
+    WORKOUT,
+)
 
 from ..base import SyncPlugin, iso_utc, write_metric, write_sample, write_session
+
+# Daily metrics from the get_stats response, beside the existing steps/
+# resting HR. Each is already in its canonical unit and is rounded to a
+# whole number (floorsAscended can come fractional). A field the response
+# doesn't carry, or that isn't a number, writes nothing - so a field name
+# that turns out wrong costs that one metric and nothing else.
+STATS_METRICS = {
+    "totalDistanceMeters": (DISTANCE_M, round),
+    "activeKilocalories": (ACTIVE_KCAL, round),
+    "totalKilocalories": (TOTAL_KCAL, round),
+    "floorsAscended": (FLOORS, round),
+    "moderateIntensityMinutes": (INTENSITY_MODERATE_MIN, round),
+    "vigorousIntensityMinutes": (INTENSITY_VIGOROUS_MIN, round),
+}
 
 # dailySleepDTO stage fields (seconds) -> the sleep session summary keys
 # (minutes). A field the device doesn't report - remSleepSeconds on a
@@ -115,6 +144,7 @@ class GarminPlugin(SyncPlugin):
 
             steps = None
             resting_hr = None
+            stats_metrics = {}
             sleep_minutes = None
             sleep_session = None
 
@@ -122,6 +152,7 @@ class GarminPlugin(SyncPlugin):
                 stats = client.get_stats(d_str)
                 steps = stats.get("totalSteps")
                 resting_hr = stats.get("restingHeartRate")
+                stats_metrics = _stats_metrics(stats, d_str)
             except Exception as e:
                 print(f"[garmin] stats fetch failed for {d_str}: {e}")
 
@@ -147,13 +178,20 @@ class GarminPlugin(SyncPlugin):
             except Exception as e:
                 print(f"[garmin] heart-rate fetch failed for {d_str}: {e}")
 
-            if steps is None and resting_hr is None and sleep_minutes is None:
+            if (
+                steps is None
+                and resting_hr is None
+                and sleep_minutes is None
+                and not stats_metrics
+            ):
                 continue
 
             # A None (that fetch failed, or Garmin had nothing) writes
             # nothing and leaves any earlier reading in place.
             write_metric(conn, d_str, self.id, STEPS, steps)
             write_metric(conn, d_str, self.id, RESTING_HR_BPM, resting_hr)
+            for metric, value in stats_metrics.items():
+                write_metric(conn, d_str, self.id, metric, value)
             write_metric(conn, d_str, self.id, SLEEP_MINUTES, sleep_minutes)
             if sleep_session:
                 write_session(conn, self.id, SLEEP, *sleep_session)
@@ -188,6 +226,42 @@ class GarminPlugin(SyncPlugin):
             if session:
                 sessions.append(session)
         return sessions
+
+
+def _stats_metrics(stats, d_str):
+    """The STATS_METRICS readings in a get_stats response, as {metric: value}.
+
+    Only the fields that are there as a finite number make it in, each
+    converted to its canonical unit; anything else is left out, as if
+    Garmin had reported nothing. A field missing from the response
+    altogether (not just null, which is a day without that data) is
+    logged with the keys that are there, since it most likely means a
+    field name that's wrong. sync() reads steps and resting HR before
+    calling this, so nothing here can cost them.
+    """
+    if not isinstance(stats, dict) or not stats:
+        return {}
+    out = {}
+    for field, (metric, convert) in STATS_METRICS.items():
+        value = stats.get(field)
+        if _is_number(value):
+            out[metric] = convert(value)
+    missing = [field for field in STATS_METRICS if field not in stats]
+    if missing:
+        print(
+            f"[garmin] stats for {d_str} have no {', '.join(missing)} - not written. "
+            f"stats keys: {sorted(stats)}"
+        )
+    return out
+
+
+def _is_number(value):
+    """A finite int or float - not a bool, a string or NaN."""
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(value)
+    )
 
 
 def _sleep_session(dto, asleep_minutes, d_str):
