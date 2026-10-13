@@ -11,16 +11,33 @@ own calls to its device API. Full direction:
 ## Stack (keep it lightweight — no frameworks without a real reason)
 - Python + Flask, raw `sqlite3` (NOT SQLAlchemy/an ORM)
 - Vanilla JS, no build step
-- Docker + docker-compose; one container, SQLite at `/data/tracker.db`
+- Docker + docker-compose; one container, SQLite at `/data/tracker.db` (in WAL
+  mode, so `tracker.db-wal`/`tracker.db-shm` beside it are part of the
+  database); logs unbuffered (`PYTHONUNBUFFERED=1` in `app/Dockerfile`), so
+  scheduler/sync output reaches `docker logs` at once
 - Do NOT introduce Alembic, SQLAlchemy, React, a bundler, or similar.
 
 ## Layout
 - `app/main.py` — Flask API + APScheduler. `serve()` runs migrations, then the
   one-time derived backfill, then the scheduler, then the app; none of that may
-  run on import (tests import it).
+  run on import (tests import it). Every connection comes from `get_conn()`,
+  per call (one per request or scheduled run — never a shared global one).
+  One sync at a time: a process-level `_sync_lock` (`threading.Lock`, taken
+  with `acquire(blocking=False)`, released in a `finally`) guards both
+  `POST /api/sync/<plugin>` and `scheduled_sync()`. A manual sync that finds
+  one running gets a 409 and starts nothing:
+  `{"ok": false, "error": "a sync is already in progress"}`. A scheduled tick
+  that finds one logs `[scheduler] sync already running, skipping` and returns.
 - `app/migrations/` — hand-rolled runner. Numbered `NNN_name.sql`, applied once,
   tracked in `schema_migrations`. New schema change = a new numbered migration;
   migrations must be additive and safe against a populated production DB.
+  Also `connect(db_path)`, the one way a connection is opened (`get_conn()`
+  and the `python -m migrations` CLI both use it): straight after connecting,
+  `PRAGMA busy_timeout = 30000` (wait up to 30s for a lock instead of failing;
+  sqlite3's own default is 5s), then `PRAGMA journal_mode = WAL` (readers and
+  the writer stop blocking each other; persistent, so the first connection —
+  `migrate()` at startup — converts the database and later ones are no-ops).
+  `synchronous` is left at its default.
 - `app/plugins/` — sync (pull) plugins. Each `app/plugins/<name>/plugin.py`
   subclasses `SyncPlugin` (`app/plugins/base.py`), registered in `__init__.py`,
   declares a connector manifest (`fields`, `add_flow`), reads creds via
@@ -240,9 +257,13 @@ same PR:
   fetches (sentinels dropped by `_series_samples()` — no new request, no
   migration); Garmin's remaining daily metrics (VO2 max and hydration via
   `GARMIN_VITALS`, body fat, BMI and weight via a `get_body_composition`
-  block — no migration). Still to come: the cross-source `/api/series`
+  block — no migration); write-lock robustness (busy_timeout 30s + WAL on
+  every connection via `connect()`, a process-level sync lock — an
+  overlapping sync gets 409 and a scheduled tick skips — and unbuffered logs;
+  no migration). Still to come: the cross-source `/api/series`
   stitch (pending a second series source), more series sources, verifying
-  sources + history.
+  sources + history, and committing a sync per day (it still holds one write
+  transaction for the whole run).
 - **Webhook / push ingestion:** landed for metrics (see Data model); still to
   come: pushing sessions (sleep, workouts) through it.
 - **The access contract:** landed (see Data model): discovery, range queries
