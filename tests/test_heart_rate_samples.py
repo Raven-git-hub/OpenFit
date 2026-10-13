@@ -133,9 +133,9 @@ def as_rows(samples):
 
 class FakeGarmin:
     """Stands in for garminconnect.Garmin: canned heart rate and stats by
-    date, recording every get_heart_rates call; no sleep and no
-    activities (those are test_sleep_sessions.py's and
-    test_workout_sessions.py's)."""
+    date, recording every get_heart_rates call; no sleep, vitals or
+    activities (those are test_sleep_sessions.py's,
+    test_garmin_daily_vitals.py's and test_workout_sessions.py's)."""
 
     def __init__(self, hr_by_date, stats_by_date=None):
         self.hr_by_date = hr_by_date
@@ -153,6 +153,15 @@ class FakeGarmin:
         if isinstance(self.hr_by_date, Exception):
             raise self.hr_by_date
         return self.hr_by_date.get(cdate, {"calendarDate": cdate, "heartRateValues": None})
+
+    def get_spo2_data(self, cdate):
+        return {}
+
+    def get_respiration_data(self, cdate):
+        return {}
+
+    def get_hrv_data(self, cdate):
+        return {}
 
     def get_activities_by_date(self, startdate, enddate=None):
         return []

@@ -95,7 +95,8 @@ def without(rows, *metrics):
 
 class FakeGarmin:
     """Stands in for garminconnect.Garmin: canned stats by date; no
-    sleep, heart rate or activities (those are test_sleep_sessions.py's,
+    sleep, vitals, heart rate or activities (those are
+    test_sleep_sessions.py's, test_garmin_daily_vitals.py's,
     test_heart_rate_samples.py's and test_workout_sessions.py's)."""
 
     def __init__(self, stats_by_date):
@@ -111,6 +112,15 @@ class FakeGarmin:
 
     def get_heart_rates(self, cdate):
         return {"calendarDate": cdate, "heartRateValues": None}
+
+    def get_spo2_data(self, cdate):
+        return {}
+
+    def get_respiration_data(self, cdate):
+        return {}
+
+    def get_hrv_data(self, cdate):
+        return {}
 
     def get_activities_by_date(self, startdate, enddate=None):
         return []

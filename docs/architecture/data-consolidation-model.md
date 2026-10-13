@@ -248,12 +248,16 @@ vocabulary — not a home for app context (rosters, calendars). See §1 scope.
 - Garmin daily metrics beyond steps + resting HR — the first of the cross-vendor
   daily core: distance, active/total calories, floors, and moderate/vigorous
   intensity minutes, from the `get_stats` response it already fetches.
+- Garmin daily vitals — SpO2 (`spo2_pct`), waking respiration rate
+  (`respiratory_rate_brpm`) and overnight HRV (`hrv_ms`), a request each; daily
+  values only (the intraday SpO2/respiration series follows).
 
 **Designed, to-build:**
 - The **series stitch** (compute-on-read priority pick in `GET /api/series`,
   pending a second series source) and further series sources.
-- **Wide expansion** — more daily/session types (daily vitals next), each a
-  fetcher + a canonical key/kind (a new metric is data, not a migration).
+- **Wide expansion** — more daily/session/series types, each a fetcher + a
+  canonical key/kind (a new metric is data, not a migration); the vitals series
+  (intraday SpO2 and respiration) is next.
 - **Per-event session dedup** + preferred-source-per-kind selection view.
 - **Source tiers** (device/manual/app) with app-tier as opt-in.
 - **Session write-back** (apps contributing sessions, incl. custom detectors).

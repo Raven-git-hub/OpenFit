@@ -43,17 +43,28 @@ own calls to its device API. Full direction:
   migration. Keys and units come from `app/metrics.py` (`steps`/count,
   `resting_hr_bpm`/bpm, `sleep_minutes`/min, `weight_kg`/kg, and the daily
   activity metrics `distance_m`/m, `active_kcal`/kcal, `total_kcal`/kcal,
-  `floors`/count, `intensity_moderate_min`/min, `intensity_vigorous_min`/min).
-  Garmin files those six from the same `get_stats` response as steps and
-  resting HR, through its `STATS_METRICS` field map
-  (`app/plugins/garmin/plugin.py`; each rounded to a whole number): a field
-  absent or not a finite number writes nothing (an absent one is logged with
-  the response's keys — the floors/intensity field names are unverified
-  guesses), and a day holding only these still lands. Migration `005`
-  unpivoted the old wide `activity` table into it and dropped `activity`;
-  migration `006` moved the old `weights` table in as `weight_kg` readings under
-  source `manual` (hand entry; `synced_at` NULL for migrated rows) and dropped
-  `weights`.
+  `floors`/count, `intensity_moderate_min`/min, `intensity_vigorous_min`/min,
+  and the daily vitals `spo2_pct`/%, `respiratory_rate_brpm`/brpm,
+  `hrv_ms`/ms). Garmin files those six activity metrics from the same
+  `get_stats` response as steps and resting HR, through its `STATS_METRICS`
+  field map (`app/plugins/garmin/plugin.py`; each rounded to a whole number):
+  a field absent or not a finite number writes nothing (an absent one is
+  logged with the response's keys — the floors/intensity field names are
+  unverified guesses), and a day holding only these still lands. The three
+  vitals are a request a day each, through the plugin's `DAILY_VITALS` table:
+  `get_spo2_data` → `averageSpO2`, `get_respiration_data` →
+  `avgWakingRespirationValue`, `get_hrv_data` → the nested
+  `hrvSummary.lastNightAvg` (the whole payload is `{}` on a device without HRV).
+  Each is stored as reported (not rounded), in its own try/except (a failed
+  fetch costs only its metric); a value absent or not a finite number writes
+  nothing and isn't logged — an empty response is a device without that sensor,
+  not a wrong field name — and a day holding only a vital still lands. Daily
+  figures only: the intraday arrays in the same responses (`spO2HourlyAverages`,
+  `respirationValuesArray`, …) aren't read — that series is a later slice.
+  Migration `005` unpivoted the old wide `activity` table into it and dropped
+  `activity`; migration `006` moved the old `weights` table in as `weight_kg`
+  readings under source `manual` (hand entry; `synced_at` NULL for migrated
+  rows) and dropped `weights`.
 - Beside it, `sessions(id, source, kind, "start", "end", summary_json, synced_at)`
   (migration `007`, purely additive) for interval records: `id` is
   `source:kind:start` so a re-sync upserts, `start`/`end` are ISO 8601 UTC
@@ -190,12 +201,14 @@ same PR:
   (fixed precedence) and the user-overridable per-metric primary in
   `settings.source_roles` (no migration); Garmin's daily metrics broadened
   from `get_stats` (distance, calories, floors, intensity minutes — no
-  migration); the `samples` table (series grain)
+  migration); Garmin daily vitals (SpO2, respiration, HRV — daily values, a
+  request each, no migration); the `samples` table (series grain)
   and `write_sample()` in `009`; Garmin intraday heart rate fetched into it,
   and read back through `GET /api/series/<metric>` (a per-source passthrough).
-  Still to come: daily vitals (SpO2, respiration, HRV), the cross-source
-  `/api/series` stitch (pending a second series source), more series sources,
-  verifying sources + history.
+  Still to come: the vitals series (intraday SpO2 and respiration, whose
+  arrays need sentinel handling), the cross-source `/api/series` stitch
+  (pending a second series source), more series sources, verifying sources +
+  history.
 - **Webhook / push ingestion:** landed for metrics (see Data model); still to
   come: pushing sessions (sleep, workouts) through it.
 - **The access contract:** landed (see Data model): discovery, range queries
