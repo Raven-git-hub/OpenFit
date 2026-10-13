@@ -74,8 +74,13 @@ own calls to its device API. Full direction:
   straight through and writes nothing), and upserts a re-sync in place.
   Series keys are their own vocabulary, distinct from the daily keys even
   where the quantity overlaps: `heart_rate` (bpm), the first, is not
-  `resting_hr_bpm`. Plumbing only so far: no plugin fetches into it, nothing
-  derives from it, and no API reads it — those are later slices.
+  `resting_hr_bpm`. Garmin fills it — the first populated series: each day of
+  its sync window, `get_heart_rates` gives `[epoch_ms, bpm]` pairs on a ~2-minute
+  cadence, parsed by `_heart_rate_samples()` (`app/plugins/garmin/plugin.py`;
+  null bpm/non-wear and unparseable pairs dropped) and written as `heart_rate`
+  samples, ahead of the day's no-summary skip and in its own try/except (a
+  failed fetch costs only the samples). Ingest only so far: nothing derives
+  from it and no API reads it — those are later slices.
 - `derived_metrics(date, metric, value, unit, source, synced_at)` keyed
   `(date, metric)` (migration `008`, purely additive): the one trusted value per
   metric per day, every metric including `weight_kg`. `source` is the winning
@@ -163,8 +168,9 @@ same PR:
   then workouts with no further migration); the stored derived value in `008`
   (fixed precedence) and the user-overridable per-metric primary in
   `settings.source_roles` (no migration); the `samples` table (series grain)
-  and `write_sample()` in `009`. Still to come: fetching samples (heart rate
-  first), reading them back through the contract, verifying sources + history.
+  and `write_sample()` in `009`; Garmin intraday heart rate fetched into it.
+  Still to come: reading samples back through the contract (the `/api/series`
+  stitch), more series sources, verifying sources + history.
 - **Webhook / push ingestion:** landed for metrics (see Data model); still to
   come: pushing sessions (sleep, workouts) through it.
 - **The access contract:** landed (see Data model): discovery, range queries

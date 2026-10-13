@@ -114,7 +114,7 @@ STRENGTH_SESSION = (
 class FakeGarmin:
     """Stands in for garminconnect.Garmin: canned activities, recording
     every get_activities_by_date call; no stats or sleep for any day
-    unless given."""
+    unless given, and no heart rate."""
 
     def __init__(self, activities, stats_by_date=None):
         self.activities = activities
@@ -126,6 +126,9 @@ class FakeGarmin:
 
     def get_sleep_data(self, cdate):
         return {"dailySleepDTO": {"calendarDate": cdate, "sleepTimeSeconds": None}}
+
+    def get_heart_rates(self, cdate):
+        return {"calendarDate": cdate, "heartRateValues": None}
 
     def get_activities_by_date(self, startdate, enddate=None):
         self.activity_calls.append((startdate, enddate))
