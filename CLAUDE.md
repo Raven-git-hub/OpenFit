@@ -45,8 +45,9 @@ own calls to its device API. Full direction:
   `resting_hr_bpm`/bpm, `sleep_minutes`/min, `weight_kg`/kg, and the daily
   activity metrics `distance_m`/m, `active_kcal`/kcal, `total_kcal`/kcal,
   `floors`/count, `intensity_moderate_min`/min, `intensity_vigorous_min`/min,
-  and the daily vitals `spo2_pct`/%, `respiratory_rate_brpm`/brpm,
-  `hrv_ms`/ms). Garmin files those six activity metrics from the same
+  the daily vitals `spo2_pct`/%, `respiratory_rate_brpm`/brpm,
+  `hrv_ms`/ms, and `vo2_max`/ml/kg/min, `body_fat_pct`/%, `bmi`/kg/m2,
+  `hydration_ml`/ml). Garmin files those six activity metrics from the same
   `get_stats` response as steps and resting HR, through its `STATS_METRICS`
   field map (`app/plugins/garmin/plugin.py`; each rounded to a whole number):
   a field absent or not a finite number writes nothing (an absent one is
@@ -63,6 +64,23 @@ own calls to its device API. Full direction:
   field name — and a day holding only a vital still lands. The same SpO2 and
   respiration responses also carry the intraday series (an entry's `series`
   key; see `samples` below), read from the one fetch — no extra request.
+  `GARMIN_VITALS` also carries two single-value daily fetches with no series:
+  `get_training_status` → the nested `mostRecentVO2Max.generic.vo2MaxValue`
+  as `vo2_max` (the most recent estimate whatever day is asked, so each day of
+  the window gets the current value) and `get_hydration_data` → `valueInML` as
+  `hydration_ml`, both stored as reported. Body composition is its own
+  request a day, `get_body_composition(day, day)` (a range call with three
+  outputs, so not a `GARMIN_VITALS` entry), read by
+  `_body_composition_metrics()` from `totalAverage`: `bodyFat` →
+  `body_fat_pct` and `bmi` → `bmi` as reported, and `weight` → `weight_kg`
+  converted from grams (`/ 1000`) — Garmin's `weight_kg` sits beside the
+  `manual` one and outranks it in the default precedence. That unit is
+  unverified (every field was null on the account probed), so the converted
+  weight is written only within `weight_kg`'s `PLAUSIBLE_RANGES`; outside it
+  nothing is written and the raw grams and converted kg are logged. As with
+  the vitals, a missing/null/non-number field writes nothing and isn't
+  logged, a failed fetch costs only its own metrics, and a day holding only
+  these still lands.
   Migration `005` unpivoted the old wide `activity` table into it and dropped
   `activity`; migration `006` moved the old `weights` table in as `weight_kg`
   readings under source `manual` (hand entry; `synced_at` NULL for migrated
@@ -220,8 +238,11 @@ same PR:
   and read back through `GET /api/series/<metric>` (a per-source passthrough);
   Garmin's respiration and SpO2 series from the vitals responses it already
   fetches (sentinels dropped by `_series_samples()` — no new request, no
-  migration). Still to come: the cross-source `/api/series` stitch (pending a
-  second series source), more series sources, verifying sources + history.
+  migration); Garmin's remaining daily metrics (VO2 max and hydration via
+  `GARMIN_VITALS`, body fat, BMI and weight via a `get_body_composition`
+  block — no migration). Still to come: the cross-source `/api/series`
+  stitch (pending a second series source), more series sources, verifying
+  sources + history.
 - **Webhook / push ingestion:** landed for metrics (see Data model); still to
   come: pushing sessions (sleep, workouts) through it.
 - **The access contract:** landed (see Data model): discovery, range queries

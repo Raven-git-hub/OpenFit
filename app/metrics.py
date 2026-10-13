@@ -31,6 +31,10 @@ INTENSITY_VIGOROUS_MIN = "intensity_vigorous_min"
 SPO2_PCT = "spo2_pct"
 RESPIRATORY_RATE_BRPM = "respiratory_rate_brpm"
 HRV_MS = "hrv_ms"
+VO2_MAX = "vo2_max"
+BODY_FAT_PCT = "body_fat_pct"
+BMI = "bmi"
+HYDRATION_ML = "hydration_ml"
 
 # Canonical key -> the unit its value is stored in.
 METRICS = {
@@ -47,6 +51,10 @@ METRICS = {
     SPO2_PCT: "%",
     RESPIRATORY_RATE_BRPM: "brpm",
     HRV_MS: "ms",
+    VO2_MAX: "ml/kg/min",
+    BODY_FAT_PCT: "%",
+    BMI: "kg/m2",
+    HYDRATION_ML: "ml",
 }
 
 
@@ -83,6 +91,10 @@ PLAUSIBLE_RANGES = {
     SPO2_PCT: (50, 100),
     RESPIRATORY_RATE_BRPM: (3, 60),
     HRV_MS: (0, 500),
+    VO2_MAX: (10, 90),
+    BODY_FAT_PCT: (2, 70),
+    BMI: (8, 80),
+    HYDRATION_ML: (0, 20_000),
 }
 
 

@@ -20,7 +20,7 @@ and nothing here is gated on any one device populating it.
 
 ## Catalogue
 
-Status: ✅ built · **A** = Garmin daily batch · **B** = Garmin series batch · ○ future · ✕ excluded.
+Status: ✅ built · ○ future · ✕ excluded.
 
 ### Activity & fitness
 | key | grain | unit | status |
@@ -50,10 +50,10 @@ Status: ✅ built · **A** = Garmin daily batch · **B** = Garmin series batch �
 | hrv_ms | daily | ms | ✅ |
 | spo2_pct | daily | % | ✅ |
 | respiratory_rate_brpm | daily | brpm | ✅ |
-| vo2_max | daily | ml/kg/min | A |
+| vo2_max | daily | ml/kg/min | ✅ |
 | heart_rate | series | bpm | ✅ |
-| respiration | series | brpm | B |
-| spo2 | series | % | B |
+| respiration | series | brpm | ✅ |
+| spo2 | series | % | ✅ |
 | hrv_intraday | series | ms | ○ |
 | blood_glucose | sample | mmol/L | ○ |
 | blood_pressure_systolic / _diastolic | sample | mmHg | ○ |
@@ -73,9 +73,9 @@ Status: ✅ built · **A** = Garmin daily batch · **B** = Garmin series batch �
 ### Body measurements
 | key | grain | unit | status |
 |---|---|---|---|
-| weight_kg | daily | kg | ✅ (manual; +Garmin in A) |
-| body_fat_pct | daily | % | A |
-| bmi | daily | kg/m² | A |
+| weight_kg | daily | kg | ✅ (manual + Garmin) |
+| body_fat_pct | daily | % | ✅ |
+| bmi | daily | kg/m² | ✅ |
 | height_cm | daily | cm | ○ |
 | muscle_mass_kg / bone_mass_kg | daily | kg | ○ |
 | body_water_pct | daily | % | ○ |
@@ -83,7 +83,7 @@ Status: ✅ built · **A** = Garmin daily batch · **B** = Garmin series batch �
 ### Nutrition & hydration (additive / mostly manual-logged)
 | key | grain | unit | status |
 |---|---|---|---|
-| hydration_ml | daily | ml | A |
+| hydration_ml | daily | ml | ✅ |
 | calories_consumed_kcal | daily | kcal | ○ |
 | carbs_g / protein_g / fat_g | daily | g | ○ |
 | food_log | entry | — | ○ |

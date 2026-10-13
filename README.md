@@ -37,7 +37,8 @@ is not the product.
 - A versioned SQLite data store with a hand-rolled migration runner.
 - **Garmin Connect** plugin — steps, resting HR, daily distance, active and
   total calories, floors climbed, moderate and vigorous intensity minutes, daily
-  SpO2, respiration rate and HRV (on devices that measure them), sleep (daily
+  SpO2, respiration rate and HRV (on devices that measure them), VO2 max,
+  hydration, body fat, BMI and weight (from a compatible scale), sleep (daily
   total plus a per-night session with stages), workouts (a session per
   activity), and intraday series: heart rate and respiration rate (a sample
   every couple of minutes) and SpO2 (hourly averages).
@@ -69,7 +70,8 @@ curl -X POST http://<your-server-ip>:8080/api/webhook/<token> \
 - `metric` is a canonical key (`steps`, `resting_hr_bpm`, `sleep_minutes`,
   `weight_kg`, `distance_m`, `active_kcal`, `total_kcal`, `floors`,
   `intensity_moderate_min`, `intensity_vigorous_min`, `spo2_pct`,
-  `respiratory_rate_brpm`, `hrv_ms`) and `value` a number in its unit
+  `respiratory_rate_brpm`, `hrv_ms`, `vo2_max`, `body_fat_pct`, `bmi`,
+  `hydration_ml`) and `value` a number in its unit
   (`app/metrics.py`).
 - `date` (`YYYY-MM-DD`) is optional and defaults to today; `source` is optional
   and defaults to `webhook`. Name your device (`"eufy"`) and it takes part in
@@ -80,7 +82,8 @@ curl -X POST http://<your-server-ip>:8080/api/webhook/<token> \
   automation can't corrupt your data: steps 0–200000, resting HR 20–250 bpm,
   sleep 0–1440 min, weight 20–400 kg, distance 0–500000 m, active and total
   calories 0–30000 kcal each, floors 0–10000, each kind of intensity minutes
-  0–1440, SpO2 50–100 %, respiration 3–60 breaths/min, and HRV 0–500 ms.
+  0–1440, SpO2 50–100 %, respiration 3–60 breaths/min, HRV 0–500 ms, VO2 max
+  10–90 ml/kg/min, body fat 2–70 %, BMI 8–80 kg/m², and hydration 0–20000 ml.
 - Pushing the same metric and source for a day again replaces the reading, and
   the day's derived value is updated at once.
 
@@ -249,9 +252,10 @@ table — one row per `(date, source, metric)` reading, filed under a canonical
 vocabulary (`steps`, `resting_hr_bpm`, `sleep_minutes`, `weight_kg`, ... in
 `app/metrics.py`) — so a new metric needs no migration. Weight is one of those
 metrics: hand-entered weigh-ins are `weight_kg` readings (in kg) under the source
-`manual`, and there is no separate weights table any more. Beside `metrics`, a
-`sessions` table holds interval records, each with a start/end and a summary,
-filed under a session kind from the same vocabulary. A `sleep` session is one
+`manual` (Garmin files its own from a compatible scale, under `garmin`), and
+there is no separate weights table any more. Beside `metrics`, a `sessions`
+table holds interval records, each with a start/end and a summary, filed under
+a session kind from the same vocabulary. A `sleep` session is one
 night (or nap) from each device, with its stage breakdown in minutes
 (`asleep_minutes`, plus `light_minutes`/`deep_minutes`/`rem_minutes`/
 `awake_minutes` where the device reports them); sleep is dual-track: the daily
