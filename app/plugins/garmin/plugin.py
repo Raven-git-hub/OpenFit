@@ -11,9 +11,10 @@ Fetched per day: get_stats (steps, resting HR, distance, calories,
 floors and intensity minutes), get_sleep_data (the
 daily sleep total plus the night as a sleep session), get_spo2_data,
 get_respiration_data and get_hrv_data (the day's SpO2, respiration rate
-and HRV) and get_heart_rates (the intraday heart-rate series, as
-samples). Fetched once over the whole range: get_activities_by_date,
-each activity a workout session.
+and HRV, and from the same SpO2 and respiration responses their
+intraday series, as samples) and get_heart_rates (the intraday
+heart-rate series, as samples). Fetched once over the whole range:
+get_activities_by_date, each activity a workout session.
 """
 
 import math
@@ -31,10 +32,12 @@ from metrics import (
     HRV_MS,
     INTENSITY_MODERATE_MIN,
     INTENSITY_VIGOROUS_MIN,
+    RESPIRATION,
     RESPIRATORY_RATE_BRPM,
     RESTING_HR_BPM,
     SLEEP,
     SLEEP_MINUTES,
+    SPO2,
     SPO2_PCT,
     STEPS,
     TOTAL_KCAL,
@@ -57,22 +60,38 @@ STATS_METRICS = {
     "vigorousIntensityMinutes": (INTENSITY_VIGOROUS_MIN, round),
 }
 
-# Daily vitals, a request each: (what to call it in a log line, the
-# client method, the path to the day's value in its response, the metric
-# it files as). Each value is already in its canonical unit and is stored
-# as reported. A value that isn't there, or isn't a number, writes
-# nothing and isn't logged: an empty response is how a device without
-# that sensor answers (get_hrv_data is {} on a watch without HRV), not a
-# wrong field name. Only the daily figure is read - the intraday arrays
-# in the same responses (respirationValuesArray, spO2HourlyAverages, ...)
-# are left for the series.
-DAILY_VITALS = [
-    ("SpO2", "get_spo2_data", ("averageSpO2",), SPO2_PCT),
-    (
-        "respiration", "get_respiration_data", ("avgWakingRespirationValue",),
-        RESPIRATORY_RATE_BRPM,
-    ),
-    ("HRV", "get_hrv_data", ("hrvSummary", "lastNightAvg"), HRV_MS),
+# Vitals, a request a day each, and each response read for both grains:
+# the day's figure as a daily metric and, where the response carries one,
+# its intraday array as a series. Per entry: what to call it in a log
+# line, the client method, "daily" - the path to the day's value in the
+# response and the metric it files as - and "series" - the response key
+# holding its [epoch_ms, value] rows and the series metric they file as,
+# or None. Each value is already in its canonical unit and is stored as
+# reported. A value or array that isn't there, or a value that isn't a
+# number, writes nothing and isn't logged: an empty response is how a
+# device without that sensor answers (get_hrv_data is {} on a watch
+# without HRV), not a wrong field name. SpO2's series is the hourly
+# averages - the finer spO2SingleValues can be null - and HRV's readings
+# aren't a series here.
+GARMIN_VITALS = [
+    {
+        "label": "SpO2",
+        "method": "get_spo2_data",
+        "daily": (("averageSpO2",), SPO2_PCT),
+        "series": ("spO2HourlyAverages", SPO2),
+    },
+    {
+        "label": "respiration",
+        "method": "get_respiration_data",
+        "daily": (("avgWakingRespirationValue",), RESPIRATORY_RATE_BRPM),
+        "series": ("respirationValuesArray", RESPIRATION),
+    },
+    {
+        "label": "HRV",
+        "method": "get_hrv_data",
+        "daily": (("hrvSummary", "lastNightAvg"), HRV_MS),
+        "series": None,
+    },
 ]
 
 # dailySleepDTO stage fields (seconds) -> the sleep session summary keys
@@ -193,16 +212,25 @@ class GarminPlugin(SyncPlugin):
                 print(f"[garmin] sleep fetch failed for {d_str}: {e}")
 
             # Each vital is its own request, so a failed one costs that
-            # metric and nothing else.
+            # vital - its metric and its series - and nothing else. The one
+            # response gives both: the daily value is held for below, and
+            # the series goes straight in, ahead of the skip, as heart
+            # rate's does.
             vitals = {}
-            for label, method, path, metric in DAILY_VITALS:
+            for vital in GARMIN_VITALS:
                 try:
-                    value = _daily_vital(getattr(client, method)(d_str), path)
+                    payload = getattr(client, vital["method"])(d_str)
+                    path, metric = vital["daily"]
+                    value = _daily_vital(payload, path)
+                    if value is not None:
+                        vitals[metric] = value
+                    if vital["series"]:
+                        key, series_metric = vital["series"]
+                        rows = payload.get(key) if isinstance(payload, dict) else None
+                        for ts, sample in _series_samples(rows):
+                            write_sample(conn, self.id, series_metric, ts, sample)
                 except Exception as e:
-                    print(f"[garmin] {label} fetch failed for {d_str}: {e}")
-                    continue
-                if value is not None:
-                    vitals[metric] = value
+                    print(f"[garmin] {vital['label']} fetch failed for {d_str}: {e}")
 
             # The intraday series goes straight in, ahead of the skip
             # below: a day with samples but no daily summary still keeps
@@ -431,6 +459,35 @@ def _heart_rate_samples(payload):
         ts = _gmt_iso(ts_ms)
         if ts is not None:
             out.append((ts, bpm))
+    return out
+
+
+def _series_samples(rows, drop_non_positive=True):
+    """[[epoch_ms, value], ...] rows -> (iso_utc ts, value) pairs.
+
+    The series counterpart of _daily_vital: Garmin's intraday arrays
+    (respirationValuesArray, spO2HourlyAverages) share this shape, index
+    0 the timestamp and index 1 the value (their descriptor lists say
+    so). Drops nulls, non-numbers, and (by default) non-positive values -
+    Garmin's "no reading" sentinels in these arrays are negative (-1,
+    -2). A row that isn't a pair, or a timestamp out of range, is
+    skipped. Never raises - a shape mismatch costs the samples, not the
+    sync.
+    """
+    out = []
+    if not isinstance(rows, list):
+        return out
+    for row in rows:
+        if not isinstance(row, (list, tuple)) or len(row) < 2:
+            continue
+        ts_ms, value = row[0], row[1]
+        if not _is_number(ts_ms) or not _is_number(value):
+            continue
+        if drop_non_positive and value <= 0:
+            continue
+        ts = _gmt_iso(ts_ms)
+        if ts is not None:
+            out.append((ts, value))
     return out
 
 

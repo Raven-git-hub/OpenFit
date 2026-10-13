@@ -39,7 +39,8 @@ is not the product.
   total calories, floors climbed, moderate and vigorous intensity minutes, daily
   SpO2, respiration rate and HRV (on devices that measure them), sleep (daily
   total plus a per-night session with stages), workouts (a session per
-  activity), and intraday heart rate (a sample every couple of minutes).
+  activity), and intraday series: heart rate and respiration rate (a sample
+  every couple of minutes) and SpO2 (hourly averages).
 - **Google Health** plugin — steps, resting HR, sleep and workouts, from Pixel
   Watch / Fitbit via Google's cloud Health API (not the legacy Fitbit Web API,
   retired September 2026).
@@ -49,7 +50,8 @@ is not the product.
   regeneratable token and per-metric sanity ranges.
 - The **access contract** — a small, stable read API apps build on: what data
   there is, one metric over a date range (with which source each value came
-  from), sleep/workout sessions, and intraday series like heart rate.
+  from), sleep/workout sessions, and intraday series like heart rate,
+  respiration and SpO2.
 - An interim web viewer (being replaced).
 
 ## Webhook input (push)
@@ -159,7 +161,7 @@ sources yet, so a night both devices tracked appears once per device. An unknown
 kind is a 404.
 
 **Intraday series — `GET /api/series/<metric>?from=YYYY-MM-DD&to=YYYY-MM-DD`**
-(`heart_rate`).
+(`heart_rate` in bpm, `respiration` in breaths/min, `spo2` in %).
 
 ```json
 {"metric": "heart_rate", "unit": "bpm", "points": [
@@ -172,8 +174,8 @@ Every recorded sample, oldest first, each tagged with its source; times are ISO
 8601 UTC. For now this is a straight passthrough: if two devices both sampled a
 stretch, both devices' samples are listed. Stitching them into one timeline by
 source priority comes once a second series source exists. Series keys are their
-own vocabulary, so a daily key such as `resting_hr_bpm` is a 404 here, like any
-unknown metric; a known one with no samples has `"points": []`.
+own vocabulary, so a daily key such as `resting_hr_bpm` or `spo2_pct` is a 404
+here, like any unknown metric; a known one with no samples has `"points": []`.
 
 `from` and `to` are optional and inclusive; leave one out for an open end. For
 sessions they match the start's UTC date, and for series the sample's. A
@@ -259,10 +261,13 @@ its `type` (the device's activity type, lowercased), `duration_minutes`,
 `distance_m`, `avg_hr_bpm` and `calories_kcal`, whichever the device reports.
 A third table, `samples`, is the series (intraday) grain: one row per
 `(source, metric, timestamp)` for readings like heart rate every couple of
-minutes, filed under its own series vocabulary (`heart_rate` in bpm, distinct
-from the daily `resting_hr_bpm`). A null reading — a non-wear gap — is dropped
-rather than stored. Garmin fills it with intraday heart rate, and apps read it
-through `GET /api/series/<metric>`.
+minutes, filed under its own series vocabulary (`heart_rate` in bpm,
+`respiration` in brpm and `spo2` in %, distinct from the daily `resting_hr_bpm`,
+`respiratory_rate_brpm` and `spo2_pct`). A null reading — a non-wear gap — is
+dropped rather than stored, as are Garmin's negative "no reading" markers in its
+respiration and SpO2 arrays. Garmin fills it with intraday heart rate,
+respiration and SpO2 (the last two from the same responses as its daily vitals,
+so no extra requests), and apps read it through `GET /api/series/<metric>`.
 The per-day value is stored, not worked out on each read: a `derived_metrics`
 table holds one value per `(date, metric)`, tagged with the source it came from,
 picked by `app/derived.py` after every sync (for the days that sync covered) and

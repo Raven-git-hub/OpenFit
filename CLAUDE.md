@@ -29,7 +29,8 @@ own calls to its device API. Full direction:
   `write_sample()`. Never bypass this pattern.
 - `app/metrics.py` — the canonical metric vocabulary (key → unit), plus the
   session kinds (`SLEEP`, `WORKOUT` in `SESSION_KINDS`) and the series metrics
-  (`HEART_RATE` in `SERIES_METRICS`). Import keys and kinds from here; never
+  (`HEART_RATE`, `RESPIRATION`, `SPO2` in `SERIES_METRICS`). Import keys and
+  kinds from here; never
   spell metric or kind strings out in plugins or the API.
 - `app/derived.py` — the one place a source is picked per `(date, metric)`:
   `recompute_derived()` writes `derived_metrics`. Never pick a source anywhere else.
@@ -51,16 +52,17 @@ own calls to its device API. Full direction:
   a field absent or not a finite number writes nothing (an absent one is
   logged with the response's keys — the floors/intensity field names are
   unverified guesses), and a day holding only these still lands. The three
-  vitals are a request a day each, through the plugin's `DAILY_VITALS` table:
-  `get_spo2_data` → `averageSpO2`, `get_respiration_data` →
-  `avgWakingRespirationValue`, `get_hrv_data` → the nested
-  `hrvSummary.lastNightAvg` (the whole payload is `{}` on a device without HRV).
-  Each is stored as reported (not rounded), in its own try/except (a failed
-  fetch costs only its metric); a value absent or not a finite number writes
-  nothing and isn't logged — an empty response is a device without that sensor,
-  not a wrong field name — and a day holding only a vital still lands. Daily
-  figures only: the intraday arrays in the same responses (`spO2HourlyAverages`,
-  `respirationValuesArray`, …) aren't read — that series is a later slice.
+  vitals are a request a day each, through the plugin's `GARMIN_VITALS` table
+  (each entry's `daily` path and metric): `get_spo2_data` → `averageSpO2`,
+  `get_respiration_data` → `avgWakingRespirationValue`, `get_hrv_data` → the
+  nested `hrvSummary.lastNightAvg` (the whole payload is `{}` on a device
+  without HRV). Each is stored as reported (not rounded), in its own
+  try/except (a failed fetch costs only that vital — its metric and its
+  series); a value absent or not a finite number writes nothing and isn't
+  logged — an empty response is a device without that sensor, not a wrong
+  field name — and a day holding only a vital still lands. The same SpO2 and
+  respiration responses also carry the intraday series (an entry's `series`
+  key; see `samples` below), read from the one fetch — no extra request.
   Migration `005` unpivoted the old wide `activity` table into it and dropped
   `activity`; migration `006` moved the old `weights` table in as `weight_kg`
   readings under source `manual` (hand entry; `synced_at` NULL for migrated
@@ -92,15 +94,26 @@ own calls to its device API. Full direction:
   metric outside it, drops a `None` value (a source's non-wear gap passes
   straight through and writes nothing), and upserts a re-sync in place.
   Series keys are their own vocabulary, distinct from the daily keys even
-  where the quantity overlaps: `heart_rate` (bpm), the first, is not
-  `resting_hr_bpm`. Garmin fills it — the first populated series: each day of
-  its sync window, `get_heart_rates` gives `[epoch_ms, bpm]` pairs on a ~2-minute
-  cadence, parsed by `_heart_rate_samples()` (`app/plugins/garmin/plugin.py`;
-  null bpm/non-wear and unparseable pairs dropped) and written as `heart_rate`
-  samples, ahead of the day's no-summary skip and in its own try/except (a
-  failed fetch costs only the samples). Nothing derives from it; apps read
-  it through the access contract (`GET /api/series/<metric>`, below) as a
-  per-source passthrough — the cross-source stitch is a later slice.
+  where the quantity overlaps: `heart_rate` (bpm) is not `resting_hr_bpm`,
+  `respiration` (brpm) is not `respiratory_rate_brpm`, `spo2` (%) is not
+  `spo2_pct`. Garmin fills all three, each day of its sync window:
+  - `heart_rate` — `get_heart_rates` gives `[epoch_ms, bpm]` pairs on a
+    ~2-minute cadence, parsed by `_heart_rate_samples()`
+    (`app/plugins/garmin/plugin.py`; null bpm/non-wear and unparseable pairs
+    dropped), in its own try/except (a failed fetch costs only the samples).
+  - `respiration` and `spo2` — from the daily vitals' own responses
+    (`GARMIN_VITALS`' `series` keys, no extra request):
+    `respirationValuesArray` (`[epoch_ms, brpm]`, ~2-minute cadence) and
+    `spO2HourlyAverages` (`[epoch_ms, %]`, hourly; the finer
+    `spO2SingleValues` can be null, so it isn't read). Both go through the one
+    reusable converter `_series_samples(rows, drop_non_positive=True)`, which
+    drops nulls, non-numbers, unreadable rows and — Garmin's "no reading"
+    sentinels in these arrays being negative (-1/-2) — non-positive values;
+    never raises. A failed fetch costs that vital's metric and series.
+  All three are written ahead of the day's no-summary skip, so a day with
+  samples but no daily figures keeps them. Nothing derives from them; apps
+  read them through the access contract (`GET /api/series/<metric>`, below) as
+  a per-source passthrough — the cross-source stitch is a later slice.
 - `derived_metrics(date, metric, value, unit, source, synced_at)` keyed
   `(date, metric)` (migration `008`, purely additive): the one trusted value per
   metric per day, every metric including `weight_kg`. `source` is the winning
@@ -167,8 +180,8 @@ own calls to its device API. Full direction:
     stitch comes once a second series source exists). `from`/`to` match the
     sample's UTC date, as `ts` bounds (`>= fromT00:00:00Z`, `<= toT23:59:59Z`)
     so the `(metric, ts)` index is used. 404 unless `<metric>` is in
-    `SERIES_METRICS` — a daily key like `resting_hr_bpm` included; known with
-    no samples → `points: []`.
+    `SERIES_METRICS` (`heart_rate`, `respiration`, `spo2`) — a daily key like
+    `resting_hr_bpm` included; known with no samples → `points: []`.
   - `from`/`to`: optional, inclusive `YYYY-MM-DD` (empty = omitted); malformed,
     or `from` after `to` → 400. Errors are `{"ok": false, "error"}`.
   These shapes are the stable contract: change them additively only.
@@ -204,11 +217,11 @@ same PR:
   migration); Garmin daily vitals (SpO2, respiration, HRV — daily values, a
   request each, no migration); the `samples` table (series grain)
   and `write_sample()` in `009`; Garmin intraday heart rate fetched into it,
-  and read back through `GET /api/series/<metric>` (a per-source passthrough).
-  Still to come: the vitals series (intraday SpO2 and respiration, whose
-  arrays need sentinel handling), the cross-source `/api/series` stitch
-  (pending a second series source), more series sources, verifying sources +
-  history.
+  and read back through `GET /api/series/<metric>` (a per-source passthrough);
+  Garmin's respiration and SpO2 series from the vitals responses it already
+  fetches (sentinels dropped by `_series_samples()` — no new request, no
+  migration). Still to come: the cross-source `/api/series` stitch (pending a
+  second series source), more series sources, verifying sources + history.
 - **Webhook / push ingestion:** landed for metrics (see Data model); still to
   come: pushing sessions (sleep, workouts) through it.
 - **The access contract:** landed (see Data model): discovery, range queries

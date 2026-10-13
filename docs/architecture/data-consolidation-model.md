@@ -50,8 +50,8 @@ extensible, since other sources carry types Google doesn't.)
    *kind*, source as an attribute. Table: `sessions`. **Built** (sleep, workout).
 3. **Series** — timestamped samples (HR, SpO2, …), one row per sample per source.
    Table: `samples`. **Storage and read built** (Garmin intraday HR,
-   `GET /api/series` as a per-source passthrough); the cross-source stitch is
-   designed, not built. This is the "intraday" grain.
+   respiration and SpO2, `GET /api/series` as a per-source passthrough); the
+   cross-source stitch is designed, not built. This is the "intraday" grain.
 
 A session is two things: an **interval** (universal, source-agnostic — any app
 can slice the series with it) and a **summary** (a vendor interpretation OpenFit
@@ -129,8 +129,14 @@ on each source's own labels.*
 Store each source's raw samples per source: `(source, metric, timestamp, value)`.
 Oura's and Google's samples sit side by side, untouched — dumb raw lanes.
 
-**Built:** the `samples` table and `write_sample()`; Garmin writes its intraday
-heart rate (`heart_rate`, ~2-minute cadence, non-wear nulls dropped). The read
+**Built:** the `samples` table and `write_sample()`; Garmin writes three
+intraday series: heart rate (`heart_rate`, ~2-minute cadence, non-wear nulls
+dropped), respiration (`respiration`, ~2-minute cadence) and SpO2 (`spo2`,
+hourly averages). Respiration and SpO2 come out of the same `get_respiration_data`
+/ `get_spo2_data` responses that already give the daily vitals — one fetch,
+both grains — through one reusable `[timestamp, value]` row converter that
+drops Garmin's negative "no reading" sentinels (-1/-2) along with nulls and
+unreadable rows: the series counterpart of the daily field maps. The read
 side exists as a **single-source passthrough**: `GET /api/series/<metric>` (§8)
 lists every source's raw samples in a range, each tagged, with no priority
 applied — with Garmin the only series source there is nothing to stitch yet.
@@ -238,7 +244,9 @@ vocabulary — not a home for app context (rosters, calendars). See §1 scope.
   source roles and fixed default precedence; forward-only re-derive over the sync
   window.
 - `sessions` (sleep, workout), source-agnostic querying by kind.
-- `samples` (series grain) storage; Garmin intraday heart rate ingested into it.
+- `samples` (series grain) storage; Garmin intraday heart rate, respiration and
+  SpO2 ingested into it (respiration and SpO2 from the vitals responses already
+  fetched — no extra request).
 - Sync: 6-hourly, 7-day trailing window, re-derive.
 - Webhook push ingestion (metrics only, token auth, own-source enforcement).
 - Access contract (catalog, metric range, sessions, intraday series as a
@@ -249,15 +257,14 @@ vocabulary — not a home for app context (rosters, calendars). See §1 scope.
   daily core: distance, active/total calories, floors, and moderate/vigorous
   intensity minutes, from the `get_stats` response it already fetches.
 - Garmin daily vitals — SpO2 (`spo2_pct`), waking respiration rate
-  (`respiratory_rate_brpm`) and overnight HRV (`hrv_ms`), a request each; daily
-  values only (the intraday SpO2/respiration series follows).
+  (`respiratory_rate_brpm`) and overnight HRV (`hrv_ms`), a request each; the
+  SpO2 and respiration responses also give their intraday series (above).
 
 **Designed, to-build:**
 - The **series stitch** (compute-on-read priority pick in `GET /api/series`,
   pending a second series source) and further series sources.
 - **Wide expansion** — more daily/session/series types, each a fetcher + a
-  canonical key/kind (a new metric is data, not a migration); the vitals series
-  (intraday SpO2 and respiration) is next.
+  canonical key/kind (a new metric is data, not a migration).
 - **Per-event session dedup** + preferred-source-per-kind selection view.
 - **Source tiers** (device/manual/app) with app-tier as opt-in.
 - **Session write-back** (apps contributing sessions, incl. custom detectors).
