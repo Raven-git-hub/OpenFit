@@ -17,11 +17,17 @@ import pytest
 import main
 from derived import recompute_derived
 from metrics import (
+    ACTIVE_KCAL,
+    DISTANCE_M,
+    FLOORS,
+    INTENSITY_MODERATE_MIN,
+    INTENSITY_VIGOROUS_MIN,
     METRICS,
     PLAUSIBLE_RANGES,
     RESTING_HR_BPM,
     SLEEP_MINUTES,
     STEPS,
+    TOTAL_KCAL,
     WEIGHT_KG,
 )
 
@@ -341,6 +347,12 @@ def test_the_plausible_ranges():
         RESTING_HR_BPM: (20, 250),
         SLEEP_MINUTES: (0, 1440),
         WEIGHT_KG: (20, 400),
+        DISTANCE_M: (0, 500_000),
+        ACTIVE_KCAL: (0, 30_000),
+        TOTAL_KCAL: (0, 30_000),
+        FLOORS: (0, 10_000),
+        INTENSITY_MODERATE_MIN: (0, 1440),
+        INTENSITY_VIGOROUS_MIN: (0, 1440),
     }
     for metric in PLAUSIBLE_RANGES:
         assert metric in METRICS

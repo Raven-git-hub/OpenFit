@@ -41,7 +41,15 @@ own calls to its device API. Full direction:
 - Current: a tidy `metrics(date, source, metric, value, unit, synced_at)` keyed
   `(date, source, metric)` — one row per reading, so a new metric is data not a
   migration. Keys and units come from `app/metrics.py` (`steps`/count,
-  `resting_hr_bpm`/bpm, `sleep_minutes`/min, `weight_kg`/kg). Migration `005`
+  `resting_hr_bpm`/bpm, `sleep_minutes`/min, `weight_kg`/kg, and the daily
+  activity metrics `distance_m`/m, `active_kcal`/kcal, `total_kcal`/kcal,
+  `floors`/count, `intensity_moderate_min`/min, `intensity_vigorous_min`/min).
+  Garmin files those six from the same `get_stats` response as steps and
+  resting HR, through its `STATS_METRICS` field map
+  (`app/plugins/garmin/plugin.py`; each rounded to a whole number): a field
+  absent or not a finite number writes nothing (an absent one is logged with
+  the response's keys — the floors/intensity field names are unverified
+  guesses), and a day holding only these still lands. Migration `005`
   unpivoted the old wide `activity` table into it and dropped `activity`;
   migration `006` moved the old `weights` table in as `weight_kg` readings under
   source `manual` (hand entry; `synced_at` NULL for migrated rows) and dropped
@@ -180,11 +188,14 @@ same PR:
   `005`; weight folded in as `weight_kg` in `006`; `sessions` in `007` (sleep,
   then workouts with no further migration); the stored derived value in `008`
   (fixed precedence) and the user-overridable per-metric primary in
-  `settings.source_roles` (no migration); the `samples` table (series grain)
+  `settings.source_roles` (no migration); Garmin's daily metrics broadened
+  from `get_stats` (distance, calories, floors, intensity minutes — no
+  migration); the `samples` table (series grain)
   and `write_sample()` in `009`; Garmin intraday heart rate fetched into it,
   and read back through `GET /api/series/<metric>` (a per-source passthrough).
-  Still to come: the cross-source `/api/series` stitch (pending a second
-  series source), more series sources, verifying sources + history.
+  Still to come: daily vitals (SpO2, respiration, HRV), the cross-source
+  `/api/series` stitch (pending a second series source), more series sources,
+  verifying sources + history.
 - **Webhook / push ingestion:** landed for metrics (see Data model); still to
   come: pushing sessions (sleep, workouts) through it.
 - **The access contract:** landed (see Data model): discovery, range queries

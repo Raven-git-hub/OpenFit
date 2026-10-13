@@ -22,6 +22,12 @@ STEPS = "steps"
 RESTING_HR_BPM = "resting_hr_bpm"
 SLEEP_MINUTES = "sleep_minutes"
 WEIGHT_KG = "weight_kg"
+DISTANCE_M = "distance_m"
+ACTIVE_KCAL = "active_kcal"
+TOTAL_KCAL = "total_kcal"
+FLOORS = "floors"
+INTENSITY_MODERATE_MIN = "intensity_moderate_min"
+INTENSITY_VIGOROUS_MIN = "intensity_vigorous_min"
 
 # Canonical key -> the unit its value is stored in.
 METRICS = {
@@ -29,6 +35,12 @@ METRICS = {
     RESTING_HR_BPM: "bpm",
     SLEEP_MINUTES: "min",
     WEIGHT_KG: "kg",
+    DISTANCE_M: "m",
+    ACTIVE_KCAL: "kcal",
+    TOTAL_KCAL: "kcal",
+    FLOORS: "count",
+    INTENSITY_MODERATE_MIN: "min",
+    INTENSITY_VIGOROUS_MIN: "min",
 }
 
 
@@ -56,6 +68,12 @@ PLAUSIBLE_RANGES = {
     RESTING_HR_BPM: (20, 250),
     SLEEP_MINUTES: (0, 1440),
     WEIGHT_KG: (20, 400),
+    DISTANCE_M: (0, 500_000),
+    ACTIVE_KCAL: (0, 30_000),
+    TOTAL_KCAL: (0, 30_000),
+    FLOORS: (0, 10_000),
+    INTENSITY_MODERATE_MIN: (0, 1440),
+    INTENSITY_VIGOROUS_MIN: (0, 1440),
 }
 
 
