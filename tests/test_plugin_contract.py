@@ -10,9 +10,20 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from plugins.base import SyncPlugin, iso_utc, write_metric, write_session
+from plugins.base import SyncPlugin, iso_utc, write_metric, write_sample, write_session
 from crypto import encrypt
-from metrics import METRICS, SESSION_KINDS, SLEEP, SLEEP_MINUTES, STEPS, WORKOUT
+from metrics import (
+    HEART_RATE,
+    METRICS,
+    RESTING_HR_BPM,
+    SERIES_METRICS,
+    SESSION_KINDS,
+    SLEEP,
+    SLEEP_MINUTES,
+    STEPS,
+    WORKOUT,
+    series_unit_for,
+)
 
 
 class FakePlugin(SyncPlugin):
@@ -239,6 +250,93 @@ def test_write_session_leaves_metrics_alone(conn):
     write_session(conn, "fake", "sleep", "2026-01-01T22:30:00Z", "2026-01-02T06:20:00Z", NIGHT)
 
     assert readings_for(conn, "fake") == [("2026-01-02", "sleep_minutes", 443, "min")]
+
+
+# ---------- write_sample: the intraday series grain ----------
+
+
+def samples_for(conn, source):
+    """Every sample a source has, in timestamp order."""
+    return [
+        tuple(r) for r in conn.execute(
+            "SELECT metric, ts, value, unit FROM samples WHERE source = ? ORDER BY metric, ts",
+            (source,),
+        )
+    ]
+
+
+def test_write_sample_writes_a_row(conn):
+    wrote = write_sample(conn, "fake", HEART_RATE, "2026-01-01T08:00:00Z", 61)
+    conn.commit()
+
+    assert wrote is True
+    # The unit comes from the series vocabulary, not the caller.
+    assert samples_for(conn, "fake") == [("heart_rate", "2026-01-01T08:00:00Z", 61.0, "bpm")]
+    assert conn.execute("SELECT synced_at FROM samples").fetchone()[0]
+
+
+def test_write_sample_rejects_a_metric_outside_the_series_vocabulary(conn):
+    with pytest.raises(ValueError, match="unknown series metric"):
+        write_sample(conn, "fake", "heartrate", "2026-01-01T08:00:00Z", 61)
+
+    assert samples_for(conn, "fake") == []
+
+
+def test_a_daily_metric_is_not_a_series_metric(conn):
+    """resting_hr_bpm is the daily summary; the sample stream is heart_rate."""
+    with pytest.raises(ValueError, match="unknown series metric"):
+        write_sample(conn, "fake", RESTING_HR_BPM, "2026-01-01T08:00:00Z", 61)
+
+    assert HEART_RATE not in METRICS
+    assert not set(SERIES_METRICS) & set(METRICS)
+
+
+def test_an_unknown_series_metric_fails_even_without_a_value(conn):
+    """A typo shows on the first call, not only once a sample has a value."""
+    with pytest.raises(ValueError, match="unknown series metric"):
+        write_sample(conn, "fake", "heartrate", "2026-01-01T08:00:00Z", None)
+
+
+def test_write_sample_skips_a_missing_value(conn):
+    """A source's null - a non-wear gap - is no reading, and writes nothing."""
+    assert write_sample(conn, "fake", HEART_RATE, "2026-01-01T08:00:00Z", None) is False
+
+    assert conn.execute("SELECT COUNT(*) FROM samples").fetchone()[0] == 0
+
+
+def test_rewriting_a_sample_upserts_rather_than_duplicating(conn):
+    ts = "2026-01-01T08:00:00Z"
+    write_sample(conn, "fake", HEART_RATE, ts, 61)
+    conn.execute("UPDATE samples SET synced_at = '2000-01-01 00:00:00'")
+    write_sample(conn, "fake", HEART_RATE, ts, 64)
+
+    assert samples_for(conn, "fake") == [("heart_rate", ts, 64.0, "bpm")]
+    assert conn.execute("SELECT synced_at FROM samples").fetchone()[0] > "2000-01-01 00:00:00"
+
+
+def test_samples_are_keyed_by_source_metric_and_ts(conn):
+    """Two sources' samples at the same instant never contend."""
+    ts = "2026-01-01T08:00:00Z"
+    write_sample(conn, "garmin", HEART_RATE, ts, 61)
+    write_sample(conn, "google_health", HEART_RATE, ts, 63)
+    write_sample(conn, "garmin", HEART_RATE, "2026-01-01T08:02:00Z", 62)
+
+    assert conn.execute("SELECT COUNT(*) FROM samples").fetchone()[0] == 3
+    assert samples_for(conn, "google_health") == [("heart_rate", ts, 63.0, "bpm")]
+
+
+def test_write_sample_leaves_metrics_alone(conn):
+    """A separate grain: a sample is never filed as a daily reading."""
+    write_metric(conn, "2026-01-01", "fake", RESTING_HR_BPM, 52)
+    write_sample(conn, "fake", HEART_RATE, "2026-01-01T08:00:00Z", 61)
+
+    assert readings_for(conn, "fake") == [("2026-01-01", "resting_hr_bpm", 52, "bpm")]
+
+
+def test_series_unit_for():
+    assert series_unit_for(HEART_RATE) == "bpm"
+    with pytest.raises(ValueError, match="unknown series metric"):
+        series_unit_for(RESTING_HR_BPM)
 
 
 def test_iso_utc_is_one_shape_for_every_source():

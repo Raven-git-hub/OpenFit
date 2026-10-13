@@ -101,8 +101,8 @@ def test_fresh_database_gets_all_tables(tmp_path):
         r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
     }
     assert {
-        "workouts", "metrics", "sessions", "derived_metrics", "settings", "accounts",
-        "schema_migrations",
+        "workouts", "metrics", "sessions", "derived_metrics", "samples", "settings",
+        "accounts", "schema_migrations",
     } <= names
     assert "activity" not in names  # unpivoted into metrics by 005
     assert "weights" not in names   # folded into metrics by 006
@@ -862,4 +862,125 @@ def test_a_derived_value_needs_a_value_and_a_source(conn, value, source):
             "INSERT INTO derived_metrics (date, metric, value, unit, source) "
             "VALUES ('2026-01-01', 'steps', ?, 'count', ?)",
             (value, source),
+        )
+
+
+# ---------- 009: the samples table ----------
+
+
+SAMPLE_COLUMNS = ["source", "metric", "ts", "value", "unit", "synced_at"]
+
+
+def populated_at_version_8(db_at_version):
+    """A version-8 database - where production sits before 009 - with data in it."""
+    path = db_at_version(8)
+    conn = sqlite3.connect(path)
+    conn.executemany(
+        "INSERT INTO metrics (date, source, metric, value, unit, synced_at) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        [
+            ("2026-01-01", "garmin", "steps", 9000, "count", "x"),
+            ("2026-01-01", "garmin", "resting_hr_bpm", 52, "bpm", "x"),
+            ("2026-01-01", "manual", "weight_kg", 82.0, "kg", None),
+        ],
+    )
+    conn.execute(
+        "INSERT INTO derived_metrics (date, metric, value, unit, source, synced_at) "
+        "VALUES ('2026-01-01', 'resting_hr_bpm', 52, 'bpm', 'garmin', 'x')"
+    )
+    conn.execute(
+        'INSERT INTO sessions (id, source, kind, "start", "end", summary_json, synced_at) '
+        "VALUES ('garmin:sleep:s', 'garmin', 'sleep', 's', 'e', '{}', 'x')"
+    )
+    conn.execute("INSERT INTO workouts VALUES (1, 0, 1)")
+    conn.execute("INSERT INTO settings VALUES ('home_tiles', '{}')")
+    conn.execute("INSERT INTO accounts VALUES ('garmin', 'blob', 'then')")
+    conn.commit()
+    return conn
+
+
+def test_samples_table_on_a_fresh_database(tmp_path):
+    conn = sqlite3.connect(str(tmp_path / "fresh.db"))
+    run_migrations(conn)
+
+    assert column_names(conn, "samples") == SAMPLE_COLUMNS
+    # One row per (source, metric, ts): each source keeps its own lane.
+    assert primary_key_columns(conn, "samples") == ["source", "metric", "ts"]
+    assert conn.execute("SELECT COUNT(*) FROM samples").fetchone()[0] == 0
+    # Every column is required - a null reading is dropped, never stored.
+    not_null = {r[1] for r in conn.execute("PRAGMA table_info(samples)") if r[3]}
+    assert not_null == set(SAMPLE_COLUMNS)
+    assert index_columns(conn, "idx_samples_metric_ts") == ["metric", "ts"]
+    conn.close()
+
+
+def test_samples_migration_is_additive(db_at_version):
+    """009 adds a table and its index, and nothing already there changes."""
+    conn = populated_at_version_8(db_at_version)
+    before = everything_but(conn, "samples")
+
+    assert run_migrations(conn) == versions_from(9)
+
+    assert column_names(conn, "samples") == SAMPLE_COLUMNS
+    assert conn.execute("SELECT COUNT(*) FROM samples").fetchone()[0] == 0
+    assert everything_but(conn, "samples", only=before) == before
+    conn.close()
+
+
+def test_samples_migration_is_idempotent(db_at_version):
+    conn = populated_at_version_8(db_at_version)
+    assert run_migrations(conn) == versions_from(9)
+    conn.execute(
+        "INSERT INTO samples (source, metric, ts, value, unit, synced_at) "
+        "VALUES ('garmin', 'heart_rate', '2026-01-01T08:00:00Z', 61, 'bpm', 'x')"
+    )
+    conn.commit()
+    schema_before = table_sql(conn, "samples")
+    rows_before = conn.execute("SELECT * FROM samples").fetchall()
+    others_before = everything_but(conn, "samples")
+
+    assert run_migrations(conn) == []
+    assert run_migrations(conn) == []
+
+    assert table_sql(conn, "samples") == schema_before
+    assert conn.execute("SELECT * FROM samples").fetchall() == rows_before
+    assert everything_but(conn, "samples") == others_before
+    assert conn.execute(
+        "SELECT COUNT(*) FROM schema_migrations WHERE version = 9"
+    ).fetchone()[0] == 1
+    conn.close()
+
+
+def test_samples_migration_adopts_a_preexisting_table(tmp_path):
+    """CREATE TABLE IF NOT EXISTS: an existing samples table survives."""
+    path = str(tmp_path / "has-samples.db")
+    conn = sqlite3.connect(path)
+    conn.execute(
+        "CREATE TABLE samples (source TEXT NOT NULL, metric TEXT NOT NULL, ts TEXT NOT NULL, "
+        "value REAL NOT NULL, unit TEXT NOT NULL, synced_at TEXT NOT NULL, "
+        "PRIMARY KEY (source, metric, ts))"
+    )
+    conn.execute(
+        "INSERT INTO samples VALUES ('garmin', 'heart_rate', '2026-01-01T08:00:00Z', 61, 'bpm', 'x')"
+    )
+    conn.commit()
+
+    run_migrations(conn)
+
+    assert conn.execute("SELECT * FROM samples").fetchall() == [
+        ("garmin", "heart_rate", "2026-01-01T08:00:00Z", 61, "bpm", "x")
+    ]
+    assert index_columns(conn, "idx_samples_metric_ts") == ["metric", "ts"]
+    conn.close()
+
+
+def test_one_sample_per_source_metric_and_ts(conn):
+    conn.execute(
+        "INSERT INTO samples (source, metric, ts, value, unit, synced_at) "
+        "VALUES ('garmin', 'heart_rate', '2026-01-01T08:00:00Z', 61, 'bpm', 'x')"
+    )
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute(
+            "INSERT INTO samples (source, metric, ts, value, unit, synced_at) "
+            "VALUES ('garmin', 'heart_rate', '2026-01-01T08:00:00Z', 64, 'bpm', 'y')"
         )

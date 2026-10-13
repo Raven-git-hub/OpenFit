@@ -24,11 +24,13 @@ own calls to its device API. Full direction:
 - `app/plugins/` — sync (pull) plugins. Each `app/plugins/<name>/plugin.py`
   subclasses `SyncPlugin` (`app/plugins/base.py`), registered in `__init__.py`,
   declares a connector manifest (`fields`, `add_flow`), reads creds via
-  `self.get_credentials(conn)`, writes readings via `write_metric()` and
-  interval records via `write_session()`. Never bypass this pattern.
+  `self.get_credentials(conn)`, writes readings via `write_metric()`,
+  interval records via `write_session()` and intraday samples via
+  `write_sample()`. Never bypass this pattern.
 - `app/metrics.py` — the canonical metric vocabulary (key → unit), plus the
-  session kinds (`SLEEP`, `WORKOUT` in `SESSION_KINDS`). Import keys and kinds
-  from here; never spell metric or kind strings out in plugins or the API.
+  session kinds (`SLEEP`, `WORKOUT` in `SESSION_KINDS`) and the series metrics
+  (`HEART_RATE` in `SERIES_METRICS`). Import keys and kinds from here; never
+  spell metric or kind strings out in plugins or the API.
 - `app/derived.py` — the one place a source is picked per `(date, metric)`:
   `recompute_derived()` writes `derived_metrics`. Never pick a source anywhere else.
 - `app/crypto.py` — Fernet encrypt/decrypt for stored credentials.
@@ -61,6 +63,19 @@ own calls to its device API. Full direction:
     source's activity type, lowercased — not yet mapped across sources),
     `duration_minutes`, `distance_m`, `avg_hr_bpm`, `calories_kcal`.
   Read through the access contract (`GET /api/sessions/<kind>`, below).
+- `samples(source, metric, ts, value, unit, synced_at)` keyed
+  `(source, metric, ts)` (migration `009`, purely additive): the series
+  (intraday) grain, the third beside daily `metrics` and interval `sessions` —
+  one row per source/metric/timestamp, `ts` ISO 8601 UTC from `iso_utc()`,
+  every column NOT NULL, indexed on `(metric, ts)`. Written only via
+  `write_sample(conn, source, metric, ts, value)` (`app/plugins/base.py`),
+  which fills the unit from `SERIES_METRICS` (`app/metrics.py`), raises on a
+  metric outside it, drops a `None` value (a source's non-wear gap passes
+  straight through and writes nothing), and upserts a re-sync in place.
+  Series keys are their own vocabulary, distinct from the daily keys even
+  where the quantity overlaps: `heart_rate` (bpm), the first, is not
+  `resting_hr_bpm`. Plumbing only so far: no plugin fetches into it, nothing
+  derives from it, and no API reads it — those are later slices.
 - `derived_metrics(date, metric, value, unit, source, synced_at)` keyed
   `(date, metric)` (migration `008`, purely additive): the one trusted value per
   metric per day, every metric including `weight_kg`. `source` is the winning
@@ -147,8 +162,9 @@ same PR:
   `005`; weight folded in as `weight_kg` in `006`; `sessions` in `007` (sleep,
   then workouts with no further migration); the stored derived value in `008`
   (fixed precedence) and the user-overridable per-metric primary in
-  `settings.source_roles` (no migration). Still to come: verifying sources +
-  history.
+  `settings.source_roles` (no migration); the `samples` table (series grain)
+  and `write_sample()` in `009`. Still to come: fetching samples (heart rate
+  first), reading them back through the contract, verifying sources + history.
 - **Webhook / push ingestion:** landed for metrics (see Data model); still to
   come: pushing sessions (sleep, workouts) through it.
 - **The access contract:** landed (see Data model): discovery, range queries
