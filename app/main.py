@@ -6,6 +6,7 @@ import math
 import os
 import secrets
 import sqlite3
+import threading
 import time
 import urllib.parse
 from datetime import date, datetime, timedelta, timezone
@@ -13,7 +14,7 @@ from datetime import date, datetime, timedelta, timezone
 from flask import Flask, jsonify, request, send_from_directory
 from apscheduler.schedulers.background import BackgroundScheduler
 
-from migrations import run_migrations
+from migrations import connect, run_migrations
 from plugins import PLUGINS
 from plugins.base import OAUTH_REDIRECT_URI, write_metric
 from crypto import encrypt
@@ -47,7 +48,9 @@ app.config["DB_PATH"] = DB_PATH
 
 
 def get_conn():
-    conn = sqlite3.connect(app.config["DB_PATH"])
+    # connect() sets the busy timeout and WAL on every connection,
+    # before migrate() runs too.
+    conn = connect(app.config["DB_PATH"])
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -1158,35 +1161,59 @@ def _sync(plugin, conn, days):
     return n
 
 
+# One sync at a time, process-wide. The scheduler's thread and a request
+# thread are both in this one process, and a sync holds its write
+# transaction for the whole run, so two side by side would only wait on
+# (or fail on) each other's lock - and pull the same days twice. Taken
+# without blocking: a sync that finds one already running backs off.
+_sync_lock = threading.Lock()
+
+SYNC_IN_PROGRESS = "a sync is already in progress"
+
+
 @app.route("/api/sync/<plugin_id>", methods=["POST"])
 def trigger_sync(plugin_id):
     plugin = PLUGINS.get(plugin_id)
     if not plugin:
         return jsonify({"ok": False, "error": f"no such plugin: {plugin_id}"}), 404
+    if not _sync_lock.acquire(blocking=False):
+        return jsonify({"ok": False, "error": SYNC_IN_PROGRESS}), 409
     try:
         conn = get_conn()
-        n = _sync(plugin, conn, int(request.args.get("days", 7)))
-        conn.close()
+        try:
+            n = _sync(plugin, conn, int(request.args.get("days", 7)))
+        finally:
+            conn.close()
         return jsonify({"ok": True, "days_written": n})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
+    finally:
+        _sync_lock.release()
 
 
 def scheduled_sync():
-    for plugin in PLUGINS.values():
-        try:
-            conn = get_conn()
+    if not _sync_lock.acquire(blocking=False):
+        # Never queued behind it: a manual sync is mid-pull, and the
+        # next tick catches up on anything it didn't cover.
+        print("[scheduler] sync already running, skipping")
+        return
+    try:
+        for plugin in PLUGINS.values():
             try:
-                # Skip anything with no account and no env credentials -
-                # it would only fail with a "not connected" error.
-                if not plugin.status(conn)["configured"]:
-                    continue
-                n = _sync(plugin, conn, 7)
-            finally:
-                conn.close()
-            print(f"[scheduler] {plugin.id} wrote {n} day(s)")
-        except Exception as e:
-            print(f"[scheduler] {plugin.id} failed: {e}")
+                conn = get_conn()
+                try:
+                    # Skip anything with no account and no env credentials -
+                    # it would only fail with a "not connected" error.
+                    if not plugin.status(conn)["configured"]:
+                        continue
+                    n = _sync(plugin, conn, 7)
+                finally:
+                    conn.close()
+                print(f"[scheduler] {plugin.id} wrote {n} day(s)")
+            except Exception as e:
+                print(f"[scheduler] {plugin.id} failed: {e}")
+    finally:
+        _sync_lock.release()
 
 
 def start_scheduler():

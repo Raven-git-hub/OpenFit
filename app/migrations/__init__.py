@@ -23,7 +23,7 @@ Usage
 -----
 From Python (main.py does this at startup):
 
-    conn = sqlite3.connect(db_path)
+    conn = connect(db_path)
     run_migrations(conn)
 
 From the shell, e.g. against a copy of the production DB before deploy:
@@ -38,6 +38,29 @@ import sqlite3
 MIGRATIONS_DIR = os.path.dirname(os.path.abspath(__file__))
 
 FILENAME_RE = re.compile(r"^(\d+)_[\w-]+\.sql$")
+
+# How long a connection waits for a lock another connection holds - a
+# sync's write transaction, say - before giving up with "database is
+# locked". sqlite3.connect()'s own default is 5s.
+BUSY_TIMEOUT_MS = 30000
+
+
+def connect(db_path):
+    """Open db_path the way every OpenFit connection is opened.
+
+    The busy timeout goes first, before any statement that can take a
+    lock - switching to WAL included. WAL then lets readers and the one
+    writer stop blocking each other. It is persistent, stored in the
+    database file: the first connection converts the database (migrate()
+    at startup, before anything else has it open) and from then on this
+    is a no-op. Connections stay per-call - one per request or scheduled
+    run - never one shared between threads.
+    """
+    conn = sqlite3.connect(db_path)
+    conn.execute(f"PRAGMA busy_timeout = {BUSY_TIMEOUT_MS}")
+    conn.execute("PRAGMA journal_mode = WAL")
+    return conn
+
 
 SCHEMA_MIGRATIONS_DDL = """
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -136,7 +159,7 @@ def current_version(conn):
 
 def migrate_path(db_path, verbose=True):
     """Convenience wrapper: open db_path, migrate it, close."""
-    conn = sqlite3.connect(db_path)
+    conn = connect(db_path)
     try:
         return run_migrations(conn, verbose=verbose)
     finally:

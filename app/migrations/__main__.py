@@ -7,6 +7,9 @@ so the migration can be verified before it touches real data:
     docker compose cp tracker:/data/tracker.db ./tracker-copy.db
     python -m migrations ./tracker-copy.db
 
+The database runs in WAL mode: if /data/tracker.db-wal exists, recent
+writes are still in it, so copy it too, as ./tracker-copy.db-wal.
+
 With no argument it uses $DB_PATH, falling back to the container default
 /data/tracker.db.
 """

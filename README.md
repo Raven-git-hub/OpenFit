@@ -45,8 +45,11 @@ is not the product.
 - **Google Health** plugin — steps, resting HR, sleep and workouts, from Pixel
   Watch / Fitbit via Google's cloud Health API (not the legacy Fitbit Web API,
   retired September 2026).
-- Scheduled background sync plus a manual sync, with device connections managed
-  in-app and credentials encrypted at rest.
+- Scheduled background sync plus a manual sync (`POST /api/sync/<plugin>`), with
+  device connections managed in-app and credentials encrypted at rest. One sync
+  runs at a time: a manual sync asked for while one is running gets
+  `409 {"ok": false, "error": "a sync is already in progress"}` instead of a
+  second pull, and a scheduled run that finds one running skips that tick.
 - A **webhook** any automation can push a reading to, guarded by a
   regeneratable token and per-metric sanity ranges.
 - The **access contract** — a small, stable read API apps build on: what data
@@ -290,7 +293,11 @@ days that sync covers, and never rewrites values already derived. See
 [docs/architecture](docs/architecture/). Device credentials entered in the UI
 are stored as a Fernet-encrypted JSON blob (one row per plugin) and never
 returned over the API; the key comes from `$OPENFIT_SECRET_KEY` or is generated
-at `/data/.secret_key` — back it up with the database.
+at `/data/.secret_key` — back it up with the database. The database runs in
+SQLite's WAL mode: recent writes can sit in `tracker.db-wal`, beside
+`tracker.db`, until they're checkpointed into it, so back up the whole `/data`
+volume — or, copying the file by hand, take `tracker.db-wal` with it when there
+is one (`tracker.db-shm` is rebuilt and needn't be copied).
 
 ### Schema migrations
 
