@@ -2,18 +2,27 @@
 The access contract: the read API apps build on.
 
 GET /api/catalog says what there is, GET /api/metric/<metric> serves one
-metric's derived series and GET /api/sessions/<kind> one kind's
-sessions, each with its provenance. Metrics come from derived_metrics -
-the picked value - never the raw per-source rows. Also here: manual
-/api/weights writes re-derive their days, so a weigh-in reaches the
-contract at once.
+metric's derived series, GET /api/sessions/<kind> one kind's sessions
+and GET /api/series/<metric> one series metric's intraday samples, each
+with its provenance. Metrics come from derived_metrics - the picked
+value - never the raw per-source rows; samples have no pick yet, so
+every source's are served. Also here: manual /api/weights writes
+re-derive their days, so a weigh-in reaches the contract at once.
 """
 
 import pytest
 
 from derived import recompute_derived, set_source_role
-from metrics import METRICS, RESTING_HR_BPM, SLEEP, STEPS, WEIGHT_KG, WORKOUT
-from plugins.base import write_session
+from metrics import (
+    HEART_RATE,
+    METRICS,
+    RESTING_HR_BPM,
+    SLEEP,
+    STEPS,
+    WEIGHT_KG,
+    WORKOUT,
+)
+from plugins.base import write_sample, write_session
 
 
 def insert(conn, date, source, **values):
@@ -32,8 +41,19 @@ def session(conn, source, kind, start, end, summary):
     conn.commit()
 
 
+def sample(conn, source, ts, value, metric=HEART_RATE):
+    write_sample(conn, source, metric, ts, value)
+    conn.commit()
+
+
 def series(client, metric, query=""):
     resp = client.get(f"/api/metric/{metric}{query}")
+    assert resp.status_code == 200
+    return resp.get_json()
+
+
+def samples(client, metric, query=""):
+    resp = client.get(f"/api/series/{metric}{query}")
     assert resp.status_code == 200
     return resp.get_json()
 
@@ -64,7 +84,7 @@ def assert_rejected(resp, status):
 
 
 def test_catalog_of_an_empty_install(client):
-    assert client.get("/api/catalog").get_json() == {"metrics": [], "sessions": []}
+    assert client.get("/api/catalog").get_json() == {"metrics": [], "sessions": [], "series": []}
 
 
 def test_catalog_lists_each_metric_with_data(client, conn):
@@ -110,6 +130,7 @@ def test_catalog_lists_each_metric_with_data(client, conn):
         },
     ]
     assert catalog["sessions"] == []
+    assert catalog["series"] == []
 
 
 def test_catalog_sources_are_the_winners_not_every_reporter(client, conn):
@@ -174,6 +195,39 @@ def test_catalog_lists_session_kinds_by_name(client, conn):
 
     kinds = [s["kind"] for s in client.get("/api/catalog").get_json()["sessions"]]
     assert kinds == [SLEEP, WORKOUT]
+
+
+def test_catalog_lists_each_series_metric_with_data(client, conn):
+    sample(conn, "garmin", "2026-01-02T08:00:00Z", 64)
+    sample(conn, "garmin", "2026-01-01T23:58:00Z", 58)
+    sample(conn, "polar", "2026-01-03T07:30:00Z", 71)
+
+    catalog = client.get("/api/catalog").get_json()
+
+    assert catalog["series"] == [
+        {
+            "metric": HEART_RATE,
+            "unit": "bpm",
+            "sources": ["garmin", "polar"],
+            "first": "2026-01-01T23:58:00Z",
+            "last": "2026-01-03T07:30:00Z",
+            "count": 3,
+        }
+    ]
+    # Samples are their own grain: no daily metric or session from them.
+    assert catalog["metrics"] == []
+    assert catalog["sessions"] == []
+
+
+def test_catalog_series_sources_are_in_default_precedence(client, conn):
+    # No pick for samples yet, but the sources are listed the way the
+    # daily pick ranks them: apple sorts before garmin by name, not here.
+    sample(conn, "apple", "2026-01-01T08:00:00Z", 60)
+    sample(conn, "google_health", "2026-01-01T08:00:00Z", 61)
+    sample(conn, "garmin", "2026-01-01T08:00:00Z", 62)
+
+    [hr] = client.get("/api/catalog").get_json()["series"]
+    assert hr["sources"] == ["garmin", "google_health", "apple"]
 
 
 # ---------- a metric's series ----------
@@ -363,10 +417,108 @@ def test_sessions_of_an_unknown_kind_is_404(client):
     assert_rejected(client.get("/api/sessions/nap"), 404)
 
 
+# ---------- a series metric's samples ----------
+
+
+def test_samples_oldest_first_tagged_with_their_source(client, conn):
+    sample(conn, "garmin", "2026-10-12T15:18:00Z", 79)
+    sample(conn, "garmin", "2026-10-12T15:16:00Z", 77)
+    sample(conn, "garmin", "2026-10-12T15:20:00Z", 81)
+
+    assert samples(client, HEART_RATE) == {
+        "metric": HEART_RATE,
+        "unit": "bpm",
+        "points": [
+            {"ts": "2026-10-12T15:16:00Z", "value": 77, "source": "garmin"},
+            {"ts": "2026-10-12T15:18:00Z", "value": 79, "source": "garmin"},
+            {"ts": "2026-10-12T15:20:00Z", "value": 81, "source": "garmin"},
+        ],
+    }
+
+
+def test_sample_values_are_whole_where_they_can_be(client, conn):
+    # Stored as REAL, so 77 is read back as 77.0 - served as 77 again;
+    # a value with a fraction keeps it.
+    sample(conn, "garmin", "2026-01-01T08:00:00Z", 77)
+    sample(conn, "garmin", "2026-01-01T08:02:00Z", 77.5)
+
+    # JSON 77.0 would parse back as a float, so the type is what shows it.
+    whole, fraction = (p["value"] for p in samples(client, HEART_RATE)["points"])
+    assert whole == 77 and type(whole) is int
+    assert fraction == 77.5
+
+
+def test_samples_from_two_sources_are_both_listed(client, conn):
+    # A passthrough, not a stitch: where two devices sampled the same
+    # stretch, every sample is served, tagged - ts first, then source.
+    sample(conn, "polar", "2026-01-01T08:00:00Z", 61)
+    sample(conn, "garmin", "2026-01-01T08:00:00Z", 60)
+    sample(conn, "garmin", "2026-01-01T08:02:00Z", 62)
+    sample(conn, "polar", "2026-01-01T08:01:00Z", 63)
+
+    assert samples(client, HEART_RATE)["points"] == [
+        {"ts": "2026-01-01T08:00:00Z", "value": 60, "source": "garmin"},
+        {"ts": "2026-01-01T08:00:00Z", "value": 61, "source": "polar"},
+        {"ts": "2026-01-01T08:01:00Z", "value": 63, "source": "polar"},
+        {"ts": "2026-01-01T08:02:00Z", "value": 62, "source": "garmin"},
+    ]
+
+
+@pytest.mark.parametrize(
+    "query, stamps",
+    [
+        # Matched on the sample's UTC date: the whole of the `to` day is
+        # in, and nothing from the day either side.
+        ("?from=2026-01-02&to=2026-01-02", ["2026-01-02T00:00:00Z", "2026-01-02T23:59:59Z"]),
+        ("?from=2026-01-02", ["2026-01-02T00:00:00Z", "2026-01-02T23:59:59Z", "2026-01-03T00:00:00Z"]),
+        ("?to=2026-01-01", ["2026-01-01T23:59:59Z"]),
+        ("?from=2026-02-01", []),
+        # Empty is the same as not given.
+        ("?from=&to=", [
+            "2026-01-01T23:59:59Z",
+            "2026-01-02T00:00:00Z",
+            "2026-01-02T23:59:59Z",
+            "2026-01-03T00:00:00Z",
+        ]),
+        # Unpadded is read as the date it means.
+        ("?from=2026-1-3", ["2026-01-03T00:00:00Z"]),
+    ],
+)
+def test_samples_from_and_to_match_the_utc_date(client, conn, query, stamps):
+    for ts in (
+        "2026-01-01T23:59:59Z",
+        "2026-01-02T00:00:00Z",
+        "2026-01-02T23:59:59Z",
+        "2026-01-03T00:00:00Z",
+    ):
+        sample(conn, "garmin", ts, 60)
+
+    assert [p["ts"] for p in samples(client, HEART_RATE, query)["points"]] == stamps
+
+
+def test_samples_of_a_known_metric_with_none(client):
+    assert samples(client, HEART_RATE) == {"metric": HEART_RATE, "unit": "bpm", "points": []}
+
+
+@pytest.mark.parametrize(
+    "metric",
+    [
+        "spo2",
+        # A daily key is not a series one, even for the same quantity.
+        RESTING_HR_BPM,
+        STEPS,
+    ],
+)
+def test_samples_of_an_unknown_series_metric_is_404(client, metric):
+    assert_rejected(client.get(f"/api/series/{metric}"), 404)
+
+
 # ---------- from / to validation ----------
 
 
-@pytest.mark.parametrize("path", [f"/api/metric/{STEPS}", f"/api/sessions/{SLEEP}"])
+@pytest.mark.parametrize(
+    "path", [f"/api/metric/{STEPS}", f"/api/sessions/{SLEEP}", f"/api/series/{HEART_RATE}"]
+)
 @pytest.mark.parametrize(
     "query, named",
     [
@@ -384,7 +536,9 @@ def test_a_malformed_date_is_400(client, path, query, named):
     assert named in resp.get_json()["error"]
 
 
-@pytest.mark.parametrize("path", [f"/api/metric/{STEPS}", f"/api/sessions/{SLEEP}"])
+@pytest.mark.parametrize(
+    "path", [f"/api/metric/{STEPS}", f"/api/sessions/{SLEEP}", f"/api/series/{HEART_RATE}"]
+)
 def test_from_after_to_is_400(client, path):
     assert_rejected(client.get(path + "?from=2026-01-02&to=2026-01-01"), 400)
 
@@ -476,4 +630,4 @@ def test_clearing_weights_re_derives_only_the_cleared_days(client, conn):
 
 def test_clearing_no_weights_is_fine(client):
     assert client.delete("/api/weights").status_code == 200
-    assert client.get("/api/catalog").get_json() == {"metrics": [], "sessions": []}
+    assert client.get("/api/catalog").get_json() == {"metrics": [], "sessions": [], "series": []}
