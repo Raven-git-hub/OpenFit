@@ -28,6 +28,9 @@ TOTAL_KCAL = "total_kcal"
 FLOORS = "floors"
 INTENSITY_MODERATE_MIN = "intensity_moderate_min"
 INTENSITY_VIGOROUS_MIN = "intensity_vigorous_min"
+SPO2_PCT = "spo2_pct"
+RESPIRATORY_RATE_BRPM = "respiratory_rate_brpm"
+HRV_MS = "hrv_ms"
 
 # Canonical key -> the unit its value is stored in.
 METRICS = {
@@ -41,6 +44,9 @@ METRICS = {
     FLOORS: "count",
     INTENSITY_MODERATE_MIN: "min",
     INTENSITY_VIGOROUS_MIN: "min",
+    SPO2_PCT: "%",
+    RESPIRATORY_RATE_BRPM: "brpm",
+    HRV_MS: "ms",
 }
 
 
@@ -74,6 +80,9 @@ PLAUSIBLE_RANGES = {
     FLOORS: (0, 10_000),
     INTENSITY_MODERATE_MIN: (0, 1440),
     INTENSITY_VIGOROUS_MIN: (0, 1440),
+    SPO2_PCT: (50, 100),
+    RESPIRATORY_RATE_BRPM: (3, 60),
+    HRV_MS: (0, 500),
 }
 
 

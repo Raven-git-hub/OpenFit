@@ -20,12 +20,15 @@ from metrics import (
     ACTIVE_KCAL,
     DISTANCE_M,
     FLOORS,
+    HRV_MS,
     INTENSITY_MODERATE_MIN,
     INTENSITY_VIGOROUS_MIN,
     METRICS,
     PLAUSIBLE_RANGES,
+    RESPIRATORY_RATE_BRPM,
     RESTING_HR_BPM,
     SLEEP_MINUTES,
+    SPO2_PCT,
     STEPS,
     TOTAL_KCAL,
     WEIGHT_KG,
@@ -353,6 +356,9 @@ def test_the_plausible_ranges():
         FLOORS: (0, 10_000),
         INTENSITY_MODERATE_MIN: (0, 1440),
         INTENSITY_VIGOROUS_MIN: (0, 1440),
+        SPO2_PCT: (50, 100),
+        RESPIRATORY_RATE_BRPM: (3, 60),
+        HRV_MS: (0, 500),
     }
     for metric in PLAUSIBLE_RANGES:
         assert metric in METRICS

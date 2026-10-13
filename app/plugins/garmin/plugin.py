@@ -9,9 +9,11 @@ scheduled sync.
 
 Fetched per day: get_stats (steps, resting HR, distance, calories,
 floors and intensity minutes), get_sleep_data (the
-daily sleep total plus the night as a sleep session) and get_heart_rates
-(the intraday heart-rate series, as samples). Fetched once over the
-whole range: get_activities_by_date, each activity a workout session.
+daily sleep total plus the night as a sleep session), get_spo2_data,
+get_respiration_data and get_hrv_data (the day's SpO2, respiration rate
+and HRV) and get_heart_rates (the intraday heart-rate series, as
+samples). Fetched once over the whole range: get_activities_by_date,
+each activity a workout session.
 """
 
 import math
@@ -26,11 +28,14 @@ from metrics import (
     DISTANCE_M,
     FLOORS,
     HEART_RATE,
+    HRV_MS,
     INTENSITY_MODERATE_MIN,
     INTENSITY_VIGOROUS_MIN,
+    RESPIRATORY_RATE_BRPM,
     RESTING_HR_BPM,
     SLEEP,
     SLEEP_MINUTES,
+    SPO2_PCT,
     STEPS,
     TOTAL_KCAL,
     WORKOUT,
@@ -51,6 +56,24 @@ STATS_METRICS = {
     "moderateIntensityMinutes": (INTENSITY_MODERATE_MIN, round),
     "vigorousIntensityMinutes": (INTENSITY_VIGOROUS_MIN, round),
 }
+
+# Daily vitals, a request each: (what to call it in a log line, the
+# client method, the path to the day's value in its response, the metric
+# it files as). Each value is already in its canonical unit and is stored
+# as reported. A value that isn't there, or isn't a number, writes
+# nothing and isn't logged: an empty response is how a device without
+# that sensor answers (get_hrv_data is {} on a watch without HRV), not a
+# wrong field name. Only the daily figure is read - the intraday arrays
+# in the same responses (respirationValuesArray, spO2HourlyAverages, ...)
+# are left for the series.
+DAILY_VITALS = [
+    ("SpO2", "get_spo2_data", ("averageSpO2",), SPO2_PCT),
+    (
+        "respiration", "get_respiration_data", ("avgWakingRespirationValue",),
+        RESPIRATORY_RATE_BRPM,
+    ),
+    ("HRV", "get_hrv_data", ("hrvSummary", "lastNightAvg"), HRV_MS),
+]
 
 # dailySleepDTO stage fields (seconds) -> the sleep session summary keys
 # (minutes). A field the device doesn't report - remSleepSeconds on a
@@ -169,6 +192,18 @@ class GarminPlugin(SyncPlugin):
             except Exception as e:
                 print(f"[garmin] sleep fetch failed for {d_str}: {e}")
 
+            # Each vital is its own request, so a failed one costs that
+            # metric and nothing else.
+            vitals = {}
+            for label, method, path, metric in DAILY_VITALS:
+                try:
+                    value = _daily_vital(getattr(client, method)(d_str), path)
+                except Exception as e:
+                    print(f"[garmin] {label} fetch failed for {d_str}: {e}")
+                    continue
+                if value is not None:
+                    vitals[metric] = value
+
             # The intraday series goes straight in, ahead of the skip
             # below: a day with samples but no daily summary still keeps
             # its samples. A failed fetch costs the samples only.
@@ -183,6 +218,7 @@ class GarminPlugin(SyncPlugin):
                 and resting_hr is None
                 and sleep_minutes is None
                 and not stats_metrics
+                and not vitals
             ):
                 continue
 
@@ -193,6 +229,8 @@ class GarminPlugin(SyncPlugin):
             for metric, value in stats_metrics.items():
                 write_metric(conn, d_str, self.id, metric, value)
             write_metric(conn, d_str, self.id, SLEEP_MINUTES, sleep_minutes)
+            for metric, value in vitals.items():
+                write_metric(conn, d_str, self.id, metric, value)
             if sleep_session:
                 write_session(conn, self.id, SLEEP, *sleep_session)
             written += 1
@@ -253,6 +291,21 @@ def _stats_metrics(stats, d_str):
             f"stats keys: {sorted(stats)}"
         )
     return out
+
+
+def _daily_vital(payload, path):
+    """The number at `path` (a tuple of keys) in a vitals response, or None.
+
+    Walks the nested dicts defensively: a payload that's None or {}, a
+    level that's missing or null, or a value that isn't a finite number
+    all read as None - a day without that vital. Never raises.
+    """
+    value = payload
+    for key in path:
+        if not isinstance(value, dict):
+            return None
+        value = value.get(key)
+    return value if _is_number(value) else None
 
 
 def _is_number(value):
