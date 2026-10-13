@@ -6,9 +6,12 @@ Each is its own request a day (get_spo2_data, get_respiration_data,
 get_hrv_data), and each files one canonical daily metric (app/metrics.py)
 from one field of its response: averageSpO2 -> spo2_pct,
 avgWakingRespirationValue -> respiratory_rate_brpm, and the nested
-hrvSummary.lastNightAvg -> hrv_ms. Daily values only: the same responses
-carry intraday arrays (spO2HourlyAverages, respirationValuesArray,
-hrvReadings), which are the series' and are not read here.
+hrvSummary.lastNightAvg -> hrv_ms. Daily values only here: the same
+SpO2 and respiration responses also carry the intraday series
+(spO2HourlyAverages, respirationValuesArray), read from the one fetch and
+tested in test_garmin_vitals_series.py. The payloads below keep those
+arrays in, so every test here is also a guard that reading the series
+leaves the daily figures exactly as they were.
 
 A device without HRV answers get_hrv_data with {} - a normal day, not a
 wrong field name - so that writes nothing and logs nothing. A failed
@@ -38,7 +41,7 @@ class FrozenDate(date):
 
 # get_spo2_data() for the day, trimmed. averageSpO2 is the day's figure;
 # the lowest/latest/seven-day/sleep values beside it are distinct so a
-# mix-up shows, and the hourly array is the series' (Slice 6).
+# mix-up shows, and the hourly array is the series'.
 GARMIN_SPO2 = {
     "calendarDate": DAY,
     "averageSpO2": 95.0,
@@ -49,8 +52,8 @@ GARMIN_SPO2 = {
     "spO2HourlyAverages": [[1767312000000, 94], [1767315600000, 96]],
 }
 
-# get_respiration_data() for the day, trimmed. The values array uses
-# negative sentinels for no reading - which is why the series waits.
+# get_respiration_data() for the day, trimmed. The values array is the
+# series', with a negative sentinel for no reading.
 GARMIN_RESPIRATION = {
     "calendarDate": DAY,
     "lowestRespirationValue": 8.0,
@@ -111,8 +114,10 @@ def without(rows, *metrics):
     return [row for row in rows if row[0] not in metrics]
 
 
-def sample_count(conn):
-    return conn.execute("SELECT COUNT(*) FROM samples").fetchone()[0]
+def heart_rate_sample_count(conn):
+    return conn.execute(
+        "SELECT COUNT(*) FROM samples WHERE metric = 'heart_rate'"
+    ).fetchone()[0]
 
 
 class FakeGarmin:
@@ -255,7 +260,7 @@ def test_a_failed_vital_fetch_costs_only_that_metric(conn, garmin, capsys, vital
     assert readings(conn) == sorted(
         STATS_READINGS + without(VITAL_READINGS, VITAL_METRICS[vital])
     )
-    assert sample_count(conn) == 1
+    assert heart_rate_sample_count(conn) == 1
     assert FAILED_FETCH_LOG[vital] in capsys.readouterr().out
 
 
@@ -286,14 +291,6 @@ def test_each_vital_is_fetched_for_each_day_of_the_window(conn, garmin):
     assert sorted(garmin.client.vital_calls) == sorted(
         (vital, d) for vital in VITAL_METRICS for d in (DAY, "2026-01-01")
     )
-
-
-def test_the_series_arrays_are_not_read(conn, garmin):
-    """spO2HourlyAverages and respirationValuesArray are the series' -
-    nothing reaches the samples table from them yet."""
-    garmin(conn, ALL_VITALS)
-
-    assert sample_count(conn) == 0
 
 
 def test_a_resync_replaces_the_days_vitals(conn, garmin):

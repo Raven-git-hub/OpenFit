@@ -16,8 +16,10 @@ from derived import recompute_derived, set_source_role
 from metrics import (
     HEART_RATE,
     METRICS,
+    RESPIRATORY_RATE_BRPM,
     RESTING_HR_BPM,
     SLEEP,
+    SPO2_PCT,
     STEPS,
     WEIGHT_KG,
     WORKOUT,
@@ -503,9 +505,11 @@ def test_samples_of_a_known_metric_with_none(client):
 @pytest.mark.parametrize(
     "metric",
     [
-        "spo2",
+        "heartrate",
         # A daily key is not a series one, even for the same quantity.
         RESTING_HR_BPM,
+        SPO2_PCT,
+        RESPIRATORY_RATE_BRPM,
         STEPS,
     ],
 )

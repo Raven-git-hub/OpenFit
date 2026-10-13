@@ -89,11 +89,16 @@ PLAUSIBLE_RANGES = {
 # ---- series metrics (intraday samples) ----
 # Stored in the `samples` table, NOT the daily `metrics` table. Keys are
 # distinct from daily metrics even where the quantity overlaps: the heart_rate
-# sample stream is a different thing from the resting_hr_bpm daily summary.
+# sample stream is a different thing from the resting_hr_bpm daily summary,
+# as respiration is from respiratory_rate_brpm and spo2 from spo2_pct.
 HEART_RATE = "heart_rate"
+RESPIRATION = "respiration"
+SPO2 = "spo2"
 
 SERIES_METRICS = {
     HEART_RATE: "bpm",
+    RESPIRATION: "brpm",
+    SPO2: "%",
 }
 
 
