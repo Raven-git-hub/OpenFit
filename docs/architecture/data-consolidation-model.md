@@ -49,8 +49,9 @@ extensible, since other sources carry types Google doesn't.)
 2. **Session** — an interval (`start`/`end`) plus a vendor summary, keyed by
    *kind*, source as an attribute. Table: `sessions`. **Built** (sleep, workout).
 3. **Series** — timestamped samples (HR, SpO2, …), one row per sample per source.
-   Table: `samples`. **Storage built** (Garmin intraday HR); the read-side stitch
-   is designed, not built. This is the "intraday" grain.
+   Table: `samples`. **Storage and read built** (Garmin intraday HR,
+   `GET /api/series` as a per-source passthrough); the cross-source stitch is
+   designed, not built. This is the "intraday" grain.
 
 A session is two things: an **interval** (universal, source-agnostic — any app
 can slice the series with it) and a **summary** (a vendor interpretation OpenFit
@@ -123,14 +124,18 @@ on each source's own labels.*
 
 ---
 
-## 5. The series grain (intraday) — storage built, stitch designed
+## 5. The series grain (intraday) — storage and passthrough read built, stitch designed
 
 Store each source's raw samples per source: `(source, metric, timestamp, value)`.
 Oura's and Google's samples sit side by side, untouched — dumb raw lanes.
 
 **Built:** the `samples` table and `write_sample()`; Garmin writes its intraday
-heart rate (`heart_rate`, ~2-minute cadence, non-wear nulls dropped). Nothing
-reads it yet — the stitch below and `GET /api/series` (§8) are still to come.
+heart rate (`heart_rate`, ~2-minute cadence, non-wear nulls dropped). The read
+side exists as a **single-source passthrough**: `GET /api/series/<metric>` (§8)
+lists every source's raw samples in a range, each tagged, with no priority
+applied — with Garmin the only series source there is nothing to stitch yet.
+The stitch below replaces the passthrough once a second series source exists to
+build and test it against.
 
 **The graph is a read-time stitch, not a stored copy.** When something requests a
 range, OpenFit walks it and emits the samples of the **highest-priority source
@@ -213,13 +218,14 @@ vocabulary — not a home for app context (rosters, calendars). See §1 scope.
 
 ## 8. The access contract (what apps read)
 
-**Built:** `GET /api/catalog`, `GET /api/metric/<metric>`,
-`GET /api/sessions/<kind>` — read-only, no auth, provenance included, stable and
-additive-only.
+**Built:** `GET /api/catalog` (metrics, session kinds and series),
+`GET /api/metric/<metric>`, `GET /api/sessions/<kind>`,
+`GET /api/series/<metric>` (intraday samples; a per-source passthrough for now,
+§5) — read-only, no auth, provenance included, stable and additive-only.
 
 **Designed additions:**
-- `GET /api/series/<type>` — the stitched intraday timeline, provenance per
-  segment (§5).
+- The stitch in `GET /api/series/<metric>` — the intraday timeline picked by
+  priority, provenance per segment (§5), pending a second series source.
 - A preferred-source session view (per-event dedup, §6).
 - An opt-in to include the `app` tier (§7).
 
@@ -235,13 +241,14 @@ additive-only.
 - `samples` (series grain) storage; Garmin intraday heart rate ingested into it.
 - Sync: 6-hourly, 7-day trailing window, re-derive.
 - Webhook push ingestion (metrics only, token auth, own-source enforcement).
-- Access contract (catalog, metric range, sessions).
+- Access contract (catalog, metric range, sessions, intraday series as a
+  per-source passthrough).
 - Four Google data types fetched (steps via daily roll-up, daily resting HR,
   sleep sessions, exercise sessions) + Garmin equivalents + manual weight.
 
 **Designed, to-build:**
-- The **series grain read side** (compute-on-read stitch, `GET /api/series`) and
-  further series sources.
+- The **series stitch** (compute-on-read priority pick in `GET /api/series`,
+  pending a second series source) and further series sources.
 - **Wide expansion** — more daily/session types beyond the current four, each a
   fetcher + a canonical key/kind (a new metric is data, not a migration).
 - **Per-event session dedup** + preferred-source-per-kind selection view.

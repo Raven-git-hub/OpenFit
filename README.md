@@ -47,7 +47,7 @@ is not the product.
   regeneratable token and per-metric sanity ranges.
 - The **access contract** — a small, stable read API apps build on: what data
   there is, one metric over a date range (with which source each value came
-  from), and sleep/workout sessions.
+  from), sleep/workout sessions, and intraday series like heart rate.
 - An interim web viewer (being replaced).
 
 ## Webhook input (push)
@@ -85,14 +85,17 @@ yet.
 
 ## Reading the data (the access contract)
 
-Apps read OpenFit through three read-only endpoints. They serve the **derived**
-profile — the one value OpenFit picked per metric per day, each tagged with the
-source it came from — never the raw per-source readings, so an app gets one
-trusted answer and never has to reconcile devices itself. Same trusted-network
-model as the rest of the API: no auth. These shapes are the stable contract;
-the `/api/activity` and `/api/weights` routes are interim-UI shims, not for apps.
+Apps read OpenFit through four read-only endpoints. Daily metrics are served
+from the **derived** profile — the one value OpenFit picked per metric per day,
+each tagged with the source it came from — never the raw per-source readings, so
+an app gets one trusted answer and never has to reconcile devices itself.
+Sessions and intraday series aren't picked between sources yet: every source's
+are listed, each tagged. Same trusted-network model as the rest of the API: no
+auth. These shapes are the stable contract; the `/api/activity` and
+`/api/weights` routes are interim-UI shims, not for apps.
 
-**Discovery — `GET /api/catalog`.** Every metric and session kind that has data:
+**Discovery — `GET /api/catalog`.** Every metric, session kind and series that
+has data:
 
 ```json
 {
@@ -104,6 +107,11 @@ the `/api/activity` and `/api/weights` routes are interim-UI shims, not for apps
   "sessions": [
     {"kind": "sleep", "count": 1,
      "first": "2026-10-07T22:41:00Z", "last": "2026-10-07T22:41:00Z"}
+  ],
+  "series": [
+    {"metric": "heart_rate", "unit": "bpm", "sources": ["garmin"],
+     "first": "2026-10-07T00:00:00Z", "last": "2026-10-08T23:58:00Z",
+     "count": 1440}
   ]
 }
 ```
@@ -111,7 +119,9 @@ the `/api/activity` and `/api/weights` routes are interim-UI shims, not for apps
 `sources` are the sources that have supplied the picked value on any day, in the
 order the pick tries them; `first`/`last`/`count` are the metric's derived days,
 and `last_value` the value on `last_date`. A session kind's `first`/`last` are
-its earliest and latest start. An empty install returns two empty lists.
+its earliest and latest start. A series' `sources` are every source with a
+sample of it, and `first`/`last` its earliest and latest sample. An empty
+install returns three empty lists.
 
 **One metric — `GET /api/metric/<metric>?from=YYYY-MM-DD&to=YYYY-MM-DD`.**
 
@@ -141,9 +151,26 @@ fields that the device reported (`{}` if none). Sessions aren't picked between
 sources yet, so a night both devices tracked appears once per device. An unknown
 kind is a 404.
 
+**Intraday series — `GET /api/series/<metric>?from=YYYY-MM-DD&to=YYYY-MM-DD`**
+(`heart_rate`).
+
+```json
+{"metric": "heart_rate", "unit": "bpm", "points": [
+  {"ts": "2026-10-12T15:16:00Z", "value": 77, "source": "garmin"},
+  {"ts": "2026-10-12T15:18:00Z", "value": 79, "source": "garmin"}
+]}
+```
+
+Every recorded sample, oldest first, each tagged with its source; times are ISO
+8601 UTC. For now this is a straight passthrough: if two devices both sampled a
+stretch, both devices' samples are listed. Stitching them into one timeline by
+source priority comes once a second series source exists. Series keys are their
+own vocabulary, so a daily key such as `resting_hr_bpm` is a 404 here, like any
+unknown metric; a known one with no samples has `"points": []`.
+
 `from` and `to` are optional and inclusive; leave one out for an open end. For
-sessions they match the start's UTC date. A malformed date, or `from` after
-`to`, is a 400.
+sessions they match the start's UTC date, and for series the sample's. A
+malformed date, or `from` after `to`, is a 400.
 
 ## Quick start
 
@@ -227,8 +254,8 @@ A third table, `samples`, is the series (intraday) grain: one row per
 `(source, metric, timestamp)` for readings like heart rate every couple of
 minutes, filed under its own series vocabulary (`heart_rate` in bpm, distinct
 from the daily `resting_hr_bpm`). A null reading — a non-wear gap — is dropped
-rather than stored. Garmin fills it with intraday heart rate; nothing reads it
-yet — an API for it comes later.
+rather than stored. Garmin fills it with intraday heart rate, and apps read it
+through `GET /api/series/<metric>`.
 The per-day value is stored, not worked out on each read: a `derived_metrics`
 table holds one value per `(date, metric)`, tagged with the source it came from,
 picked by `app/derived.py` after every sync (for the days that sync covered) and

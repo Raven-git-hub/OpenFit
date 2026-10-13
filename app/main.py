@@ -28,6 +28,7 @@ from metrics import (
     METRICS,
     PLAUSIBLE_RANGES,
     RESTING_HR_BPM,
+    SERIES_METRICS,
     SESSION_KINDS,
     SLEEP_MINUTES,
     STEPS,
@@ -312,16 +313,17 @@ def get_activity():
 # ---------- the access contract ----------
 
 # The stable read API apps build on: discovery (/api/catalog), then range
-# queries - one metric's series (/api/metric/<metric>) or one kind of
-# session (/api/sessions/<kind>). Read-only, on the same trusted-network
-# model as everything else.
+# queries - one metric's series (/api/metric/<metric>), one kind of
+# session (/api/sessions/<kind>) or one series metric's intraday samples
+# (/api/series/<metric>). Read-only, on the same trusted-network model as
+# everything else.
 #
 # Metrics are served from derived_metrics - the one value per metric per
 # day picked in derived.py, each point tagged with the source it came
 # from - never the raw per-source rows in metrics, so an app gets one
-# trusted answer and never reconciles sources itself. Sessions have no
-# derived pick yet: every source's session is served, each tagged with
-# its source.
+# trusted answer and never reconciles sources itself. Sessions and
+# samples have no derived pick yet: every source's session or sample is
+# served, each tagged with its source.
 #
 # Unlike /api/activity and /api/weights, these shapes were made for apps,
 # not kept for the interim UI: keys and units are the canonical ones from
@@ -365,16 +367,20 @@ def _in_range(column, since, until):
 
 @app.route("/api/catalog", methods=["GET"])
 def get_catalog():
-    """What this install has: every metric and session kind with any data.
+    """What this install has: every metric, session kind and series with any data.
 
-    {"metrics": [...], "sessions": [...]}. A metric entry is {metric,
-    unit, sources, first, last, count, last_value, last_date}: `sources`
-    are those that have won any day, in the order the pick tries them;
-    first/last bound its derived days and `count` is how many there are;
-    last_value is the value on last_date, its latest day. A session entry
-    is {kind, count, first, last}, first/last being the earliest and
-    latest start. Metrics are in vocabulary order, kinds by name; one with
-    no data is left out, so an empty install has two empty lists.
+    {"metrics": [...], "sessions": [...], "series": [...]}. A metric
+    entry is {metric, unit, sources, first, last, count, last_value,
+    last_date}: `sources` are those that have won any day, in the order
+    the pick tries them; first/last bound its derived days and `count` is
+    how many there are; last_value is the value on last_date, its latest
+    day. A session entry is {kind, count, first, last}, first/last being
+    the earliest and latest start. A series entry is {metric, unit,
+    sources, first, last, count}: `sources` are every source with a
+    sample of it, in default precedence (there is no pick yet), and
+    first/last the earliest and latest sample ts. Metrics and series are
+    in vocabulary order, kinds by name; one with no data is left out, so
+    an empty install has three empty lists.
     """
     conn = get_conn()
     roles = load_source_roles(conn)
@@ -399,6 +405,14 @@ def get_catalog():
         for row in conn.execute(
             'SELECT kind, COUNT(*) AS count, MIN("start") AS first, MAX("start") AS last '
             "FROM sessions GROUP BY kind"
+        )
+    }
+    sampled = {
+        row["metric"]: row
+        for row in conn.execute(
+            "SELECT metric, MIN(ts) AS first, MAX(ts) AS last, COUNT(*) AS count, "
+            "json_group_array(DISTINCT source) AS sources "
+            "FROM samples GROUP BY metric"
         )
     }
     conn.close()
@@ -427,7 +441,19 @@ def get_catalog():
         for kind in sorted(SESSION_KINDS)
         if kind in kinds
     ]
-    return jsonify({"metrics": metrics, "sessions": sessions})
+    series = [
+        {
+            "metric": metric,
+            "unit": unit,
+            "sources": sorted(json.loads(sampled[metric]["sources"]), key=source_rank),
+            "first": sampled[metric]["first"],
+            "last": sampled[metric]["last"],
+            "count": sampled[metric]["count"],
+        }
+        for metric, unit in SERIES_METRICS.items()
+        if metric in sampled
+    ]
+    return jsonify({"metrics": metrics, "sessions": sessions, "series": series})
 
 
 @app.route("/api/metric/<metric>", methods=["GET"])
@@ -494,6 +520,49 @@ def get_sessions(kind):
         }
         for row in rows
     ])
+
+
+@app.route("/api/series/<metric>", methods=["GET"])
+def get_samples(metric):
+    """One series metric's samples: {metric, unit, points: [{ts, value, source}]}.
+
+    Every source's samples, by ts then source, each tagged with its
+    source: there is no pick between sources yet, so where two devices
+    both sampled a stretch, both appear. ts is ISO 8601 UTC; ?from= and
+    ?to= (YYYY-MM-DD, inclusive) match its UTC date. 404 for a metric
+    outside SERIES_METRICS - a daily key included; a known one with no
+    samples in range has no points.
+    """
+    if metric not in SERIES_METRICS:
+        return jsonify({"ok": False, "error": f"unknown series metric: {metric}"}), 404
+    bounds, error = _date_range(request.args)
+    if error:
+        return jsonify({"ok": False, "error": error}), 400
+
+    # ts is YYYY-MM-DDTHH:MM:SSZ (iso_utc()), whole seconds, so these
+    # bounds take in exactly the samples on those UTC dates - and, unlike
+    # sessions' substr(), a range on ts itself can use the (metric, ts)
+    # index.
+    since, until = bounds
+    in_range, params = _in_range(
+        "ts",
+        f"{since}T00:00:00Z" if since else None,
+        f"{until}T23:59:59Z" if until else None,
+    )
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT ts, value, source FROM samples "
+        f"WHERE metric = ? AND {in_range} ORDER BY ts, source",
+        (metric, *params),
+    ).fetchall()
+    conn.close()
+    # value is a REAL column, so a whole bpm comes back as 77.0: served
+    # as the 77 the device recorded.
+    points = [
+        {"ts": row["ts"], "value": _whole(row["value"]), "source": row["source"]}
+        for row in rows
+    ]
+    return jsonify({"metric": metric, "unit": SERIES_METRICS[metric], "points": points})
 
 
 # ---------- settings ----------

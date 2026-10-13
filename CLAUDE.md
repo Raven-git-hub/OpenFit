@@ -79,8 +79,9 @@ own calls to its device API. Full direction:
   cadence, parsed by `_heart_rate_samples()` (`app/plugins/garmin/plugin.py`;
   null bpm/non-wear and unparseable pairs dropped) and written as `heart_rate`
   samples, ahead of the day's no-summary skip and in its own try/except (a
-  failed fetch costs only the samples). Ingest only so far: nothing derives
-  from it and no API reads it — those are later slices.
+  failed fetch costs only the samples). Nothing derives from it; apps read
+  it through the access contract (`GET /api/series/<metric>`, below) as a
+  per-source passthrough — the cross-source stitch is a later slice.
 - `derived_metrics(date, metric, value, unit, source, synced_at)` keyed
   `(date, metric)` (migration `008`, purely additive): the one trusted value per
   metric per day, every metric including `weight_kg`. `source` is the winning
@@ -125,10 +126,13 @@ own calls to its device API. Full direction:
   `derived_metrics`, never raw per-source `metrics` rows, so they never
   reconcile sources:
   - `GET /api/catalog` → `{"metrics": [{metric, unit, sources, first, last,
-    count, last_value, last_date}], "sessions": [{kind, count, first, last}]}`
-    — only metrics/kinds with data (vocabulary order; kinds by name).
-    `sources` = sources that have won any day, in pick order; session
-    `first`/`last` are start timestamps.
+    count, last_value, last_date}], "sessions": [{kind, count, first, last}],
+    "series": [{metric, unit, sources, first, last, count}]}` — only
+    metrics/kinds/series with data (vocabulary order; kinds by name), so an
+    empty install has three empty lists. A metric's `sources` = sources that
+    have won any day, in pick order; a series' = every source with a sample
+    of it, in default precedence (no pick yet). Session `first`/`last` are
+    start timestamps, a series' its earliest/latest sample `ts`.
   - `GET /api/metric/<metric>?from=&to=` → `{metric, unit, points: [{date,
     value, source}]}` ascending; `value` as stored (a float). Unknown metric
     404; known with no data → `points: []`.
@@ -137,6 +141,15 @@ own calls to its device API. Full direction:
     (`{}` if none), `end` may be null. Sessions have no derived pick: each
     source's session is listed, tagged with its source. `from`/`to` match the
     start's UTC date. Unknown kind 404.
+  - `GET /api/series/<metric>?from=&to=` → `{metric, unit, points: [{ts, value,
+    source}]}` from `samples`, ascending by `ts` then source; `value` a whole
+    number as an int (`_whole()`: 77.0 reads as 77). A per-source passthrough,
+    no pick: every source's samples are listed, tagged (the cross-source
+    stitch comes once a second series source exists). `from`/`to` match the
+    sample's UTC date, as `ts` bounds (`>= fromT00:00:00Z`, `<= toT23:59:59Z`)
+    so the `(metric, ts)` index is used. 404 unless `<metric>` is in
+    `SERIES_METRICS` — a daily key like `resting_hr_bpm` included; known with
+    no samples → `points: []`.
   - `from`/`to`: optional, inclusive `YYYY-MM-DD` (empty = omitted); malformed,
     or `from` after `to` → 400. Errors are `{"ok": false, "error"}`.
   These shapes are the stable contract: change them additively only.
@@ -168,15 +181,16 @@ same PR:
   then workouts with no further migration); the stored derived value in `008`
   (fixed precedence) and the user-overridable per-metric primary in
   `settings.source_roles` (no migration); the `samples` table (series grain)
-  and `write_sample()` in `009`; Garmin intraday heart rate fetched into it.
-  Still to come: reading samples back through the contract (the `/api/series`
-  stitch), more series sources, verifying sources + history.
+  and `write_sample()` in `009`; Garmin intraday heart rate fetched into it,
+  and read back through `GET /api/series/<metric>` (a per-source passthrough).
+  Still to come: the cross-source `/api/series` stitch (pending a second
+  series source), more series sources, verifying sources + history.
 - **Webhook / push ingestion:** landed for metrics (see Data model); still to
   come: pushing sessions (sleep, workouts) through it.
 - **The access contract:** landed (see Data model): discovery, range queries
-  with provenance, sessions. Still to come: a `?by_source` option for raw
-  per-source reads, and a derived pick for sessions (one per night across
-  devices).
+  with provenance, sessions, intraday series (passthrough). Still to come: a
+  `?by_source` option for raw per-source reads, a derived pick for sessions
+  (one per night across devices), and the series stitch.
 Keep `GET /api/activity` returning its current flat shape, and `/api/weights` its
 `[{date, weight}]` shape (manual `weight_kg` readings only), as compatibility shims
 during the data-model change. Remove the orphaned `workouts` table +
