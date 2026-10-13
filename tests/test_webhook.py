@@ -18,9 +18,12 @@ import main
 from derived import recompute_derived
 from metrics import (
     ACTIVE_KCAL,
+    BMI,
+    BODY_FAT_PCT,
     DISTANCE_M,
     FLOORS,
     HRV_MS,
+    HYDRATION_ML,
     INTENSITY_MODERATE_MIN,
     INTENSITY_VIGOROUS_MIN,
     METRICS,
@@ -31,6 +34,7 @@ from metrics import (
     SPO2_PCT,
     STEPS,
     TOTAL_KCAL,
+    VO2_MAX,
     WEIGHT_KG,
 )
 
@@ -359,6 +363,10 @@ def test_the_plausible_ranges():
         SPO2_PCT: (50, 100),
         RESPIRATORY_RATE_BRPM: (3, 60),
         HRV_MS: (0, 500),
+        VO2_MAX: (10, 90),
+        BODY_FAT_PCT: (2, 70),
+        BMI: (8, 80),
+        HYDRATION_ML: (0, 20_000),
     }
     for metric in PLAUSIBLE_RANGES:
         assert metric in METRICS

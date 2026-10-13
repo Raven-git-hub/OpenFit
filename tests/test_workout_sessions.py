@@ -139,6 +139,15 @@ class FakeGarmin:
     def get_hrv_data(self, cdate):
         return {}
 
+    def get_training_status(self, cdate):
+        return {}
+
+    def get_hydration_data(self, cdate):
+        return {}
+
+    def get_body_composition(self, startdate, enddate=None):
+        return {}
+
     def get_activities_by_date(self, startdate, enddate=None):
         self.activity_calls.append((startdate, enddate))
         if isinstance(self.activities, Exception):

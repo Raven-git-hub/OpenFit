@@ -247,6 +247,15 @@ class FakeGarmin:
     def get_hrv_data(self, cdate):
         return self._vital("hrv", "get_hrv_data", cdate)
 
+    def get_training_status(self, cdate):
+        return {}
+
+    def get_hydration_data(self, cdate):
+        return {}
+
+    def get_body_composition(self, startdate, enddate=None):
+        return {}
+
     def get_heart_rates(self, cdate):
         return {"calendarDate": cdate, "heartRateValues": None}
 

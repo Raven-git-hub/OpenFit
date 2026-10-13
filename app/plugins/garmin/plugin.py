@@ -12,8 +12,10 @@ floors and intensity minutes), get_sleep_data (the
 daily sleep total plus the night as a sleep session), get_spo2_data,
 get_respiration_data and get_hrv_data (the day's SpO2, respiration rate
 and HRV, and from the same SpO2 and respiration responses their
-intraday series, as samples) and get_heart_rates (the intraday
-heart-rate series, as samples). Fetched once over the whole range:
+intraday series, as samples), get_training_status and
+get_hydration_data (VO2 max and hydration), get_body_composition (body
+fat, BMI and weight) and get_heart_rates (the intraday heart-rate
+series, as samples). Fetched once over the whole range:
 get_activities_by_date, each activity a workout session.
 """
 
@@ -26,12 +28,16 @@ from garminconnect import Garmin, GarminConnectAuthenticationError
 
 from metrics import (
     ACTIVE_KCAL,
+    BMI,
+    BODY_FAT_PCT,
     DISTANCE_M,
     FLOORS,
     HEART_RATE,
     HRV_MS,
+    HYDRATION_ML,
     INTENSITY_MODERATE_MIN,
     INTENSITY_VIGOROUS_MIN,
+    PLAUSIBLE_RANGES,
     RESPIRATION,
     RESPIRATORY_RATE_BRPM,
     RESTING_HR_BPM,
@@ -41,6 +47,8 @@ from metrics import (
     SPO2_PCT,
     STEPS,
     TOTAL_KCAL,
+    VO2_MAX,
+    WEIGHT_KG,
     WORKOUT,
 )
 
@@ -73,6 +81,10 @@ STATS_METRICS = {
 # without HRV), not a wrong field name. SpO2's series is the hourly
 # averages - the finer spO2SingleValues can be null - and HRV's readings
 # aren't a series here.
+#
+# It also carries two single-value daily fetches with no sensor or series
+# semantics - VO2 max and hydration - since they take the same shape: one
+# date argument, one value at a path, stored as reported.
 GARMIN_VITALS = [
     {
         "label": "SpO2",
@@ -92,7 +104,30 @@ GARMIN_VITALS = [
         "daily": (("hrvSummary", "lastNightAvg"), HRV_MS),
         "series": None,
     },
+    # get_training_status gives the most recent estimate whatever day is
+    # asked, so each day of the window files the current value - fine for
+    # a metric that moves this slowly.
+    {
+        "label": "VO2 max",
+        "method": "get_training_status",
+        "daily": (("mostRecentVO2Max", "generic", "vo2MaxValue"), VO2_MAX),
+        "series": None,
+    },
+    {
+        "label": "hydration",
+        "method": "get_hydration_data",
+        "daily": (("valueInML",), HYDRATION_ML),
+        "series": None,
+    },
 ]
+
+# Body composition from get_body_composition's totalAverage -> the metric
+# each files as. bodyFat and bmi are in their canonical units already and
+# stored as reported; weight is converted (see _body_composition_metrics).
+BODY_COMPOSITION_FIELDS = {
+    "bodyFat": BODY_FAT_PCT,
+    "bmi": BMI,
+}
 
 # dailySleepDTO stage fields (seconds) -> the sleep session summary keys
 # (minutes). A field the device doesn't report - remSleepSeconds on a
@@ -232,6 +267,17 @@ class GarminPlugin(SyncPlugin):
                 except Exception as e:
                     print(f"[garmin] {vital['label']} fetch failed for {d_str}: {e}")
 
+            # Body composition is a range call (the day as start and end)
+            # with three readings in it, so it has its own request rather
+            # than a GARMIN_VITALS entry. A failed fetch costs those three.
+            body_metrics = {}
+            try:
+                body_metrics = _body_composition_metrics(
+                    client.get_body_composition(d_str, d_str), d_str
+                )
+            except Exception as e:
+                print(f"[garmin] body-composition fetch failed for {d_str}: {e}")
+
             # The intraday series goes straight in, ahead of the skip
             # below: a day with samples but no daily summary still keeps
             # its samples. A failed fetch costs the samples only.
@@ -247,6 +293,7 @@ class GarminPlugin(SyncPlugin):
                 and sleep_minutes is None
                 and not stats_metrics
                 and not vitals
+                and not body_metrics
             ):
                 continue
 
@@ -258,6 +305,8 @@ class GarminPlugin(SyncPlugin):
                 write_metric(conn, d_str, self.id, metric, value)
             write_metric(conn, d_str, self.id, SLEEP_MINUTES, sleep_minutes)
             for metric, value in vitals.items():
+                write_metric(conn, d_str, self.id, metric, value)
+            for metric, value in body_metrics.items():
                 write_metric(conn, d_str, self.id, metric, value)
             if sleep_session:
                 write_session(conn, self.id, SLEEP, *sleep_session)
@@ -319,6 +368,47 @@ def _stats_metrics(stats, d_str):
             f"stats keys: {sorted(stats)}"
         )
     return out
+
+
+def _body_composition_metrics(payload, d_str):
+    """The readings in a get_body_composition response's totalAverage, as
+    {metric: value}.
+
+    bodyFat -> body_fat_pct and bmi -> bmi, stored as reported; weight ->
+    weight_kg, converted from grams (Garmin reports body-composition
+    weight in grams). That unit can't be checked until a compatible scale
+    reports, so the converted weight is written only if it's within
+    weight_kg's plausible range; a finite weight that converts outside it
+    writes nothing and logs the raw and converted values, so the unit can
+    be confirmed from the logs. Like _daily_vital: a payload or
+    totalAverage that's missing, null or not a dict, or a field that isn't
+    a finite number, is left out without a log line - a day with no
+    weigh-in comes back like that. Never raises.
+    """
+    try:
+        average = payload.get("totalAverage") if isinstance(payload, dict) else None
+        if not isinstance(average, dict):
+            return {}
+        out = {}
+        for field, metric in BODY_COMPOSITION_FIELDS.items():
+            value = average.get(field)
+            if _is_number(value):
+                out[metric] = value
+        grams = average.get("weight")
+        if _is_number(grams):
+            kg = grams / 1000.0
+            low, high = PLAUSIBLE_RANGES[WEIGHT_KG]
+            if low <= kg <= high:
+                out[WEIGHT_KG] = kg
+            else:
+                print(
+                    f"[garmin] body-composition weight {grams}g -> {kg}kg out of "
+                    f"plausible range, not written ({d_str})"
+                )
+        return out
+    except Exception as e:
+        print(f"[garmin] could not read body composition for {d_str}: {e}")
+        return {}
 
 
 def _daily_vital(payload, path):
