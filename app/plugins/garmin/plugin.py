@@ -7,9 +7,10 @@ reuse it instead of logging in with the password again. If your account has
 MFA enabled, run first_login.py once (see repo README) before starting the
 scheduled sync.
 
-Fetched per day: get_stats (steps, resting HR) and get_sleep_data (the
-daily sleep total plus the night as a sleep session). Fetched once over
-the whole range: get_activities_by_date, each activity a workout session.
+Fetched per day: get_stats (steps, resting HR), get_sleep_data (the
+daily sleep total plus the night as a sleep session) and get_heart_rates
+(the intraday heart-rate series, as samples). Fetched once over the
+whole range: get_activities_by_date, each activity a workout session.
 """
 
 import os
@@ -18,9 +19,9 @@ from datetime import date, datetime, timedelta, timezone
 
 from garminconnect import Garmin, GarminConnectAuthenticationError
 
-from metrics import RESTING_HR_BPM, SLEEP, SLEEP_MINUTES, STEPS, WORKOUT
+from metrics import HEART_RATE, RESTING_HR_BPM, SLEEP, SLEEP_MINUTES, STEPS, WORKOUT
 
-from ..base import SyncPlugin, iso_utc, write_metric, write_session
+from ..base import SyncPlugin, iso_utc, write_metric, write_sample, write_session
 
 # dailySleepDTO stage fields (seconds) -> the sleep session summary keys
 # (minutes). A field the device doesn't report - remSleepSeconds on a
@@ -136,6 +137,15 @@ class GarminPlugin(SyncPlugin):
                     sleep_session = _sleep_session(dto, sleep_minutes, d_str)
             except Exception as e:
                 print(f"[garmin] sleep fetch failed for {d_str}: {e}")
+
+            # The intraday series goes straight in, ahead of the skip
+            # below: a day with samples but no daily summary still keeps
+            # its samples. A failed fetch costs the samples only.
+            try:
+                for ts, bpm in _heart_rate_samples(client.get_heart_rates(d_str)):
+                    write_sample(conn, self.id, HEART_RATE, ts, bpm)
+            except Exception as e:
+                print(f"[garmin] heart-rate fetch failed for {d_str}: {e}")
 
             if steps is None and resting_hr is None and sleep_minutes is None:
                 continue
@@ -262,6 +272,39 @@ def _workout_session(activity):
     except Exception as e:
         print(f"[garmin] could not read a workout: {e}")
         return None
+
+
+def _heart_rate_samples(payload):
+    """The intraday [epoch_ms, bpm] pairs in a get_heart_rates payload as
+    (iso_utc timestamp, bpm) tuples.
+
+    heartRateValues runs on a steady ~2-minute cadence, index 0 the
+    timestamp and index 1 the heart rate (heartRateValueDescriptors says
+    so); a bpm of null marks non-wear, and the first pair often is one.
+    The daily max/min/restingHeartRate beside it are ignored here -
+    resting HR comes in through get_stats.
+
+    Drops null bpm (a non-wear gap - write_sample would skip it anyway, but
+    there's no reason to call it) and anything unparseable, a bpm that
+    isn't a number included. Defensive throughout; never raises - a shape
+    mismatch costs the samples, not the sync.
+    """
+    if not isinstance(payload, dict):
+        return []
+    values = payload.get("heartRateValues")
+    if not isinstance(values, list):
+        return []
+    out = []
+    for pair in values:
+        if not isinstance(pair, (list, tuple)) or len(pair) < 2:
+            continue
+        ts_ms, bpm = pair[0], pair[1]
+        if not isinstance(bpm, (int, float)) or not isinstance(ts_ms, (int, float)):
+            continue
+        ts = _gmt_iso(ts_ms)
+        if ts is not None:
+            out.append((ts, bpm))
+    return out
 
 
 def _gmt_datetime(value):

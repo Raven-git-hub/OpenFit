@@ -36,9 +36,11 @@ is not the product.
 
 - A versioned SQLite data store with a hand-rolled migration runner.
 - **Garmin Connect** plugin — steps, resting HR, sleep (daily total plus a
-  per-night session with stages), and workouts (a session per activity).
-- **Google Health** plugin — the same, from Pixel Watch / Fitbit via Google's
-  cloud Health API (not the legacy Fitbit Web API, retired September 2026).
+  per-night session with stages), workouts (a session per activity), and
+  intraday heart rate (a sample every couple of minutes).
+- **Google Health** plugin — the same bar intraday heart rate, from Pixel Watch /
+  Fitbit via Google's cloud Health API (not the legacy Fitbit Web API, retired
+  September 2026).
 - Scheduled background sync plus a manual sync, with device connections managed
   in-app and credentials encrypted at rest.
 - A **webhook** any automation can push a reading to, guarded by a
@@ -225,8 +227,8 @@ A third table, `samples`, is the series (intraday) grain: one row per
 `(source, metric, timestamp)` for readings like heart rate every couple of
 minutes, filed under its own series vocabulary (`heart_rate` in bpm, distinct
 from the daily `resting_hr_bpm`). A null reading — a non-wear gap — is dropped
-rather than stored. For now it is plumbing only: no device fetches into it and
-no API reads it yet.
+rather than stored. Garmin fills it with intraday heart rate; nothing reads it
+yet — an API for it comes later.
 The per-day value is stored, not worked out on each read: a `derived_metrics`
 table holds one value per `(date, metric)`, tagged with the source it came from,
 picked by `app/derived.py` after every sync (for the days that sync covered) and

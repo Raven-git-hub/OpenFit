@@ -49,7 +49,8 @@ extensible, since other sources carry types Google doesn't.)
 2. **Session** — an interval (`start`/`end`) plus a vendor summary, keyed by
    *kind*, source as an attribute. Table: `sessions`. **Built** (sleep, workout).
 3. **Series** — timestamped samples (HR, SpO2, …), one row per sample per source.
-   **Designed, not built.** This is the "intraday" grain.
+   Table: `samples`. **Storage built** (Garmin intraday HR); the read-side stitch
+   is designed, not built. This is the "intraday" grain.
 
 A session is two things: an **interval** (universal, source-agnostic — any app
 can slice the series with it) and a **summary** (a vendor interpretation OpenFit
@@ -122,10 +123,14 @@ on each source's own labels.*
 
 ---
 
-## 5. The series grain (intraday) — designed
+## 5. The series grain (intraday) — storage built, stitch designed
 
 Store each source's raw samples per source: `(source, metric, timestamp, value)`.
 Oura's and Google's samples sit side by side, untouched — dumb raw lanes.
+
+**Built:** the `samples` table and `write_sample()`; Garmin writes its intraday
+heart rate (`heart_rate`, ~2-minute cadence, non-wear nulls dropped). Nothing
+reads it yet — the stitch below and `GET /api/series` (§8) are still to come.
 
 **The graph is a read-time stitch, not a stored copy.** When something requests a
 range, OpenFit walks it and emits the samples of the **highest-priority source
@@ -227,6 +232,7 @@ additive-only.
   source roles and fixed default precedence; forward-only re-derive over the sync
   window.
 - `sessions` (sleep, workout), source-agnostic querying by kind.
+- `samples` (series grain) storage; Garmin intraday heart rate ingested into it.
 - Sync: 6-hourly, 7-day trailing window, re-derive.
 - Webhook push ingestion (metrics only, token auth, own-source enforcement).
 - Access contract (catalog, metric range, sessions).
@@ -234,7 +240,8 @@ additive-only.
   sleep sessions, exercise sessions) + Garmin equivalents + manual weight.
 
 **Designed, to-build:**
-- The **series grain** (timestamp-keyed samples; compute-on-read stitch).
+- The **series grain read side** (compute-on-read stitch, `GET /api/series`) and
+  further series sources.
 - **Wide expansion** — more daily/session types beyond the current four, each a
   fetcher + a canonical key/kind (a new metric is data, not a migration).
 - **Per-event session dedup** + preferred-source-per-kind selection view.
