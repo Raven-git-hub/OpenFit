@@ -971,9 +971,9 @@ h5 + .dnote{margin-top:0;}
   /* =========================================================
      VOICE - a spoken explanation, a button beside a card's title
      One shared <audio>, so only one clip plays at a time. The clips
-     come from GET /audio/<name> (AUDIO_DIR on the server). Until one
-     is dropped in, its request 404s and the button just resets: it
-     stays, and works the moment the file is there.
+     come from GET /audio/<name> (app/audio/, baked into the image). A
+     missing one 404s and the button just resets: it stays, and works
+     the moment the file is there.
      ========================================================= */
   const VOICE_CLIPS = {
     sources:'/audio/connected-sources.mp3',

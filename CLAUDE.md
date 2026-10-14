@@ -79,8 +79,11 @@ own calls to its device API. Full direction:
   `<audio>`: one clip at a time, a second click stops it, and a missing file
   (404) just resets the button, which stays. `GET /audio/<name>`
   (`app/main.py`) serves them via `send_from_directory` from `AUDIO_DIR`
-  (`$AUDIO_DIR`, default `/data/audio` — the persistent volume, so clips are
-  dropped in without a rebuild); static serving is otherwise off. Reads
+  (`$AUDIO_DIR`, default `/app/audio`). The clips are committed in
+  `app/audio/` and baked into the image (`COPY audio ./audio` in
+  `app/Dockerfile`), so they deploy with `git pull && docker compose up -d
+  --build`; a new or changed clip is a commit plus a rebuild (the old
+  `/data/audio` volume drop-in is retired). Static serving is otherwise off. Reads
   `/api/catalog?include_empty=1`, `/api/coverage` and `/api/source-roles`
   (dragging a daily metric's sources `PUT`s `/api/source-roles/<metric>`), plus
   the connector endpoints (`/api/connectors`, the OAuth add flow,

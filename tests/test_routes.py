@@ -1,5 +1,6 @@
 """API route tests - the shape the frontend depends on."""
 
+import os
 import sqlite3
 from datetime import date
 
@@ -251,10 +252,28 @@ def test_audio_serves_a_clip_from_audio_dir(client, tmp_path, monkeypatch):
     resp.close()
 
 
+def test_the_voice_clips_ship_in_the_repo_and_are_served(client, monkeypatch):
+    import main
+
+    # The clips are committed in app/audio/ and baked into the image there
+    # (/app/audio, AUDIO_DIR's default), so a deploy carries them.
+    audio_dir = os.path.join(os.path.dirname(main.__file__), "audio")
+    clips = ("connected-sources.mp3", "your-data.mp3")
+    for clip in clips:
+        assert os.path.isfile(os.path.join(audio_dir, clip)), clip
+
+    monkeypatch.setitem(main.app.config, "AUDIO_DIR", audio_dir)
+    for clip in clips:
+        resp = client.get(f"/audio/{clip}")
+        assert resp.status_code == 200, clip
+        assert resp.mimetype == "audio/mpeg"
+        resp.close()
+
+
 def test_audio_404_when_the_clip_is_absent(client, tmp_path, monkeypatch):
     import main
 
-    # The default state: no clips dropped in yet - not even the folder.
+    # No audio folder at all.
     monkeypatch.setitem(main.app.config, "AUDIO_DIR", str(tmp_path / "audio"))
     assert client.get("/audio/your-data.mp3").status_code == 404
 
