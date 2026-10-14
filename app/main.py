@@ -937,8 +937,9 @@ def webhook(token):
 # the form, validation and storage all follow.
 #
 # Credentials are encrypted before they touch the database - see
-# app/crypto.py. They are never read back out over the API: the UI shows
-# that a device is connected, not what it was connected with.
+# app/crypto.py. The secrets among them never come back out over the API:
+# the one thing read back is the account's non-password identifier (a
+# Garmin email), for the source's Settings popup - see connector_detail().
 
 
 @app.route("/api/connectors", methods=["GET"])
@@ -1186,17 +1187,109 @@ def finish_oauth(plugin_id):
     return jsonify({"ok": True})
 
 
-@app.route("/api/connectors/<plugin_id>", methods=["DELETE"])
-def disconnect_connector(plugin_id):
-    """Remove the account AND any token the plugin cached on disk."""
+def _login(plugin, credentials):
+    """The account's non-secret identifier, or None if it has none.
+
+    Built from the manifest, never from the stored blob's own keys: only
+    fields declared with a type other than "password" are read, so a
+    password can't come back, and neither can anything stored beside the
+    manifest fields - an oauth connector's refresh token. Garmin's is its
+    email. Several such fields are joined in manifest order.
+    """
+    values = [
+        credentials.get(f["key"])
+        for f in plugin.fields
+        if f.get("type") != "password"
+    ]
+    return ", ".join(v for v in values if isinstance(v, str) and v) or None
+
+
+@app.route("/api/connectors/<plugin_id>/detail", methods=["GET"])
+def connector_detail(plugin_id):
+    """One source's account, for its Settings popup.
+
+    {connected_via, login, added, last_sync}: `connected_via` is the
+    plugin's add_flow ("credentials" or "oauth"); `login` the account's
+    non-secret identifier (_login()); `added` when the account was
+    stored (accounts.created_at); `last_sync` the latest synced_at across
+    the source's metrics, samples and sessions, as stored (UTC), null
+    before its first sync. With no account - not connected - login,
+    added and last_sync are all null.
+    """
     plugin = PLUGINS.get(plugin_id)
     if not plugin:
         return jsonify({"ok": False, "error": f"no such connector: {plugin_id}"}), 404
 
+    login = added = last_sync = None
     conn = get_conn()
-    conn.execute("DELETE FROM accounts WHERE plugin_id = ?", (plugin_id,))
-    conn.commit()
-    conn.close()
+    try:
+        account = conn.execute(
+            "SELECT created_at FROM accounts WHERE plugin_id = ?", (plugin_id,)
+        ).fetchone()
+        if account is not None:
+            added = account["created_at"]
+            login = _login(plugin, plugin.get_credentials(conn))
+            # MAX skips NULLs - a migrated reading has no synced_at - and
+            # every stamp is datetime('now')'s, so they compare as text.
+            last_sync = conn.execute(
+                "SELECT MAX(stamp) FROM ("
+                "SELECT MAX(synced_at) AS stamp FROM metrics WHERE source = ? "
+                "UNION ALL SELECT MAX(synced_at) FROM samples WHERE source = ? "
+                "UNION ALL SELECT MAX(synced_at) FROM sessions WHERE source = ?"
+                ")",
+                (plugin_id, plugin_id, plugin_id),
+            ).fetchone()[0]
+    finally:
+        conn.close()
+    return jsonify({
+        "connected_via": plugin.add_flow,
+        "login": login,
+        "added": added,
+        "last_sync": last_sync,
+    })
+
+
+@app.route("/api/connectors/<plugin_id>", methods=["DELETE"])
+def disconnect_connector(plugin_id):
+    """Remove the account AND any token the plugin cached on disk.
+
+    The source's data stays: disconnecting stops future syncs, nothing
+    more. ?wipe=1 (also true/yes) deletes that too - every metric, sample
+    and session it wrote - and re-derives the days its readings covered,
+    so each falls to whatever source is left or loses its derived row.
+    The wipe, the re-derive and the account delete are one transaction.
+    """
+    plugin = PLUGINS.get(plugin_id)
+    if not plugin:
+        return jsonify({"ok": False, "error": f"no such connector: {plugin_id}"}), 404
+    wipe = request.args.get("wipe", "").lower() in ("1", "true", "yes")
+
+    conn = get_conn()
+    try:
+        days = []
+        if wipe:
+            # RETURNING, as DELETE /api/weights does: the affected range is
+            # exactly the readings deleted, even if a sync commits rows
+            # between a separate read and this delete.
+            days = [
+                row["date"]
+                for row in conn.execute(
+                    "DELETE FROM metrics WHERE source = ? RETURNING date", (plugin_id,)
+                )
+            ]
+            conn.execute("DELETE FROM samples WHERE source = ?", (plugin_id,))
+            conn.execute("DELETE FROM sessions WHERE source = ?", (plugin_id,))
+        conn.execute("DELETE FROM accounts WHERE plugin_id = ?", (plugin_id,))
+        if days:
+            # One span rather than a day at a time, so the whole removal
+            # stays one transaction (recompute_derived() commits it). Every
+            # metric on every day in the span is re-picked under the
+            # current source roles, as a re-derived day's other metrics
+            # already are. Samples and sessions have no derived pick.
+            recompute_derived(conn, since=min(days), until=max(days))
+        conn.commit()
+    finally:
+        conn.close()
 
     # A leftover session token would mean the device still syncs after
     # you removed it, so this is part of the delete, not a nicety.

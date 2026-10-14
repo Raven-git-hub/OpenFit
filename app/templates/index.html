@@ -191,7 +191,14 @@ button{font-family:inherit;cursor:pointer;}
 .btn:hover{border-color:var(--accent);color:var(--accent);}
 .btn.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-ink);}
 .btn.primary:hover{filter:brightness(1.05);color:var(--accent-ink);}
+/* destructive: an outline in the status red, and solid for the final confirm */
+.btn.danger{border-color:var(--crit);color:var(--crit);}
+.btn.danger:hover{border-color:var(--crit);color:var(--crit);background:color-mix(in srgb,var(--crit) 10%,var(--surface));}
+.btn.danger.solid{background:var(--crit);color:var(--surface);}
+.btn.danger.solid:hover{background:var(--crit);color:var(--surface);filter:brightness(1.05);}
 .btn.sm{padding:6px 10px;font-size:12.5px;}
+/* an icon before a button's label - the gear on a source's Settings */
+.btn .ico{width:13px;height:13px;fill:currentColor;vertical-align:-2px;margin-right:6px;}
 .btn:disabled{opacity:.5;cursor:not-allowed;}
 .btn:disabled:hover{border-color:var(--border-strong);color:var(--ink);filter:none;}
 /* a link that acts as a button - the OAuth consent link, which has to be
@@ -256,6 +263,26 @@ a.btn{display:inline-block;text-decoration:none;}
 .modal .field{margin-bottom:12px;}
 .modal h4 + .field{margin-top:16px;}
 .modal-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:16px;}
+/* Remove source on the left, Close on the right */
+.modal-actions.split{justify-content:space-between;}
+/* a source's Settings: its account as a label / value list */
+.info{display:grid;grid-template-columns:auto minmax(0,1fr);margin:14px 0 0;}
+.info dt, .info dd{display:flex;align-items:center;padding:10px 0;border-bottom:1px solid var(--border);}
+.info dt{font-size:11.5px;text-transform:uppercase;letter-spacing:.8px;color:var(--muted);font-weight:600;padding-right:18px;}
+.info dd{justify-content:flex-end;margin:0;text-align:right;font-size:13.5px;overflow-wrap:anywhere;}
+.info dt:last-of-type, .info dd:last-of-type{border-bottom:none;}
+/* the popup's error line takes no room until there is one */
+.src-msg:empty{display:none;}
+/* the remove gate's "Wipe data?" choice */
+.danger-panel{
+  border:1px solid color-mix(in srgb,var(--crit) 45%,var(--border));border-radius:var(--radius-sm);
+  background:color-mix(in srgb,var(--crit) 7%,var(--surface));padding:14px;
+}
+.danger-panel h5{font-family:var(--font-display);font-weight:700;font-size:14px;color:var(--crit);margin:0 0 4px;}
+.danger-panel p{font-size:13px;color:var(--ink-2);margin:0;}
+.danger-panel .modal-actions{margin-top:12px;}
+/* straight under the title (the are-you-sure step) */
+.danger-panel:first-child{margin-top:12px;}
 
 /* ---------- the data card ----------
    One row per metric, series and session kind:
@@ -440,11 +467,14 @@ h5 + .dnote{margin-top:0;}
     setPrimary:   (metric, src)  => send('/api/source-roles/'+enc(metric), 'PUT', {primary:src}),
     sessions:     (kind, from)   => getJSON('/api/sessions/'+enc(kind)+(from ? '?from='+enc(from) : ''), null),
     /* Connectors = plugins + whatever account has been attached to them.
-       Credentials go one way only: they are posted here and never read
-       back, so nothing on this page can display a stored password. */
+       Secrets go one way only: they are posted here and never read back,
+       so nothing on this page can display a stored password. /detail
+       returns the account's non-password login (an email), nothing more. */
     listConnectors:  ()            => getJSON('/api/connectors', []),
+    connectorDetail: id            => fetchJSON('/api/connectors/'+enc(id)+'/detail'),
     addConnector:    (id, values)  => send('/api/connectors/'+enc(id), 'POST', values),
-    removeConnector: id            => send('/api/connectors/'+enc(id), 'DELETE'),
+    /* wipe also deletes everything the source wrote, and re-derives */
+    removeConnector: (id, wipe)    => send('/api/connectors/'+enc(id)+(wipe ? '?wipe=1' : ''), 'DELETE'),
     /* OAuth connectors are added in two calls: start hands back a consent
        URL (and keeps the PKCE verifier server-side), finish takes the code
        the provider put in the address bar. */
@@ -1038,8 +1068,9 @@ h5 + .dnote{margin-top:0;}
      CONNECTED SOURCES
      ========================================================= */
   /* Connected devices, from /api/connectors. A device is "connected"
-     when an account has been stored for it; the credentials themselves
-     never come back over the API, only the fact that they exist. */
+     when an account has been stored for it; its secrets never come back
+     over the API, only the fact that they exist (and, in its Settings,
+     its non-password login). */
   function paintSources(){
     const card = $('#sourcesCard');
     card.innerHTML = '';
@@ -1058,13 +1089,15 @@ h5 + .dnote{margin-top:0;}
     card.appendChild(addSourceRow());
   }
 
+  const GEAR = '<svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><path fill-rule="evenodd" d="M13.26 6.39 15.17 6.61 15.17 9.39 13.26 9.61 12.86 10.58 14.05 12.08 12.08 14.05 10.58 12.86 9.61 13.26 9.39 15.17 6.61 15.17 6.39 13.26 5.42 12.86 3.92 14.05 1.95 12.08 3.14 10.58 2.74 9.61 .83 9.39 .83 6.61 2.74 6.39 3.14 5.42 1.95 3.92 3.92 1.95 5.42 3.14 6.39 2.74 6.61 .83 9.39 .83 9.61 2.74 10.58 3.14 12.08 1.95 14.05 3.92 12.86 5.42ZM10.4 8a2.4 2.4 0 1 0-4.8 0 2.4 2.4 0 1 0 4.8 0Z"/></svg>';
+
   function sourceRow(c){
     const row = el('div','src', `
       <div class="src-name">${esc(c.name)}</div>
       <div class="src-r">
         <span class="pill ok">● connected</span>
         <button class="btn sm" type="button" data-act="sync">Sync now</button>
-        <button class="btn sm" type="button" data-act="remove">Remove</button>
+        <button class="btn sm" type="button" data-act="settings" aria-haspopup="dialog">${GEAR}Settings</button>
       </div>`);
 
     const syncBtn = row.querySelector('[data-act="sync"]');
@@ -1081,19 +1114,121 @@ h5 + .dnote{margin-top:0;}
       setTimeout(()=>{ syncBtn.textContent = 'Sync now'; syncBtn.disabled = false; }, 2200);
     };
 
-    const rmBtn = row.querySelector('[data-act="remove"]');
-    rmBtn.onclick = async ()=>{
-      rmBtn.disabled = true; rmBtn.title = ''; rmBtn.textContent = 'Removing…';
-      const res = await api.removeConnector(c.id);
+    row.querySelector('[data-act="settings"]').onclick = () => openSourceSettings(c);
+    return row;
+  }
+
+  /* ---- a source's Settings popup ----
+     Its account (/api/connectors/<id>/detail) as an info list, and
+     Remove source behind a two-step gate in the same modal: keep or wipe
+     the data, then are-you-sure. No confirm(): the steps are the gate. */
+  const VIA_NAMES = {credentials:'Password', oauth:'OAuth'};
+  /* A stored stamp as a Date. synced_at is SQLite's "YYYY-MM-DD HH:MM:SS",
+     UTC with no zone; created_at is ISO with its offset. */
+  const parseStamp = s => new Date(/(Z|[+-]\d\d:?\d\d)$/i.test(s) ? s : String(s).replace(' ','T')+'Z');
+  const fmtWhen = (s, opts) => {
+    const d = parseStamp(s);
+    return isNaN(d.getTime()) ? String(s) : d.toLocaleString('en-GB', opts);
+  };
+  const fmtSync  = s => s ? fmtWhen(s, {day:'numeric',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit'}) : 'Never';
+  const fmtAdded = s => s ? fmtWhen(s, {day:'numeric',month:'short',year:'numeric'}) : '—';
+
+  function openSourceSettings(c){
+    const name = esc(c.name);
+    const {box, close} = openModal(`
+      <h4>${name}</h4>
+      <div data-step="info">
+        <dl class="info">
+          <dt>Login</dt><dd data-f="login">…</dd>
+          <dt>Connected via</dt><dd data-f="via">…</dd>
+          <dt>Last sync</dt><dd data-f="sync" class="tnum">…</dd>
+          <dt>Added</dt><dd data-f="added" class="tnum">…</dd>
+        </dl>
+        <div class="modal-actions split">
+          <button class="btn sm danger" data-act="remove" type="button">Remove source</button>
+          <button class="btn sm" data-act="close" type="button">Close</button>
+        </div>
+      </div>
+      <div data-step="keep" hidden>
+        <p class="hint">Disconnecting stops future syncs.</p>
+        <div class="danger-panel">
+          <h5>Wipe data?</h5>
+          <p>Keep the source's historical data for analysis, or wipe it entirely from the database?</p>
+          <div class="modal-actions">
+            <button class="btn sm" data-act="keep" type="button">Keep data</button>
+            <button class="btn sm danger" data-act="wipe" type="button">Wipe data</button>
+          </div>
+        </div>
+        <div class="modal-actions">
+          <button class="btn sm" data-act="back" type="button">Cancel</button>
+        </div>
+      </div>
+      <div data-step="confirm" hidden>
+        <div class="danger-panel">
+          <h5>Are you sure?</h5>
+          <p data-f="confirm"></p>
+          <div class="modal-actions">
+            <button class="btn sm" data-act="back" type="button">Cancel</button>
+            <button class="btn sm danger solid" data-act="confirm" type="button">Remove</button>
+          </div>
+        </div>
+      </div>
+      <div class="form-msg bad src-msg" data-f="msg"></div>`);
+
+    const f = key => box.querySelector(`[data-f="${key}"]`);
+    const msg = f('msg');
+    const confirmBtn = box.querySelector('[data-act="confirm"]');
+    let wipe = false;
+
+    function step(name){
+      box.querySelectorAll('[data-step]').forEach(s => { s.hidden = s.dataset.step!==name; });
+      msg.textContent = '';
+      // Focus the step's safe way out: Close on the info list, then the
+      // first button (Keep data, Cancel) on each step of the gate.
+      const safe = name==='info' ? '[data-act="close"]' : `[data-step="${name}"] button`;
+      box.querySelector(safe).focus();
+    }
+    function choose(w){
+      wipe = w;
+      f('confirm').innerHTML = w
+        ? `<b>${name}</b> will be disconnected and all of its data wiped from the database. This can't be undone.`
+        : `<b>${name}</b> will be disconnected. Its historical data stays in the database.`;
+      confirmBtn.textContent = w ? 'Remove & wipe' : 'Remove';
+      step('confirm');
+    }
+
+    box.querySelector('[data-act="close"]').onclick = close;
+    box.querySelector('[data-act="remove"]').onclick = () => step('keep');
+    box.querySelectorAll('[data-act="back"]').forEach(b => { b.onclick = () => step('info'); });
+    box.querySelector('[data-act="keep"]').onclick = () => choose(false);
+    box.querySelector('[data-act="wipe"]').onclick = () => choose(true);
+    confirmBtn.onclick = async ()=>{
+      const label = confirmBtn.textContent;
+      confirmBtn.disabled = true; confirmBtn.textContent = 'Removing…';
+      const res = await api.removeConnector(c.id, wipe);
       if(res.ok){
-        await refreshConnectors();
+        close();
+        // Both: the source has gone from the card, and a wipe re-derived
+        // the days it covered - the data card must show what's left.
+        refreshConnectors();
+        loadData();
       }else{
-        rmBtn.textContent = 'Failed';
-        rmBtn.title = res.error || 'Could not remove this device';
-        setTimeout(()=>{ rmBtn.textContent = 'Remove'; rmBtn.disabled = false; }, 2200);
+        msg.textContent = res.error || 'Could not remove this source';
+        confirmBtn.disabled = false; confirmBtn.textContent = label;
       }
     };
-    return row;
+    step('info');
+
+    api.connectorDetail(c.id).then(d => {
+      f('login').textContent = d.login || '—';
+      f('via').textContent = VIA_NAMES[d.connected_via] || cap(d.connected_via) || '—';
+      f('sync').textContent = fmtSync(d.last_sync);
+      f('added').textContent = fmtAdded(d.added);
+    }).catch(() => {
+      // Remove stays usable - it's the way out of an account that won't read.
+      ['login','via','sync','added'].forEach(k => { f(k).textContent = '—'; });
+      msg.textContent = "Couldn't load this source's details.";
+    });
   }
 
   /* The button at the foot of the card. Every connector the API offers

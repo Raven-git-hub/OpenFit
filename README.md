@@ -56,10 +56,11 @@ continuous it is, and which source wins each metric — not the product.
   there is, one metric over a date range (with which source each value came
   from), sleep/workout sessions, and intraday series like heart rate,
   respiration and SpO2.
-- A built-in **data console**: connected devices (add, sync, remove), every
-  metric, series and session kind with its latest reading and cadence, how
-  continuously each is covered (day / week / month, and the last five weeks),
-  and drag-to-reorder source priority per metric.
+- A built-in **data console**: connected devices (add, sync, and a per-source
+  Settings popup showing the account and removing it, keeping or wiping its
+  data), every metric, series and session kind with its latest reading and
+  cadence, how continuously each is covered (day / week / month, and the last
+  five weeks), and drag-to-reorder source priority per metric.
 
 ## Webhook input (push)
 
@@ -236,8 +237,12 @@ Visit `http://<your-server-ip>:8080`. It runs fine with zero plugins configured.
 
 Devices are added in the app, not a config file: **Connected sources → Add
 source**. Pick the device, fill in what it asks for, hit Add.
-Credentials are encrypted before they're stored, and **Remove** deletes them
-along with any cached session token. An install that predates this flow keeps
+Credentials are encrypted before they're stored; a source's **Settings** shows
+its login (never the password or a token), how it connected, its last sync and
+when it was added. **Remove source** there deletes the credentials along with
+any cached session token, and asks whether to keep the source's historical data
+or wipe it from the database (`DELETE /api/connectors/<plugin>?wipe=1`, which
+also re-derives the days it covered). An install that predates this flow keeps
 working: the `.env` variables are read as a fallback until you re-add the device.
 
 ### Garmin Connect plugin

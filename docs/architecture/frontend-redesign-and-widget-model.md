@@ -39,7 +39,8 @@ popup lands.
 **The Data tab** is one column:
 
 1. **Connected sources.** One compact row per connected device: name, status
-   pill, **Sync now**, **Remove**. Below them, **Add source**. When a connector
+   pill, **Sync now**, and a gear **Settings** button that opens the source's
+   Settings popup (below). Below them, **Add source**. When a connector
    isn't connected yet, it opens a menu of those connectors, and picking one
    opens the existing add flow, built from the connector's manifest: the
    credentials modal, or the two-step OAuth paste-back modal. When every
@@ -60,6 +61,43 @@ click) closes it without saving. On load the page opens that tab, in place of
 the old hardcoded Data default; if nothing is stored, or the stored tab no
 longer exists, it opens Data. The choice takes effect on the next load, not at
 once. There is no helper text in the popup.
+
+**A source's Settings popup.** The gear on a connected source's row opens it,
+on the same `.modal` chrome, titled with the source's name. It reads
+`GET /api/connectors/<id>/detail` (`{connected_via, login, added, last_sync}`)
+and shows it as a label / value list:
+
+- **Login**: the account's non-secret identifier (a Garmin email), or `—` when
+  there is none. The API only ever returns non-password manifest fields here,
+  never a password or an OAuth token.
+- **Connected via**: Password (`credentials`) or OAuth (`oauth`).
+- **Last sync**: the latest `synced_at` across the source's rows, stored as UTC
+  and shown as a local date and time; **Never** before its first sync.
+- **Added**: when the account was stored, as a date.
+
+Until the detail lands each value reads `…`; if it fails, they read `—` with
+"Couldn't load this source's details." under them, and Remove still works,
+since removing is the way out of an account that won't read. **Remove source**
+(danger) sits at the foot, with **Close** opposite it.
+
+Remove is a two-step gate inside the same modal. There is no browser
+`confirm()` or `alert()`:
+
+1. "Disconnecting stops future syncs.", then a danger panel: **Wipe data?**
+   "Keep the source's historical data for analysis, or wipe it entirely from
+   the database?" with **Keep data** and (danger) **Wipe data**. **Cancel**
+   below it goes back to the info list.
+2. **Are you sure?**, naming the source and whether its data stays or is wiped
+   ("This can't be undone."), with **Cancel** (back to the info list) and a
+   solid danger **Remove** or **Remove & wipe**.
+
+Confirming sends `DELETE /api/connectors/<id>`, with `?wipe=1` on the wipe path,
+which also deletes the source's metrics, samples and sessions and re-derives the
+days its readings covered. On success the popup closes and the page re-reads
+both the connectors (the row goes) and the dataset (`loadData()`), so a wipe's
+effect on the rows shows at once. On failure the error shows in the popup and
+the button comes back. Per-source sync cadence isn't here yet; it arrives with
+the scheduler work.
 
 **The coming-soon placeholder.** One reusable modal (`comingSoon(title)`),
 built on the same `.modal` chrome: a title, "Coming soon." and a Close button
