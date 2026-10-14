@@ -183,13 +183,16 @@ device's own history, as far back as the device keeps it.
 ### Intensity
 
 `intensity_moderate_min` and `intensity_vigorous_min` are a source's own
-moderate- and vigorous-intensity minutes, as reported; `active_minutes` is a
-source's own total of active minutes, where it reports one. The engine never
-sums the two intensities into `active_minutes`, nor splits a total into them
-(laws 1 and 2). A vendor's weighted or zone-based figure — minutes in its heart
-rate zones, a "zone minutes" score that counts vigorous time double — is a
-different measurement (law 3): it doesn't file under these keys, and waits for
-the deferred `hr_zone_minutes` shape.
+moderate- and vigorous-intensity minutes, as reported. `active_minutes` is the
+home for a source's single-number "active minutes" figure, however the vendor
+computes it — zone-weighted ones included: Fitbit/Google Active Zone Minutes
+maps to `active_minutes`. The key is not defined as unweighted. The engine
+never sums moderate and vigorous into `active_minutes`, never splits it back
+into them, and never synthesises the WHO moderate/vigorous split from a
+vendor's heart-rate zones (laws 1 and 2). The deferred `hr_zone_minutes` is a
+different thing: the time breakdown per heart-rate zone (minutes in each
+zone), not the single Active Zone Minutes number, so it doesn't displace AZM
+from `active_minutes`.
 
 ### Sources and precedence
 
