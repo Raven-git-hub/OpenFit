@@ -226,3 +226,42 @@ def test_index_has_the_home_and_data_tabs_and_no_activity_read(client):
     assert 'data-tab="data"' in page and 'data-panel="data"' in page
     # The last-sync stamp went, and /api/activity with it.
     assert "/api/activity" not in page
+
+
+def test_index_wires_the_voice_buttons_to_the_audio_route(client):
+    resp = client.get("/")
+    page = resp.get_data(as_text=True)
+    resp.close()
+    for clip in ("/audio/connected-sources.mp3", "/audio/your-data.mp3"):
+        assert clip in page
+
+
+def test_audio_serves_a_clip_from_audio_dir(client, tmp_path, monkeypatch):
+    import main
+
+    audio_dir = tmp_path / "audio"
+    audio_dir.mkdir()
+    (audio_dir / "your-data.mp3").write_bytes(b"ID3 not really an mp3")
+    monkeypatch.setitem(main.app.config, "AUDIO_DIR", str(audio_dir))
+
+    resp = client.get("/audio/your-data.mp3")
+    assert resp.status_code == 200
+    assert resp.mimetype == "audio/mpeg"
+    assert resp.get_data() == b"ID3 not really an mp3"
+    resp.close()
+
+
+def test_audio_404_when_the_clip_is_absent(client, tmp_path, monkeypatch):
+    import main
+
+    # The default state: no clips dropped in yet - not even the folder.
+    monkeypatch.setitem(main.app.config, "AUDIO_DIR", str(tmp_path / "audio"))
+    assert client.get("/audio/your-data.mp3").status_code == 404
+
+    # The folder, without that clip; and nothing outside it is reachable.
+    (tmp_path / "audio").mkdir()
+    (tmp_path / "audio" / "your-data.mp3").write_bytes(b"ID3")
+    (tmp_path / "tracker.db").write_bytes(b"not for the browser")
+    assert client.get("/audio/connected-sources.mp3").status_code == 404
+    assert client.get("/audio/..%2Ftracker.db").status_code == 404
+    assert client.get("/audio/../tracker.db").status_code == 404

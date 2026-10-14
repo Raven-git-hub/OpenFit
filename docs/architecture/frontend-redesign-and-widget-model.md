@@ -18,8 +18,8 @@ the top of the file.
 **Top bar.** The logo on the left. On the right, today's date in a pill, and
 under it two small pill buttons: **settings**, then the **theme** toggle, which
 cycles Auto / Light / Dark (per browser, in `localStorage` as `of-theme`). The
-bar no longer shows a last-sync stamp. Settings opens the coming-soon
-placeholder (below) until a settings popup lands.
+bar no longer shows a last-sync stamp. Settings opens the Settings popup
+(below).
 
 **Tab strip.** The angled tab strip from before the console, restored with its
 original markup and CSS (`.tabstrip`, `.tab`, `.tab-add`), so it looks exactly as
@@ -27,12 +27,14 @@ it did. It holds two tabs:
 
 - **Home**, at the far left. A blank panel for now.
 - **Data**, at the far right, just left of the dashed **＋ Add**. It holds the
-  whole console, below, and is the tab open on load.
+  whole console, below.
 
-Switching tabs shows one panel and hides the other. Nothing is re-fetched or
-repainted, so the console keeps its state (open rows, notes) underneath. The
-active tab isn't remembered: a reload opens Data. **＋ Add** opens the
-coming-soon placeholder until an add-a-tab popup lands.
+The page opens on the tab chosen as the **Opening page** in Settings (below),
+Data by default. Switching tabs shows one panel and hides the other. Nothing is
+re-fetched or repainted, so the console keeps its state (open rows, notes)
+underneath. The tab last viewed isn't remembered: a reload opens the opening
+page again. **＋ Add** opens the coming-soon placeholder until an add-a-tab
+popup lands.
 
 **The Data tab** is one column:
 
@@ -44,19 +46,54 @@ coming-soon placeholder until an add-a-tab popup lands.
    connector is connected, it opens the coming-soon placeholder, until it is
    wired to the add-source popup that replaces it.
 2. **Your data.** The heading, then the list straight away: one row per catalog
-   entry (below). Click a row to expand it.
+   entry (below), grouped by cadence. Click a row to expand it.
+
+Each card's title has a voice button just after it (below).
+
+**The Settings popup.** Built on the same `.modal` chrome as the add-device
+flows, with one control: **Opening page**, a dropdown of the tabs. Its options
+are built from the tab strip itself (every `.tab[data-tab]`, labelled with the
+tab's own text: Home and Data today), so a new tab is offered without touching
+the popup. **Save** stores the choice per browser, in `localStorage` as
+`of-opening-tab`, and closes the popup; **Close** (or Escape, or a backdrop
+click) closes it without saving. On load the page opens that tab, in place of
+the old hardcoded Data default; if nothing is stored, or the stored tab no
+longer exists, it opens Data. The choice takes effect on the next load, not at
+once. There is no helper text in the popup.
 
 **The coming-soon placeholder.** One reusable modal (`comingSoon(title)`),
-built on the same `.modal` chrome as the add-device flows: a title, "Coming
-soon." and a Close button (Escape and a backdrop click close it too). Add
-source (with nothing left to add), Settings and ＋ Add all open it, each with
-its own title.
+built on the same `.modal` chrome: a title, "Coming soon." and a Close button
+(Escape and a backdrop click close it too). Add source (with nothing left to
+add) and ＋ Add open it, each with its own title.
+
+## Voice explanations: `GET /audio/<name>`
+
+A small round button sits just after the **Connected sources** and **Your
+data** card titles. Each plays a spoken explanation of its card:
+`/audio/connected-sources.mp3` and `/audio/your-data.mp3`.
+
+- Clicking a button plays its clip from the start. Clicking it again stops and
+  resets it. Clicking the other button stops the first clip and plays the
+  other, so only one clip plays at a time. Idle shows a play glyph, playing a
+  stop glyph. There is no caption and no toast.
+- Both buttons share one `<audio>` element. Playing sets its `src` to the
+  card's clip, sets `currentTime = 0` and calls `play()`. The button resets on
+  `ended` and on `error` (and if `play()` is refused). The cards repaint (after
+  a sync, say), and a repainted button picks up whatever is playing.
+- The clips are served by `GET /audio/<name>` →
+  `send_from_directory(AUDIO_DIR, name)`, with `AUDIO_DIR` from
+  `$AUDIO_DIR` (default `/data/audio`). That is on the persistent `/data`
+  volume, not in the image, so clips can be dropped in or replaced without a
+  rebuild. Static serving is otherwise off (`static_folder=None`).
+- Until a clip is there, its request 404s and the button silently resets: no
+  error dialog and no broken state. The button isn't hidden, so it works the
+  moment the file exists.
 
 ## The rows: `GET /api/catalog?include_empty=1`
 
-Each catalog entry is one row: metrics first, then series, then sessions, in
-the order the catalog returns them (vocabulary order). Each row has fixed,
-aligned columns:
+Each catalog entry is one row, grouped by cadence (**Grouping**, below); inside
+a group, metrics come first, then series, then sessions, in the order the
+catalog returns them (vocabulary order). Each row has fixed, aligned columns:
 
 `[chevron] Name · Reading · Cadence ··· [Day] [Wk] [Mth]`
 
@@ -79,8 +116,14 @@ aligned columns:
   - Nothing reported: `—`.
 - **Cadence.** The catalog's `cadence`, capitalised: Daily, Reading, Session,
   Manual.
-- **Grouping.** Rows with `count > 0` come first. A **Not yet reporting**
-  divider follows, then the empty slots, dimmed (they still expand).
+- **Grouping.** Rows with `count > 0` come first, grouped by `cadence` in a
+  fixed order: **Daily**, **Manual**, **Session**, **Reading**. Each group
+  that has rows gets a divider header (the `.dgroup` style); a cadence with no
+  reporting rows gets no header. Within a group, rows keep the catalog order.
+  A cadence outside those four would be listed after them under its own
+  header, not dropped (`cadence_for()` gives none today). A single **Not yet
+  reporting** divider follows, then every empty slot, dimmed and ungrouped
+  (they still expand).
 
 ## Continuity: `GET /api/coverage`
 

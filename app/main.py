@@ -38,6 +38,7 @@ from metrics import (
 )
 
 DB_PATH = os.getenv("DB_PATH", "/data/tracker.db")
+AUDIO_DIR = os.getenv("AUDIO_DIR", "/data/audio")
 SYNC_INTERVAL_HOURS = int(os.getenv("SYNC_INTERVAL_HOURS", "6"))
 
 app = Flask(__name__, static_folder=None)
@@ -46,6 +47,8 @@ app = Flask(__name__, static_folder=None)
 # temp file. It still defaults to $DB_PATH, so nothing changes in the
 # container.
 app.config["DB_PATH"] = DB_PATH
+# Likewise the console's voice clips.
+app.config["AUDIO_DIR"] = AUDIO_DIR
 
 
 def get_conn():
@@ -86,6 +89,15 @@ def backfill():
 @app.route("/")
 def index():
     return send_from_directory("templates", "index.html")
+
+
+# The console's spoken explanations (its voice buttons). Served from the
+# /data volume rather than the image, so a clip can be dropped in or
+# replaced without a rebuild. Until it is, the request 404s and the
+# button just resets.
+@app.route("/audio/<name>")
+def audio(name):
+    return send_from_directory(app.config["AUDIO_DIR"], name)
 
 
 # ---------- weights ----------
