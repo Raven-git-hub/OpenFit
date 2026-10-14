@@ -82,10 +82,14 @@ data** card titles. Each plays a spoken explanation of its card:
   a sync, say), and a repainted button picks up whatever is playing.
 - The clips are served by `GET /audio/<name>` →
   `send_from_directory(AUDIO_DIR, name)`, with `AUDIO_DIR` from
-  `$AUDIO_DIR` (default `/data/audio`). That is on the persistent `/data`
-  volume, not in the image, so clips can be dropped in or replaced without a
-  rebuild. Static serving is otherwise off (`static_folder=None`).
-- Until a clip is there, its request 404s and the button silently resets: no
+  `$AUDIO_DIR` (default `/app/audio`). The clips ship in the repo, in
+  `app/audio/`, and are baked into the image at build (`COPY audio ./audio`
+  in `app/Dockerfile`), so they deploy with the code:
+  `git pull && docker compose up -d --build`. Adding or replacing a clip is a
+  commit and a rebuild. (They used to be hand-copied onto the `/data` volume
+  at `/data/audio`; that approach is retired.) Static serving is otherwise off
+  (`static_folder=None`).
+- If a clip is missing, its request 404s and the button silently resets: no
   error dialog and no broken state. The button isn't hidden, so it works the
   moment the file exists.
 

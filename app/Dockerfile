@@ -13,6 +13,7 @@ COPY main.py crypto.py derived.py metrics.py first_login.py ./
 COPY plugins ./plugins
 COPY migrations ./migrations
 COPY templates ./templates
+COPY audio ./audio
 
 RUN mkdir -p /data
 VOLUME ["/data"]

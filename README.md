@@ -269,6 +269,7 @@ then on.
 app/
   main.py                     Flask API + scheduler, loads plugins from plugins/
   templates/index.html        The data console (vanilla JS, no build step)
+  audio/                      The console's voice clips, baked into the image
   plugins/
     base.py                   SyncPlugin interface every pull plugin implements
     __init__.py               PLUGINS registry — one line per installed plugin

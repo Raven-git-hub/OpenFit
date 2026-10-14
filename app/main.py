@@ -38,7 +38,7 @@ from metrics import (
 )
 
 DB_PATH = os.getenv("DB_PATH", "/data/tracker.db")
-AUDIO_DIR = os.getenv("AUDIO_DIR", "/data/audio")
+AUDIO_DIR = os.getenv("AUDIO_DIR", "/app/audio")
 SYNC_INTERVAL_HOURS = int(os.getenv("SYNC_INTERVAL_HOURS", "6"))
 
 app = Flask(__name__, static_folder=None)
@@ -91,10 +91,9 @@ def index():
     return send_from_directory("templates", "index.html")
 
 
-# The console's spoken explanations (its voice buttons). Served from the
-# /data volume rather than the image, so a clip can be dropped in or
-# replaced without a rebuild. Until it is, the request 404s and the
-# button just resets.
+# The console's spoken explanations (its voice buttons). The clips ship
+# in app/audio/ and are baked into the image (/app/audio), so they deploy
+# with the code. A missing clip 404s and the button just resets.
 @app.route("/audio/<name>")
 def audio(name):
     return send_from_directory(app.config["AUDIO_DIR"], name)
