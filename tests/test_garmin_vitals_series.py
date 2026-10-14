@@ -438,6 +438,8 @@ def test_the_catalog_lists_both_series(client, conn, garmin):
         {
             "metric": "respiration",
             "unit": "brpm",
+            "grain": "series",
+            "cadence": "reading",
             "sources": ["garmin"],
             "first": "2026-01-01T23:02:00Z",
             "last": "2026-01-01T23:08:00Z",
@@ -446,6 +448,8 @@ def test_the_catalog_lists_both_series(client, conn, garmin):
         {
             "metric": "spo2",
             "unit": "%",
+            "grain": "series",
+            "cadence": "reading",
             "sources": ["garmin"],
             "first": "2026-01-01T23:00:00Z",
             "last": "2026-01-02T01:00:00Z",

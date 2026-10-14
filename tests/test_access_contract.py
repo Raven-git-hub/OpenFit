@@ -1,30 +1,43 @@
 """
 The access contract: the read API apps build on.
 
-GET /api/catalog says what there is, GET /api/metric/<metric> serves one
-metric's derived series, GET /api/sessions/<kind> one kind's sessions
-and GET /api/series/<metric> one series metric's intraday samples, each
-with its provenance. Metrics come from derived_metrics - the picked
-value - never the raw per-source rows; samples have no pick yet, so
-every source's are served. Also here: manual /api/weights writes
+GET /api/catalog says what there is (each key labelled with its grain
+and cadence), GET /api/coverage which days hold it, GET
+/api/metric/<metric> serves one metric's derived series, GET
+/api/sessions/<kind> one kind's sessions and GET /api/series/<metric>
+one series metric's intraday samples, each with its provenance. Metrics
+come from derived_metrics - the picked value - never the raw per-source
+rows; samples have no pick yet, so every source's are served. Also here: manual /api/weights writes
 re-derive their days, so a weigh-in reaches the contract at once.
 """
+
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
 from derived import recompute_derived, set_source_role
 from metrics import (
+    BMI,
+    BODY_FAT_PCT,
     HEART_RATE,
+    HYDRATION_ML,
+    MANUAL_METRICS,
     METRICS,
+    RESPIRATION,
     RESPIRATORY_RATE_BRPM,
     RESTING_HR_BPM,
+    SERIES_METRICS,
+    SESSION_KINDS,
     SLEEP,
+    SLEEP_MINUTES,
+    SPO2,
     SPO2_PCT,
     STEPS,
     WEIGHT_KG,
     WORKOUT,
+    cadence_for,
 )
-from plugins.base import write_sample, write_session
+from plugins.base import iso_utc, write_sample, write_session
 
 
 def insert(conn, date, source, **values):
@@ -103,6 +116,8 @@ def test_catalog_lists_each_metric_with_data(client, conn):
         {
             "metric": STEPS,
             "unit": "count",
+            "grain": "daily",
+            "cadence": "daily",
             "sources": ["garmin", "google_health"],
             "first": "2026-01-01",
             "last": "2026-01-03",
@@ -113,6 +128,8 @@ def test_catalog_lists_each_metric_with_data(client, conn):
         {
             "metric": RESTING_HR_BPM,
             "unit": "bpm",
+            "grain": "daily",
+            "cadence": "daily",
             "sources": ["garmin"],
             "first": "2026-01-01",
             "last": "2026-01-01",
@@ -123,6 +140,8 @@ def test_catalog_lists_each_metric_with_data(client, conn):
         {
             "metric": WEIGHT_KG,
             "unit": "kg",
+            "grain": "daily",
+            "cadence": "manual",
             "sources": ["manual"],
             "first": "2026-01-02",
             "last": "2026-01-02",
@@ -183,6 +202,8 @@ def test_catalog_lists_each_session_kind_with_data(client, conn):
     assert catalog["sessions"] == [
         {
             "kind": SLEEP,
+            "grain": "session",
+            "cadence": "session",
             "count": 3,
             "first": "2026-01-01T23:00:00Z",
             "last": "2026-01-03T22:00:00Z",
@@ -210,6 +231,8 @@ def test_catalog_lists_each_series_metric_with_data(client, conn):
         {
             "metric": HEART_RATE,
             "unit": "bpm",
+            "grain": "series",
+            "cadence": "reading",
             "sources": ["garmin", "polar"],
             "first": "2026-01-01T23:58:00Z",
             "last": "2026-01-03T07:30:00Z",
@@ -230,6 +253,241 @@ def test_catalog_series_sources_are_in_default_precedence(client, conn):
 
     [hr] = client.get("/api/catalog").get_json()["series"]
     assert hr["sources"] == ["garmin", "google_health", "apple"]
+
+
+def test_catalog_labels_every_entry_with_its_grain_and_cadence(client, conn):
+    insert(conn, "2026-01-01", "garmin", steps=9000, body_fat_pct=18.5)
+    recompute_derived(conn)
+    session(conn, "garmin", WORKOUT, "2026-01-01T07:00:00Z", "2026-01-01T07:30:00Z", {})
+    sample(conn, "garmin", "2026-01-01T08:00:00Z", 97, metric=SPO2)
+
+    catalog = client.get("/api/catalog").get_json()
+
+    def labels(entries, name):
+        return [(e[name], e["grain"], e["cadence"]) for e in entries]
+
+    assert labels(catalog["metrics"], "metric") == [
+        (STEPS, "daily", "daily"),
+        (BODY_FAT_PCT, "daily", "manual"),
+    ]
+    assert labels(catalog["sessions"], "kind") == [(WORKOUT, "session", "session")]
+    assert labels(catalog["series"], "metric") == [(SPO2, "series", "reading")]
+
+
+def test_catalog_with_include_empty_lists_the_whole_vocabulary(client, conn):
+    insert(conn, "2026-01-01", "garmin", resting_hr_bpm=52)
+    recompute_derived(conn)
+    session(conn, "garmin", WORKOUT, "2026-01-01T07:00:00Z", "2026-01-01T07:30:00Z", {})
+    sample(conn, "garmin", "2026-01-01T08:00:00Z", 14, metric=RESPIRATION)
+
+    catalog = client.get("/api/catalog?include_empty=1").get_json()
+
+    # Vocabulary order, whether or not a key has data; kinds by name.
+    assert [m["metric"] for m in catalog["metrics"]] == list(METRICS)
+    assert [s["metric"] for s in catalog["series"]] == list(SERIES_METRICS)
+    assert [s["kind"] for s in catalog["sessions"]] == sorted(SESSION_KINDS)
+    # Every entry is labelled, empty or not.
+    for entry in catalog["metrics"]:
+        assert entry["grain"] == "daily"
+        assert entry["cadence"] == cadence_for(entry["metric"])
+
+    metrics = {m["metric"]: m for m in catalog["metrics"]}
+    # One with data is just as it is without include_empty...
+    assert metrics[RESTING_HR_BPM]["count"] == 1
+    assert metrics[RESTING_HR_BPM]["sources"] == ["garmin"]
+    # ...and one without is an empty slot.
+    assert metrics[STEPS] == {
+        "metric": STEPS,
+        "unit": "count",
+        "grain": "daily",
+        "cadence": "daily",
+        "sources": [],
+        "first": None,
+        "last": None,
+        "count": 0,
+        "last_value": None,
+        "last_date": None,
+    }
+    assert catalog["sessions"] == [
+        {"kind": SLEEP, "grain": "session", "cadence": "session",
+         "count": 0, "first": None, "last": None},
+        {"kind": WORKOUT, "grain": "session", "cadence": "session",
+         "count": 1, "first": "2026-01-01T07:00:00Z", "last": "2026-01-01T07:00:00Z"},
+    ]
+    series = {s["metric"]: s for s in catalog["series"]}
+    assert series[RESPIRATION]["count"] == 1
+    assert series[HEART_RATE] == {
+        "metric": HEART_RATE,
+        "unit": "bpm",
+        "grain": "series",
+        "cadence": "reading",
+        "sources": [],
+        "first": None,
+        "last": None,
+        "count": 0,
+    }
+
+
+def test_catalog_with_include_empty_on_an_empty_install(client):
+    catalog = client.get("/api/catalog?include_empty=1").get_json()
+
+    assert [m["metric"] for m in catalog["metrics"]] == list(METRICS)
+    assert [s["metric"] for s in catalog["series"]] == list(SERIES_METRICS)
+    assert [s["kind"] for s in catalog["sessions"]] == sorted(SESSION_KINDS)
+    for entry in [*catalog["metrics"], *catalog["series"], *catalog["sessions"]]:
+        assert entry["count"] == 0
+        assert entry["first"] is None and entry["last"] is None
+        # Sessions list no sources.
+        assert entry.get("sources", []) == []
+
+
+@pytest.mark.parametrize("query", ["", "?include_empty=", "?include_empty=0", "?include_empty=no"])
+def test_catalog_without_include_empty_leaves_out_keys_with_no_data(client, conn, query):
+    insert(conn, "2026-01-01", "garmin", steps=9000)
+    recompute_derived(conn)
+
+    catalog = client.get(f"/api/catalog{query}").get_json()
+
+    assert [m["metric"] for m in catalog["metrics"]] == [STEPS]
+    assert catalog["sessions"] == []
+    assert catalog["series"] == []
+
+
+# ---------- cadence ----------
+
+
+@pytest.mark.parametrize(
+    "key, cadence",
+    [
+        (STEPS, "daily"),
+        (RESTING_HR_BPM, "daily"),
+        (SLEEP_MINUTES, "daily"),
+        (WEIGHT_KG, "manual"),
+        (BODY_FAT_PCT, "manual"),
+        (BMI, "manual"),
+        (HYDRATION_ML, "manual"),
+        (HEART_RATE, "reading"),
+        (SPO2, "reading"),
+        (SLEEP, "session"),
+        (WORKOUT, "session"),
+    ],
+)
+def test_cadence_for(key, cadence):
+    assert cadence_for(key) == cadence
+
+
+def test_every_manual_metric_is_a_daily_metric():
+    # The manual label narrows the daily one; it isn't a fourth vocabulary.
+    assert MANUAL_METRICS <= set(METRICS)
+
+
+@pytest.mark.parametrize("key", ["heartrate", "nap", ""])
+def test_cadence_for_an_unknown_key_raises(key):
+    with pytest.raises(ValueError, match="unknown metric"):
+        cadence_for(key)
+
+
+# ---------- coverage ----------
+
+
+def coverage(client, query=""):
+    resp = client.get(f"/api/coverage{query}")
+    assert resp.status_code == 200
+    return resp.get_json()
+
+
+def test_coverage_of_an_empty_install(client):
+    assert coverage(client) == {"metrics": {}, "series": {}, "sessions": {}}
+
+
+def test_coverage_is_each_keys_dates_whatever_the_source(client, conn):
+    insert(conn, "2026-01-03", "garmin", steps=7000)
+    insert(conn, "2026-01-01", "garmin", steps=9000, resting_hr_bpm=52)
+    # Two sources the same day: one date, not two.
+    insert(conn, "2026-01-01", "google_health", steps=8000)
+    insert(conn, "2026-01-02", "manual", weight_kg=82.5)
+    recompute_derived(conn)
+    # Many samples a day, from two sources: each date once.
+    sample(conn, "garmin", "2026-01-02T08:00:00Z", 60)
+    sample(conn, "garmin", "2026-01-02T08:02:00Z", 62)
+    sample(conn, "polar", "2026-01-02T09:00:00Z", 70)
+    sample(conn, "garmin", "2026-01-01T23:59:59Z", 58)
+    sample(conn, "garmin", "2026-01-04T00:00:00Z", 15, metric=RESPIRATION)
+    session(conn, "garmin", SLEEP, "2026-01-02T22:30:00Z", "2026-01-03T06:30:00Z", {})
+    session(conn, "google_health", SLEEP, "2026-01-02T23:00:00Z", "2026-01-03T07:00:00Z", {})
+    session(conn, "garmin", SLEEP, "2026-01-01T23:00:00Z", "2026-01-02T07:00:00Z", {})
+    session(conn, "garmin", WORKOUT, "2026-01-03T07:00:00Z", "2026-01-03T07:30:00Z", {})
+
+    assert coverage(client) == {
+        "metrics": {
+            STEPS: ["2026-01-01", "2026-01-03"],
+            RESTING_HR_BPM: ["2026-01-01"],
+            WEIGHT_KG: ["2026-01-02"],
+        },
+        "series": {
+            HEART_RATE: ["2026-01-01", "2026-01-02"],
+            RESPIRATION: ["2026-01-04"],
+        },
+        # A session is on the date it starts.
+        "sessions": {
+            SLEEP: ["2026-01-01", "2026-01-02"],
+            WORKOUT: ["2026-01-03"],
+        },
+    }
+
+
+def test_coverage_of_metrics_is_the_derived_days(client, conn):
+    # Written but not derived: not a covered day yet.
+    insert(conn, "2026-01-01", "garmin", steps=9000)
+
+    assert coverage(client)["metrics"] == {}
+
+
+def test_coverage_buckets_a_timestamp_by_its_utc_date(client, conn):
+    # A real stored ts, from iso_utc(): 23:30 at UTC-5 is the next UTC day.
+    late = iso_utc(datetime(2026, 1, 1, 23, 30, tzinfo=timezone(timedelta(hours=-5))))
+    sample(conn, "garmin", late, 60)
+    session(conn, "garmin", SLEEP, late, None, {})
+
+    covered = coverage(client)
+    assert covered["series"] == {HEART_RATE: ["2026-01-02"]}
+    assert covered["sessions"] == {SLEEP: ["2026-01-02"]}
+
+
+@pytest.mark.parametrize(
+    "query, dates",
+    [
+        ("?from=2026-01-02&to=2026-01-03", ["2026-01-02", "2026-01-03"]),
+        ("?from=2026-01-03", ["2026-01-03", "2026-01-04"]),
+        ("?to=2026-01-01", ["2026-01-01"]),
+        ("?from=2026-01-02&to=2026-01-02", ["2026-01-02"]),
+        # Empty is the same as not given.
+        ("?from=&to=", ["2026-01-01", "2026-01-02", "2026-01-03", "2026-01-04"]),
+    ],
+)
+def test_coverage_from_and_to_are_inclusive(client, conn, query, dates):
+    for day in range(1, 5):
+        insert(conn, f"2026-01-0{day}", "garmin", steps=day)
+        # At each edge of the day, so the whole of the `to` day is in and
+        # nothing from the day either side.
+        sample(conn, "garmin", f"2026-01-0{day}T00:00:00Z", 60)
+        sample(conn, "garmin", f"2026-01-0{day}T23:59:59Z", 60)
+        session(conn, "garmin", SLEEP, f"2026-01-0{day}T23:59:59Z", None, {})
+    recompute_derived(conn)
+
+    assert coverage(client, query) == {
+        "metrics": {STEPS: dates},
+        "series": {HEART_RATE: dates},
+        "sessions": {SLEEP: dates},
+    }
+
+
+def test_coverage_leaves_out_a_key_with_nothing_in_range(client, conn):
+    insert(conn, "2026-01-01", "garmin", steps=9000)
+    insert(conn, "2026-01-05", "garmin", resting_hr_bpm=52)
+    recompute_derived(conn)
+
+    assert coverage(client, "?from=2026-01-03")["metrics"] == {RESTING_HR_BPM: ["2026-01-05"]}
 
 
 # ---------- a metric's series ----------
@@ -521,7 +779,13 @@ def test_samples_of_an_unknown_series_metric_is_404(client, metric):
 
 
 @pytest.mark.parametrize(
-    "path", [f"/api/metric/{STEPS}", f"/api/sessions/{SLEEP}", f"/api/series/{HEART_RATE}"]
+    "path",
+    [
+        f"/api/metric/{STEPS}",
+        f"/api/sessions/{SLEEP}",
+        f"/api/series/{HEART_RATE}",
+        "/api/coverage",
+    ],
 )
 @pytest.mark.parametrize(
     "query, named",
@@ -541,7 +805,13 @@ def test_a_malformed_date_is_400(client, path, query, named):
 
 
 @pytest.mark.parametrize(
-    "path", [f"/api/metric/{STEPS}", f"/api/sessions/{SLEEP}", f"/api/series/{HEART_RATE}"]
+    "path",
+    [
+        f"/api/metric/{STEPS}",
+        f"/api/sessions/{SLEEP}",
+        f"/api/series/{HEART_RATE}",
+        "/api/coverage",
+    ],
 )
 def test_from_after_to_is_400(client, path):
     assert_rejected(client.get(path + "?from=2026-01-02&to=2026-01-01"), 400)
