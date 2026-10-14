@@ -217,6 +217,18 @@ def test_the_secret_and_refresh_token_are_only_ciphertext_on_disk(client, db_pat
     assert "refresh-abc" not in body
 
 
+def test_the_settings_detail_holds_no_secret_or_token(client, token_endpoint):
+    start(client)
+    finish(client, "4/code-from-google")
+
+    resp = client.get("/api/connectors/google_health/detail")
+    assert resp.status_code == 200
+    assert resp.get_json()["connected_via"] == "oauth"
+    body = resp.get_data(as_text=True)
+    for secret in ("shh-secret", "refresh-abc", "access-xyz"):
+        assert secret not in body
+
+
 @pytest.mark.parametrize("pasted", [
     "http://127.0.0.1:9109/?code=4/pasted-url&scope=https://www.googleapis.com/auth/x",
     "127.0.0.1:9109/?code=4/pasted-url&scope=x",

@@ -12,8 +12,9 @@ result rather than choosing again.
 When it runs: after each sync, over the window that sync wrote
 (recompute_derived(conn, since=...)), after each webhook reading or
 manual weigh-in, over that reading's day (since=until=its date), after
-manual weigh-ins are cleared, over each cleared day, and once on first
-boot to fill a database whose readings predate derived_metrics
+manual weigh-ins are cleared, over each cleared day, after a source is
+removed with its data wiped, over the span its readings covered, and once
+on first boot to fill a database whose readings predate derived_metrics
 (backfill_derived()).
 Never as a blanket re-derive of all history on startup: the policy is
 configurable, and changing it is forward-only, so values already derived

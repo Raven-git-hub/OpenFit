@@ -71,7 +71,18 @@ own calls to its device API. Full direction:
   of a hardcoded default. ＋ Add, and Add source once every connector is
   connected, each open one shared coming-soon placeholder modal
   (`comingSoon(title)`); while a connector is still unconnected, Add source
-  opens its real add flow. "Your data" groups its reporting rows by `cadence`
+  opens its real add flow. Each connected source's row has **Sync now** and a
+  gear **Settings** button (there is no bare Remove): Settings opens a
+  per-source `.modal` that reads `GET /api/connectors/<id>/detail` into an
+  info list — Login (`—` if null), Connected via (Password / OAuth), Last
+  sync (the stored UTC stamp as a local date + time; null → Never), Added (a
+  date) — with **Remove source** at its foot. Remove is a two-step gate in
+  the same modal, no `confirm()`: "Disconnecting stops future syncs." over a
+  danger panel "Wipe data?" ([Keep data] / [Wipe data]), then "Are you
+  sure?" naming the source and whether its data goes ([Cancel] / [Remove] or
+  [Remove & wipe]); confirming `DELETE`s `/api/connectors/<id>` (`?wipe=1` on
+  the wipe path), then refreshes the sources card and `loadData()`.
+  "Your data" groups its reporting rows by `cadence`
   — Daily, Manual, Session, Reading, a `.dgroup` header per non-empty group —
   above the one ungrouped "Not yet reporting" group. A round voice button
   after the "Connected sources" and "Your data" titles plays that card's clip
@@ -87,6 +98,7 @@ own calls to its device API. Full direction:
   `/api/catalog?include_empty=1`, `/api/coverage` and `/api/source-roles`
   (dragging a daily metric's sources `PUT`s `/api/source-roles/<metric>`), plus
   the connector endpoints (`/api/connectors`, the OAuth add flow,
+  `/api/connectors/<id>/detail`, `DELETE /api/connectors/<id>`,
   `/api/sync/<plugin>`); not `/api/activity` (the last-sync stamp that read it
   is gone). See `docs/architecture/frontend-redesign-and-widget-model.md`.
 - `tests/` — pytest, temp DB, no network.
@@ -199,7 +211,9 @@ own calls to its device API. Full direction:
   Refreshed after every sync for that sync's window (`today - (days-1)` on),
   after every webhook reading and manual `POST /api/weights` for its one day
   (`since=until=date`), after `DELETE /api/weights` for each day it cleared
-  (one day at a time), and backfilled once by `serve()` only while the table
+  (one day at a time), after `DELETE /api/connectors/<plugin>?wipe=1` over
+  the span its deleted readings covered (min..max date, one call, so the
+  whole removal is one transaction), and backfilled once by `serve()` only while the table
   is empty — never a blanket re-derive (a policy change is forward-only). The
   access contract and the default `/api/activity` read it; `?by_source=1`
   still reads `metrics`.
@@ -274,7 +288,31 @@ own calls to its device API. Full direction:
   - `from`/`to`: optional, inclusive `YYYY-MM-DD` (empty = omitted); malformed,
     or `from` after `to` → 400. Errors are `{"ok": false, "error"}`.
   These shapes are the stable contract: change them additively only.
-- Also: `workouts` (orphaned — slated for removal); `settings`; `accounts`;
+- Connectors (no migration): `accounts(plugin_id, credentials, created_at)`,
+  one row per connected plugin, `credentials` a Fernet-encrypted JSON blob
+  (the manifest fields, plus an oauth connector's refresh token). `GET
+  /api/connectors` lists every plugin with its manifest and `connected`/
+  `configured`. `GET /api/connectors/<plugin>/detail` → `{connected_via,
+  login, added, last_sync}` for the source's Settings popup:
+  `connected_via` is the plugin's `add_flow`; `login` its non-secret account
+  identifier (`_login()` in `app/main.py`), read only from the manifest
+  fields whose `type` isn't `"password"` (Garmin's `email`; Google Health's
+  `client_id`), several joined with `, `, null if none — never a password,
+  and never a key outside the manifest (an oauth refresh/access token);
+  `added` is `accounts.created_at`; `last_sync` the MAX `synced_at` over the
+  source's `metrics`, `samples` and `sessions` rows, as stored (UTC
+  `YYYY-MM-DD HH:MM:SS`), null before a first sync. Not connected → `login`/
+  `added`/`last_sync` all null; unknown plugin → 404. `DELETE
+  /api/connectors/<plugin>` removes the account and the plugin's cached auth
+  (`clear_cached_auth()`) and keeps its data. With `?wipe=1` (also
+  `true`/`yes`; anything else keeps) it also deletes every `metrics`
+  (`RETURNING date`), `samples` and `sessions` row with `source = <plugin>`
+  and `recompute_derived()`s the min..max of those dates — a day only that
+  source filled loses its derived row, a day another source filled falls to
+  it — in one transaction with the account delete (a failure rolls it all
+  back). Every metric on every day in that span is re-picked under the
+  current source roles. Unknown plugin → 404.
+- Also: `workouts` (orphaned — slated for removal); `settings`;
   `schema_migrations`.
 - Target (in progress — see Direction): the other source roles (sources that
   verify the primary) and full history retained.
@@ -283,7 +321,9 @@ own calls to its device API. Full direction:
 - No multi-tenancy in core. No `user_id`, no auth on core (the webhook's URL
   token is the one exception). Multi-user is a future per-container Host layer.
 - Privacy-first: no telemetry, no external calls except a plugin's own device API.
-  Credentials encrypted at rest, never returned over the API.
+  Credentials encrypted at rest; their secrets (passwords, tokens) never
+  returned over the API — `/api/connectors/<id>/detail`'s non-password
+  `login` is the one field read back.
 - Ships no tracking apps. `app/templates/index.html` is the data console — what
   the dataset holds, its continuity, and which source wins each metric (see
   Layout) — not a tracker; don't build tracker features into core.
