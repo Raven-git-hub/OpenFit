@@ -35,10 +35,12 @@ continuous it is, and which source wins each metric — not the product.
 ## What's here today
 
 - A versioned SQLite data store with a hand-rolled migration runner.
-- **Garmin Connect** plugin — steps, resting HR, daily distance, active and
-  total calories, floors climbed, moderate and vigorous intensity minutes, daily
-  SpO2, respiration rate and HRV (on devices that measure them), VO2 max,
-  hydration, body fat, BMI and weight (from a compatible scale), sleep (a
+- **Garmin Connect** plugin — steps, resting HR, daily distance, active, total
+  and basal calories, floors climbed, elevation gain, moderate and vigorous
+  intensity minutes, sedentary minutes, daily SpO2, respiration rate and HRV
+  (on devices that measure them), VO2 max, hydration, weight, body fat, BMI,
+  muscle and bone mass, body water and visceral fat (from a compatible
+  scale), sleep (a
   per-night session with stages), workouts (a session per
   activity), and intraday series: heart rate and respiration rate (a sample
   every couple of minutes) and SpO2 (hourly averages).

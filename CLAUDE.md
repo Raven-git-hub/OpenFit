@@ -164,15 +164,27 @@ own calls to its device API. Full direction:
   `muscle_mass_kg`/kg, `bone_mass_kg`/kg, `body_water_pct`/%,
   `visceral_fat`/rating. Fitness: `vo2_max`/ml/kg/min. Nutrition &
   hydration: `hydration_ml`/ml, `calories_in`/kcal, `carbs_g`, `protein_g`,
-  `fat_g` (g). Other: the instant `mood`/scale (1–5). No source fills the
-  new v2 keys yet (Garmin's come in PR 2, Google Health's in PR 3); an
+  `fat_g` (g). Other: the instant `mood`/scale (1–5). Garmin fills its v2
+  keys (below: basal, sedentary, elevation, and the body-composition
+  masses, water and visceral fat); Google Health's come in PR 3; the rest
+  (`active_minutes`, blood pressure/glucose, body/skin temperature,
+  `height_cm`, nutrition, `mood`) wait for a source — Garmin must not write
+  `active_minutes`: it files the moderate/vigorous split, and a
+  single-number active-minutes figure is another vendor's measurement. An
   instant reading is still one per `(date, source)` here. There is no daily
-  sleep metric (see `sessions`). Garmin files its six activity metrics from the same
+  sleep metric (see `sessions`). Garmin files nine activity metrics from the same
   `get_stats` response as steps and resting HR, through its `STATS_METRICS`
-  field map (`app/plugins/garmin/plugin.py`; each rounded to a whole number):
-  a field absent or not a finite number writes nothing (an absent one is
-  logged with the response's keys — the floors/intensity field names are
-  unverified guesses), and a day holding only these still lands. The three
+  field map (`app/plugins/garmin/plugin.py`; each rounded to a whole
+  number): `totalDistanceMeters` → `distance_m`, `activeKilocalories` →
+  `active_kcal`, `totalKilocalories` → `total_kcal`, `floorsAscended` →
+  `floors`, `moderateIntensityMinutes`/`vigorousIntensityMinutes` →
+  `intensity_moderate_min`/`_vigorous_min`, `bmrKilocalories` →
+  `basal_kcal`, `sedentarySeconds` → `sedentary_min` (`/ 60` first) and
+  `floorsAscendedInMeters` → `elevation_gain_m`. A field absent or not a
+  finite number writes nothing (an absent one is logged with the response's
+  keys — the floors, intensity, basal, sedentary and elevation field names
+  are unverified guesses, and `floorsAscendedInMeters` may not be in the
+  daily summary at all), and a day holding only these still lands. The three
   vitals are a request a day each, through the plugin's `GARMIN_VITALS` table
   (each entry's `daily` path and metric): `get_spo2_data` → `averageSpO2`,
   `get_respiration_data` → `avgWakingRespirationValue`, `get_hrv_data` → the
@@ -189,18 +201,24 @@ own calls to its device API. Full direction:
   as `vo2_max` (the most recent estimate whatever day is asked, so each day of
   the window gets the current value) and `get_hydration_data` → `valueInML` as
   `hydration_ml`, both stored as reported. Body composition is its own
-  request a day, `get_body_composition(day, day)` (a range call with three
+  request a day, `get_body_composition(day, day)` (a range call with several
   outputs, so not a `GARMIN_VITALS` entry), read by
-  `_body_composition_metrics()` from `totalAverage`: `bodyFat` →
-  `body_fat_pct` and `bmi` → `bmi` as reported, and `weight` → `weight_kg`
-  converted from grams (`/ 1000`) — Garmin's `weight_kg` sits beside the
-  `manual` one and outranks it in the default precedence. That unit is
-  unverified (every field was null on the account probed), so the converted
-  weight is written only within `weight_kg`'s `PLAUSIBLE_RANGES`; outside it
-  nothing is written and the raw grams and converted kg are logged. As with
-  the vitals, a missing/null/non-number field writes nothing and isn't
-  logged, a failed fetch costs only its own metrics, and a day holding only
-  these still lands.
+  `_body_composition_metrics()` from `totalAverage`. As reported
+  (`BODY_COMPOSITION_FIELDS`): `bodyFat` → `body_fat_pct`, `bmi` → `bmi`,
+  `bodyWater` → `body_water_pct` and `visceralFat` → `visceral_fat`.
+  Converted from grams (`/ 1000`, `BODY_COMPOSITION_GRAMS`): `weight` →
+  `weight_kg`, `muscleMass` → `muscle_mass_kg` and `boneMass` →
+  `bone_mass_kg` — Garmin's `weight_kg` sits beside the `manual` one and
+  outranks it in the default precedence. That unit (and the
+  `muscleMass`/`boneMass` names) is unverified (every field was null on the
+  account probed — one without a compatible smart scale, which is correct
+  behaviour, not a failure), so each converted mass is written only within
+  its metric's `PLAUSIBLE_RANGES`; outside it nothing is written and the
+  field, raw grams and converted kg are logged. `physiqueRating` and
+  `metabolicAge`, beside them, are vendor-proprietary composites and never
+  read (schema v2, law 5). As with the vitals, a missing/null/non-number
+  field writes nothing and isn't logged, a failed fetch costs only its own
+  metrics, and a day holding only these still lands.
   Migration `005` unpivoted the old wide `activity` table into it and dropped
   `activity`; migration `006` moved the old `weights` table in as `weight_kg`
   readings under source `manual` (hand entry; `synced_at` NULL for migrated
@@ -453,9 +471,11 @@ same PR:
   `CATEGORIES`, `grain_for()`/`category_for()`), the catalog's `category`
   and `grain_for()` grain, priority-ordered `/api/sessions`, `sleep_minutes`
   retired (migration `010`; the Garmin and Google Health daily sleep writes
-  removed; `/api/activity` without `sleep_hours`). Still to come: PR 2 —
-  Garmin fills its new keys (basal, sedentary, elevation, body composition);
-  PR 3 — Google Health enrichment (incl. its baseline-relative skin
+  removed; `/api/activity` without `sleep_hours`). PR 2 landed: Garmin fills
+  its new keys — basal, sedentary and elevation from `get_stats`, muscle and
+  bone mass, body water and visceral fat from `get_body_composition` (field
+  names/units unverified, logged on absence or out of range; no migration).
+  Still to come: PR 3 — Google Health enrichment (incl. its baseline-relative skin
   temperature); PR 4 — the console regroups by category/grain and the
   `cadence_for()`/`MANUAL_METRICS` shim is deleted. Deferred until a plugin
   targets them: `hr_zone_minutes`, Women's-health keys, `ecg`, `symptoms`.

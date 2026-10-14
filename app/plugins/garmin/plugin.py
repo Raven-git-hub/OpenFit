@@ -7,14 +7,16 @@ reuse it instead of logging in with the password again. If your account has
 MFA enabled, run first_login.py once (see repo README) before starting the
 scheduled sync.
 
-Fetched per day: get_stats (steps, resting HR, distance, calories,
-floors and intensity minutes), get_sleep_data (the night as a sleep
+Fetched per day: get_stats (steps, resting HR, distance, calories -
+active, total and basal - floors, elevation gain, intensity and
+sedentary minutes), get_sleep_data (the night as a sleep
 session - there is no daily sleep metric), get_spo2_data,
 get_respiration_data and get_hrv_data (the day's SpO2, respiration rate
 and HRV, and from the same SpO2 and respiration responses their
 intraday series, as samples), get_training_status and
-get_hydration_data (VO2 max and hydration), get_body_composition (body
-fat, BMI and weight) and get_heart_rates (the intraday heart-rate
+get_hydration_data (VO2 max and hydration), get_body_composition
+(weight, body fat, BMI, muscle and bone mass, body water and visceral
+fat, from a compatible scale) and get_heart_rates (the intraday heart-rate
 series, as samples). Fetched once over the whole range:
 get_activities_by_date, each activity a workout session.
 """
@@ -28,24 +30,31 @@ from garminconnect import Garmin, GarminConnectAuthenticationError
 
 from metrics import (
     ACTIVE_KCAL,
+    BASAL_KCAL,
     BMI,
     BODY_FAT_PCT,
+    BODY_WATER_PCT,
+    BONE_MASS_KG,
     DISTANCE_M,
+    ELEVATION_GAIN_M,
     FLOORS,
     HEART_RATE,
     HRV_MS,
     HYDRATION_ML,
     INTENSITY_MODERATE_MIN,
     INTENSITY_VIGOROUS_MIN,
+    MUSCLE_MASS_KG,
     PLAUSIBLE_RANGES,
     RESPIRATION,
     RESPIRATORY_RATE_BRPM,
     RESTING_HR_BPM,
+    SEDENTARY_MIN,
     SLEEP,
     SPO2,
     SPO2_PCT,
     STEPS,
     TOTAL_KCAL,
+    VISCERAL_FAT,
     VO2_MAX,
     WEIGHT_KG,
     WORKOUT,
@@ -54,10 +63,18 @@ from metrics import (
 from ..base import SyncPlugin, iso_utc, write_metric, write_sample, write_session
 
 # Daily metrics from the get_stats response, beside the existing steps/
-# resting HR. Each is already in its canonical unit and is rounded to a
-# whole number (floorsAscended can come fractional). A field the response
-# doesn't carry, or that isn't a number, writes nothing - so a field name
-# that turns out wrong costs that one metric and nothing else.
+# resting HR: field -> (metric, conversion to its canonical unit). Each
+# is rounded to a whole number (floorsAscended can come fractional);
+# sedentarySeconds is turned into minutes first, the rest are in their
+# canonical unit already. A field the response doesn't carry, or that
+# isn't a number, writes nothing - so a field name that turns out wrong
+# costs that one metric and nothing else, and _stats_metrics logs it.
+#
+# The floors, intensity, basal, sedentary and elevation field names are
+# unverified guesses; floorsAscendedInMeters may not be in the daily
+# summary at all. There is no active_minutes here, deliberately: Garmin
+# reports the moderate/vigorous split, and a single-number "active
+# minutes" is another vendor's measurement (schema v2, law 3).
 STATS_METRICS = {
     "totalDistanceMeters": (DISTANCE_M, round),
     "activeKilocalories": (ACTIVE_KCAL, round),
@@ -65,6 +82,9 @@ STATS_METRICS = {
     "floorsAscended": (FLOORS, round),
     "moderateIntensityMinutes": (INTENSITY_MODERATE_MIN, round),
     "vigorousIntensityMinutes": (INTENSITY_VIGOROUS_MIN, round),
+    "bmrKilocalories": (BASAL_KCAL, round),
+    "sedentarySeconds": (SEDENTARY_MIN, lambda seconds: round(seconds / 60)),
+    "floorsAscendedInMeters": (ELEVATION_GAIN_M, round),
 }
 
 # Vitals, a request a day each, and each response read for both grains:
@@ -121,11 +141,28 @@ GARMIN_VITALS = [
 ]
 
 # Body composition from get_body_composition's totalAverage -> the metric
-# each files as. bodyFat and bmi are in their canonical units already and
-# stored as reported; weight is converted (see _body_composition_metrics).
+# each files as. These are in their canonical units already - bodyFat and
+# bodyWater percentages, bmi, and visceralFat a unitless rating - and are
+# stored as reported.
 BODY_COMPOSITION_FIELDS = {
     "bodyFat": BODY_FAT_PCT,
     "bmi": BMI,
+    "bodyWater": BODY_WATER_PCT,
+    "visceralFat": VISCERAL_FAT,
+}
+
+# The masses in totalAverage -> the metric each files as. Garmin reports
+# these in grams, so each is converted to kg and range-guarded (see
+# _body_composition_metrics). The muscleMass and boneMass names and units
+# are unverified, like weight's.
+#
+# physiqueRating and metabolicAge sit beside these in totalAverage and are
+# deliberately not read: they're vendor-proprietary composites, which
+# schema v2 excludes (law 5).
+BODY_COMPOSITION_GRAMS = {
+    "weight": WEIGHT_KG,
+    "muscleMass": MUSCLE_MASS_KG,
+    "boneMass": BONE_MASS_KG,
 }
 
 # dailySleepDTO stage fields (seconds) -> the sleep session summary keys
@@ -267,8 +304,8 @@ class GarminPlugin(SyncPlugin):
                     print(f"[garmin] {vital['label']} fetch failed for {d_str}: {e}")
 
             # Body composition is a range call (the day as start and end)
-            # with three readings in it, so it has its own request rather
-            # than a GARMIN_VITALS entry. A failed fetch costs those three.
+            # with several readings in it, so it has its own request rather
+            # than a GARMIN_VITALS entry. A failed fetch costs those readings.
             body_metrics = {}
             try:
                 body_metrics = _body_composition_metrics(
@@ -372,16 +409,18 @@ def _body_composition_metrics(payload, d_str):
     """The readings in a get_body_composition response's totalAverage, as
     {metric: value}.
 
-    bodyFat -> body_fat_pct and bmi -> bmi, stored as reported; weight ->
-    weight_kg, converted from grams (Garmin reports body-composition
-    weight in grams). That unit can't be checked until a compatible scale
-    reports, so the converted weight is written only if it's within
-    weight_kg's plausible range; a finite weight that converts outside it
-    writes nothing and logs the raw and converted values, so the unit can
-    be confirmed from the logs. Like _daily_vital: a payload or
-    totalAverage that's missing, null or not a dict, or a field that isn't
-    a finite number, is left out without a log line - a day with no
-    weigh-in comes back like that. Never raises.
+    BODY_COMPOSITION_FIELDS (bodyFat, bmi, bodyWater, visceralFat) are
+    stored as reported. BODY_COMPOSITION_GRAMS (weight, muscleMass,
+    boneMass) are converted from grams to kg (Garmin reports
+    body-composition masses in grams). That unit can't be checked until a
+    compatible scale reports, so each converted mass is written only if
+    it's within its metric's plausible range; a finite mass that converts
+    outside it writes nothing and logs the raw and converted values, so
+    the unit can be confirmed from the logs. Like _daily_vital: a payload
+    or totalAverage that's missing, null or not a dict, or a field that
+    isn't a finite number, is left out without a log line - a day with no
+    weigh-in, or an account with no compatible scale, comes back like
+    that. Never raises.
     """
     try:
         average = payload.get("totalAverage") if isinstance(payload, dict) else None
@@ -392,15 +431,17 @@ def _body_composition_metrics(payload, d_str):
             value = average.get(field)
             if _is_number(value):
                 out[metric] = value
-        grams = average.get("weight")
-        if _is_number(grams):
+        for field, metric in BODY_COMPOSITION_GRAMS.items():
+            grams = average.get(field)
+            if not _is_number(grams):
+                continue
             kg = grams / 1000.0
-            low, high = PLAUSIBLE_RANGES[WEIGHT_KG]
+            low, high = PLAUSIBLE_RANGES[metric]
             if low <= kg <= high:
-                out[WEIGHT_KG] = kg
+                out[metric] = kg
             else:
                 print(
-                    f"[garmin] body-composition weight {grams}g -> {kg}kg out of "
+                    f"[garmin] body-composition {field} {grams}g -> {kg}kg out of "
                     f"plausible range, not written ({d_str})"
                 )
         return out

@@ -6,18 +6,21 @@ VO2 max and hydration are single-value daily fetches, so they ride the
 GARMIN_VITALS loop: get_training_status -> the nested
 mostRecentVO2Max.generic.vo2MaxValue as vo2_max, and get_hydration_data
 -> valueInML as hydration_ml, each stored as reported. Body composition
-is a range call (the day as both start and end) with three readings in
-it, so it has its own fetch: get_body_composition's totalAverage ->
-bodyFat as body_fat_pct and bmi as bmi, as reported, and weight as
-weight_kg, converted from the grams Garmin reports it in.
+is a range call (the day as both start and end) with several readings
+in it, so it has its own fetch: get_body_composition's totalAverage ->
+bodyFat as body_fat_pct, bmi as bmi, bodyWater as body_water_pct and
+visceralFat as visceral_fat, as reported, and weight, muscleMass and
+boneMass as weight_kg, muscle_mass_kg and bone_mass_kg, converted from
+the grams Garmin reports them in. physiqueRating and metabolicAge beside
+them are vendor-proprietary composites, never written (schema v2, law 5).
 
 That unit is the one thing here that couldn't be checked against a real
-account (every field probed was null), so the converted weight is only
-written within weight_kg's plausible range; outside it, nothing is
-written and the raw and converted values are logged. As with the vitals,
-an empty or null answer is a day with nothing to report - written as
-nothing, logged as nothing - and a failed fetch costs only its own
-metrics.
+account (every field probed was null - an account without a compatible
+smart scale), so each converted mass is only written within its metric's
+plausible range; outside it, nothing is written and the raw and
+converted values are logged. As with the vitals, an empty or null answer
+is a day with nothing to report - written as nothing, logged as nothing
+- and a failed fetch costs only its own metrics.
 
 No network: the Garmin client is a fake handed to sync(), as in
 test_garmin_daily_vitals.py.
@@ -28,7 +31,17 @@ from datetime import date
 import pytest
 
 from derived import recompute_derived
-from metrics import BMI, BODY_FAT_PCT, HYDRATION_ML, VO2_MAX, WEIGHT_KG
+from metrics import (
+    BMI,
+    BODY_FAT_PCT,
+    BODY_WATER_PCT,
+    BONE_MASS_KG,
+    HYDRATION_ML,
+    MUSCLE_MASS_KG,
+    VISCERAL_FAT,
+    VO2_MAX,
+    WEIGHT_KG,
+)
 
 DAY = "2026-01-02"
 
@@ -68,20 +81,62 @@ GARMIN_HYDRATION = {
 }
 
 # get_body_composition(day, day), trimmed. totalAverage holds the day's
-# figures - weight in grams - beside the readings nothing here files.
+# figures - the masses in grams - beside the two composites nothing here
+# files, and the window's from/until (epoch ms).
 GARMIN_BODY_COMPOSITION = {
     "startDate": DAY,
     "endDate": DAY,
     "dateWeightList": [],
     "totalAverage": {
+        "from": 1767312000000,
+        "until": 1767398399999,
         "weight": 75000.0,
         "bmi": 24.1,
         "bodyFat": 22.4,
         "bodyWater": 55.1,
         "boneMass": 3100,
         "muscleMass": 33000,
-        "visceralFat": None,
+        "physiqueRating": 5,
+        "visceralFat": 9,
+        "metabolicAge": 41,
     },
+}
+
+# get_body_composition(day, day) on an account without a compatible smart
+# scale: the same shape, every reading null.
+GARMIN_NO_SCALE = {
+    "startDate": DAY,
+    "endDate": DAY,
+    "dateWeightList": [],
+    "totalAverage": {
+        "from": 1767312000000,
+        "until": 1767398399999,
+        "weight": None,
+        "bmi": None,
+        "bodyFat": None,
+        "bodyWater": None,
+        "boneMass": None,
+        "muscleMass": None,
+        "physiqueRating": None,
+        "visceralFat": None,
+        "metabolicAge": None,
+    },
+}
+
+# Each totalAverage field read and the metric it files as.
+BODY_FIELDS = {
+    "weight": WEIGHT_KG,
+    "bmi": BMI,
+    "bodyFat": BODY_FAT_PCT,
+    "bodyWater": BODY_WATER_PCT,
+    "boneMass": BONE_MASS_KG,
+    "muscleMass": MUSCLE_MASS_KG,
+    "visceralFat": VISCERAL_FAT,
+}
+
+# The schema v2 additions among them.
+V2_BODY_FIELDS = {
+    field: BODY_FIELDS[field] for field in ("bodyWater", "boneMass", "muscleMass", "visceralFat")
 }
 
 ALL_PAYLOADS = {
@@ -91,7 +146,15 @@ ALL_PAYLOADS = {
 }
 
 # What ALL_PAYLOADS files: (metric, value, unit), by metric.
-BODY_READINGS = [("bmi", 24.1, "kg/m2"), ("body_fat_pct", 22.4, "%"), ("weight_kg", 75.0, "kg")]
+BODY_READINGS = [
+    ("bmi", 24.1, "kg/m2"),
+    ("body_fat_pct", 22.4, "%"),
+    ("body_water_pct", 55.1, "%"),
+    ("bone_mass_kg", 3.1, "kg"),
+    ("muscle_mass_kg", 33.0, "kg"),
+    ("visceral_fat", 9, "rating"),
+    ("weight_kg", 75.0, "kg"),
+]
 VO2_READING = ("vo2_max", 48.0, "ml/kg/min")
 HYDRATION_READING = ("hydration_ml", 1750.0, "ml")
 ALL_READINGS = sorted(BODY_READINGS + [VO2_READING, HYDRATION_READING])
@@ -100,7 +163,7 @@ ALL_READINGS = sorted(BODY_READINGS + [VO2_READING, HYDRATION_READING])
 FETCH_METRICS = {
     "training_status": [VO2_MAX],
     "hydration": [HYDRATION_ML],
-    "body_composition": [BODY_FAT_PCT, BMI, WEIGHT_KG],
+    "body_composition": list(BODY_FIELDS.values()),
 }
 FAILED_FETCH_LOG = {
     "training_status": f"VO2 max fetch failed for {DAY}",
@@ -238,11 +301,22 @@ def test_hydration_is_read_from_value_in_ml(conn, garmin):
     assert readings(conn) == [HYDRATION_READING]
 
 
-def test_body_composition_files_body_fat_bmi_and_weight_in_kg(conn, garmin):
-    """weight 75000 (grams) -> 75.0 kg; bodyFat and bmi as reported."""
+def test_body_composition_files_each_reading_with_the_masses_in_kg(conn, garmin):
+    """weight 75000, muscleMass 33000 and boneMass 3100 (grams) -> 75.0,
+    33.0 and 3.1 kg; bodyFat, bmi, bodyWater and visceralFat as reported."""
     garmin(conn, {"body_composition": GARMIN_BODY_COMPOSITION})
 
     assert readings(conn) == BODY_READINGS
+
+
+def test_physique_rating_and_metabolic_age_are_never_written(conn, garmin):
+    """Vendor-proprietary composites (schema v2, law 5): not even a day
+    holding nothing else lands."""
+    only = {"totalAverage": {"physiqueRating": 5, "metabolicAge": 41}}
+
+    assert garmin(conn, {"body_composition": only}) == 0
+
+    assert readings(conn) == []
 
 
 def test_body_composition_is_asked_for_the_day_as_start_and_end(conn, garmin):
@@ -251,30 +325,51 @@ def test_body_composition_is_asked_for_the_day_as_start_and_end(conn, garmin):
     assert garmin.client.body_calls == [(DAY, DAY), ("2026-01-01", "2026-01-01")]
 
 
-@pytest.mark.parametrize("grams, kg", [(75, 0.075), (750_000_000, 750_000.0)])
-def test_a_weight_out_of_range_once_converted_is_logged_and_not_written(
-    conn, garmin, capsys, grams, kg
+@pytest.mark.parametrize(
+    "field, grams, kg",
+    [
+        ("weight", 75, 0.075),
+        ("weight", 750_000_000, 750_000.0),
+        ("muscleMass", 33, 0.033),
+        ("muscleMass", 330_000, 330.0),
+        ("boneMass", 3.1, 0.0031),
+        ("boneMass", 31_000, 31.0),
+    ],
+)
+def test_a_mass_out_of_range_once_converted_is_logged_and_not_written(
+    conn, garmin, capsys, field, grams, kg
 ):
-    """The grams guess is guarded: a weight that converts to something no
-    one weighs writes nothing, and the log says what came in and what it
-    became, so the unit can be confirmed. Body fat and BMI still land."""
-    garmin(conn, {"body_composition": with_average(weight=grams)})
+    """The grams guess is guarded: a mass that converts to something no
+    body holds - one already reported in kg, say - writes nothing, and the
+    log says what came in and what it became, so the unit can be
+    confirmed. The other readings still land."""
+    garmin(conn, {"body_composition": with_average(**{field: grams})})
 
-    assert readings(conn) == without(BODY_READINGS, WEIGHT_KG)
+    assert readings(conn) == without(BODY_READINGS, BODY_FIELDS[field])
     assert (
-        f"[garmin] body-composition weight {grams}g -> {kg}kg out of plausible range, "
-        "not written"
+        f"[garmin] body-composition {field} {grams}g -> {kg}kg out of plausible range, "
+        f"not written ({DAY})"
     ) in capsys.readouterr().out
 
 
-@pytest.mark.parametrize("grams, kg", [(20_000, 20.0), (400_000, 400.0)])
-def test_a_weight_at_either_end_of_the_range_is_written(conn, garmin, grams, kg):
-    garmin(conn, {"body_composition": with_average(weight=grams)})
+@pytest.mark.parametrize(
+    "field, grams, kg",
+    [
+        ("weight", 20_000, 20.0),
+        ("weight", 400_000, 400.0),
+        ("muscleMass", 5_000, 5.0),
+        ("muscleMass", 120_000, 120.0),
+        ("boneMass", 500, 0.5),
+        ("boneMass", 10_000, 10.0),
+    ],
+)
+def test_a_mass_at_either_end_of_the_range_is_written(conn, garmin, field, grams, kg):
+    garmin(conn, {"body_composition": with_average(**{field: grams})})
 
-    assert ("weight_kg", kg, "kg") in readings(conn)
+    assert (BODY_FIELDS[field], kg, "kg") in readings(conn)
 
 
-@pytest.mark.parametrize("field, metric", [("bodyFat", BODY_FAT_PCT), ("bmi", BMI), ("weight", WEIGHT_KG)])
+@pytest.mark.parametrize("field, metric", sorted(BODY_FIELDS.items()))
 @pytest.mark.parametrize("value", [None, "22.4", True, float("nan"), float("inf"), [22.4]])
 def test_a_body_composition_field_that_is_not_a_number_is_skipped(
     conn, garmin, capsys, field, metric, value
@@ -295,6 +390,7 @@ def test_a_body_composition_field_that_is_not_a_number_is_skipped(
         {"totalAverage": {"weight": None, "bmi": None, "bodyFat": None}},
         {"totalAverage": [75000]},
         "75000",
+        GARMIN_NO_SCALE,
     ],
 )
 def test_no_weigh_in_writes_nothing_and_logs_nothing(conn, garmin, capsys, payload):
@@ -346,6 +442,17 @@ def test_a_day_whose_only_data_is_one_of_these_still_lands(conn, garmin, name):
     assert sorted(m for m, _, _ in readings(conn)) == sorted(FETCH_METRICS[name])
 
 
+@pytest.mark.parametrize("field", sorted(V2_BODY_FIELDS))
+def test_a_day_whose_only_data_is_one_new_body_reading_still_lands(conn, garmin, field):
+    """Not dropped by the day's skip: a weigh-in that reports only this
+    one reading still files it."""
+    only = {"totalAverage": {field: GARMIN_BODY_COMPOSITION["totalAverage"][field]}}
+
+    assert garmin(conn, {"body_composition": only}) == 1
+
+    assert readings(conn) == [r for r in BODY_READINGS if r[0] == V2_BODY_FIELDS[field]]
+
+
 def test_a_day_whose_fetches_all_fail_is_still_skipped(conn, garmin, capsys):
     error = RuntimeError("503 Service Unavailable")
 
@@ -390,4 +497,9 @@ def test_the_new_metrics_flow_through_derive_and_the_access_contract(client, con
         "metric": "vo2_max",
         "unit": "ml/kg/min",
         "points": [{"date": DAY, "value": 48.0, "source": "garmin"}],
+    }
+    assert client.get("/api/metric/muscle_mass_kg").get_json() == {
+        "metric": "muscle_mass_kg",
+        "unit": "kg",
+        "points": [{"date": DAY, "value": 33.0, "source": "garmin"}],
     }

@@ -16,8 +16,15 @@ v2 lands in four PRs:
    `category`; `/api/sessions/<kind>` lists sessions in source-priority order;
    daily `sleep_minutes` retired (migration `010`) and with it `/api/activity`'s
    sleep field.
-2. **Garmin fills its new keys** — basal calories, sedentary minutes,
-   elevation gain, the body-composition keys. _To come._
+2. **Garmin fills its new keys (built).** From `get_stats`: basal calories
+   (`bmrKilocalories`), sedentary minutes (`sedentarySeconds`) and elevation
+   gain (`floorsAscendedInMeters`); from `get_body_composition`: muscle and
+   bone mass (grams, converted and range-guarded like weight), body water and
+   visceral fat. The field names and the grams unit are unverified guesses —
+   an absent `get_stats` field, or a mass out of range once converted, is
+   logged so the logs say which to correct. Garmin's physique rating and
+   metabolic age are excluded (law 5), and it doesn't write
+   `active_minutes` (see *Intensity*).
 3. **Google Health enrichment.** _To come._
 4. **The console regroups by category and grain**, and the deprecated
    `cadence_for()` / `MANUAL_METRICS` shim is deleted. _To come._ Until then the
