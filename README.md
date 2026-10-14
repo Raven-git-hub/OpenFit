@@ -67,9 +67,11 @@ continuous it is, and which source wins each metric — not the product.
   respiration and SpO2.
 - A built-in **data console**: connected devices (add, sync, and a per-source
   Settings popup showing the account, setting how often it syncs, and removing
-  it, keeping or wiping its data), every metric, series and session kind with its latest reading and
-  cadence, how continuously each is covered (day / week / month, and the last
-  five weeks), and drag-to-reorder source priority per metric.
+  it, keeping or wiping its data), every metric, series and session kind
+  grouped by category with its latest reading and grain (what isn't
+  reporting yet folded away under its category), how continuously each is
+  covered (day / week / month, and the last five weeks), and drag-to-reorder
+  source priority per metric.
 
 ## Webhook input (push)
 
@@ -134,19 +136,17 @@ has data:
 {
   "metrics": [
     {"metric": "steps", "unit": "count", "grain": "daily",
-     "category": "Activity", "cadence": "daily",
-     "sources": ["garmin", "google_health"],
+     "category": "Activity", "sources": ["garmin", "google_health"],
      "first": "2026-10-07", "last": "2026-10-08", "count": 2,
      "last_value": 10450.0, "last_date": "2026-10-08"}
   ],
   "sessions": [
-    {"kind": "sleep", "grain": "session", "category": "Sleep",
-     "cadence": "session", "count": 1,
+    {"kind": "sleep", "grain": "session", "category": "Sleep", "count": 1,
      "first": "2026-10-07T22:41:00Z", "last": "2026-10-07T22:41:00Z"}
   ],
   "series": [
     {"metric": "heart_rate", "unit": "bpm", "grain": "series",
-     "category": "Vitals", "cadence": "reading", "sources": ["garmin"],
+     "category": "Vitals", "sources": ["garmin"],
      "first": "2026-10-07T00:00:00Z", "last": "2026-10-08T23:58:00Z",
      "count": 1440}
   ]
@@ -164,12 +164,10 @@ Every entry is labelled with its `grain` — `daily` (one value per day),
 `instant` (a single timestamped point, like a weigh-in or a blood-pressure
 reading; still one value per day for now), `session` (intervals) or `series`
 (intraday samples) — and its `category`: Activity, Vitals, Body composition,
-Fitness, Sleep, Nutrition & hydration, Women's health or Other. `cadence` is
-the older label — `daily`, `manual` (weight, body fat, BMI, hydration),
-`session` or `reading` — kept for the built-in console and deprecated: build on
-`grain` and `category`. Add
-`?include_empty=1` to list every metric, session kind and series OpenFit knows,
-including those with no data yet — `"count": 0`, `"sources": []` and null
+Fitness, Sleep, Nutrition & hydration, Women's health or Other. (The pre-v2
+`cadence` label is gone: build on `grain` and `category`, as the built-in
+console does.) Add `?include_empty=1` to list every metric, session kind and
+series OpenFit knows, including those with no data yet — `"count": 0`, `"sources": []` and null
 `first`/`last` (and `last_value`/`last_date`) — in the same order, for showing
 what isn't reporting yet.
 

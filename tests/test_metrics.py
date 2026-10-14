@@ -2,8 +2,8 @@
 The canonical vocabulary, schema v2 (app/metrics.py): every metric with
 its unit, category, grain and plausible range; grain_for() and
 category_for() over metrics, series metrics and session kinds alike;
-and sleep_minutes retired - sleep is sessions only. The deprecated
-cadence_for() shim is pinned with the catalog, in test_access_contract.py.
+and sleep_minutes retired - sleep is sessions only. The pre-v2 cadence
+label is gone: the catalog and the console use grain and category.
 """
 
 import pytest

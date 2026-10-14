@@ -1,8 +1,8 @@
 """
 The access contract: the read API apps build on.
 
-GET /api/catalog says what there is (each key labelled with its grain,
-category and cadence), GET /api/coverage which days hold it, GET
+GET /api/catalog says what there is (each key labelled with its grain
+and category), GET /api/coverage which days hold it, GET
 /api/metric/<metric> serves one metric's derived series, GET
 /api/sessions/<kind> one kind's sessions (by source priority) and GET /api/series/<metric>
 one series metric's intraday samples, each with its provenance. Metrics
@@ -19,20 +19,10 @@ import pytest
 
 from derived import SOURCE_ROLES_KEY, recompute_derived, set_source_role
 from metrics import (
-    ACTIVE_KCAL,
     BLOOD_GLUCOSE,
-    BMI,
     BODY_FAT_PCT,
-    DISTANCE_M,
-    FLOORS,
     HEART_RATE,
-    HRV_MS,
-    HYDRATION_ML,
-    INTENSITY_MODERATE_MIN,
-    INTENSITY_VIGOROUS_MIN,
-    MANUAL_METRICS,
     METRICS,
-    MOOD,
     RESPIRATION,
     RESPIRATORY_RATE_BRPM,
     RESTING_HR_BPM,
@@ -42,11 +32,9 @@ from metrics import (
     SPO2,
     SPO2_PCT,
     STEPS,
-    TOTAL_KCAL,
     VO2_MAX,
     WEIGHT_KG,
     WORKOUT,
-    cadence_for,
     category_for,
     grain_for,
 )
@@ -131,7 +119,6 @@ def test_catalog_lists_each_metric_with_data(client, conn):
             "unit": "count",
             "grain": "daily",
             "category": "Activity",
-            "cadence": "daily",
             "sources": ["garmin", "google_health"],
             "first": "2026-01-01",
             "last": "2026-01-03",
@@ -144,7 +131,6 @@ def test_catalog_lists_each_metric_with_data(client, conn):
             "unit": "bpm",
             "grain": "daily",
             "category": "Vitals",
-            "cadence": "daily",
             "sources": ["garmin"],
             "first": "2026-01-01",
             "last": "2026-01-01",
@@ -155,10 +141,8 @@ def test_catalog_lists_each_metric_with_data(client, conn):
         {
             "metric": WEIGHT_KG,
             "unit": "kg",
-            # Instant in v2, while the deprecated cadence keeps its old label.
             "grain": "instant",
             "category": "Body composition",
-            "cadence": "manual",
             "sources": ["manual"],
             "first": "2026-01-02",
             "last": "2026-01-02",
@@ -221,7 +205,6 @@ def test_catalog_lists_each_session_kind_with_data(client, conn):
             "kind": SLEEP,
             "grain": "session",
             "category": "Sleep",
-            "cadence": "session",
             "count": 3,
             "first": "2026-01-01T23:00:00Z",
             "last": "2026-01-03T22:00:00Z",
@@ -251,7 +234,6 @@ def test_catalog_lists_each_series_metric_with_data(client, conn):
             "unit": "bpm",
             "grain": "series",
             "category": "Vitals",
-            "cadence": "reading",
             "sources": ["garmin", "polar"],
             "first": "2026-01-01T23:58:00Z",
             "last": "2026-01-03T07:30:00Z",
@@ -274,7 +256,7 @@ def test_catalog_series_sources_are_in_default_precedence(client, conn):
     assert hr["sources"] == ["garmin", "google_health", "apple"]
 
 
-def test_catalog_labels_every_entry_with_its_grain_category_and_cadence(client, conn):
+def test_catalog_labels_every_entry_with_its_grain_and_category(client, conn):
     insert(conn, "2026-01-01", "garmin", steps=9000, body_fat_pct=18.5, vo2_max=48)
     insert(conn, "2026-01-01", "cgm", blood_glucose=5.4)
     recompute_derived(conn)
@@ -285,19 +267,19 @@ def test_catalog_labels_every_entry_with_its_grain_category_and_cadence(client, 
     catalog = client.get("/api/catalog").get_json()
 
     def labels(entries, name):
-        return [(e[name], e["grain"], e["category"], e["cadence"]) for e in entries]
+        return [(e[name], e["grain"], e["category"]) for e in entries]
 
     assert labels(catalog["metrics"], "metric") == [
-        (STEPS, "daily", "Activity", "daily"),
-        (BLOOD_GLUCOSE, "instant", "Vitals", "daily"),
-        (BODY_FAT_PCT, "instant", "Body composition", "manual"),
-        (VO2_MAX, "daily", "Fitness", "daily"),
+        (STEPS, "daily", "Activity"),
+        (BLOOD_GLUCOSE, "instant", "Vitals"),
+        (BODY_FAT_PCT, "instant", "Body composition"),
+        (VO2_MAX, "daily", "Fitness"),
     ]
     assert labels(catalog["sessions"], "kind") == [
-        (SLEEP, "session", "Sleep", "session"),
-        (WORKOUT, "session", "Activity", "session"),
+        (SLEEP, "session", "Sleep"),
+        (WORKOUT, "session", "Activity"),
     ]
-    assert labels(catalog["series"], "metric") == [(SPO2, "series", "Vitals", "reading")]
+    assert labels(catalog["series"], "metric") == [(SPO2, "series", "Vitals")]
 
 
 def test_catalog_with_include_empty_lists_the_whole_vocabulary(client, conn):
@@ -316,7 +298,6 @@ def test_catalog_with_include_empty_lists_the_whole_vocabulary(client, conn):
     for entry in catalog["metrics"]:
         assert entry["grain"] == grain_for(entry["metric"])
         assert entry["category"] == category_for(entry["metric"])
-        assert entry["cadence"] == cadence_for(entry["metric"])
 
     metrics = {m["metric"]: m for m in catalog["metrics"]}
     # One with data is just as it is without include_empty...
@@ -328,7 +309,6 @@ def test_catalog_with_include_empty_lists_the_whole_vocabulary(client, conn):
         "unit": "count",
         "grain": "daily",
         "category": "Activity",
-        "cadence": "daily",
         "sources": [],
         "first": None,
         "last": None,
@@ -337,9 +317,9 @@ def test_catalog_with_include_empty_lists_the_whole_vocabulary(client, conn):
         "last_date": None,
     }
     assert catalog["sessions"] == [
-        {"kind": SLEEP, "grain": "session", "category": "Sleep", "cadence": "session",
+        {"kind": SLEEP, "grain": "session", "category": "Sleep",
          "count": 0, "first": None, "last": None},
-        {"kind": WORKOUT, "grain": "session", "category": "Activity", "cadence": "session",
+        {"kind": WORKOUT, "grain": "session", "category": "Activity",
          "count": 1, "first": "2026-01-01T07:00:00Z", "last": "2026-01-01T07:00:00Z"},
     ]
     series = {s["metric"]: s for s in catalog["series"]}
@@ -349,7 +329,6 @@ def test_catalog_with_include_empty_lists_the_whole_vocabulary(client, conn):
         "unit": "bpm",
         "grain": "series",
         "category": "Vitals",
-        "cadence": "reading",
         "sources": [],
         "first": None,
         "last": None,
@@ -380,56 +359,6 @@ def test_catalog_without_include_empty_leaves_out_keys_with_no_data(client, conn
     assert [m["metric"] for m in catalog["metrics"]] == [STEPS]
     assert catalog["sessions"] == []
     assert catalog["series"] == []
-
-
-# ---------- cadence (the deprecated shim the console still groups by) ----------
-
-
-@pytest.mark.parametrize(
-    "key, cadence",
-    [
-        # Every pre-v2 key still in the vocabulary, with the label it had
-        # before v2: the console's groups must not move until it switches
-        # to grain and category.
-        (STEPS, "daily"),
-        (RESTING_HR_BPM, "daily"),
-        (DISTANCE_M, "daily"),
-        (ACTIVE_KCAL, "daily"),
-        (TOTAL_KCAL, "daily"),
-        (FLOORS, "daily"),
-        (INTENSITY_MODERATE_MIN, "daily"),
-        (INTENSITY_VIGOROUS_MIN, "daily"),
-        (SPO2_PCT, "daily"),
-        (RESPIRATORY_RATE_BRPM, "daily"),
-        (HRV_MS, "daily"),
-        (VO2_MAX, "daily"),
-        (WEIGHT_KG, "manual"),
-        (BODY_FAT_PCT, "manual"),
-        (BMI, "manual"),
-        (HYDRATION_ML, "manual"),
-        (HEART_RATE, "reading"),
-        (RESPIRATION, "reading"),
-        (SPO2, "reading"),
-        (SLEEP, "session"),
-        (WORKOUT, "session"),
-        # A v2 key is a plain daily one to the shim, whatever its grain.
-        (MOOD, "daily"),
-        (BLOOD_GLUCOSE, "daily"),
-    ],
-)
-def test_cadence_for(key, cadence):
-    assert cadence_for(key) == cadence
-
-
-def test_every_manual_metric_is_a_daily_metric():
-    # The manual label narrows the daily one; it isn't a fourth vocabulary.
-    assert MANUAL_METRICS <= set(METRICS)
-
-
-@pytest.mark.parametrize("key", ["heartrate", "nap", "", "sleep_minutes"])
-def test_cadence_for_an_unknown_key_raises(key):
-    with pytest.raises(ValueError, match="unknown metric"):
-        cadence_for(key)
 
 
 # ---------- coverage ----------

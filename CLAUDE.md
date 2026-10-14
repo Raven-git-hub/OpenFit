@@ -77,14 +77,9 @@ own calls to its device API. Full direction:
   `"series"` (in `SERIES_METRICS`), `"session"` (in `SESSION_KINDS`), else
   the metric's declared `"daily"`/`"instant"`; `category_for(key)` → its
   category (series metrics Vitals, `sleep` Sleep, `workout` Activity); both
-  raise `ValueError` on any other key. Deprecated, kept unchanged only as a
-  shim for the console until PR 4 of the v2 rollout switches it to
-  grain/category and deletes them: `cadence_for(key)` → `"reading"`
-  (series), `"session"`, `"manual"` (in `MANUAL_METRICS` = `weight_kg`,
-  `body_fat_pct`, `bmi`, `hydration_ml`), else `"daily"` (any other metric,
-  an instant one included — so a weigh-in reads grain `instant`, cadence
-  `manual`). There is no `manual` grain: hand entry is a source. Grain,
-  category and cadence are labels: nothing is stored or picked by them.
+  raise `ValueError` on any other key. There is no `manual` grain: hand
+  entry is a source. Grain and category are labels: nothing is stored or
+  picked by them.
 - `app/derived.py` — the one place a source is picked per `(date, metric)`:
   `recompute_derived()` writes `derived_metrics`. Never pick a source anywhere else.
 - `app/crypto.py` — Fernet encrypt/decrypt for stored credentials.
@@ -120,9 +115,20 @@ own calls to its device API. Full direction:
   sure?" naming the source and whether its data goes ([Cancel] / [Remove] or
   [Remove & wipe]); confirming `DELETE`s `/api/connectors/<id>` (`?wipe=1` on
   the wipe path), then refreshes the sources card and `loadData()`.
-  "Your data" groups its reporting rows by `cadence`
-  — Daily, Manual, Session, Reading, a `.dgroup` header per non-empty group —
-  above the one ungrouped "Not yet reporting" group. A row from the
+  "Your data" groups its rows by `category`, the 8 in `CATEGORIES` display
+  order (one outside them would follow, by name; one with no rows at all,
+  Women's health today, gets no header), and within a category sorts them
+  by `grain` — daily, instant, session, series (a stable sort, so ties keep
+  vocabulary order). Each category has a `.dgroup` header with a muted
+  "N reporting · M empty" count, then its reporting rows, then — if it has
+  any `count: 0` rows — a fold: a "M not yet reporting in <category>"
+  button over those rows (still dimmed, still expandable), hidden until
+  opened, so a category with nothing reporting shows its header and the
+  fold alone. A fold's open state (`state.foldOpen`, by category) persists
+  across a refresh, as an open row's does (`state.open`); a fold also
+  renders open while one of its rows is expanded, and closing it closes
+  its rows. The row's third column is its grain (Daily / Instant /
+  Session / Series, `.d-grain`), under a "Grain" caption. A row from the
   catalog's `metrics` list (`row.cov === 'metrics'`) — `daily` or `instant`
   grain — renders as a picked metric (latest value, draggable source
   priority); a session kind's latest session is the one with the latest
@@ -415,9 +421,9 @@ own calls to its device API. Full direction:
     of it, in default precedence (no pick yet). Session `first`/`last` are
     start timestamps, a series' its earliest/latest sample `ts`. Every entry
     also carries `grain` (`grain_for()`: a metric's declared `"daily"` or
-    `"instant"`, `"session"`, `"series"`), `category` (`category_for()`) and
-    `cadence` (`cadence_for()`, the deprecated shim the console still groups
-    by — kept exactly as before until PR 4). `?include_empty=1` (also `true`/`yes`;
+    `"instant"`, `"session"`, `"series"`) and `category` (`category_for()`)
+    — the console groups by them. (The pre-v2 `cadence` label is gone,
+    removed in PR 4 of the v2 rollout.) `?include_empty=1` (also `true`/`yes`;
     default off = the above) lists every vocabulary key in each list, in the
     same order — one with no data as `count: 0`, `sources: []`,
     `first`/`last` null (metrics also `last_value`/`last_date` null) — so a
@@ -547,7 +553,7 @@ same PR:
   sources, verifying
   sources + history, and committing a sync per day (it still holds one write
   transaction for the whole run).
-- **Metric schema v2** (`docs/architecture/metric-schema-v2.md`), four PRs.
+- **Metric schema v2** (`docs/architecture/metric-schema-v2.md`), four PRs, all landed.
   PR 1 landed: the v2 vocabulary (unit/category/grain/range per key,
   `CATEGORIES`, `grain_for()`/`category_for()`), the catalog's `category`
   and `grain_for()` grain, priority-ordered `/api/sessions`, `sleep_minutes`
@@ -562,18 +568,20 @@ same PR:
   over the one sync window (no migration). PR 3b landed: Google's intraday
   series — `heart_rate` via a 60-second windowed rollUp and `spo2` from
   `oxygen-saturation`, as samples at one value a minute (no migration; no
-  respiration series, Google has none). Still to come: Google's body
-  composition, nutrition, skin temperature and basal
-  calories (no rollup — a decision on summing raw points); PR 4 — the
-  console regroups by category/grain and the `cadence_for()`/`MANUAL_METRICS`
-  shim is deleted. Deferred until a plugin
+  respiration series, Google has none). PR 4 landed, completing the v2
+  rollout: the console groups by category with grain as the inner sort,
+  each category's empty rows behind a fold, and the
+  `cadence_for()`/`MANUAL_METRICS` shim is deleted, with the catalog's
+  `cadence` field (no migration). Still to come, beyond the rollout:
+  Google's body composition, nutrition, skin temperature and basal
+  calories (no rollup — a decision on summing raw points). Deferred until a plugin
   targets them: `hr_zone_minutes`, Women's-health keys, `ecg`, `symptoms`.
 - **Webhook / push ingestion:** landed for metrics (see Data model); still to
   come: pushing sessions (sleep, workouts) through it.
 - **The access contract:** landed (see Data model): discovery, range queries
   with provenance, sessions, intraday series (passthrough); for the
   data-collation console, each catalog entry's
-  `grain`/`cadence` (`cadence_for()`, `MANUAL_METRICS`), the catalog's
+  `grain`/`category`, the catalog's
   `?include_empty=1` and per-day presence via `GET /api/coverage` (no
   migration); the console itself is `index.html` (frontend only). Still to come: a
   `?by_source` option for raw per-source reads, a derived pick for sessions

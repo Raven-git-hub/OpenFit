@@ -291,7 +291,7 @@ a.btn{display:inline-block;text-decoration:none;}
 
 /* ---------- the data card ----------
    One row per metric, series and session kind:
-   chevron · name · reading · cadence · (gap) · Day/Wk/Mth rhombuses.
+   chevron · name · reading · grain · (gap) · Day/Wk/Mth rhombuses.
    The caption row uses the same grid, so its captions sit over the
    columns they name. */
 .card.data{padding:20px 10px 10px;}
@@ -313,7 +313,7 @@ a.btn{display:inline-block;text-decoration:none;}
 .ditem.open .chev{transform:rotate(90deg);}
 .d-name{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
 .d-read{font-family:var(--font-mono);font-size:13px;color:var(--ink-2);white-space:nowrap;}
-.d-cad{font-size:12.5px;color:var(--muted);}
+.d-grain{font-size:12.5px;color:var(--muted);}
 .dcap > *{font-size:inherit;color:inherit;}
 /* not yet reporting: dimmed, but still opens */
 .ditem.dim .drow > *{opacity:.55;}
@@ -322,6 +322,16 @@ a.btn{display:inline-block;text-decoration:none;}
   font-size:10.5px;text-transform:uppercase;letter-spacing:.9px;color:var(--muted);font-weight:700;
 }
 .dgroup::after{content:"";flex:1;height:1px;background:var(--border);}
+.dgroup-count{font-size:10px;letter-spacing:.3px;color:var(--muted);font-weight:600;text-transform:none;}
+/* a category's not-yet-reporting rows, folded behind one button */
+.foldbtn{
+  width:100%;border:none;background:none;color:var(--muted);text-align:left;
+  display:flex;align-items:center;gap:8px;padding:11px 10px;font-size:13px;font-family:var(--font-body);
+}
+.foldbtn:hover{background:var(--inset);color:var(--ink);}
+.foldbtn .chev{display:inline-block;transition:transform .15s;color:var(--muted);}
+.foldbtn[aria-expanded="true"] .chev{transform:rotate(90deg);}
+.foldbody[hidden]{display:none;}
 
 /* continuity rhombuses - skewed like the tab strip.
    Fill opacity (--op) is the coverage; an outline alone means none. */
@@ -378,7 +388,7 @@ h5 + .dnote{margin-top:0;}
 }
 @media (max-width:640px){
   .dgrid{grid-template-columns:12px minmax(0,1fr) auto auto;column-gap:10px;}
-  .d-cad, .d-gap{display:none;}
+  .d-grain, .d-gap{display:none;}
   .rh-cell{width:28px;}
   .dpanel{grid-template-columns:1fr;padding-left:10px;}
   .src{flex-wrap:wrap;}
@@ -528,6 +538,7 @@ h5 + .dnote{margin-top:0;}
     latest:{},         // session kind -> its latest session (for the Reading)
     sessionSources:{}, // session kind -> [source] | 'loading' | 'error' (fetched on expand)
     open:new Set(),    // ids of expanded rows - they stay open across a refresh
+    foldOpen:new Set(),// categories whose not-yet-reporting fold is open - likewise
     note:{},           // row id -> {cls, text}: what the last priority change did
   };
 
@@ -679,11 +690,17 @@ h5 + .dnote{margin-top:0;}
   /* =========================================================
      THE DATA CARD
      ========================================================= */
-  /* The reporting rows are grouped by cadence, top to bottom in this
-     order. Every catalog cadence is one of these (cadence_for() in
-     app/metrics.py); one that wasn't would still be listed, after them,
-     rather than dropped. */
-  const CADENCE_ORDER = ['daily','manual','session','reading'];
+  /* The rows are grouped by category, top to bottom in this order
+     (CATEGORIES in app/metrics.py); one outside it would still be listed,
+     after them by name, rather than dropped. Within a category, rows sort
+     by grain in GRAIN_ORDER; ties keep the catalog's vocabulary order. */
+  const CATEGORY_ORDER = [
+    'Activity', 'Vitals', 'Body composition', 'Fitness', 'Sleep',
+    'Nutrition & hydration', "Women's health", 'Other',
+  ];
+  const GRAIN_ORDER = {daily:0, instant:1, session:2, series:3};
+  // An unknown grain sorts last. (daily is 0, so not `||`.)
+  const grainRank = g => (g in GRAIN_ORDER) ? GRAIN_ORDER[g] : 9;
 
   function paintData(){
     const card = $('#dataCard');
@@ -706,26 +723,70 @@ h5 + .dnote{margin-top:0;}
     }
 
     const {rows} = state.data;
-    const reporting = rows.filter(r => r.count > 0);
-    const waiting   = rows.filter(r => !r.count);
     if(state.stale) head.appendChild(el('div','form-msg bad', 'Couldn’t refresh - showing the last load.'));
 
     const list = el('div','dlist');
     list.appendChild(el('div','dcap dgrid',
-      `<span></span><span>Metric</span><span>Reading</span><span class="d-cad">Cadence</span><span class="d-gap"></span>
+      `<span></span><span>Metric</span><span>Reading</span><span class="d-grain">Grain</span><span class="d-gap"></span>
        <span class="rhs"><span class="rh-cell">Day</span><span class="rh-cell">Wk</span><span class="rh-cell">Mth</span></span>`));
-    // A cadence with nothing reporting gets no header.
-    new Set(CADENCE_ORDER.concat(reporting.map(r => r.cadence))).forEach(c => {
-      const group = reporting.filter(r => r.cadence===c);
-      if(!group.length) return;
-      list.appendChild(el('div','dgroup', esc(cap(c) || 'Other')));
-      group.forEach(r => list.appendChild(rowItem(r)));
+    // Each category: its header, its reporting rows, then a fold of its
+    // empty ones. A category with no rows at all gets no header.
+    const present = Array.from(new Set(rows.map(r => r.category)));
+    const order = CATEGORY_ORDER.concat(present.filter(c => !CATEGORY_ORDER.includes(c)).sort());
+    order.forEach(cat => {
+      const catRows = rows.filter(r => r.category===cat);
+      if(!catRows.length) return;
+      catRows.sort((a, b) => grainRank(a.grain) - grainRank(b.grain));   // stable
+      const rep = catRows.filter(r => r.count > 0);
+      const emp = catRows.filter(r => !r.count);
+      list.appendChild(categoryHeader(cat, rep.length, emp.length));
+      rep.forEach(r => list.appendChild(rowItem(r)));
+      if(emp.length) list.appendChild(foldBlock(cat, emp));
     });
-    if(waiting.length){
-      list.appendChild(el('div','dgroup','Not yet reporting'));
-      waiting.forEach(r => list.appendChild(rowItem(r)));
-    }
     card.appendChild(list);
+  }
+
+  function categoryHeader(cat, nRep, nEmp){
+    return el('div','dgroup',
+      `<span>${esc(cat)}</span>`
+      + `<span class="dgroup-count">${nRep} reporting${nEmp ? ` · ${nEmp} empty` : ''}</span>`);
+  }
+
+  /* A category's not-yet-reporting rows, behind one button. It stays open
+     across a refresh (state.foldOpen), and opens anyway while one of its
+     rows is expanded, so an open row stays visible. */
+  const foldId = cat => 'fold-' + cat.replace(/[^a-z0-9_-]/gi, '-');
+  function foldBlock(cat, emp){
+    const open = state.foldOpen.has(cat) || emp.some(r => state.open.has(r.id));
+    const wrap = el('div','foldwrap');
+    const btn = el('button','foldbtn',
+      `<span class="chev" aria-hidden="true">›</span>${emp.length} not yet reporting in ${esc(cat)}`);
+    btn.type = 'button';
+    btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+    btn.setAttribute('aria-controls', foldId(cat));
+    const body = el('div','foldbody');
+    body.id = foldId(cat);
+    body.hidden = !open;
+    emp.forEach(r => body.appendChild(rowItem(r)));
+    btn.onclick = () => {
+      const nowOpen = body.hidden;
+      body.hidden = !nowOpen;
+      btn.setAttribute('aria-expanded', nowOpen ? 'true' : 'false');
+      if(nowOpen){
+        state.foldOpen.add(cat);
+      }else{
+        state.foldOpen.delete(cat);
+        // Its rows close with it, or an open one would reopen it on refresh.
+        if(emp.some(r => state.open.has(r.id))){
+          emp.forEach(r => { state.open.delete(r.id); delete state.note[r.id]; });
+          body.innerHTML = '';
+          emp.forEach(r => body.appendChild(rowItem(r)));
+        }
+      }
+    };
+    wrap.appendChild(btn);
+    wrap.appendChild(body);
+    return wrap;
   }
 
   const panelId = row => 'panel-' + row.id.replace(/[^a-z0-9_-]/gi, '-');
@@ -740,7 +801,7 @@ h5 + .dnote{margin-top:0;}
       <span class="chev" aria-hidden="true">›</span>
       <span class="d-name" data-tip="${esc(row.key + (row.unit ? ' · ' + (UNIT_LABEL[row.unit] || row.unit) : ''))}">${esc(metricName(row.key))}</span>
       <span class="d-read tnum" data-tip="${esc(read.tip)}">${esc(read.text)}</span>
-      <span class="d-cad">${esc(cap(row.cadence))}</span>
+      <span class="d-grain">${esc(cap(row.grain))}</span>
       <span class="d-gap"></span>
       <span class="rhs" role="img" aria-label="${esc('Continuity: ' + cont.map(c => c.name.toLowerCase() + ' ' + pct(c.of ? c.have/c.of : 0)).join(', '))}">${cont.map(rhombus).join('')}</span>`);
     head.type = 'button';

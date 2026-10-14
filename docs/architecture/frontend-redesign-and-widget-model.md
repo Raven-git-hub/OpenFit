@@ -47,7 +47,7 @@ popup lands.
    connector is connected, it opens the coming-soon placeholder, until it is
    wired to the add-source popup that replaces it.
 2. **Your data.** The heading, then the list straight away: one row per catalog
-   entry (below), grouped by cadence. Click a row to expand it.
+   entry (below), grouped by category. Click a row to expand it.
 
 Each card's title has a voice button just after it (below).
 
@@ -146,11 +146,11 @@ data** card titles. Each plays a spoken explanation of its card:
 
 ## The rows: `GET /api/catalog?include_empty=1`
 
-Each catalog entry is one row, grouped by cadence (**Grouping**, below); inside
-a group, metrics come first, then series, then sessions, in the order the
-catalog returns them (vocabulary order). Each row has fixed, aligned columns:
+Each catalog entry is one row, grouped by category (**Grouping**, below);
+inside a category, rows sort by grain, ties keeping the order the catalog
+returns them in (vocabulary order). Each row has fixed, aligned columns:
 
-`[chevron] Name · Reading · Cadence ··· [Day] [Wk] [Mth]`
+`[chevron] Name · Reading · Grain ··· [Day] [Wk] [Mth]`
 
 - **Name.** The catalog returns raw keys. The page maps them to display names
   (`steps` → Steps, `resting_hr_bpm` → Resting HR, `spo2_pct` → SpO₂ (daily),
@@ -169,16 +169,23 @@ catalog returns them (vocabulary order). Each row has fixed, aligned columns:
     read, not the whole history. If that isn't available, the reading falls
     back to `{count} sessions`.
   - Nothing reported: `—`.
-- **Cadence.** The catalog's `cadence`, capitalised: Daily, Reading, Session,
-  Manual.
-- **Grouping.** Rows with `count > 0` come first, grouped by `cadence` in a
-  fixed order: **Daily**, **Manual**, **Session**, **Reading**. Each group
-  that has rows gets a divider header (the `.dgroup` style); a cadence with no
-  reporting rows gets no header. Within a group, rows keep the catalog order.
-  A cadence outside those four would be listed after them under its own
-  header, not dropped (`cadence_for()` gives none today). A single **Not yet
-  reporting** divider follows, then every empty slot, dimmed and ungrouped
-  (they still expand).
+- **Grain.** The catalog's `grain`, capitalised: Daily, Instant, Session,
+  Series.
+- **Grouping.** Rows are grouped by the catalog's `category`, in the
+  `CATEGORIES` display order: **Activity**, **Vitals**, **Body composition**,
+  **Fitness**, **Sleep**, **Nutrition & hydration**, **Women's health**,
+  **Other**. A category outside those would follow, by name, not be dropped;
+  a category with no rows at all (Women's health, which has no keys yet) gets
+  no header. Within a category, rows sort by grain — daily, instant, session,
+  series — a stable sort, so ties keep the catalog order. Each category gets
+  a divider header (the `.dgroup` style) with a muted count, "N reporting",
+  plus " · M empty" when it has empty rows. Its reporting rows (`count > 0`)
+  follow; then, if it has any empty slots, a fold — a "M not yet reporting in
+  <category>" button with a chevron over those rows, dimmed (they still
+  expand), hidden until opened. A category with nothing reporting (Body
+  composition, without a smart scale) shows its header and the fold alone.
+  A fold stays open across a refresh, as an expanded row does; it also opens
+  while one of its rows is expanded, and closing it closes its rows.
 
 ## Continuity: `GET /api/coverage`
 
