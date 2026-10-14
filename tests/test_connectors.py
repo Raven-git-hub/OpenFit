@@ -65,6 +65,22 @@ def test_lists_every_plugin_with_its_manifest(client):
         assert isinstance(c["fields"], list)
 
 
+def test_lists_connectors_by_display_name(client, monkeypatch):
+    """Alphabetical by name, whatever order the plugins were registered in.
+
+    The registry is reversed first so registration order disagrees with
+    the alphabet - otherwise this would pass without the sort.
+    """
+    import main
+
+    monkeypatch.setattr(main, "PLUGINS", dict(reversed(list(main.PLUGINS.items()))))
+    found = client.get("/api/connectors").get_json()
+    names = [c["name"] for c in found]
+
+    assert names == sorted(names, key=str.lower)
+    assert [c["id"] for c in found] == ["garmin", "google_health"]
+
+
 def test_garmin_manifest_is_a_credentials_form(client):
     garmin = connectors(client)["garmin"]
 
