@@ -35,7 +35,6 @@ from metrics import (
     SESSION_KINDS,
     STEPS,
     WEIGHT_KG,
-    cadence_for,
     category_for,
     grain_for,
 )
@@ -399,13 +398,12 @@ def get_catalog():
     sample of it, in default precedence (there is no pick yet), and
     first/last the earliest and latest sample ts. Every entry also has
     `grain` (grain_for() in metrics.py: "daily" or "instant" for a
-    metric, "session", "series"), `category` (category_for()) and
-    `cadence` (cadence_for() - the pre-v2 label, kept for the console
-    until it moves to grain and category). Metrics and series are in
-    vocabulary order, kinds by name; one with no data is left out, so an
-    empty install has three empty lists - unless ?include_empty=1, which
-    lists every key in the vocabulary, one with no data as count 0,
-    sources [] and null first/last (and last_value/last_date).
+    metric, "session", "series") and `category` (category_for()).
+    Metrics and series are in vocabulary order, kinds by name; one with
+    no data is left out, so an empty install has three empty lists -
+    unless ?include_empty=1, which lists every key in the vocabulary, one
+    with no data as count 0, sources [] and null first/last (and
+    last_value/last_date).
     """
     include_empty = request.args.get("include_empty", "").lower() in ("1", "true", "yes")
     conn = get_conn()
@@ -460,7 +458,6 @@ def get_catalog():
             "unit": unit,
             "grain": grain_for(metric),
             "category": category_for(metric),
-            "cadence": cadence_for(metric),
             "sources": sorted(
                 json.loads(row["sources"]),
                 key=lambda s: source_rank(s, roles.get(metric)),
@@ -473,7 +470,6 @@ def get_catalog():
         })
     sessions = [
         {"kind": kind, "grain": grain_for(kind), "category": category_for(kind),
-         "cadence": cadence_for(kind),
          "count": row["count"], "first": row["first"], "last": row["last"]}
         for kind in sorted(SESSION_KINDS)
         if (row := kinds.get(kind, nothing)) is not None
@@ -484,7 +480,6 @@ def get_catalog():
             "unit": unit,
             "grain": grain_for(metric),
             "category": category_for(metric),
-            "cadence": cadence_for(metric),
             "sources": sorted(json.loads(row["sources"]), key=source_rank),
             "first": row["first"],
             "last": row["last"],

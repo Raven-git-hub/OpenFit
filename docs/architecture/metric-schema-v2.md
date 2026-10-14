@@ -41,10 +41,12 @@ v2 lands in four PRs:
    come: body composition, nutrition and skin temperature; `basal_kcal` waits
    on a decision, since v4 has no rollup for `basal-energy-burned`, only raw
    interval points.
-4. **The console regroups by category and grain**, and the deprecated
-   `cadence_for()` / `MANUAL_METRICS` shim is deleted. _To come._ Until then the
-   console still groups its rows by the old `cadence` labels, which the catalog
-   keeps reporting unchanged.
+4. **The console regroups by category and grain (built).** The "Your data"
+   card groups its rows by category, in display order, with grain as the
+   inner sort, each category's not-yet-reporting rows folded behind one
+   button; a row's third column is its grain. The deprecated
+   `cadence_for()` / `MANUAL_METRICS` shim is deleted, and with it the
+   catalog's `cadence` field, whose only consumer was the console.
 
 ## The laws
 
@@ -79,9 +81,8 @@ still filed one per `(date, source)` in `metrics`, like a daily one.
 
 There is **no `manual` grain.** Hand entry is a *source* (`manual`), not a
 shape: a weigh-in is `instant` whether it came from a smart scale, the webhook
-or a keyboard. The old `cadence` label (`daily` / `manual` / `session` /
-`reading`) survives only as the deprecated `cadence_for()` shim until PR 4, so
-a weigh-in currently reads `grain: "instant"` and `cadence: "manual"` at once.
+or a keyboard. The pre-v2 `cadence` label (`daily` / `manual` / `session` /
+`reading`), which conflated the two, was removed in PR 4.
 
 `grain_for(key)` answers for any key: `series` for a series metric, `session`
 for a session kind, else the metric's declared `daily` or `instant`.

@@ -21,9 +21,7 @@ docs/architecture/metric-schema-v2.md.
 Series metrics - intraday samples, in the samples table - and session
 kinds are governed the same way: a key here, so a new one is an entry in
 SERIES_METRICS or SESSION_KINDS rather than a migration. grain_for() and
-category_for() (at the end) answer for any of these keys. cadence_for()
-and MANUAL_METRICS, after them, are the pre-v2 labels, kept as a
-deprecated shim until the console moves to grain and category.
+category_for() (at the end) answer for any of these keys.
 """
 
 # ---- grains ----
@@ -271,40 +269,3 @@ def category_for(key):
     except KeyError:
         raise ValueError(f"unknown metric: {key!r}") from None
 
-
-# ---- cadence (deprecated shim) ----
-#
-# Pre-v2, and kept only for the console, which still groups its rows by
-# these labels until it moves to grain and category - that change
-# removes MANUAL_METRICS and cadence_for(). Use grain_for() for anything
-# new. Unchanged from before v2: "manual" is not a grain - hand entry is
-# a source, not a shape - so a weigh-in's grain is "instant" while its
-# cadence here still reads "manual".
-#
-# How a key is collected, as a console labels it: "reading" for a series
-# metric (sampled through the day), "session" for a session kind (one per
-# interval), "manual" for a daily metric whose expected input is a scale
-# or hand entry, and "daily" for any other daily metric (a device's
-# once-a-day figure). A label, not a rule: nothing is stored or picked by
-# it, and a device may still supply a manual metric - Garmin's weight_kg
-# sits beside the manual one.
-
-MANUAL_METRICS = {WEIGHT_KG, BODY_FAT_PCT, BMI, HYDRATION_ML}
-
-
-def cadence_for(key):
-    """How a metric, series metric or session kind is collected. Deprecated: see above.
-
-    One of "reading", "session", "manual" or "daily" (see above). Raises
-    ValueError for a key in none of the vocabularies.
-    """
-    if key in SERIES_METRICS:
-        return "reading"
-    if key in SESSION_KINDS:
-        return "session"
-    # Before the plain daily fallback: every manual metric is in METRICS too.
-    if key in MANUAL_METRICS:
-        return "manual"
-    if key in METRICS:
-        return "daily"
-    raise ValueError(f"unknown metric: {key!r}")
