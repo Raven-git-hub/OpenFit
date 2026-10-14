@@ -313,16 +313,16 @@ class SyncPlugin(ABC):
 
         Write each reading with write_metric(conn, date, self.id, metric,
         value): `metric` is a key from metrics.py (steps, resting_hr_bpm,
-        sleep_minutes, ...) and `value` is converted to that metric's
-        unit first - minutes of sleep, not hours or seconds. The metrics
+        weight_kg, ...) and `value` is converted to that metric's unit
+        first - metres, not kilometres or miles. The metrics
         table is keyed on (date, source, metric), so each plugin owns its
         own rows, two sources covering the same day never contend, and a
         metric you didn't fetch this time keeps its earlier value.
 
         Interval data goes in as a session with write_session(conn,
         self.id, kind, start, end, summary), `kind` a session kind from
-        metrics.py: a night's sleep (SLEEP) beside the daily metric rather
-        than instead of it, a workout (WORKOUT) as a session only. Commit
+        metrics.py: a night's sleep (SLEEP) or a workout (WORKOUT), each
+        as a session only - neither has a daily metric. Commit
         before returning. See plugins/garmin/plugin.py for the reference
         implementation.
 

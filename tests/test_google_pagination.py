@@ -24,7 +24,7 @@ import pytest
 import requests
 
 from crypto import encrypt
-from metrics import RESTING_HR_BPM, SLEEP_MINUTES, STEPS
+from metrics import RESTING_HR_BPM, STEPS
 from plugins.google_health.plugin import MAX_PAGES
 
 # The newest day in every fixture; the points run back from it, newest
@@ -95,21 +95,48 @@ def hr_on(d):
     return 50 + d.day % 10
 
 
+def metric_readings(metric):
+    """What sync() filed as `metric`: [(date, value)], by date."""
+    def read(conn):
+        return [
+            tuple(r) for r in conn.execute(
+                "SELECT date, value FROM metrics WHERE source = 'google_health' AND metric = ? "
+                "ORDER BY date",
+                (metric,),
+            )
+        ]
+    return read
+
+
+def sleep_readings(conn):
+    """What sync() filed for sleep - sessions only, there is no daily
+    metric - as [(the start's date, minutes asleep)], by start."""
+    return [
+        tuple(r) for r in conn.execute(
+            "SELECT substr(\"start\", 1, 10), json_extract(summary_json, '$.asleep_minutes') "
+            "FROM sessions WHERE source = 'google_health' AND kind = 'sleep' ORDER BY \"start\""
+        )
+    ]
+
+
 @dataclass
 class Fetcher:
     data_type: str      # the path segment under dataTypes/
     items_key: str      # where each page lists its points
     token_in: str       # where the next page's token goes: "query" or "body"
-    metric: str         # what sync() files the points as
+    read: Callable      # conn -> what sync() filed from the points, [(date, value)]
     point: Callable     # date -> one data point for that day
     value: Callable     # date -> the reading that point should file
 
 
 FETCHERS = {
-    "steps": Fetcher("steps", "rollupDataPoints", "body", STEPS, steps_point, steps_on),
-    "sleep": Fetcher("sleep", "dataPoints", "query", SLEEP_MINUTES, sleep_point, sleep_on),
+    "steps": Fetcher(
+        "steps", "rollupDataPoints", "body", metric_readings(STEPS), steps_point, steps_on,
+    ),
+    "sleep": Fetcher("sleep", "dataPoints", "query", sleep_readings, sleep_point, sleep_on),
     "resting_hr": Fetcher(
-        "daily-resting-heart-rate", "dataPoints", "query", RESTING_HR_BPM, hr_point, hr_on,
+        "daily-resting-heart-rate", "dataPoints", "query", metric_readings(RESTING_HR_BPM),
+        hr_point, hr_on,
     ),
 }
 
@@ -222,14 +249,8 @@ def google(conn, monkeypatch):
     return fake
 
 
-def readings(conn, metric):
-    return [
-        tuple(r) for r in conn.execute(
-            "SELECT date, value FROM metrics WHERE source = 'google_health' AND metric = ? "
-            "ORDER BY date",
-            (metric,),
-        )
-    ]
+def readings(conn, fetcher):
+    return fetcher.read(conn)
 
 
 def expected(fetcher, days):
@@ -247,7 +268,7 @@ def test_every_page_is_read(conn, google, fetcher):
 
     # The older days live on page 2 - exactly what a first-page-only
     # fetch dropped.
-    assert readings(conn, fetcher.metric) == expected(fetcher, page1 + page2)
+    assert readings(conn, fetcher) == expected(fetcher, page1 + page2)
 
 
 def test_the_page_token_goes_where_the_endpoint_wants_it(google, fetcher):
@@ -270,7 +291,7 @@ def test_a_single_page_still_works(conn, google, fetcher):
 
     google.sync()
 
-    assert readings(conn, fetcher.metric) == expected(fetcher, days)
+    assert readings(conn, fetcher) == expected(fetcher, days)
     assert len(google.requests_for(fetcher)) == 1
 
 
@@ -282,7 +303,7 @@ def test_a_failed_later_page_keeps_the_earlier_ones(conn, google, fetcher, capsy
 
     assert google.sync() == 25
 
-    assert readings(conn, fetcher.metric) == expected(fetcher, page1)
+    assert readings(conn, fetcher) == expected(fetcher, page1)
     assert "page 2 failed, keeping the 25 points" in capsys.readouterr().out
 
 
@@ -291,7 +312,7 @@ def test_a_failed_first_page_writes_nothing_for_that_fetcher(conn, google, fetch
 
     assert google.sync() == 0
 
-    assert readings(conn, fetcher.metric) == []
+    assert readings(conn, fetcher) == []
     assert "fetch failed" in capsys.readouterr().out
 
 
@@ -306,7 +327,7 @@ def test_a_token_that_never_runs_out_stops_at_the_page_cap(conn, google, fetcher
     # filter; a real account's would stop at the window, and the plugin
     # drops any night that began before it.
     kept = days_back(SYNC_DAYS) if fetcher is FETCHERS["sleep"] else days_back(MAX_PAGES)
-    assert readings(conn, fetcher.metric) == expected(fetcher, kept)
+    assert readings(conn, fetcher) == expected(fetcher, kept)
     assert f"stopped after {MAX_PAGES} pages" in capsys.readouterr().out
 
 
@@ -334,7 +355,7 @@ def test_a_backfill_longer_than_a_sleep_page_keeps_every_night(conn, google):
     assert google.sync(days=30) == 30
 
     for fetcher in FETCHERS.values():
-        assert readings(conn, fetcher.metric) == expected(fetcher, days)
+        assert readings(conn, fetcher) == expected(fetcher, days)
     # Sleep sessions are read from the same pages, so the oldest five
     # nights are back too.
     sessions = sleep_sessions(conn)

@@ -19,7 +19,6 @@ from metrics import (
     SERIES_METRICS,
     SESSION_KINDS,
     SLEEP,
-    SLEEP_MINUTES,
     STEPS,
     WORKOUT,
     series_unit_for,
@@ -30,7 +29,7 @@ class FakePlugin(SyncPlugin):
     """A minimal SyncPlugin that writes whatever readings it's handed.
 
     Each row is a date plus any canonical metrics, e.g.
-    {"date": "2026-01-01", "steps": 9000, "sleep_minutes": 450}.
+    {"date": "2026-01-01", "steps": 9000, "hrv_ms": 45}.
     """
 
     name = "Fake source"
@@ -78,12 +77,12 @@ def test_resync_upserts_rather_than_duplicating(conn):
 
 def test_partial_sync_keeps_metrics_it_did_not_fetch(conn):
     """A later partial sync must not blank out metrics an earlier one filled."""
-    FakePlugin("fake", [{"date": "2026-01-01", "steps": 9000, "sleep_minutes": 450}]).sync(conn, 7)
+    FakePlugin("fake", [{"date": "2026-01-01", "steps": 9000, "hrv_ms": 45}]).sync(conn, 7)
     FakePlugin("fake", [{"date": "2026-01-01", "resting_hr_bpm": 52}]).sync(conn, 7)
 
     assert readings_for(conn, "fake") == [
+        ("2026-01-01", "hrv_ms", 45, "ms"),
         ("2026-01-01", "resting_hr_bpm", 52, "bpm"),
-        ("2026-01-01", "sleep_minutes", 450, "min"),
         ("2026-01-01", "steps", 9000, "count"),
     ]
 
@@ -96,14 +95,14 @@ def test_two_sources_same_date_do_not_contend(conn):
     """
     day = "2026-01-01"
     FakePlugin("garmin", [{"date": day, "steps": 9000, "resting_hr_bpm": 52}]).sync(conn, 7)
-    FakePlugin("google_health", [{"date": day, "steps": 8000, "sleep_minutes": 390}]).sync(conn, 7)
+    FakePlugin("google_health", [{"date": day, "steps": 8000, "hrv_ms": 39}]).sync(conn, 7)
 
     assert readings_for(conn, "garmin") == [
         (day, "resting_hr_bpm", 52, "bpm"),
         (day, "steps", 9000, "count"),
     ]
     assert readings_for(conn, "google_health") == [
-        (day, "sleep_minutes", 390, "min"),
+        (day, "hrv_ms", 39, "ms"),
         (day, "steps", 8000, "count"),
     ]
 
@@ -245,11 +244,19 @@ def test_write_session_skips_a_missing_start(conn):
 
 
 def test_write_session_leaves_metrics_alone(conn):
-    """Dual-track: a session is written beside the daily total, never into it."""
-    write_metric(conn, "2026-01-02", "fake", SLEEP_MINUTES, 443)
+    """A session is written beside the daily metrics, never into them."""
+    write_metric(conn, "2026-01-02", "fake", STEPS, 9000)
     write_session(conn, "fake", "sleep", "2026-01-01T22:30:00Z", "2026-01-02T06:20:00Z", NIGHT)
 
-    assert readings_for(conn, "fake") == [("2026-01-02", "sleep_minutes", 443, "min")]
+    assert readings_for(conn, "fake") == [("2026-01-02", "steps", 9000, "count")]
+
+
+def test_write_metric_refuses_the_retired_sleep_minutes(conn):
+    """Sleep is sessions only in schema v2: sleep_minutes is no metric."""
+    with pytest.raises(ValueError, match="unknown metric"):
+        write_metric(conn, "2026-01-02", "fake", "sleep_minutes", 443)
+
+    assert readings_for(conn, "fake") == []
 
 
 # ---------- write_sample: the intraday series grain ----------

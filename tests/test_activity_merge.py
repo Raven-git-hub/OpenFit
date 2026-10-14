@@ -1,7 +1,8 @@
 """
 The metrics reshape must stay invisible to the frontend: GET /api/activity
 still returns one flat row per date in the old field names and units,
-with garmin winning over google_health per metric.
+with garmin winning over google_health per metric. All but sleep_hours:
+sleep has no daily metric in schema v2, so the field is gone.
 
 The flat rows are read from derived_metrics, so seeding re-derives after
 writing the readings - as a sync does.
@@ -30,29 +31,37 @@ def insert(conn, date, source, synced_at=None, **readings):
 
 
 def test_garmin_wins_over_google_health(client, conn):
-    insert(conn, "2026-01-01", "google_health", steps=8000, resting_hr_bpm=60, sleep_minutes=360)
-    insert(conn, "2026-01-01", "garmin", steps=9000, resting_hr_bpm=52, sleep_minutes=450)
+    insert(conn, "2026-01-01", "google_health", steps=8000, resting_hr_bpm=60)
+    insert(conn, "2026-01-01", "garmin", steps=9000, resting_hr_bpm=52)
 
     row = client.get("/api/activity").get_json()[0]
     assert row == {
         "date": "2026-01-01",
         "steps": 9000,
         "resting_hr": 52,
-        "sleep_hours": 7.5,
         "source": "garmin",
     }
 
 
+def test_there_is_no_sleep_field(client, conn):
+    insert(conn, "2026-01-01", "garmin", steps=9000, resting_hr_bpm=52)
+
+    for row in (
+        client.get("/api/activity").get_json()[0],
+        client.get("/api/activity?by_source=1").get_json()[0],
+    ):
+        assert "sleep_hours" not in row
+
+
 def test_merge_is_per_metric_not_per_row(client, conn):
-    # Garmin has steps but no sleep; Google Health has the sleep. The
-    # merged day should carry both - this is the whole point of the
-    # reshape.
+    # Garmin has steps but no resting HR; Google Health has the resting
+    # HR. The merged day should carry both - this is the whole point of
+    # the reshape.
     insert(conn, "2026-01-01", "garmin", steps=9000)
-    insert(conn, "2026-01-01", "google_health", steps=8000, sleep_minutes=390, resting_hr_bpm=61)
+    insert(conn, "2026-01-01", "google_health", steps=8000, resting_hr_bpm=61)
 
     row = client.get("/api/activity").get_json()[0]
     assert row["steps"] == 9000
-    assert row["sleep_hours"] == 6.5
     assert row["resting_hr"] == 61
 
 
@@ -76,23 +85,22 @@ def test_a_source_with_one_metric_leaves_the_rest_empty(client, conn):
             "date": "2026-01-01",
             "steps": None,
             "resting_hr": 52,
-            "sleep_hours": None,
             "source": "garmin",
         }
     ]
 
 
 def test_values_come_back_in_the_old_types_and_units(client, conn):
-    # Stored as REAL minutes; read back as the old INTEGER columns and
-    # one-decimal hours. 9000 == 9000.0 in Python, so check the types:
-    # the JSON must say 9000, not 9000.0.
-    insert(conn, "2026-01-01", "garmin", steps=9000, resting_hr_bpm=52, sleep_minutes=437)
+    # Stored as REAL; read back as the old INTEGER columns. 9000 ==
+    # 9000.0 in Python, so check the types: the JSON must say 9000, not
+    # 9000.0.
+    insert(conn, "2026-01-01", "garmin", steps=9000, resting_hr_bpm=52)
 
     for row in (
         client.get("/api/activity").get_json()[0],
         client.get("/api/activity?by_source=1").get_json()[0],
     ):
-        assert (row["steps"], row["resting_hr"], row["sleep_hours"]) == (9000, 52, 7.3)
+        assert (row["steps"], row["resting_hr"]) == (9000, 52)
         assert type(row["steps"]) is int
         assert type(row["resting_hr"]) is int
 
@@ -137,7 +145,7 @@ def test_by_source_rows_keep_the_wide_shape(client, conn):
     # One row per (date, source) with every field; synced_at is the
     # latest write to any of its metrics, as the old row's would be.
     insert(conn, "2026-01-01", "garmin", synced_at="2026-01-01 06:00:00", steps=9000)
-    insert(conn, "2026-01-01", "garmin", synced_at="2026-01-01 07:00:00", sleep_minutes=450)
+    insert(conn, "2026-01-01", "garmin", synced_at="2026-01-01 07:00:00", resting_hr_bpm=52)
     insert(conn, "2026-01-01", "google_health", synced_at="2026-01-01 05:00:00", resting_hr_bpm=61)
     insert(conn, "2026-01-02", "garmin", synced_at="2026-01-02 06:00:00", steps=8000)
 
@@ -146,15 +154,13 @@ def test_by_source_rows_keep_the_wide_shape(client, conn):
             "date": "2026-01-02",
             "steps": 8000,
             "resting_hr": None,
-            "sleep_hours": None,
             "source": "garmin",
             "synced_at": "2026-01-02 06:00:00",
         },
         {
             "date": "2026-01-01",
             "steps": 9000,
-            "resting_hr": None,
-            "sleep_hours": 7.5,
+            "resting_hr": 52,
             "source": "garmin",
             "synced_at": "2026-01-01 07:00:00",
         },
@@ -162,7 +168,6 @@ def test_by_source_rows_keep_the_wide_shape(client, conn):
             "date": "2026-01-01",
             "steps": None,
             "resting_hr": 61,
-            "sleep_hours": None,
             "source": "google_health",
             "synced_at": "2026-01-01 05:00:00",
         },
@@ -178,7 +183,9 @@ def test_by_source_off_by_default(client, conn):
 
 
 def test_activity_migrated_by_005_reads_back_unchanged(db_at_version, monkeypatch):
-    """Data written before 005 comes out of the API as it went in.
+    """Data written before 005 comes out of the API as it went in -
+    all but its sleep_hours, which 005 filed as sleep_minutes and 010
+    retired with the rest of the daily sleep metric.
 
     Seeded at version 4 - the shape a production database is in - with
     the values the old plugins wrote, then migrated and read back.
@@ -194,9 +201,6 @@ def test_activity_migrated_by_005_reads_back_unchanged(db_at_version, monkeypatc
             ("2026-01-01", 9000, 52, 7.5, "garmin", "2026-01-01 06:00:00"),
             ("2026-01-01", 8000, 60, 6.0, "google_health", "2026-01-01 07:00:00"),
             ("2026-01-02", 7000, None, None, "garmin", "2026-01-02 06:00:00"),
-            # Google summed per-session hours, so float noise like this
-            # is real. It now reads back as the one-decimal value it
-            # meant - the one place the output differs, for the better.
             ("2026-01-02", None, 61, 6.6000000000000005, "google_health", "2026-01-02 07:00:00"),
         ],
     )
@@ -210,18 +214,16 @@ def test_activity_migrated_by_005_reads_back_unchanged(db_at_version, monkeypatc
     client = main.app.test_client()
 
     assert client.get("/api/activity").get_json() == [
-        {"date": "2026-01-02", "steps": 7000, "resting_hr": 61, "sleep_hours": 6.6,
-         "source": "garmin"},
-        {"date": "2026-01-01", "steps": 9000, "resting_hr": 52, "sleep_hours": 7.5,
-         "source": "garmin"},
+        {"date": "2026-01-02", "steps": 7000, "resting_hr": 61, "source": "garmin"},
+        {"date": "2026-01-01", "steps": 9000, "resting_hr": 52, "source": "garmin"},
     ]
     assert client.get("/api/activity?by_source=1").get_json() == [
-        {"date": "2026-01-02", "steps": 7000, "resting_hr": None, "sleep_hours": None,
+        {"date": "2026-01-02", "steps": 7000, "resting_hr": None,
          "source": "garmin", "synced_at": "2026-01-02 06:00:00"},
-        {"date": "2026-01-02", "steps": None, "resting_hr": 61, "sleep_hours": 6.6,
+        {"date": "2026-01-02", "steps": None, "resting_hr": 61,
          "source": "google_health", "synced_at": "2026-01-02 07:00:00"},
-        {"date": "2026-01-01", "steps": 9000, "resting_hr": 52, "sleep_hours": 7.5,
+        {"date": "2026-01-01", "steps": 9000, "resting_hr": 52,
          "source": "garmin", "synced_at": "2026-01-01 06:00:00"},
-        {"date": "2026-01-01", "steps": 8000, "resting_hr": 60, "sleep_hours": 6.0,
+        {"date": "2026-01-01", "steps": 8000, "resting_hr": 60,
          "source": "google_health", "synced_at": "2026-01-01 07:00:00"},
     ]

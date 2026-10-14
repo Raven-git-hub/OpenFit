@@ -18,10 +18,10 @@ fallback when the stored account has no refresh token of its own.
 Data types used (Google Health API v4):
   - steps                     -> dailyRollUp (clean daily sums), at most
                                  MAX_ROLLUP_DAYS per request
-  - sleep                     -> list, summed per civil day from session summaries;
-                                 each data point is also stored as a sleep session.
-                                 Asked for by end date; sleep that began before
-                                 the sync window is dropped (see _fetch_sleep)
+  - sleep                     -> list, each data point stored as a sleep session
+                                 (no daily metric). Asked for by end date; sleep
+                                 that began before the sync window is dropped
+                                 (see _fetch_sleep)
   - daily-resting-heart-rate  -> list (no rollup available for this type)
   - exercise                  -> list, each data point stored as a workout
                                  session (no daily metric). Asked for by civil
@@ -45,7 +45,7 @@ from datetime import date, datetime, timedelta
 
 import requests
 
-from metrics import RESTING_HR_BPM, SLEEP, SLEEP_MINUTES, STEPS, WORKOUT
+from metrics import RESTING_HR_BPM, SLEEP, STEPS, WORKOUT
 
 from ..base import SyncPlugin, iso_utc, write_metric, write_session
 
@@ -228,6 +228,8 @@ class GoogleHealthPlugin(SyncPlugin):
         hr_by_date = self._fetch_resting_hr(headers, start, today)
         workouts = self._fetch_workouts(headers, start)
 
+        # A day with sleep counts as written: its sleep is filed below, as
+        # sessions - there is no daily sleep metric.
         all_dates = set(steps_by_date) | set(sleep_by_date) | set(hr_by_date)
         written = 0
         for d_str in all_dates:
@@ -235,10 +237,9 @@ class GoogleHealthPlugin(SyncPlugin):
             # lacks come back None and are left as they were.
             write_metric(conn, d_str, self.id, STEPS, steps_by_date.get(d_str))
             write_metric(conn, d_str, self.id, RESTING_HR_BPM, hr_by_date.get(d_str))
-            write_metric(conn, d_str, self.id, SLEEP_MINUTES, sleep_by_date.get(d_str))
             written += 1
 
-        # Each night (and nap) as its own session, beside the daily total.
+        # Each night (and nap) as its own session.
         for session in sleep_sessions:
             write_session(conn, self.id, SLEEP, *session)
         # Workouts are sessions only - there is no daily workout metric.
@@ -295,27 +296,25 @@ class GoogleHealthPlugin(SyncPlugin):
             return {}
 
     def _fetch_sleep(self, headers, start, end):
-        """Minutes asleep via the list endpoint, summed per civil day, plus
-        each data point as a (start, end, summary) sleep session.
+        """Each data point via the list endpoint as a (start, end, summary)
+        sleep session, plus minutes asleep summed per civil day.
 
-        Returns (minutes_by_date, sessions). The two are read from the
-        same points independently, so a session that can't be parsed
-        never costs the daily total. Both leave out sleep that began
-        before `start` (see below).
+        Returns (minutes_by_date, sessions). Sleep is filed as sessions
+        only - there is no daily sleep metric - so sync() uses
+        minutes_by_date just to count the days that had sleep. The two
+        are read from the same points independently, and both leave out
+        sleep that began before `start` (see below).
         """
         # Sleep can't be filtered on when it starts - the discovery doc
         # rules sleep out of interval.civil_start_time - so this asks by
         # civil end date, which it lists for sleep. That also brings back
         # the night that began the evening before `start` and ended inside
-        # the window. Filed under the day it began, that night alone would
-        # replace the day's total - dropping any nap from earlier that day,
-        # which ended before `start` and so isn't in this answer. So sleep
-        # whose civil start day is before `start` is skipped, for the
-        # total and the session alike: that day keeps the full total an
-        # earlier sync wrote while it was inside the window, and every day
-        # this sync does write has all its sleep here. (A point with no
-        # civil start day can't be placed; it is kept, and as before
-        # gives a session but no daily total.)
+        # the window, but not any nap from earlier that day, which ended
+        # before `start`. So sleep whose civil start day is before `start`
+        # is skipped: that day was synced whole while it was inside the
+        # window, and every day this sync covers has all its sleep here.
+        # (A point with no civil start day can't be placed; it is kept, and
+        # gives a session but no day.)
         first_day = start.isoformat()
         params = {"filter": f'sleep.interval.civil_end_time >= "{first_day}"'}
         try:

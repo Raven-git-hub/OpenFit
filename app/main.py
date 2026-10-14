@@ -33,10 +33,11 @@ from metrics import (
     RESTING_HR_BPM,
     SERIES_METRICS,
     SESSION_KINDS,
-    SLEEP_MINUTES,
     STEPS,
     WEIGHT_KG,
     cadence_for,
+    category_for,
+    grain_for,
 )
 
 DB_PATH = os.getenv("DB_PATH", "/data/tracker.db")
@@ -202,7 +203,9 @@ def set_workout():
 # By default each field is the stored derived value (derived_metrics -
 # see derived.py); ?by_source=1 lists every source's readings instead.
 # Each field maps to the canonical metric it is now read from, and how to
-# turn the stored value back into what the field used to hold.
+# turn the stored value back into what the field used to hold. Its old
+# sleep_hours field is gone: sleep has no daily metric in schema v2 (it
+# is sessions only - /api/sessions/sleep).
 
 
 def _whole(value):
@@ -218,7 +221,6 @@ ACTIVITY_FIELDS = {
     # field: (canonical metric, stored value -> field value)
     "steps": (STEPS, _whole),
     "resting_hr": (RESTING_HR_BPM, _whole),
-    "sleep_hours": (SLEEP_MINUTES, lambda minutes: round(minutes / 60, 1)),
 }
 
 # Canonical metric -> (field, convert), for pivoting readings back.
@@ -396,8 +398,10 @@ def get_catalog():
     sources, first, last, count}: `sources` are every source with a
     sample of it, in default precedence (there is no pick yet), and
     first/last the earliest and latest sample ts. Every entry also has
-    `grain` ("daily", "session" or "series" - the table it lives in) and
-    `cadence` (cadence_for() in metrics.py). Metrics and series are in
+    `grain` (grain_for() in metrics.py: "daily" or "instant" for a
+    metric, "session", "series"), `category` (category_for()) and
+    `cadence` (cadence_for() - the pre-v2 label, kept for the console
+    until it moves to grain and category). Metrics and series are in
     vocabulary order, kinds by name; one with no data is left out, so an
     empty install has three empty lists - unless ?include_empty=1, which
     lists every key in the vocabulary, one with no data as count 0,
@@ -454,7 +458,8 @@ def get_catalog():
         metrics.append({
             "metric": metric,
             "unit": unit,
-            "grain": "daily",
+            "grain": grain_for(metric),
+            "category": category_for(metric),
             "cadence": cadence_for(metric),
             "sources": sorted(
                 json.loads(row["sources"]),
@@ -467,7 +472,8 @@ def get_catalog():
             "last_date": row["last"],
         })
     sessions = [
-        {"kind": kind, "grain": "session", "cadence": cadence_for(kind),
+        {"kind": kind, "grain": grain_for(kind), "category": category_for(kind),
+         "cadence": cadence_for(kind),
          "count": row["count"], "first": row["first"], "last": row["last"]}
         for kind in sorted(SESSION_KINDS)
         if (row := kinds.get(kind, nothing)) is not None
@@ -476,7 +482,8 @@ def get_catalog():
         {
             "metric": metric,
             "unit": unit,
-            "grain": "series",
+            "grain": grain_for(metric),
+            "category": category_for(metric),
             "cadence": cadence_for(metric),
             "sources": sorted(json.loads(row["sources"]), key=source_rank),
             "first": row["first"],
@@ -566,13 +573,19 @@ def get_metric_series(metric):
 
 @app.route("/api/sessions/<kind>", methods=["GET"])
 def get_sessions(kind):
-    """One kind's sessions: [{start, end, source, summary}], by start.
+    """One kind's sessions: [{start, end, source, summary}], by source priority.
 
     start/end are ISO 8601 UTC (end may be null) and `summary` the kind's
     breakdown (see SESSION_KINDS in metrics.py) - {} when the source gave
     none. ?from= and ?to= (YYYY-MM-DD, inclusive) match the start's UTC
     date. Every source's sessions are listed, so a night two devices both
-    tracked appears twice, each with its source. 404 for an unknown kind.
+    tracked appears twice, each with its source - a priority-ordered
+    passthrough: nothing is picked, filtered or merged, but the sessions
+    of the source that would be picked come first, then the rest's, in
+    the order the derived pick ranks sources (source_rank(): the kind's
+    configured primary in the source roles, if it has one, then
+    DEFAULT_PRIORITY, then by name). Each source's sessions are by start.
+    404 for an unknown kind.
     """
     if kind not in SESSION_KINDS:
         return jsonify({"ok": False, "error": f"unknown session kind: {kind}"}), 404
@@ -584,12 +597,15 @@ def get_sessions(kind):
     # characters are its UTC date.
     in_range, params = _in_range('substr("start", 1, 10)', *bounds)
     conn = get_conn()
+    primary = load_source_roles(conn).get(kind)
     rows = conn.execute(
         'SELECT "start", "end", source, summary_json FROM sessions '
         f'WHERE kind = ? AND {in_range} ORDER BY "start", source',
         (kind, *params),
     ).fetchall()
     conn.close()
+    # A stable sort, so each source's sessions stay in start order.
+    rows.sort(key=lambda row: source_rank(row["source"], primary))
     return jsonify([
         {
             "start": row["start"],

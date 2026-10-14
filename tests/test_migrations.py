@@ -127,12 +127,12 @@ def test_old_shape_database_adopts_and_keeps_rows(tmp_path):
         "SELECT date, source, metric, value, unit, synced_at "
         "FROM metrics ORDER BY date, metric"
     ).fetchall()
+    # Every reading but sleep: 005 files sleep_hours as sleep_minutes, and
+    # 010 retires that metric.
     assert rows == [
         ("2026-01-01", "garmin", "resting_hr_bpm", 52, "bpm", "2026-01-01T06:00:00"),
-        ("2026-01-01", "garmin", "sleep_minutes", 450, "min", "2026-01-01T06:00:00"),
         ("2026-01-01", "garmin", "steps", 9000, "count", "2026-01-01T06:00:00"),
         ("2026-01-02", "google_health", "resting_hr_bpm", 61, "bpm", "2026-01-02T06:00:00"),
-        ("2026-01-02", "google_health", "sleep_minutes", 390, "min", "2026-01-02T06:00:00"),
         ("2026-01-02", "google_health", "steps", 8000, "count", "2026-01-02T06:00:00"),
     ]
     conn.close()
@@ -378,7 +378,7 @@ def activity_at_version_4(db_at_version, rows):
     return conn
 
 
-def test_metrics_migration_unpivots_activity(db_at_version):
+def test_metrics_migration_unpivots_activity(db_at_version, migrations_upto):
     """005 turns each wide activity row into one row per non-null metric."""
     conn = activity_at_version_4(db_at_version, [
         # Two sources on one day, as 002 allows.
@@ -393,7 +393,8 @@ def test_metrics_migration_unpivots_activity(db_at_version):
         ("2026-01-04", None, None, 6.6000000000000005, "google_health", "x"),
     ])
 
-    assert run_migrations(conn) == versions_from(5)
+    # 005 alone: 010 later retires the sleep_minutes rows it files.
+    assert run_migrations(conn, migrations_dir=migrations_upto(5)) == [5]
 
     rows = conn.execute(
         "SELECT date, source, metric, value, unit, synced_at "
@@ -437,17 +438,18 @@ def test_metrics_migration_drops_activity_and_indexes_by_date(db_at_version):
     conn.close()
 
 
-def test_metrics_migration_is_idempotent(db_at_version):
+def test_metrics_migration_is_idempotent(db_at_version, migrations_upto):
     """Re-running after 005 changes nothing - and can't re-read activity."""
     conn = activity_at_version_4(db_at_version, [
         ("2026-01-01", 9000, 52, 7.5, "garmin", "x"),
         ("2026-01-01", 8000, None, None, "google_health", "y"),
     ])
-    assert run_migrations(conn) == versions_from(5)
+    upto_5 = migrations_upto(5)
+    assert run_migrations(conn, migrations_dir=upto_5) == [5]
     rows_before = conn.execute("SELECT * FROM metrics ORDER BY date, source, metric").fetchall()
 
-    assert run_migrations(conn) == []
-    assert run_migrations(conn) == []
+    assert run_migrations(conn, migrations_dir=upto_5) == []
+    assert run_migrations(conn, migrations_dir=upto_5) == []
 
     assert conn.execute(
         "SELECT * FROM metrics ORDER BY date, source, metric"
@@ -670,12 +672,13 @@ def test_sessions_table_on_a_fresh_database(tmp_path):
     conn.close()
 
 
-def test_sessions_migration_is_additive(db_at_version):
+def test_sessions_migration_is_additive(db_at_version, migrations_upto):
     """007 adds a table and its index, and nothing already there changes."""
     conn = populated_at_version_6(db_at_version)
     before = everything_but(conn, "sessions")
 
-    assert run_migrations(conn) == versions_from(7)
+    # 007 alone: 010 later retires the sleep_minutes rows seeded here.
+    assert run_migrations(conn, migrations_dir=migrations_upto(7)) == [7]
 
     assert column_names(conn, "sessions") == SESSION_COLUMNS
     assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
@@ -781,12 +784,13 @@ def test_derived_metrics_table_on_a_fresh_database(tmp_path):
     conn.close()
 
 
-def test_derived_metrics_migration_is_additive(db_at_version):
+def test_derived_metrics_migration_is_additive(db_at_version, migrations_upto):
     """008 adds a table and its index, and nothing already there changes."""
     conn = populated_at_version_7(db_at_version)
     before = everything_but(conn, "derived_metrics")
 
-    assert run_migrations(conn) == versions_from(8)
+    # 008 alone: 010 later retires the sleep_minutes row seeded here.
+    assert run_migrations(conn, migrations_dir=migrations_upto(8)) == [8]
 
     assert column_names(conn, "derived_metrics") == DERIVED_COLUMNS
     assert everything_but(conn, "derived_metrics", only=before) == before
@@ -984,3 +988,135 @@ def test_one_sample_per_source_metric_and_ts(conn):
             "INSERT INTO samples (source, metric, ts, value, unit, synced_at) "
             "VALUES ('garmin', 'heart_rate', '2026-01-01T08:00:00Z', 64, 'bpm', 'y')"
         )
+
+
+# ---------- 010: retire the daily sleep_minutes metric ----------
+
+
+def populated_at_version_9(db_at_version):
+    """A version-9 database - where production sits before 010 - holding
+    sleep_minutes readings and their derived values beside everything
+    else: other metrics, sleep sessions, samples and the rest."""
+    path = db_at_version(9)
+    conn = sqlite3.connect(path)
+    conn.executemany(
+        "INSERT INTO metrics (date, source, metric, value, unit, synced_at) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        [
+            ("2026-01-01", "garmin", "steps", 9000, "count", "x"),
+            ("2026-01-01", "garmin", "sleep_minutes", 443, "min", "x"),
+            ("2026-01-01", "google_health", "sleep_minutes", 421, "min", "y"),
+            ("2026-01-02", "google_health", "sleep_minutes", 400, "min", "y"),
+            ("2026-01-02", "google_health", "resting_hr_bpm", 61, "bpm", "y"),
+            ("2026-01-02", "manual", "weight_kg", 82.0, "kg", None),
+        ],
+    )
+    conn.executemany(
+        "INSERT INTO derived_metrics (date, metric, value, unit, source, synced_at) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        [
+            ("2026-01-01", "steps", 9000, "count", "garmin", "x"),
+            ("2026-01-01", "sleep_minutes", 443, "min", "garmin", "x"),
+            ("2026-01-02", "sleep_minutes", 400, "min", "google_health", "y"),
+            ("2026-01-02", "resting_hr_bpm", 61, "bpm", "google_health", "y"),
+            ("2026-01-02", "weight_kg", 82.0, "kg", "manual", None),
+        ],
+    )
+    conn.execute(
+        'INSERT INTO sessions (id, source, kind, "start", "end", summary_json, synced_at) '
+        "VALUES ('garmin:sleep:2026-01-01T22:30:00Z', 'garmin', 'sleep', "
+        "'2026-01-01T22:30:00Z', '2026-01-02T06:20:00Z', '{\"asleep_minutes\": 443}', 'x')"
+    )
+    conn.execute(
+        "INSERT INTO samples (source, metric, ts, value, unit, synced_at) "
+        "VALUES ('garmin', 'heart_rate', '2026-01-01T08:00:00Z', 61, 'bpm', 'x')"
+    )
+    conn.execute("INSERT INTO workouts VALUES (1, 0, 1)")
+    conn.execute("INSERT INTO settings VALUES ('source_roles', '{\"steps\": \"garmin\"}')")
+    conn.execute("INSERT INTO accounts VALUES ('garmin', 'blob', 'then')")
+    conn.commit()
+    return conn
+
+
+def every_table(conn):
+    """Every table's schema and rows, schema_migrations aside - as
+    everything_but() takes them, with nothing left out."""
+    return everything_but(conn, "schema_migrations")
+
+
+def without_sleep_minutes(snapshot):
+    """An every_table() snapshot with the sleep_minutes rows taken out
+    of metrics and derived_metrics - what 010 should leave behind."""
+    out = dict(snapshot)
+    for table in ("metrics", "derived_metrics"):
+        sql, rows = out[table]
+        out[table] = (sql, [row for row in rows if "sleep_minutes" not in row])
+    return out
+
+
+def test_drop_sleep_minutes_deletes_those_rows_and_nothing_else(db_at_version):
+    conn = populated_at_version_9(db_at_version)
+    before = every_table(conn)
+    assert conn.execute(
+        "SELECT COUNT(*) FROM metrics WHERE metric = 'sleep_minutes'"
+    ).fetchone()[0] == 3
+
+    assert run_migrations(conn) == versions_from(10)
+
+    for table in ("metrics", "derived_metrics"):
+        assert conn.execute(
+            f"SELECT COUNT(*) FROM {table} WHERE metric = 'sleep_minutes'"
+        ).fetchone()[0] == 0
+    # Every other row of every table - other metrics, their derived
+    # values, the sleep sessions, samples, settings - and every table's
+    # schema, exactly as they were.
+    assert every_table(conn) == without_sleep_minutes(before)
+    assert conn.execute(
+        "SELECT metric, value FROM metrics ORDER BY date, metric"
+    ).fetchall() == [("steps", 9000), ("resting_hr_bpm", 61), ("weight_kg", 82.0)]
+    assert conn.execute('SELECT id FROM sessions').fetchall() == [
+        ("garmin:sleep:2026-01-01T22:30:00Z",)
+    ]
+    conn.close()
+
+
+def test_drop_sleep_minutes_is_applied_once_and_recorded(db_at_version):
+    conn = populated_at_version_9(db_at_version)
+    assert run_migrations(conn) == versions_from(10)
+    assert conn.execute(
+        "SELECT COUNT(*) FROM schema_migrations WHERE version = 10"
+    ).fetchone()[0] == 1
+
+    # Recorded, so it never runs again: a row written after it is left
+    # alone by every later startup.
+    conn.execute(
+        "INSERT INTO metrics (date, source, metric, value, unit, synced_at) "
+        "VALUES ('2026-01-03', 'legacy', 'sleep_minutes', 1, 'min', 'z')"
+    )
+    conn.commit()
+    others_before = every_table(conn)
+
+    assert run_migrations(conn) == []
+    assert run_migrations(conn) == []
+
+    assert every_table(conn) == others_before
+    assert conn.execute(
+        "SELECT COUNT(*) FROM schema_migrations WHERE version = 10"
+    ).fetchone()[0] == 1
+    conn.close()
+
+
+def test_drop_sleep_minutes_on_a_database_without_any(db_at_version):
+    """Nothing to delete - a fresh install, or one that never synced sleep -
+    applies just the same."""
+    conn = sqlite3.connect(db_at_version(9))
+    conn.execute(
+        "INSERT INTO metrics (date, source, metric, value, unit, synced_at) "
+        "VALUES ('2026-01-01', 'garmin', 'steps', 9000, 'count', 'x')"
+    )
+    conn.commit()
+
+    assert run_migrations(conn) == versions_from(10)
+
+    assert conn.execute("SELECT metric FROM metrics").fetchall() == [("steps",)]
+    conn.close()

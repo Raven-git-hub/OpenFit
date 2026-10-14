@@ -591,7 +591,8 @@ h5 + .dnote{margin-top:0;}
     const out = {};
     await Promise.all(kinds.filter(k => k.count > 0 && k.last).map(async k => {
       const list = await api.sessions(k.kind, String(k.last).slice(0,10));
-      if(Array.isArray(list) && list.length) out[k.kind] = list[list.length-1];
+      // Listed by source priority, not by start: take the latest start.
+      if(Array.isArray(list) && list.length) out[k.kind] = list.reduce((a, b) => b.start > a.start ? b : a);
     }));
     return out;
   }
@@ -659,7 +660,8 @@ h5 + .dnote{margin-top:0;}
 
   function readingFor(row){
     if(!row.count) return {text:'—', tip:'Nothing reported yet'};
-    if(row.grain==='daily'){
+    // Every metric row - daily or instant grain - has a derived value.
+    if(row.cov==='metrics'){
       return {text:fmtValue(row.last_value, row.unit), tip:'Latest · ' + fmtDayY(row.last_date)};
     }
     if(row.grain==='series'){
@@ -765,7 +767,7 @@ h5 + .dnote{margin-top:0;}
   function panelFor(row){
     const p = el('div','dpanel');
     p.id = panelId(row);
-    const left = el('div', null, `<h5>${row.grain==='daily' ? 'Source priority' : 'Sources'}</h5>`);
+    const left = el('div', null, `<h5>${row.cov==='metrics' ? 'Source priority' : 'Sources'}</h5>`);
     fillSources(row, left);
     const right = el('div', null, '<h5>Last 5 weeks</h5>');
     right.appendChild(weekGrid(datesOf(row)));
@@ -788,13 +790,13 @@ h5 + .dnote{margin-top:0;}
   }
 
   /* ---------- the source list (expanded, left) ----------
-     Daily metrics have a pick, so their sources are a priority list -
+     Metrics (daily or instant) have a pick, so their sources are a priority list -
      /api/source-roles, primary first, draggable. Series and sessions are
      a per-source passthrough with no pick yet: read-only. */
   function fillSources(row, box){
     const note = text => box.appendChild(el('p','dnote', esc(text)));
 
-    if(row.grain==='daily'){
+    if(row.cov==='metrics'){
       const role = state.roles[row.key];
       const sources = role && Array.isArray(role.sources) ? role.sources : [];
       if(!sources.length){ note('No source is reporting this yet.'); }

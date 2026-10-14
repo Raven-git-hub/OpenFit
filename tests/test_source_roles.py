@@ -21,7 +21,7 @@ from derived import (
     set_source_role,
     source_rank,
 )
-from metrics import METRICS, RESTING_HR_BPM, SLEEP_MINUTES, STEPS, WEIGHT_KG
+from metrics import HRV_MS, METRICS, RESTING_HR_BPM, STEPS, WEIGHT_KG
 from plugins.base import SyncPlugin, write_metric
 
 
@@ -89,15 +89,15 @@ def test_no_primary_is_the_default_rank():
 
 
 def test_a_configured_primary_wins_its_metric(conn):
-    insert(conn, "2026-01-01", "garmin", steps=9000, sleep_minutes=450)
-    insert(conn, "2026-01-01", "google_health", steps=8000, sleep_minutes=390)
+    insert(conn, "2026-01-01", "garmin", steps=9000, hrv_ms=45)
+    insert(conn, "2026-01-01", "google_health", steps=8000, hrv_ms=39)
     store_roles(conn, {STEPS: "google_health"})
 
     recompute_derived(conn)
 
     assert picked(conn, "2026-01-01", STEPS) == (8000, "google_health")
-    # sleep has no override: the default still picks Garmin.
-    assert picked(conn, "2026-01-01", SLEEP_MINUTES) == (450, "garmin")
+    # HRV has no override: the default still picks Garmin.
+    assert picked(conn, "2026-01-01", HRV_MS) == (45, "garmin")
 
 
 def test_a_primary_that_missed_a_day_falls_back_to_the_default_order(conn):
@@ -192,7 +192,7 @@ def test_get_on_an_empty_database_lists_every_metric_unconfigured(client):
 
 def test_get_shows_the_default_primary_and_the_sources_that_reported(client, conn):
     insert(conn, "2026-01-01", "manual", steps=1, weight_kg=82.0)
-    insert(conn, "2026-01-01", "google_health", steps=8000, sleep_minutes=390)
+    insert(conn, "2026-01-01", "google_health", steps=8000, hrv_ms=39)
     insert(conn, "2026-01-02", "garmin", steps=9000)
 
     roles = client.get("/api/source-roles").get_json()
@@ -203,7 +203,7 @@ def test_get_shows_the_default_primary_and_the_sources_that_reported(client, con
         "configured": False,
         "sources": ["garmin", "google_health", "manual"],
     }
-    assert roles[SLEEP_MINUTES] == {
+    assert roles[HRV_MS] == {
         "primary": "google_health", "configured": False, "sources": ["google_health"],
     }
     assert roles[WEIGHT_KG] == {"primary": "manual", "configured": False, "sources": ["manual"]}
@@ -214,7 +214,7 @@ def test_get_shows_a_configured_primary_first(client, conn):
     insert(conn, "2026-01-01", "garmin", steps=9000)
     insert(conn, "2026-01-01", "google_health", steps=8000)
     insert(conn, "2026-01-01", "manual", steps=1)
-    store_roles(conn, {STEPS: "manual", SLEEP_MINUTES: "oura"})
+    store_roles(conn, {STEPS: "manual", HRV_MS: "oura"})
 
     roles = client.get("/api/source-roles").get_json()
 
@@ -224,7 +224,7 @@ def test_get_shows_a_configured_primary_first(client, conn):
         "sources": ["manual", "garmin", "google_health"],
     }
     # A primary that hasn't reported yet is still the primary.
-    assert roles[SLEEP_MINUTES] == {"primary": "oura", "configured": True, "sources": []}
+    assert roles[HRV_MS] == {"primary": "oura", "configured": True, "sources": []}
 
 
 # ---------- PUT /api/source-roles/<metric> ----------

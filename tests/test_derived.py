@@ -10,7 +10,7 @@ from datetime import date, timedelta
 
 import main
 from derived import DEFAULT_PRIORITY, backfill_derived, recompute_derived
-from metrics import METRICS, SLEEP_MINUTES, STEPS
+from metrics import HRV_MS, METRICS, STEPS
 from plugins.base import SyncPlugin, write_metric
 
 
@@ -67,15 +67,15 @@ def test_garmin_wins_over_google_health(conn):
 
 
 def test_the_pick_is_per_metric(conn):
-    # Garmin has steps but no sleep; Google Health has both. Each metric
+    # Garmin has steps but no HRV; Google Health has both. Each metric
     # gets its own winner.
     insert(conn, "2026-01-01", "garmin", steps=9000)
-    insert(conn, "2026-01-01", "google_health", steps=8000, sleep_minutes=390)
+    insert(conn, "2026-01-01", "google_health", steps=8000, hrv_ms=39)
 
     recompute_derived(conn)
 
     assert picked(conn, "2026-01-01", STEPS) == (9000, "garmin")
-    assert picked(conn, "2026-01-01", SLEEP_MINUTES) == (390, "google_health")
+    assert picked(conn, "2026-01-01", HRV_MS) == (39, "google_health")
 
 
 def test_falls_back_to_the_next_source_on_a_day_the_top_one_missed(conn):
@@ -105,13 +105,13 @@ def test_a_single_source_yields_that_source_for_every_metric(conn):
     # Weight included: every metric is derived, not only the activity ones.
     insert(conn, "2026-01-01", "manual", synced_at=None, weight_kg=82.5)
     insert(conn, "2026-01-01", "google_health", synced_at="g",
-           steps=8000, resting_hr_bpm=61, sleep_minutes=390)
+           steps=8000, resting_hr_bpm=61, hrv_ms=39)
 
     recompute_derived(conn)
 
     assert derived(conn) == [
+        ("2026-01-01", "hrv_ms", 39, "ms", "google_health", "g"),
         ("2026-01-01", "resting_hr_bpm", 61, "bpm", "google_health", "g"),
-        ("2026-01-01", "sleep_minutes", 390, "min", "google_health", "g"),
         ("2026-01-01", "steps", 8000, "count", "google_health", "g"),
         ("2026-01-01", "weight_kg", 82.5, "kg", "manual", None),
     ]
@@ -182,7 +182,7 @@ def test_until_leaves_later_dates_alone(conn):
 
 
 def test_recompute_is_stable_and_counts_what_it_wrote(conn):
-    insert(conn, "2026-01-01", "garmin", steps=9000, sleep_minutes=450)
+    insert(conn, "2026-01-01", "garmin", steps=9000, hrv_ms=45)
     insert(conn, "2026-01-01", "google_health", steps=8000)
 
     assert recompute_derived(conn) == 2
@@ -201,14 +201,14 @@ def test_recompute_with_no_readings_derives_nothing(conn):
 
 def test_backfill_derives_existing_readings_into_an_empty_table(conn):
     insert(conn, "2026-01-01", "garmin", steps=9000)
-    insert(conn, "2026-01-01", "google_health", steps=8000, sleep_minutes=390)
+    insert(conn, "2026-01-01", "google_health", steps=8000, hrv_ms=39)
     insert(conn, "2026-01-02", "manual", weight_kg=82.0)
 
     assert backfill_derived(conn) is True
 
     filled = derived(conn)
     assert [(d, m, s) for d, m, _, _, s, _ in filled] == [
-        ("2026-01-01", "sleep_minutes", "google_health"),
+        ("2026-01-01", "hrv_ms", "google_health"),
         ("2026-01-01", "steps", "garmin"),
         ("2026-01-02", "weight_kg", "manual"),
     ]
@@ -260,7 +260,7 @@ def test_serve_backfills_an_upgraded_database_before_syncing(db_at_version, monk
     path = db_at_version(7)
     conn = sqlite3.connect(path)
     insert(conn, "2026-01-01", "garmin", steps=9000)
-    insert(conn, "2026-01-01", "google_health", steps=8000, sleep_minutes=390)
+    insert(conn, "2026-01-01", "google_health", steps=8000, hrv_ms=39)
     conn.close()
     calls = stub_startup(monkeypatch, path)
 
@@ -269,7 +269,7 @@ def test_serve_backfills_an_upgraded_database_before_syncing(db_at_version, monk
     assert calls == [("scheduler", 2), ("run", 2)]
     conn = sqlite3.connect(path)
     assert picked(conn, "2026-01-01", STEPS) == (9000, "garmin")
-    assert picked(conn, "2026-01-01", SLEEP_MINUTES) == (390, "google_health")
+    assert picked(conn, "2026-01-01", HRV_MS) == (39, "google_health")
     conn.close()
 
 
@@ -320,12 +320,12 @@ def test_a_manual_sync_refreshes_the_derived_values(client, conn, monkeypatch):
 def test_a_scheduled_sync_refreshes_the_derived_values(client, conn, monkeypatch):
     today = days_ago(0)
     monkeypatch.setattr(main, "PLUGINS", {
-        "google_health": FakePlugin("google_health", [(today, SLEEP_MINUTES, 390)]),
+        "google_health": FakePlugin("google_health", [(today, HRV_MS, 39)]),
     })
 
     main.scheduled_sync()
 
-    assert picked(conn, today, SLEEP_MINUTES) == (390, "google_health")
+    assert picked(conn, today, HRV_MS) == (39, "google_health")
 
 
 def test_a_sync_re_derives_its_own_window_and_nothing_older(client, conn, monkeypatch):
@@ -357,7 +357,6 @@ def test_activity_reads_the_stored_derived_value(client, conn):
     conn.commit()
 
     assert client.get("/api/activity").get_json() == [
-        {"date": "2026-01-01", "steps": 1234, "resting_hr": None, "sleep_hours": None,
-         "source": "garmin"},
+        {"date": "2026-01-01", "steps": 1234, "resting_hr": None, "source": "garmin"},
     ]
     assert [r["steps"] for r in client.get("/api/activity?by_source=1").get_json()] == [7000, 9000]
