@@ -204,3 +204,13 @@ def test_sync_unknown_plugin_404(client):
     body = resp.get_json()
     assert body["ok"] is False
     assert "does_not_exist" in body["error"]
+
+
+def test_index_serves_the_data_console(client):
+    resp = client.get("/")
+    assert resp.status_code == 200
+    page = resp.get_data(as_text=True)
+    resp.close()
+    # The console is wired to these reads; renaming one breaks the page.
+    for route in ("/api/catalog?include_empty=1", "/api/coverage", "/api/source-roles", "/api/connectors"):
+        assert route in page

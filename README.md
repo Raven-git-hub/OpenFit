@@ -29,8 +29,8 @@ available to whatever apps you point at it, including ones you write yourself.
 
 Early, and the current focus is the **data engine**: ingestion plugins, a
 normalised derived dataset with per-source provenance, and the API that exposes
-it. The web UI in this repo is a legacy/interim viewer — it will be replaced and
-is not the product.
+it. The web UI in this repo is a data console — what the dataset holds, how
+continuous it is, and which source wins each metric — not the product.
 
 ## What's here today
 
@@ -56,7 +56,10 @@ is not the product.
   there is, one metric over a date range (with which source each value came
   from), sleep/workout sessions, and intraday series like heart rate,
   respiration and SpO2.
-- An interim web viewer (being replaced).
+- A built-in **data console**: connected devices (add, sync, remove), every
+  metric, series and session kind with its latest reading and cadence, how
+  continuously each is covered (day / week / month, and the last five weeks),
+  and drag-to-reorder source priority per metric.
 
 ## Webhook input (push)
 
@@ -107,7 +110,7 @@ an app gets one trusted answer and never has to reconcile devices itself.
 Sessions and intraday series aren't picked between sources yet: every source's
 are listed, each tagged. Same trusted-network model as the rest of the API: no
 auth. These shapes are the stable contract; the `/api/activity` and
-`/api/weights` routes are interim-UI shims, not for apps.
+`/api/weights` routes are compatibility shims, not for apps.
 
 **Discovery — `GET /api/catalog`.** Every metric, session kind and series that
 has data:
@@ -231,8 +234,8 @@ Visit `http://<your-server-ip>:8080`. It runs fine with zero plugins configured.
 
 ### Connecting a device
 
-Devices are added in the app, not a config file: **Configuration → Connected
-sources → Add a device**. Pick the device, fill in what it asks for, hit Add.
+Devices are added in the app, not a config file: **Connected sources → Add
+source**. Pick the device, fill in what it asks for, hit Add.
 Credentials are encrypted before they're stored, and **Remove** deletes them
 along with any cached session token. An install that predates this flow keeps
 working: the `.env` variables are read as a fallback until you re-add the device.
@@ -253,7 +256,7 @@ Uses Google OAuth, so adding it is two steps, all in the UI. First, the one-off
 Google-side setup: create a project in Google Cloud Console, enable the **Google
 Health API**, set the OAuth consent screen to External/Testing with your account
 as a test user, add the `googlehealth.*.readonly` scopes, and create an OAuth
-Client ID of type **Desktop app**. Then, under **Add a device → Google Health**:
+Client ID of type **Desktop app**. Then, under **Add source → Google Health**:
 paste the client ID and secret, press **Get authorization link**, approve on
 Google (it redirects to `http://127.0.0.1:9109/`, which OpenFit deliberately does
 not serve — the page fails to load, that's expected), and paste the address (or
@@ -265,7 +268,7 @@ then on.
 ```
 app/
   main.py                     Flask API + scheduler, loads plugins from plugins/
-  templates/index.html        Interim web viewer (vanilla JS) — being replaced
+  templates/index.html        The data console (vanilla JS, no build step)
   plugins/
     base.py                   SyncPlugin interface every pull plugin implements
     __init__.py               PLUGINS registry — one line per installed plugin
