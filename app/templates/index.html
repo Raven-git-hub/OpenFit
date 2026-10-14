@@ -271,6 +271,10 @@ a.btn{display:inline-block;text-decoration:none;}
 .info dt{font-size:11.5px;text-transform:uppercase;letter-spacing:.8px;color:var(--muted);font-weight:600;padding-right:18px;}
 .info dd{justify-content:flex-end;margin:0;text-align:right;font-size:13.5px;overflow-wrap:anywhere;}
 .info dt:last-of-type, .info dd:last-of-type{border-bottom:none;}
+/* a row of preset buttons as one choice - Sync every; the chosen one is
+   .primary, and the row is inert while it loads or saves */
+.seg{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:6px;}
+.seg[aria-busy="true"]{opacity:.6;pointer-events:none;}
 /* the popup's error line takes no room until there is one */
 .src-msg:empty{display:none;}
 /* the remove gate's "Wipe data?" choice */
@@ -472,6 +476,8 @@ h5 + .dnote{margin-top:0;}
        returns the account's non-password login (an email), nothing more. */
     listConnectors:  ()            => getJSON('/api/connectors', []),
     connectorDetail: id            => fetchJSON('/api/connectors/'+enc(id)+'/detail'),
+    /* hours: one of the presets, or null for the default */
+    setConnectorCadence: (id, hours) => send('/api/connectors/'+enc(id)+'/cadence', 'PUT', {hours}),
     addConnector:    (id, values)  => send('/api/connectors/'+enc(id), 'POST', values),
     /* wipe also deletes everything the source wrote, and re-derives */
     removeConnector: (id, wipe)    => send('/api/connectors/'+enc(id)+(wipe ? '?wipe=1' : ''), 'DELETE'),
@@ -1119,10 +1125,14 @@ h5 + .dnote{margin-top:0;}
   }
 
   /* ---- a source's Settings popup ----
-     Its account (/api/connectors/<id>/detail) as an info list, and
-     Remove source behind a two-step gate in the same modal: keep or wipe
-     the data, then are-you-sure. No confirm(): the steps are the gate. */
+     Its account (/api/connectors/<id>/detail) as an info list, ending in
+     how often it syncs, and Remove source behind a two-step gate in the
+     same modal: keep or wipe the data, then are-you-sure. No confirm():
+     the steps are the gate. */
   const VIA_NAMES = {credentials:'Password', oauth:'OAuth'};
+  /* Sync every: the presets, in hours. Default (null) is the baseline -
+     no override stored - not a number of its own. */
+  const CADENCES = [[1,'1h'], [3,'3h'], [null,'Default'], [12,'12h'], [24,'24h']];
   /* A stored stamp as a Date. synced_at is SQLite's "YYYY-MM-DD HH:MM:SS",
      UTC with no zone; created_at is ISO with its offset. */
   const parseStamp = s => new Date(/(Z|[+-]\d\d:?\d\d)$/i.test(s) ? s : String(s).replace(' ','T')+'Z');
@@ -1143,6 +1153,11 @@ h5 + .dnote{margin-top:0;}
           <dt>Connected via</dt><dd data-f="via">…</dd>
           <dt>Last sync</dt><dd data-f="sync" class="tnum">…</dd>
           <dt>Added</dt><dd data-f="added" class="tnum">…</dd>
+          <dt>Sync every</dt>
+          <dd><div class="seg" data-f="cadence" role="group" aria-label="Sync every" aria-busy="true">${
+            CADENCES.map(([h, label]) =>
+              `<button class="btn sm" type="button" data-hours="${h==null ? '' : h}" aria-pressed="false">${label}</button>`
+            ).join('')}</div></dd>
         </dl>
         <div class="modal-actions split">
           <button class="btn sm danger" data-act="remove" type="button">Remove source</button>
@@ -1179,6 +1194,35 @@ h5 + .dnote{margin-top:0;}
     const msg = f('msg');
     const confirmBtn = box.querySelector('[data-act="confirm"]');
     let wipe = false;
+
+    /* Sync every: the active preset is highlighted; picking another PUTs
+       it and moves the highlight. On failure the error shows and the
+       highlight stays where it was. */
+    const seg = f('cadence');
+    const segBtns = [...seg.querySelectorAll('button')];
+    const hoursOf = b => b.dataset.hours === '' ? null : Number(b.dataset.hours);
+    let cadence;   // the active preset (null = Default); undefined until /detail lands
+    function showCadence(hours){
+      cadence = hours;
+      segBtns.forEach(b => {
+        const on = hoursOf(b) === hours;
+        b.classList.toggle('primary', on);
+        b.setAttribute('aria-pressed', String(on));
+      });
+    }
+    segBtns.forEach(b => {
+      b.onclick = async ()=>{
+        const hours = hoursOf(b);
+        // Already active: a PUT would only restart its job's timer.
+        if(hours === cadence) return;
+        seg.setAttribute('aria-busy','true');
+        msg.textContent = '';
+        const res = await api.setConnectorCadence(c.id, hours);
+        seg.removeAttribute('aria-busy');
+        if(res.ok) showCadence(hours);
+        else msg.textContent = res.error || "Couldn't change how often this source syncs";
+      };
+    });
 
     function step(name){
       box.querySelectorAll('[data-step]').forEach(s => { s.hidden = s.dataset.step!==name; });
@@ -1224,10 +1268,14 @@ h5 + .dnote{margin-top:0;}
       f('via').textContent = VIA_NAMES[d.connected_via] || cap(d.connected_via) || '—';
       f('sync').textContent = fmtSync(d.last_sync);
       f('added').textContent = fmtAdded(d.added);
+      showCadence(d.sync_is_default ? null : d.sync_hours);
+      seg.removeAttribute('aria-busy');
     }).catch(() => {
       // Remove stays usable - it's the way out of an account that won't read.
       ['login','via','sync','added'].forEach(k => { f(k).textContent = '—'; });
       msg.textContent = "Couldn't load this source's details.";
+      // So do the presets: with none highlighted, any pick is a change.
+      seg.removeAttribute('aria-busy');
     });
   }
 

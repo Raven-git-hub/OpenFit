@@ -62,8 +62,11 @@ OpenFit doesn't ingest — so it is stored verbatim).
 
 ## 3. The sync loop
 
-**Built:** APScheduler runs every `SYNC_INTERVAL_HOURS` (default 6), plus once
-shortly after startup.
+**Built:** APScheduler syncs every source once shortly after startup, then each
+connected source on its own interval job: every `SYNC_INTERVAL_HOURS` (default
+6), unless the source's Settings popup overrides it with 1, 3, 12 or 24 hours
+(the `sync_cadences` settings row). Still one sync at a time; jobs that come due
+together queue on the scheduler's single worker.
 
 **The model — trailing window, re-pull, re-derive:** each cycle re-pulls a fixed
 trailing window (7 days) per source, writes whatever comes back into that

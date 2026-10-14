@@ -64,8 +64,8 @@ once. There is no helper text in the popup.
 
 **A source's Settings popup.** The gear on a connected source's row opens it,
 on the same `.modal` chrome, titled with the source's name. It reads
-`GET /api/connectors/<id>/detail` (`{connected_via, login, added, last_sync}`)
-and shows it as a label / value list:
+`GET /api/connectors/<id>/detail` (`{connected_via, login, added, last_sync,
+sync_hours, sync_is_default}`) and shows it as a label / value list:
 
 - **Login**: the account's non-secret identifier (a Garmin email), or `—` when
   there is none. The API only ever returns non-password manifest fields here,
@@ -74,10 +74,24 @@ and shows it as a label / value list:
 - **Last sync**: the latest `synced_at` across the source's rows, stored as UTC
   and shown as a local date and time; **Never** before its first sync.
 - **Added**: when the account was stored, as a date.
+- **Sync every**: how often the source syncs, as a row of preset buttons in this
+  order: **1h · 3h · Default · 12h · 24h**. Default is the baseline
+  (`SYNC_INTERVAL_HOURS`, 6h unless the install changes it) — no override
+  stored — and is its own button, not "6h". The active preset is highlighted
+  with the existing `.btn.primary` fill: Default when `sync_is_default`,
+  otherwise the button matching `sync_hours`. Clicking another sends
+  `PUT /api/connectors/<id>/cadence` with `{hours: N}` (`{hours: null}` for
+  Default) and moves the highlight in place, with no reload; the source's next
+  scheduled sync is then that far off. Clicking the active one does nothing. On
+  failure the popup's error line shows the error and the highlight stays where
+  it was. The row is inert until the detail lands. Just the label and the
+  buttons, no explanatory note. There is no global cadence: the universal
+  Settings popup keeps its one control.
 
 Until the detail lands each value reads `…`; if it fails, they read `—` with
-"Couldn't load this source's details." under them, and Remove still works,
-since removing is the way out of an account that won't read. **Remove source**
+"Couldn't load this source's details." under them, nothing is highlighted under
+Sync every (any preset can still be picked), and Remove still works, since
+removing is the way out of an account that won't read. **Remove source**
 (danger) sits at the foot, with **Close** opposite it.
 
 Remove is a two-step gate inside the same modal. There is no browser
@@ -96,8 +110,7 @@ which also deletes the source's metrics, samples and sessions and re-derives the
 days its readings covered. On success the popup closes and the page re-reads
 both the connectors (the row goes) and the dataset (`loadData()`), so a wipe's
 effect on the rows shows at once. On failure the error shows in the popup and
-the button comes back. Per-source sync cadence isn't here yet; it arrives with
-the scheduler work.
+the button comes back.
 
 **The coming-soon placeholder.** One reusable modal (`comingSoon(title)`),
 built on the same `.modal` chrome: a title, "Coming soon." and a Close button

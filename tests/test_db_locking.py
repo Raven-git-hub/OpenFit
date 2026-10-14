@@ -2,7 +2,8 @@
 Database locking: every connection waits on a lock (busy_timeout) and
 runs in WAL, set before migrations at startup too; and one sync runs at
 a time - a manual sync that finds one running gets a 409, a scheduled
-tick that does skips, and the lock is released however a sync ends.
+tick that does (the startup catch-up, or one plugin's own job) skips,
+and the lock is released however a sync ends.
 """
 
 import sqlite3
@@ -203,6 +204,58 @@ def test_a_scheduled_tick_skips_while_a_manual_sync_runs(client, garmin, backgro
     assert "[scheduler] garmin wrote 1 day(s)" in capsys.readouterr().out
 
 
+def test_a_plugins_tick_skips_while_a_manual_sync_runs(client, garmin, background, capsys):
+    manual, result = background(post_sync)
+    assert garmin.started.wait(WAIT)
+
+    main.sync_one("garmin")
+
+    assert garmin.runs == 1
+    assert "[scheduler] sync already running, skipping garmin" in capsys.readouterr().out
+
+    garmin.finish.set()
+    manual.join(WAIT)
+    assert result["value"] == (200, {"ok": True, "days_written": 1})
+
+    # Its next tick, with nothing running, syncs.
+    main.sync_one("garmin")
+
+    assert garmin.runs == 2
+    assert "[scheduler] garmin wrote 1 day(s)" in capsys.readouterr().out
+
+
+def test_a_manual_sync_during_a_plugins_tick_gets_409(client, garmin, background):
+    tick, _ = background(lambda: main.sync_one("garmin"))
+    assert garmin.started.wait(WAIT)
+
+    resp = client.post("/api/sync/garmin")
+
+    assert resp.status_code == 409
+    assert resp.get_json() == SYNC_IN_PROGRESS
+    assert garmin.runs == 1
+
+    garmin.finish.set()
+    tick.join(WAIT)
+    assert not main._sync_lock.locked()
+
+
+def test_one_plugins_tick_skips_while_anothers_runs(client, garmin, background, monkeypatch, capsys):
+    """Every source shares the one lock: two never sync side by side."""
+    other = BlockingPlugin("google_health")
+    other.finish.set()
+    monkeypatch.setattr(main, "PLUGINS", {"garmin": garmin, "google_health": other})
+    tick, _ = background(lambda: main.sync_one("garmin"))
+    assert garmin.started.wait(WAIT)
+
+    main.sync_one("google_health")
+
+    assert other.runs == 0
+    assert "skipping google_health" in capsys.readouterr().out
+
+    garmin.finish.set()
+    tick.join(WAIT)
+
+
 def test_a_failed_sync_releases_the_lock(client, monkeypatch):
     monkeypatch.setattr(main, "PLUGINS", {"garmin": FailingPlugin("garmin")})
 
@@ -211,6 +264,9 @@ def test_a_failed_sync_releases_the_lock(client, monkeypatch):
     assert not main._sync_lock.locked()
 
     main.scheduled_sync()
+    assert not main._sync_lock.locked()
+
+    main.sync_one("garmin")
     assert not main._sync_lock.locked()
 
     # Not a 409: the next sync runs, and fails on its own terms.
