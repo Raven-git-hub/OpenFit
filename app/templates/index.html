@@ -50,6 +50,13 @@
   --warn:#c08a1a;
   --crit:#c94f4a;
 
+  /* data console - the continuity marks (rhombuses + 5-week grid).
+     Source-agnostic, so one colour; built from the tokens above, so
+     they follow the theme without a dark-mode copy of their own. */
+  --coverage:var(--accent);             /* a day / week / month with data */
+  --coverage-off:var(--surface-2);      /* a grid day with none */
+  --coverage-edge:var(--border-strong); /* the outline of an empty rhombus */
+
   --radius:14px;
   --radius-sm:9px;
   --shadow:0 1px 2px rgba(20,28,27,.06), 0 8px 24px rgba(20,28,27,.05);
@@ -121,11 +128,11 @@ button{font-family:inherit;cursor:pointer;}
 :focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:4px;}
 .tnum{font-variant-numeric:tabular-nums;}
 
-/* ---------- app shell: top bar + rhombus tab strip ---------- */
+/* ---------- app shell: top bar ---------- */
 .app{min-height:100vh;}
 .topbar{
   display:flex;align-items:flex-start;justify-content:space-between;gap:16px;
-  padding:20px 30px 0;
+  padding:20px 30px 18px;border-bottom:1px solid var(--border);
 }
 .brand{display:flex;align-items:center;gap:11px;}
 .brand-mark{
@@ -156,55 +163,7 @@ button{font-family:inherit;cursor:pointer;}
 }
 .theme-toggle:hover{border-color:var(--accent);color:var(--accent);}
 
-.tabstrip{
-  display:flex;gap:8px;align-items:flex-end;
-  padding:18px 30px 0;margin-top:8px;
-  border-bottom:1px solid var(--border);overflow-x:auto;scrollbar-width:none;
-}
-.tabstrip::-webkit-scrollbar{display:none;}
-.tab{
-  border:none;background:var(--surface-2);color:var(--ink-2);
-  font-family:var(--font-display);font-weight:700;font-size:13.5px;letter-spacing:.3px;
-  padding:11px 30px;transform:skewX(-14deg);border-radius:7px 7px 0 0;
-  white-space:nowrap;position:relative;top:1px;transition:background .12s,color .12s;
-}
-.tab>span{display:inline-block;transform:skewX(14deg);}
-.tab:hover{background:var(--surface);color:var(--ink);}
-.tab.active{background:var(--accent);color:var(--accent-ink);}
-.tab-add{margin-left:auto;background:transparent;border:1.5px dashed var(--border-strong);color:var(--muted);font-weight:600;}
-.tab-add:hover{background:transparent;border-color:var(--accent);color:var(--accent);}
-
 .main{padding:24px 30px 60px;min-width:0;}
-
-/* ---------- tile grid ---------- */
-.grid{display:grid;grid-template-columns:1fr 1fr;gap:18px;}
-.tile{
-  background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);
-  box-shadow:var(--shadow);display:flex;flex-direction:column;min-height:270px;overflow:hidden;
-}
-.tile-head{
-  display:flex;align-items:center;justify-content:space-between;
-  padding:14px 16px 10px;
-}
-.tile-title{display:flex;align-items:center;gap:9px;font-family:var(--font-display);font-weight:700;font-size:15px;}
-.tile-title .swatch{width:9px;height:9px;border-radius:3px;flex:none;}
-.tile-menu-btn{
-  border:none;background:none;color:var(--muted);border-radius:7px;
-  width:30px;height:26px;font-size:19px;line-height:1;letter-spacing:1px;display:grid;place-items:center;
-}
-.tile-menu-btn:hover{background:var(--surface-2);color:var(--ink);}
-.tile-body{padding:2px 16px 16px;flex:1;display:flex;flex-direction:column;min-height:0;}
-.tile-foot{display:flex;justify-content:flex-end;padding-top:8px;}
-.linkish{border:none;background:none;color:var(--muted);font-family:var(--font-mono);font-size:11px;padding:2px 0;}
-.linkish:hover{color:var(--crit);}
-
-/* empty states */
-.empty{
-  flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;
-  text-align:center;color:var(--muted);padding:18px;
-}
-.empty svg{width:34px;height:34px;stroke:var(--border-strong);fill:none;stroke-width:1.6;}
-.empty .cta{color:var(--accent);font-weight:600;font-size:13.5px;}
 
 /* buttons + inputs */
 .btn{
@@ -233,61 +192,7 @@ a.btn{display:inline-block;text-decoration:none;}
 .form-msg{font-size:12px;font-family:var(--font-mono);margin-top:8px;min-height:16px;}
 .form-msg.ok{color:var(--good);}
 .form-msg.bad{color:var(--crit);}
-
-/* ---------- weight chart ---------- */
-.chart-wrap{flex:1;display:flex;flex-direction:column;min-height:0;}
-.chart-readout{display:flex;gap:18px;align-items:baseline;margin:2px 0 8px;flex-wrap:wrap;}
-.readout-big{font-family:var(--font-display);font-weight:800;font-size:30px;letter-spacing:-.5px;}
-.readout-big small{font-size:15px;font-weight:600;color:var(--muted);margin-left:2px;}
-.trend-good{color:var(--good);font-weight:700;font-size:13px;font-family:var(--font-mono);}
-.trend-up{color:var(--ink-2);font-weight:700;font-size:13px;font-family:var(--font-mono);}
-svg.chart{width:100%;height:auto;display:block;overflow:visible;}
-.chart-dot{cursor:pointer;}
-
-/* ---------- add-data accordion ---------- */
-.acc{display:flex;flex-direction:column;gap:8px;}
-.acc-row{border:1px solid var(--border);border-radius:var(--radius-sm);overflow:hidden;background:var(--inset);}
-.acc-btn{
-  width:100%;display:flex;align-items:center;justify-content:space-between;gap:10px;
-  padding:11px 13px;background:none;border:none;color:var(--ink);font-weight:600;font-size:14px;
-}
-.acc-btn .lead{display:flex;align-items:center;gap:10px;}
-.acc-btn .ic{width:17px;height:17px;stroke:var(--muted);fill:none;stroke-width:1.9;}
-.acc-btn .chev{color:var(--muted);transition:transform .15s;}
-.acc-row.open .acc-btn .chev{transform:rotate(90deg);}
-.acc-panel{display:none;padding:0 13px 13px;}
-.acc-row.open .acc-panel{display:block;}
-.add-grid{display:grid;grid-template-columns:1fr 1fr;gap:9px;margin-bottom:9px;}
-
-/* ---------- activity log ---------- */
-.act-list{display:flex;flex-direction:column;gap:7px;overflow-y:auto;}
-.act-item{
-  display:flex;align-items:center;justify-content:space-between;gap:10px;
-  padding:9px 11px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--inset);
-}
-.act-when{font-family:var(--font-mono);font-size:12px;color:var(--muted);flex:none;width:52px;}
-.act-main{flex:1;min-width:0;}
-.act-metrics{font-size:13.5px;color:var(--ink-2);}
-.act-tags{display:flex;gap:5px;flex:none;flex-wrap:wrap;justify-content:flex-end;}
-.tag{
-  font-family:var(--font-mono);font-size:10.5px;font-weight:500;letter-spacing:.2px;
-  padding:3px 7px;border-radius:20px;display:inline-flex;align-items:center;gap:5px;white-space:nowrap;flex:none;
-}
-.tag::before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor;opacity:.9;}
-.tag.garmin{color:#3aa2c9;background:color-mix(in srgb,#3aa2c9 15%,transparent);}
-.tag.pixel{color:var(--m-steps);background:color-mix(in srgb,var(--m-steps) 16%,transparent);}
-.tag.manual{color:var(--muted);background:var(--surface-2);}
-.totals{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:12px;padding-top:12px;border-top:1px solid var(--border);}
-.tot{display:flex;flex-direction:column;gap:1px;}
-.tot .n{font-family:var(--font-display);font-weight:700;font-size:18px;}
-.tot .l{font-size:10.5px;text-transform:uppercase;letter-spacing:.6px;color:var(--muted);}
-.cal-strip{margin-top:11px;padding-top:11px;border-top:1px dashed var(--border);display:flex;flex-direction:column;gap:8px;}
-.webhook{
-  display:flex;align-items:center;gap:8px;background:var(--inset);border:1px solid var(--border);
-  border-radius:var(--radius-sm);padding:4px 4px 4px 11px;
-}
-.webhook code{font-family:var(--font-mono);font-size:11.5px;color:var(--muted);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
-.soon{font-family:var(--font-mono);font-size:10px;text-transform:uppercase;letter-spacing:.6px;color:var(--muted);border:1px solid var(--border);border-radius:20px;padding:2px 7px;flex:none;}
+.form-msg.info{color:var(--muted);}
 
 /* ---------- popover menu ---------- */
 .pop{
@@ -298,59 +203,135 @@ svg.chart{width:100%;height:auto;display:block;overflow:visible;}
 .pop-item{display:flex;align-items:center;gap:9px;width:100%;border:none;background:none;color:var(--ink);
   padding:8px 9px;border-radius:7px;font-size:13.5px;text-align:left;}
 .pop-item:hover{background:var(--surface-2);}
-.pop-item .sw{width:9px;height:9px;border-radius:3px;flex:none;}
-.pop-item.cur{color:var(--accent);font-weight:600;}
 
-/* ---------- plan + config pages ---------- */
-.stack{display:flex;flex-direction:column;gap:18px;max-width:760px;}
+/* ---------- cards ---------- */
+.console{display:flex;flex-direction:column;gap:18px;max-width:940px;}
 .card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow);padding:20px;}
 .card h3{font-family:var(--font-display);font-weight:700;font-size:17px;margin:0 0 3px;}
 .card .hint{color:var(--muted);font-size:13px;margin:0 0 16px;}
-.row2{display:grid;grid-template-columns:1fr 1fr;gap:12px;}
-.goal-type{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:14px;}
-.goal-type button{
-  border:1px solid var(--border);background:var(--inset);border-radius:var(--radius-sm);
-  padding:12px 10px;text-align:left;color:var(--ink-2);
-}
-.goal-type button.on{border-color:var(--accent);background:var(--accent-soft);color:var(--accent);}
-.goal-type b{display:block;font-family:var(--font-display);font-size:13.5px;margin-bottom:2px;color:inherit;}
-.goal-type span{font-size:11.5px;color:var(--muted);}
-.src{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 0;border-bottom:1px solid var(--border);}
-.src:last-child{border-bottom:none;}
-.src-l{display:flex;align-items:center;gap:12px;min-width:0;}
+
+/* ---------- connected sources ---------- */
+.src{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 0;border-bottom:1px solid var(--border);}
+.src-name{font-weight:600;min-width:0;}
 .src-r{display:flex;align-items:center;gap:10px;flex:none;}
-.src-ic{width:38px;height:38px;border-radius:9px;display:grid;place-items:center;background:var(--inset);border:1px solid var(--border);font-family:var(--font-mono);font-weight:600;font-size:13px;flex:none;}
 .pill{font-size:11px;font-weight:600;padding:4px 9px;border-radius:20px;font-family:var(--font-mono);white-space:nowrap;}
 .pill.ok{color:var(--good);background:color-mix(in srgb,var(--good) 14%,transparent);}
 .pill.wait{color:var(--warn);background:color-mix(in srgb,var(--warn) 14%,transparent);}
-.addtab{border:1.5px dashed var(--border-strong);background:var(--inset);border-radius:var(--radius);padding:22px;text-align:center;}
-/* add-a-device row at the foot of Connected sources */
-.src-add{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding-top:16px;margin-top:2px;border-top:1px solid var(--border);}
-.src-add label{font-size:11.5px;text-transform:uppercase;letter-spacing:.8px;color:var(--muted);font-weight:600;}
-.src-add select.input{width:auto;min-width:200px;flex:0 1 260px;}
+.pill.primary{color:var(--accent);background:var(--accent-soft);letter-spacing:.6px;}
+/* the Add source button at the foot of Connected sources */
+.src-add{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding-top:14px;margin-top:2px;border-top:1px solid var(--border);}
+.src + .src-add{border-top:none;margin-top:0;}
+.src-add-note{color:var(--muted);font-size:12.5px;}
+
 /* ---------- floating add-device modal ---------- */
 .modal-bg{position:fixed;inset:0;z-index:80;background:color-mix(in srgb,var(--ink) 45%,transparent);display:grid;place-items:center;padding:20px;}
 .modal{background:var(--surface);border:1px solid var(--border-strong);border-radius:var(--radius);box-shadow:var(--shadow);padding:20px;width:min(420px,100%);max-height:88vh;overflow:auto;}
 .modal h4{font-family:var(--font-display);font-weight:700;font-size:16px;margin:0 0 3px;}
+.modal .hint{color:var(--muted);font-size:13px;margin:0 0 16px;}
 .modal .field{margin-bottom:12px;}
 .modal-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:16px;}
-.tab-choose{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:14px;}
-.choose{border:1px solid var(--border);border-radius:var(--radius-sm);padding:16px;background:var(--surface);text-align:left;}
-.choose b{font-family:var(--font-display);display:block;margin-bottom:4px;}
-.choose span{font-size:12px;color:var(--muted);}
 .note-box{font-size:12.5px;color:var(--ink-2);background:var(--inset);border:1px solid var(--border);border-left:3px solid var(--accent);border-radius:8px;padding:11px 13px;line-height:1.55;}
 .mono{font-family:var(--font-mono);}
 
+/* ---------- the data card ----------
+   One row per metric, series and session kind:
+   chevron · name · reading · cadence · (gap) · Day/Wk/Mth rhombuses.
+   The caption row uses the same grid, so its captions sit over the
+   columns they name. */
+.card.data{padding:20px 10px 10px;}
+.card.data .card-head{padding:0 10px;}
+.dgrid{display:grid;grid-template-columns:16px minmax(0,200px) 120px 90px 1fr auto;align-items:center;column-gap:12px;}
+.dcap{
+  padding:0 10px 8px;border-bottom:1px solid var(--border);
+  font-size:10.5px;text-transform:uppercase;letter-spacing:.8px;color:var(--muted);font-weight:600;
+}
+.ditem{border-bottom:1px solid var(--border);}
+.ditem:last-child{border-bottom:none;}
+.drow{
+  width:100%;border:none;background:none;color:var(--ink);text-align:left;
+  padding:11px 10px;border-radius:var(--radius-sm);font-size:14px;
+}
+.drow:hover{background:var(--inset);}
+.ditem .chev{color:var(--muted);display:inline-block;transition:transform .15s;}
+.ditem.open .chev{transform:rotate(90deg);}
+.d-name{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.d-read{font-family:var(--font-mono);font-size:13px;color:var(--ink-2);white-space:nowrap;}
+.d-cad{font-size:12.5px;color:var(--muted);}
+.dcap > *{font-size:inherit;color:inherit;}
+/* not yet reporting: dimmed, but still opens */
+.ditem.dim .drow > *{opacity:.55;}
+.dgroup{
+  display:flex;align-items:center;gap:10px;padding:16px 10px 6px;
+  font-size:10.5px;text-transform:uppercase;letter-spacing:.9px;color:var(--muted);font-weight:700;
+}
+.dgroup::after{content:"";flex:1;height:1px;background:var(--border);}
+
+/* continuity rhombuses - skewed like the tab strip they replaced.
+   Fill opacity (--op) is the coverage; an outline alone means none. */
+.rhs{display:flex;}
+.rh-cell{width:34px;display:grid;place-items:center;text-align:center;}
+.rh{
+  width:20px;height:13px;transform:skewX(-14deg);border-radius:3px;
+  border:1.5px solid var(--coverage);position:relative;overflow:hidden;
+}
+.rh::before{content:"";position:absolute;inset:0;background:var(--coverage);opacity:var(--op,0);}
+.rh.none{border-color:var(--coverage-edge);}
+
+/* expanded row: source priority on the left, the 5-week grid on the right */
+.dpanel{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:18px 32px;padding:6px 10px 18px 38px;}
+.dpanel h5{margin:0 0 8px;font-size:10.5px;text-transform:uppercase;letter-spacing:.8px;color:var(--muted);font-weight:600;}
+.slist{display:flex;flex-direction:column;gap:6px;max-width:320px;}
+.stile{
+  display:flex;align-items:center;gap:10px;padding:8px 11px;
+  border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--inset);
+  font-weight:600;font-size:13.5px;user-select:none;-webkit-user-select:none;
+}
+.stile .pill{margin-left:auto;}
+.stile .grip{color:var(--muted);font-size:13px;letter-spacing:-2px;}
+.slist.sortable .stile{cursor:grab;touch-action:none;}
+.stile.dragging{border-color:var(--accent);background:var(--surface);box-shadow:var(--shadow);cursor:grabbing;}
+.slist[aria-busy="true"]{opacity:.6;pointer-events:none;}
+.dnote{font-size:12.5px;color:var(--muted);margin:10px 0 0;max-width:340px;}
+h5 + .dnote{margin-top:0;}
+
+/* 5-week grid: 5 rows of 7 days ending today, labelled by each row's first day */
+.wk{display:grid;grid-template-columns:auto repeat(7,18px);gap:4px;align-items:center;}
+.wk .wl{font-family:var(--font-mono);font-size:10.5px;color:var(--muted);padding-right:6px;white-space:nowrap;}
+.wk .wd{font-family:var(--font-mono);font-size:10px;color:var(--muted);text-align:center;}
+.day{width:18px;height:18px;border-radius:4px;background:var(--coverage-off);}
+.day.on{background:var(--coverage);}
+.day.today{outline:1.5px solid var(--ink-2);outline-offset:1px;}
+
+.dstate{padding:28px 10px 22px;text-align:center;color:var(--muted);font-size:13.5px;}
+
+/* hover/focus tooltip for anything carrying data-tip */
+.tip{
+  position:fixed;z-index:90;pointer-events:none;max-width:260px;
+  background:var(--ink);color:var(--bg);font-family:var(--font-mono);font-size:11px;line-height:1.4;
+  padding:5px 9px;border-radius:7px;box-shadow:var(--shadow);
+}
+
+/* ---------- settings disclosure ---------- */
+details.settings > summary{list-style:none;display:flex;align-items:center;justify-content:space-between;cursor:pointer;}
+details.settings > summary::-webkit-details-marker{display:none;}
+details.settings > summary h3{margin:0;}
+details.settings .chev{color:var(--muted);transition:transform .15s;}
+details.settings[open] .chev{transform:rotate(90deg);}
+.set-body{margin-top:16px;display:flex;flex-direction:column;gap:10px;align-items:flex-start;}
+.set-body .hint{margin:0;}
+
 /* ---------- responsive: phone ---------- */
 @media (max-width:860px){
-  .topbar{padding:14px 15px 0;}
+  .topbar{padding:14px 15px 14px;}
   .brand-name{font-size:20px;}
-  .tabstrip{padding:14px 15px 0;gap:6px;}
-  .tab{padding:10px 20px;font-size:12.5px;}
   .main{padding:18px 15px 60px;}
-  .grid{grid-template-columns:1fr;}
-  .tile{min-height:auto;}
-  .row2, .add-grid, .tab-choose, .goal-type{grid-template-columns:1fr;}
+}
+@media (max-width:640px){
+  .dgrid{grid-template-columns:12px minmax(0,1fr) auto auto;column-gap:10px;}
+  .d-cad, .d-gap{display:none;}
+  .rh-cell{width:28px;}
+  .dpanel{grid-template-columns:1fr;padding-left:10px;}
+  .src{flex-wrap:wrap;}
 }
 @media (prefers-reduced-motion:reduce){*{transition:none!important;}}
 </style>
@@ -373,14 +354,28 @@ svg.chart{width:100%;height:auto;display:block;overflow:visible;}
     </div>
   </header>
 
-  <nav class="tabstrip">
-    <button class="tab active" data-tab="home"><span>Home</span></button>
-    <button class="tab" data-tab="plan"><span>Plan</span></button>
-    <button class="tab" data-tab="config"><span>Configuration</span></button>
-    <button class="tab tab-add" id="addTabBtn"><span>＋ Add</span></button>
-  </nav>
+  <main class="main">
+    <div class="console">
+      <section class="card" id="sourcesCard" aria-label="Connected sources"></section>
+      <section class="card data" id="dataCard" aria-label="Your data"></section>
 
-  <main class="main" id="main"></main>
+      <details class="card settings">
+        <summary><h3>Settings</h3><span class="chev" aria-hidden="true">›</span></summary>
+        <div class="set-body">
+          <div class="field"><label>Appearance</label></div>
+          <div class="seg" id="cfgTheme">
+            <button type="button" data-t="auto">Auto</button><button type="button" data-t="light">Light</button><button type="button" data-t="dark">Dark</button>
+          </div>
+          <p class="hint">Remembered in this browser only - it is not stored with your data.</p>
+          <div class="note-box">
+            Want to go further than the theme? Every colour, font and radius is a CSS variable in the
+            <span class="mono">CUSTOMISE OPENFIT HERE</span> block at the top of <span class="mono">index.html</span>.
+            Change a handful of tokens and the whole interface re-skins - no hunting through markup.
+          </div>
+        </div>
+      </details>
+    </div>
+  </main>
 </div>
 
 <script>
@@ -394,6 +389,7 @@ svg.chart{width:100%;height:auto;display:block;overflow:visible;}
      source name) goes through here first. */
   const esc = s => String(s==null?'':s).replace(/[&<>"']/g, c =>
     ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  const enc = encodeURIComponent;
 
   /* =========================================================
      API - the only place that knows about URLs
@@ -401,6 +397,13 @@ svg.chart{width:100%;height:auto;display:block;overflow:visible;}
   async function getJSON(url, fallback){
     try{ const r = await fetch(url); return r.ok ? await r.json() : fallback; }
     catch(e){ return fallback; }
+  }
+  /* The console's own reads. A failure here is shown, not papered over
+     with an empty fallback that would read as "no data". */
+  async function fetchJSON(url){
+    const r = await fetch(url);
+    if(!r.ok) throw new Error(url+' -> '+r.status);
+    return r.json();
   }
   async function send(url, method, body){
     try{
@@ -416,84 +419,85 @@ svg.chart{width:100%;height:auto;display:block;overflow:visible;}
 
   const ACTIVITY_DAYS = 14;
   const api = {
-    listWeights:  ()             => getJSON('/api/weights', []),
-    addWeight:    (date, weight) => send('/api/weights', 'POST', {date, weight}),
-    clearWeights: ()             => send('/api/weights', 'DELETE'),
-    /* by_source=1 keeps the per-device rows so each day can be tagged
-       with what reported it; they are merged back per date below. */
+    /* The access contract: what there is, which days hold it, and who
+       is primary for each metric. */
+    catalog:      ()             => fetchJSON('/api/catalog?include_empty=1'),
+    coverage:     ()             => fetchJSON('/api/coverage'),
+    sourceRoles:  ()             => fetchJSON('/api/source-roles'),
+    setPrimary:   (metric, src)  => send('/api/source-roles/'+enc(metric), 'PUT', {primary:src}),
+    sessions:     (kind, from)   => getJSON('/api/sessions/'+enc(kind)+(from ? '?from='+enc(from) : ''), null),
+    /* Only for the top bar's last-sync stamp: the per-source rows carry
+       synced_at, which nothing in the access contract does. */
     listActivity: days           => getJSON('/api/activity?days='+days+'&by_source=1', []),
     /* Connectors = plugins + whatever account has been attached to them.
        Credentials go one way only: they are posted here and never read
        back, so nothing on this page can display a stored password. */
     listConnectors:  ()            => getJSON('/api/connectors', []),
-    addConnector:    (id, values)  => send('/api/connectors/'+encodeURIComponent(id), 'POST', values),
-    removeConnector: id            => send('/api/connectors/'+encodeURIComponent(id), 'DELETE'),
+    addConnector:    (id, values)  => send('/api/connectors/'+enc(id), 'POST', values),
+    removeConnector: id            => send('/api/connectors/'+enc(id), 'DELETE'),
     /* OAuth connectors are added in two calls: start hands back a consent
        URL (and keeps the PKCE verifier server-side), finish takes the code
        the provider put in the address bar. */
-    oauthStart:      (id, values)  => send('/api/connectors/'+encodeURIComponent(id)+'/oauth/start', 'POST', values),
-    oauthFinish:     (id, code)    => send('/api/connectors/'+encodeURIComponent(id)+'/oauth/finish', 'POST', {code}),
-    syncPlugin:   id             => send('/api/sync/'+encodeURIComponent(id)+'?days=7', 'POST'),
-    getSetting:   async key      => (await getJSON('/api/settings/'+encodeURIComponent(key), {})).value ?? null,
-    putSetting:   (key, value)   => send('/api/settings/'+encodeURIComponent(key), 'PUT', {value}),
+    oauthStart:      (id, values)  => send('/api/connectors/'+enc(id)+'/oauth/start', 'POST', values),
+    oauthFinish:     (id, code)    => send('/api/connectors/'+enc(id)+'/oauth/finish', 'POST', {code}),
+    syncPlugin:   id             => send('/api/sync/'+enc(id)+'?days=7', 'POST'),
   };
 
   /* =========================================================
-     Sources: activity.source -> a name a human recognises.
-     A new plugin needs one line here; anything unmapped still
-     shows up, labelled with its raw source id.
+     NAMES - the catalog speaks in raw keys and source ids.
+     Display names live here for now; they could move into the
+     vocabulary (app/metrics.py) later. Anything unmapped still
+     shows up, prettified.
      ========================================================= */
-  const SOURCES = {
-    garmin:        {name:'Garmin',        cls:'garmin'},
-    google_health: {name:'Google Health', cls:'pixel'},
-    // e.g. pixel_watch_4: {name:'Pixel Watch 4', cls:'pixel'},
+  const METRIC_NAMES = {
+    steps:'Steps', resting_hr_bpm:'Resting HR', active_kcal:'Active calories',
+    total_kcal:'Total calories', floors:'Floors', intensity_moderate_min:'Moderate intensity',
+    intensity_vigorous_min:'Vigorous intensity', distance_m:'Distance', sleep_minutes:'Sleep duration',
+    spo2_pct:'SpO₂ (daily)', respiratory_rate_brpm:'Respiration (daily)', hrv_ms:'HRV',
+    vo2_max:'VO₂ max', body_fat_pct:'Body fat', bmi:'BMI', hydration_ml:'Hydration', weight_kg:'Weight',
+    heart_rate:'Heart rate', respiration:'Respiration', spo2:'SpO₂',
+    sleep:'Sleep', workout:'Workouts',
   };
-  const sourceInfo = id => SOURCES[id] || {name: id || 'Unknown', cls:'manual'};
+  const titleCase = s => String(s||'').split(/[_\-\s]+/).filter(Boolean)
+    .map(w => w[0].toUpperCase() + w.slice(1)).join(' ');
+  const metricName = key => METRIC_NAMES[key] ||
+    titleCase(String(key).replace(/_(bpm|brpm|min|minutes|kcal|pct|ms|ml|kg|m|count)$/, '')) || key;
+  /* "garmin" -> "Garmin", "google_health" -> "Google Health"; a pushed
+     source ("eufy") reads the same way. */
+  const srcName = id => titleCase(id) || 'Unknown';
+  const UNIT_LABEL = {'kg/m2':'kg/m²'};
+  const cap = s => s ? s[0].toUpperCase() + s.slice(1) : '';
 
   /* =========================================================
      STATE - all of it comes from the API. Nothing is seeded:
      a fresh install starts genuinely blank.
      ========================================================= */
-  const SLOTS = ['tl','tr','bl','br'];
-  const TILES_KEY = 'home_tiles';
-  const DEFAULT_TILES = {tl:'weight', tr:'adddata', bl:'activity', br:'today'};
-
   const state = {
-    tab:'home',
-    weights:[],       // [{date, weight}] ascending. Always kilograms.
-    activity:[],      // raw per-source rows from /api/activity?by_source=1
-    connectors:[],   // [{id, name, fields, add_flow, add_note, connected, configured}]
-    tiles:Object.assign({}, DEFAULT_TILES),
-    unit:readUnit(),  // display/entry unit - a per-browser preference
-    addOpen:'weight', // which add-data row is expanded
+    connectors:null,   // [{id, name, fields, add_flow, add_note, connected, configured}]; null until loaded
+    activity:[],       // per-source rows, only for the last-sync stamp
+    status:'loading',  // the data card: loading | ready | error
+    stale:false,       // a refresh failed; the last good load is still shown
+    data:null,         // {rows, coverage, win}
+    roles:{},          // /api/source-roles: {metric: {primary, configured, sources}}
+    latest:{},         // session kind -> its latest session (for the Reading)
+    sessionSources:{}, // session kind -> [source] | 'loading' | 'error' (fetched on expand)
+    open:new Set(),    // ids of expanded rows - they stay open across a refresh
+    note:{},           // row id -> {cls, text}: what the last priority change did
   };
 
-  const WIDGETS = {
-    weight:   {name:'Weight progress',      sw:'--m-weight', render:renderWeight},
-    adddata:  {name:'Add data',             sw:'--accent',   render:renderAddData},
-    activity: {name:'Activity log',         sw:'--m-steps',  render:renderActivity},
-    today:    {name:"Today's plan & goals", sw:'--m-heart',  render:renderToday},
-    steps:    {name:'Steps trend',          sw:'--m-steps',  render:renderStepsTrend},
-    sleep:    {name:'Sleep',                sw:'--m-sleep',  render:renderSleep},
-  };
-
-  /* ---------- units ----------
-     OpenFit stores kilograms; the API carries a bare number and has no
-     unit column. The kg/lb choice is therefore presentation only - it
-     lives in localStorage next to the theme, and pounds are converted
-     to kg on the way in and back on the way out. */
-  const KG_PER_LB = 0.45359237;
-  function readUnit(){ try{ return localStorage.getItem('of-unit')==='lb' ? 'lb' : 'kg'; }catch(e){ return 'kg'; } }
-  function setUnit(u){
-    state.unit = u;
-    try{ localStorage.setItem('of-unit', u); }catch(e){}
-    renderHome();
-  }
-  const toDisplay = kg => state.unit==='lb' ? kg/KG_PER_LB : kg;
-  const toKg      = v  => state.unit==='lb' ? v*KG_PER_LB : v;
-
-  /* ---------- dates ---------- */
-  const fmtDay = iso => new Date(iso+'T00:00:00').toLocaleDateString('en-GB',{day:'numeric',month:'short'});
+  /* ---------- dates ----------
+     Coverage dates are plain YYYY-MM-DD; they are compared as whole
+     days (UTC day numbers), so no time zone can shift one. */
+  const DAY_MS = 864e5;
+  const dayNum   = iso => Date.UTC(+iso.slice(0,4), +iso.slice(5,7)-1, +iso.slice(8,10)) / DAY_MS;
+  const isoOf    = n   => new Date(n*DAY_MS).toISOString().slice(0,10);
+  const monthNum = iso => (+iso.slice(0,4))*12 + (+iso.slice(5,7)) - 1;
+  const fmtDay   = iso => new Date(iso+'T00:00:00').toLocaleDateString('en-GB',{day:'numeric',month:'short'});
+  const fmtDayY  = iso => new Date(iso+'T00:00:00').toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'});
+  const fmtDayW  = iso => new Date(iso+'T00:00:00').toLocaleDateString('en-GB',{weekday:'short',day:'numeric',month:'short'});
+  const weekday1 = iso => new Date(iso+'T00:00:00').toLocaleDateString('en-GB',{weekday:'narrow'});
+  /* A session start or sample ts (ISO, UTC), shown as the viewer's day. */
+  const fmtStamp = s => { const d = new Date(s); return isNaN(d.getTime()) ? '' : d.toLocaleDateString('en-GB',{day:'numeric',month:'short'}); };
   const todayISO = () => {
     const d = new Date();
     return new Date(d.getTime() - d.getTimezoneOffset()*60000).toISOString().slice(0,10);
@@ -508,554 +512,559 @@ svg.chart{width:100%;height:auto;display:block;overflow:visible;}
   }
 
   /* =========================================================
-     ACTIVITY: per-source rows -> one row per day
+     THE DATASET - catalog + coverage + source roles, one load
      ========================================================= */
-  const METRICS = ['steps','resting_hr','sleep_hours'];
-  function activityByDay(rows){
-    const days = new Map();
-    rows.forEach(r=>{
-      let d = days.get(r.date);
-      if(!d){
-        d = {date:r.date, steps:null, resting_hr:null, sleep_hours:null, sources:[]};
-        days.set(r.date, d);
-      }
-      // First non-null wins, in the order the API returned the rows.
-      METRICS.forEach(m=>{ if(d[m]==null && r[m]!=null) d[m] = r[m]; });
-      if(r.source && !d.sources.includes(r.source)) d.sources.push(r.source);
-    });
-    return Array.from(days.values());   // API orders date DESC
-  }
-  function activityTotals(days){
-    const sum = k => days.reduce((a,d)=> a + (d[k]!=null ? d[k] : 0), 0);
-    const avg = k => {
-      const v = days.map(d=>d[k]).filter(x=>x!=null);
-      return v.length ? v.reduce((a,b)=>a+b,0)/v.length : null;
-    };
-    return {steps:sum('steps'), sleep:avg('sleep_hours'), hr:avg('resting_hr'), days:days.length};
-  }
-  const compact = n => n>=10000 ? (n/1000).toFixed(1)+'k' : num(Math.round(n));
-
-  /* =========================================================
-     NAV
-     ========================================================= */
-  document.querySelectorAll('.tab[data-tab]').forEach(b=>{
-    b.onclick = ()=>{ state.tab = b.dataset.tab; syncNav(); route(); };
-  });
-  $('#addTabBtn').onclick = ()=>{ state.tab='config'; syncNav(); route(); };
-  function syncNav(){
-    document.querySelectorAll('.tab[data-tab]').forEach(b=>b.classList.toggle('active', b.dataset.tab===state.tab));
-  }
-  function route(){
-    closePop();
-    if(state.tab==='home') return renderHome();
-    if(state.tab==='plan') return renderPlan();
-    return renderConfig();
-  }
-
-  /* =========================================================
-     HOME - 2x2 tile grid
-     ========================================================= */
-  function renderHome(){
-    const m = $('#main'); m.innerHTML='';
-    const grid = el('div','grid');
-    SLOTS.forEach(slot=> grid.appendChild(makeTile(slot)));
-    m.appendChild(grid);
-  }
-
-  function makeTile(slot){
-    const w = WIDGETS[state.tiles[slot]] || WIDGETS[DEFAULT_TILES[slot]];
-    const tile = el('div','tile');
-    const head = el('div','tile-head',
-      `<div class="tile-title"><span class="swatch" style="background:var(${w.sw})"></span>${esc(w.name)}</div>`);
-    const menu = el('button','tile-menu-btn','⋯');
-    menu.setAttribute('aria-label','Change this tile');
-    menu.onclick = e => openTileMenu(e, slot);
-    head.appendChild(menu);
-    const body = el('div','tile-body');
-    tile.appendChild(head); tile.appendChild(body);
-    w.render(body);
-    return tile;
-  }
-
-  /* ---- WEIGHT tile ---- */
-  function renderWeight(body){
-    if(!state.weights.length){
-      body.appendChild(emptyState('scale', 'No weigh-ins yet',
-        'Add your first weight from the Add data tile - the line and your trend appear here.'));
-      return;
+  async function loadData(){
+    if(!state.data){ state.status = 'loading'; paintData(); }
+    try{
+      const [catalog, coverage, roles] = await Promise.all([api.catalog(), api.coverage(), api.sourceRoles()]);
+      state.latest = await latestSessions(catalog.sessions || []);
+      state.data = {rows:buildRows(catalog), coverage, win:coverageWindow(coverage)};
+      state.roles = roles || {};
+      state.sessionSources = {};
+      state.status = 'ready';
+      state.stale = false;
+    }catch(e){
+      if(state.data) state.stale = true;
+      else state.status = 'error';
     }
-    const wrap = el('div','chart-wrap');
-    const first = toDisplay(state.weights[0].weight);
-    const cur   = toDisplay(state.weights[state.weights.length-1].weight);
-    const delta = cur - first;
-    const since = state.weights.length > 1
-      ? `<span class="${delta<=0?'trend-good':'trend-up'} tnum">${delta<=0?'▼':'▲'} ${Math.abs(delta).toFixed(1)} ${state.unit}</span>
-         <span style="color:var(--muted);font-size:12px;"> · since ${esc(fmtDay(state.weights[0].date))}</span>`
-      : `<span style="color:var(--muted);font-size:12px;">first weigh-in · ${esc(fmtDay(state.weights[0].date))}</span>`;
-
-    wrap.appendChild(el('div','chart-readout',
-      `<div class="readout-big tnum">${cur.toFixed(1)}<small>${state.unit}</small></div><div>${since}</div>`));
-    wrap.appendChild(buildWeightChart());
-    body.appendChild(wrap);
-
-    const foot = el('div','tile-foot');
-    const clear = el('button','linkish','Clear weight log');
-    clear.onclick = async ()=>{
-      if(!window.confirm('Delete every weigh-in? This cannot be undone.')) return;
-      await api.clearWeights();
-      state.weights = await api.listWeights();
-      renderHome();
-    };
-    foot.appendChild(clear);
-    body.appendChild(foot);
+    paintData();
   }
 
-  function buildWeightChart(){
-    const W=440, H=150, pad=26;
-    const pts = state.weights.map(e=>({
-      t: Date.parse(e.date+'T00:00:00'),
-      w: toDisplay(e.weight),
-      label: fmtDay(e.date),
+  /* One row per catalog entry - metrics, then series, then sessions,
+     each in the order the catalog lists them (vocabulary order). `cov`
+     names the /api/coverage map its dates are in. */
+  function buildRows(catalog){
+    const rows = [];
+    (catalog.metrics  || []).forEach(e => rows.push(Object.assign({}, e, {id:'metric:'+e.metric, key:e.metric, cov:'metrics'})));
+    (catalog.series   || []).forEach(e => rows.push(Object.assign({}, e, {id:'series:'+e.metric, key:e.metric, cov:'series'})));
+    (catalog.sessions || []).forEach(e => rows.push(Object.assign({}, e, {id:'session:'+e.kind, key:e.kind, cov:'sessions'})));
+    return rows;
+  }
+  const datesOf = row => {
+    const map = state.data && state.data.coverage && state.data.coverage[row.cov];
+    const list = map && map[row.key];
+    return Array.isArray(list) ? list : [];
+  };
+
+  /* For a session kind's Reading: its latest session, from the last day
+     one started on (one small range read, not the whole history). */
+  async function latestSessions(kinds){
+    const out = {};
+    await Promise.all(kinds.filter(k => k.count > 0 && k.last).map(async k => {
+      const list = await api.sessions(k.kind, String(k.last).slice(0,10));
+      if(Array.isArray(list) && list.length) out[k.kind] = list[list.length-1];
     }));
-    const ws = pts.map(p=>p.w);
-    let lo = Math.min(...ws), hi = Math.max(...ws);
-    const padY = Math.max(0.5, (hi-lo)*0.15);   // a flat run still needs a band
-    lo -= padY; hi += padY;
-
-    const t0 = pts[0].t, t1 = pts[pts.length-1].t;
-    const span = (t1 - t0) || 1;
-    const X = t => pts.length===1 ? W/2 : pad + ((t-t0)/span)*(W-pad*2);
-    const Y = w => H-pad - ((w-lo)/(hi-lo))*(H-pad*2);
-
-    let line='', area='';
-    if(pts.length > 1){
-      line = pts.map((p,i)=>(i?'L':'M')+X(p.t).toFixed(1)+','+Y(p.w).toFixed(1)).join(' ');
-      area = `${line} L${X(t1).toFixed(1)},${H-pad} L${X(t0).toFixed(1)},${H-pad} Z`;
-    }
-    const dots = pts.map(p=>
-      `<circle class="chart-dot" cx="${X(p.t).toFixed(1)}" cy="${Y(p.w).toFixed(1)}" r="3.4" fill="var(--surface)" stroke="var(--m-weight)" stroke-width="2"><title>${esc(p.label)}: ${p.w.toFixed(1)}${state.unit}</title></circle>`
-    ).join('');
-    const last = pts[pts.length-1];
-
-    return el('div','chart-wrap', `
-      <svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Weight over time">
-        <defs><linearGradient id="wg" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0" stop-color="var(--m-weight)" stop-opacity=".18"/>
-          <stop offset="1" stop-color="var(--m-weight)" stop-opacity="0"/>
-        </linearGradient></defs>
-        ${area ? `<path d="${area}" fill="url(#wg)"/>` : ''}
-        ${line ? `<path d="${line}" fill="none" stroke="var(--m-weight)" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round"/>` : ''}
-        ${dots}
-        <circle cx="${X(last.t).toFixed(1)}" cy="${Y(last.w).toFixed(1)}" r="4.5" fill="var(--m-weight)"/>
-        ${pts.length>1 ? `<text x="${pad}" y="${H-6}" fill="var(--muted)" font-size="9" font-family="var(--font-mono)">${esc(pts[0].label)}</text>
-        <text x="${W-pad}" y="${H-6}" fill="var(--muted)" font-size="9" font-family="var(--font-mono)" text-anchor="end">${esc(last.label)}</text>` : ''}
-      </svg>`);
-  }
-
-  /* ---- ADD DATA tile ----
-     Only the weight form is wired this release; the rest are the
-     prototype's stubs, and land with the metrics they belong to. */
-  function renderAddData(body){
-    const rows = [
-      {id:'weight',   name:'Add weight',   ic:'<path d="M4 7h16l-2 13H6z"/><path d="M9 7a3 3 0 016 0"/>'},
-      {id:'activity', name:'Add activity', ic:'<path d="M4 12h4l2-6 4 12 2-6h4"/>'},
-      {id:'sleep',    name:'Add sleep',    ic:'<path d="M20 14a7 7 0 11-9-9 6 6 0 009 9z"/>'},
-      {id:'note',     name:'Add note',     ic:'<path d="M5 4h14v13l-4 4H5z"/><path d="M15 17h4"/>'},
-    ];
-    const acc = el('div','acc');
-
-    rows.forEach(r=>{
-      const row = el('div','acc-row' + (state.addOpen===r.id ? ' open' : ''));
-      row.appendChild(el('button','acc-btn',
-        `<span class="lead"><svg class="ic" viewBox="0 0 24 24">${r.ic}</svg>${esc(r.name)}</span><span class="chev">›</span>`));
-      const panel = el('div','acc-panel');
-
-      if(r.id==='weight'){
-        panel.innerHTML = `
-          <div class="add-grid">
-            <div class="field"><label>Weight</label>
-              <input class="input" id="wIn" type="number" step="0.1" inputmode="decimal" placeholder="e.g. 90.4"></div>
-            <div class="field"><label>Unit</label>
-              <div class="seg" id="unitSeg">
-                <button type="button" data-u="kg" class="${state.unit==='kg'?'on':''}">kg</button>
-                <button type="button" data-u="lb" class="${state.unit==='lb'?'on':''}">lb</button>
-              </div></div>
-          </div>
-          <div class="field" style="margin-bottom:10px;"><label>When</label>
-            <input class="input" id="wWhen" type="date" max="${todayISO()}"></div>
-          <button class="btn primary" id="wAdd" style="width:100%;">Add weigh-in</button>
-          <div class="form-msg" id="wMsg"></div>`;
-      }else{
-        panel.innerHTML = `<p style="color:var(--muted);font-size:13px;margin:2px 0 0;">
-          Manual entry for ${esc(r.name.toLowerCase().replace('add ',''))} is not wired up yet.
-          Most of this arrives automatically from your devices; this form is for filling gaps.</p>`;
-      }
-
-      row.appendChild(panel);
-      row.querySelector('.acc-btn').onclick = ()=>{
-        state.addOpen = state.addOpen===r.id ? null : r.id;
-        row.classList.toggle('open');
-      };
-      acc.appendChild(row);
-    });
-    body.appendChild(acc);
-    wireWeightForm(acc);
-  }
-
-  function wireWeightForm(acc){
-    const when = acc.querySelector('#wWhen');
-    if(when) when.value = todayISO();
-
-    acc.querySelectorAll('#unitSeg button').forEach(b=>{
-      b.onclick = ()=> setUnit(b.dataset.u);
-    });
-
-    const add = acc.querySelector('#wAdd');
-    if(!add) return;
-    add.onclick = async ()=>{
-      const input = acc.querySelector('#wIn');
-      const msg = acc.querySelector('#wMsg');
-      const entered = parseFloat(input.value);
-      const kg = toKg(entered);
-      // Sanity range in kg, so a slipped decimal or a lb/kg mix-up
-      // cannot quietly wreck the chart.
-      if(!isFinite(kg) || kg < 20 || kg > 400){
-        msg.className = 'form-msg bad';
-        msg.textContent = 'Enter a weight between ' + toDisplay(20).toFixed(0) + ' and ' + toDisplay(400).toFixed(0) + ' ' + state.unit + '.';
-        input.focus();
-        return;
-      }
-      add.disabled = true;
-      const res = await api.addWeight(when.value || todayISO(), Math.round(kg*100)/100);
-      add.disabled = false;
-      if(!res.ok){
-        msg.className = 'form-msg bad';
-        msg.textContent = res.error || 'Could not save that weigh-in.';
-        return;
-      }
-      state.weights = await api.listWeights();
-      renderHome();   // repaints the weight tile with the new point
-    };
-  }
-
-  /* ---- ACTIVITY tile ---- */
-  function renderActivity(body){
-    const days = activityByDay(state.activity);
-    if(!days.length){
-      body.appendChild(emptyState('pulse', 'No activity synced yet',
-        'Connect a source in Configuration and hit Sync - steps, resting HR and sleep land here.'));
-      body.appendChild(calStrip());
-      return;
-    }
-
-    const list = el('div','act-list');
-    days.forEach(d=>{
-      const parts = [];
-      if(d.steps!=null)       parts.push(`${num(d.steps)} steps`);
-      if(d.resting_hr!=null)  parts.push(`${d.resting_hr} bpm rest`);
-      if(d.sleep_hours!=null) parts.push(`${d.sleep_hours} h sleep`);
-      const tags = d.sources.map(s=>{
-        const info = sourceInfo(s);
-        return `<span class="tag ${esc(info.cls)}">${esc(info.name)}</span>`;
-      }).join('');
-      list.appendChild(el('div','act-item',
-        `<span class="act-when">${esc(fmtDay(d.date))}</span>
-         <span class="act-main"><span class="act-metrics">${parts.join(' · ') || '—'}</span></span>
-         <span class="act-tags">${tags}</span>`));
-    });
-    body.appendChild(list);
-
-    const t = activityTotals(days);
-    body.appendChild(el('div','totals',
-      `<div class="tot"><span class="n tnum" style="color:var(--m-steps)">${t.steps ? compact(t.steps) : '—'}</span><span class="l">Steps</span></div>
-       <div class="tot"><span class="n tnum" style="color:var(--m-sleep)">${t.sleep!=null ? t.sleep.toFixed(1)+'h' : '—'}</span><span class="l">Avg sleep</span></div>
-       <div class="tot"><span class="n tnum" style="color:var(--m-heart)">${t.hr!=null ? Math.round(t.hr) : '—'}</span><span class="l">Avg rest HR</span></div>
-       <div class="tot"><span class="n tnum">${t.days}</span><span class="l">Days logged</span></div>`));
-
-    body.appendChild(calStrip());
-  }
-
-  /* Calendar import and the webhook endpoint are both planned, not built -
-     shown here as the prototype does, but inert and labelled as such so
-     nothing offers a URL that does not exist yet. */
-  function calStrip(){
-    return el('div','cal-strip',
-      `<div style="display:flex;gap:8px;align-items:center;">
-         <button class="btn sm" disabled>＋ Import calendar (.ics)</button>
-         <span class="soon">planned</span>
-       </div>
-       <div class="webhook">
-         <code>/api/webhook/&lt;token&gt; — push weigh-ins straight in</code>
-         <span class="soon">planned</span>
-       </div>`);
-  }
-
-  /* ---- TODAY (plan &amp; goals) tile ----
-     Goals are set on the Plan tab, which is not wired up yet, so this
-     tile is always its own blank state this release. */
-  function renderToday(body){
-    body.appendChild(emptyState('flag', 'No plan yet',
-      'Set a goal and a weekly plan on the Plan tab - today’s targets and progress show up here.'));
-  }
-
-  /* ---- STEPS TREND tile ---- */
-  function renderStepsTrend(body){
-    const days = activityByDay(state.activity).filter(d=>d.steps!=null).slice(0,7).reverse();
-    if(!days.length){
-      body.appendChild(emptyState('pulse','No step data yet','Steps arrive from a connected source - set one up in Configuration.'));
-      return;
-    }
-    const latest = days[days.length-1];
-    const wrap = el('div','chart-wrap');
-    wrap.appendChild(el('div','chart-readout',
-      `<div class="readout-big tnum" style="color:var(--m-steps)">${num(latest.steps)}<small>steps · ${esc(fmtDay(latest.date))}</small></div>`));
-
-    const W=440, H=120, pad=20;
-    const mx = Math.max(...days.map(d=>d.steps)) || 1;
-    const bw = (W-pad*2)/days.length;
-    const bars = days.map((d,i)=>{
-      const h = (d.steps/mx)*(H-pad*2);
-      return `<rect x="${(pad+i*bw+3).toFixed(1)}" y="${(H-pad-h).toFixed(1)}" width="${Math.max(1,bw-6).toFixed(1)}" height="${h.toFixed(1)}" rx="4" fill="var(--m-steps)" opacity="${i===days.length-1?1:.5}"><title>${esc(fmtDay(d.date))}: ${num(d.steps)} steps</title></rect>`;
-    }).join('');
-    wrap.appendChild(el('div', null, `<svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Steps per day">${bars}</svg>`));
-    body.appendChild(wrap);
-  }
-
-  /* ---- SLEEP tile ---- */
-  function renderSleep(body){
-    const days = activityByDay(state.activity).slice(0,7);
-    const withSleep = days.filter(d=>d.sleep_hours!=null);
-    if(!withSleep.length){
-      body.appendChild(emptyState('moon','No sleep data yet','Sleep arrives from a connected source - set one up in Configuration.'));
-      return;
-    }
-    const latest = withSleep[0];
-    const avg = withSleep.reduce((a,d)=>a+d.sleep_hours,0)/withSleep.length;
-    const missing = days.length - withSleep.length;
-    body.appendChild(el('div','chart-readout',
-      `<div class="readout-big tnum" style="color:var(--m-sleep)">${latest.sleep_hours.toFixed(1)}<small>h · ${esc(fmtDay(latest.date))}</small></div>`));
-    body.appendChild(el('div','note-box',
-      `Averaging <b class="tnum">${avg.toFixed(1)} h</b> over the last ${withSleep.length} night${withSleep.length===1?'':'s'} with data.` +
-      (missing>0 ? ` ${missing} of the last ${days.length} day${days.length===1?'':'s'} reported no sleep - another source would fill the gaps.` : '')));
+    return out;
   }
 
   /* =========================================================
-     TILE ⋯ MENU - swap what is in a slot, and remember it
+     CONTINUITY - source-agnostic, from /api/coverage.
+     One window for every row, so the rows compare: the earliest
+     date anything has, to today (no data at all: the last 90 days).
      ========================================================= */
+  function coverageWindow(coverage){
+    const end = dayNum(todayISO());
+    let first = null;
+    ['metrics','series','sessions'].forEach(g => Object.values((coverage||{})[g] || {}).forEach(list => {
+      // Each list is ascending, so its first date is its earliest.
+      if(Array.isArray(list) && list.length && (first===null || list[0] < first)) first = list[0];
+    }));
+    if(first===null) return {start:end-89, end, empty:true};
+    return {start:Math.min(dayNum(first), end), end, empty:false};
+  }
+
+  /* daily   = distinct days with data / days in the window
+     weekly  = 7-day buckets (from the window's start) with any / all buckets
+     monthly = calendar months with any / months the window spans */
+  function continuity(dates, win){
+    const days = new Set(), weeks = new Set(), months = new Set();
+    dates.forEach(iso => {
+      const n = dayNum(iso);
+      if(!(n >= win.start && n <= win.end)) return;   // outside the window (or unparseable)
+      days.add(n);
+      weeks.add(Math.floor((n - win.start) / 7));
+      months.add(monthNum(iso));
+    });
+    const total = win.end - win.start + 1;
+    return [
+      {name:'Daily',   have:days.size,   of:total,                unit:'day'},
+      {name:'Weekly',  have:weeks.size,  of:Math.ceil(total / 7), unit:'week'},
+      {name:'Monthly', have:months.size, of:monthNum(isoOf(win.end)) - monthNum(isoOf(win.start)) + 1, unit:'month'},
+    ];
+  }
+  const pct = f => (f > 0 && f < 0.01) ? '<1%' : Math.round(f*100) + '%';
+  function rhombus(c){
+    const frac = c.of ? c.have / c.of : 0;
+    // 5% coverage or less reads as an outline, 95% or more as solid.
+    const op = Math.min(1, Math.max(0, (frac - 0.05) / 0.90));
+    const tip = `${c.name}: ${pct(frac)} · ${num(c.have)} of ${num(c.of)} ${c.unit}${c.of===1 ? '' : 's'}`;
+    return `<span class="rh-cell" data-tip="${esc(tip)}"><span class="rh${c.have ? '' : ' none'}" style="--op:${op.toFixed(3)}"></span></span>`;
+  }
+
+  /* =========================================================
+     READING - the latest value, in its unit
+     ========================================================= */
+  function fmtValue(v, unit){
+    if(v==null || !isFinite(v)) return '—';
+    const n = Number(v).toLocaleString(undefined, {maximumFractionDigits: Number.isInteger(Number(v)) ? 0 : 1});
+    if(!unit || unit==='count') return n;
+    if(unit==='%') return n + '%';
+    return n + ' ' + (UNIT_LABEL[unit] || unit);
+  }
+  function fmtDuration(minutes){
+    const t = Math.round(minutes), h = Math.floor(t / 60), m = t % 60;
+    return h ? `${h}h ${m}m` : `${m}m`;
+  }
+  // Which summary field is a session kind's duration (app/metrics.py).
+  const SESSION_MINUTES = {sleep:'asleep_minutes', workout:'duration_minutes'};
+
+  function readingFor(row){
+    if(!row.count) return {text:'—', tip:'Nothing reported yet'};
+    if(row.grain==='daily'){
+      return {text:fmtValue(row.last_value, row.unit), tip:'Latest · ' + fmtDayY(row.last_date)};
+    }
+    if(row.grain==='series'){
+      return {text:num(row.count) + ' pts', tip:`${num(row.count)} samples · ${fmtStamp(row.first)} – ${fmtStamp(row.last)}`};
+    }
+    const sessions = `${num(row.count)} session${row.count===1 ? '' : 's'}`;
+    const latest = state.latest[row.key];
+    const minutes = latest && latest.summary && latest.summary[SESSION_MINUTES[row.key]];
+    if(typeof minutes==='number' && isFinite(minutes)){
+      return {text:fmtDuration(minutes), tip:`Latest · started ${fmtStamp(latest.start)} · ${sessions} in all`};
+    }
+    return {text:sessions, tip:'Latest started ' + fmtStamp(row.last)};
+  }
+
+  /* =========================================================
+     THE DATA CARD
+     ========================================================= */
+  function paintData(){
+    const card = $('#dataCard');
+    card.innerHTML = '';
+    const head = el('div','card-head', '<h3>Your data</h3>');
+    card.appendChild(head);
+
+    if(state.status==='loading'){
+      card.appendChild(el('div','dstate','Loading your dataset…'));
+      return;
+    }
+    if(state.status==='error'){
+      const box = el('div','dstate',
+        `Couldn't load the dataset.
+         <div style="margin-top:12px;"><button class="btn sm" type="button">Try again</button></div>`);
+      box.querySelector('button').onclick = loadData;
+      card.appendChild(box);
+      return;
+    }
+
+    const {rows, win} = state.data;
+    const reporting = rows.filter(r => r.count > 0);
+    const waiting   = rows.filter(r => !r.count);
+    head.appendChild(el('p','hint',
+      (reporting.length
+        ? `${reporting.length} of ${rows.length} reporting. Day / Wk / Mth show how continuously each is covered since ${esc(fmtDayY(isoOf(win.start)))}, from any source.`
+        : 'Nothing has reported yet - connect a source above and sync.') +
+      (state.stale ? ' <span style="color:var(--crit)">Couldn’t refresh - showing the last load.</span>' : '')));
+
+    const list = el('div','dlist');
+    list.appendChild(el('div','dcap dgrid',
+      `<span></span><span>Metric</span><span>Reading</span><span class="d-cad">Cadence</span><span class="d-gap"></span>
+       <span class="rhs"><span class="rh-cell">Day</span><span class="rh-cell">Wk</span><span class="rh-cell">Mth</span></span>`));
+    reporting.forEach(r => list.appendChild(rowItem(r)));
+    if(waiting.length){
+      list.appendChild(el('div','dgroup','Not yet reporting'));
+      waiting.forEach(r => list.appendChild(rowItem(r)));
+    }
+    card.appendChild(list);
+  }
+
+  const panelId = row => 'panel-' + row.id.replace(/[^a-z0-9_-]/gi, '-');
+
+  function rowItem(row){
+    const open = state.open.has(row.id);
+    const item = el('div', 'ditem' + (row.count ? '' : ' dim') + (open ? ' open' : ''));
+    item.dataset.id = row.id;
+    const read = readingFor(row);
+    const cont = continuity(datesOf(row), state.data.win);
+    const head = el('button','drow dgrid', `
+      <span class="chev" aria-hidden="true">›</span>
+      <span class="d-name" data-tip="${esc(row.key + (row.unit ? ' · ' + (UNIT_LABEL[row.unit] || row.unit) : ''))}">${esc(metricName(row.key))}</span>
+      <span class="d-read tnum" data-tip="${esc(read.tip)}">${esc(read.text)}</span>
+      <span class="d-cad">${esc(cap(row.cadence))}</span>
+      <span class="d-gap"></span>
+      <span class="rhs" role="img" aria-label="${esc('Continuity: ' + cont.map(c => c.name.toLowerCase() + ' ' + pct(c.of ? c.have/c.of : 0)).join(', '))}">${cont.map(rhombus).join('')}</span>`);
+    head.type = 'button';
+    head.setAttribute('aria-expanded', open ? 'true' : 'false');
+    head.setAttribute('aria-controls', panelId(row));
+    head.onclick = () => {
+      if(state.open.has(row.id)){
+        state.open.delete(row.id);
+        delete state.note[row.id];
+        item.classList.remove('open');
+        const p = item.querySelector('.dpanel'); if(p) p.remove();
+      }else{
+        state.open.add(row.id);
+        item.classList.add('open');
+        item.appendChild(panelFor(row));
+      }
+      head.setAttribute('aria-expanded', state.open.has(row.id) ? 'true' : 'false');
+    };
+    item.appendChild(head);
+    if(open) item.appendChild(panelFor(row));
+    return item;
+  }
+
+  function panelFor(row){
+    const p = el('div','dpanel');
+    p.id = panelId(row);
+    const left = el('div', null, `<h5>${row.grain==='daily' ? 'Source priority' : 'Sources'}</h5>`);
+    fillSources(row, left);
+    const right = el('div', null, '<h5>Last 5 weeks</h5>');
+    right.appendChild(weekGrid(datesOf(row)));
+    p.appendChild(left);
+    p.appendChild(right);
+    return p;
+  }
+
+  /* Rebuild one open row's panel in place - after a priority change, or
+     when its session sources arrive. A closed row has nothing to repaint. */
+  function repaintPanel(row, focusSrc){
+    const old = document.getElementById(panelId(row));
+    if(!old || !state.open.has(row.id)) return;
+    const fresh = panelFor(row);
+    old.replaceWith(fresh);
+    if(focusSrc){
+      const t = Array.from(fresh.querySelectorAll('.stile')).find(x => x.dataset.src===focusSrc);
+      if(t) t.focus();
+    }
+  }
+
+  /* ---------- the source list (expanded, left) ----------
+     Daily metrics have a pick, so their sources are a priority list -
+     /api/source-roles, primary first, draggable. Series and sessions are
+     a per-source passthrough with no pick yet: read-only. */
+  function fillSources(row, box){
+    const note = text => box.appendChild(el('p','dnote', esc(text)));
+
+    if(row.grain==='daily'){
+      const role = state.roles[row.key];
+      const sources = role && Array.isArray(role.sources) ? role.sources : [];
+      if(!sources.length){ note('No source is reporting this yet.'); }
+      else{
+        const list = sourceList(sources, {primary:true, sortable:sources.length > 1});
+        box.appendChild(list);
+        if(sources.length > 1){
+          makeSortable(list, (after, before, focusSrc) => commitPriority(row, list, after, before, focusSrc));
+          note('Changing the primary source re-derives the dataset at the next sync.');
+        }else{
+          note(`${srcName(sources[0])} is the only source. Connect another to set a priority.`);
+        }
+      }
+    }else{
+      let sources = row.grain==='series' ? (row.sources || []) : [];
+      if(row.grain==='session' && row.count){
+        const got = state.sessionSources[row.key];
+        if(got===undefined || got==='loading'){
+          if(got===undefined) loadSessionSources(row);
+          note('Loading sources…');
+          return;
+        }
+        if(got==='error'){ note('Couldn’t load the sources of these sessions.'); return; }
+        sources = got;
+      }
+      if(!sources.length){ note('No source is reporting this yet.'); }
+      else{
+        box.appendChild(sourceList(sources, {}));
+        note(row.grain==='series'
+          ? 'Series are passed through per source - there’s no pick between sources yet, so no priority to set.'
+          : 'Sessions are listed per source - there’s no pick between sources yet, so no priority to set.');
+      }
+    }
+
+    const msg = state.note[row.id];
+    if(msg) box.appendChild(el('div','form-msg ' + msg.cls, esc(msg.text)));
+  }
+
+  function sourceList(sources, opts){
+    const list = el('div','slist' + (opts.sortable ? ' sortable' : ''));
+    list.setAttribute('role','list');
+    sources.forEach((id, i) => {
+      const t = el('div','stile',
+        (opts.sortable ? '<span class="grip" aria-hidden="true">⋮⋮</span>' : '') +
+        `<span>${esc(srcName(id))}</span>` +
+        (opts.primary && i===0 ? '<span class="pill primary">PRIMARY</span>' : ''));
+      t.dataset.src = id;   // the source id travels with the tile
+      t.setAttribute('role','listitem');
+      if(opts.sortable){
+        t.tabIndex = 0;
+        t.setAttribute('aria-label', `${srcName(id)}. Drag, or use the up and down arrow keys, to reorder.`);
+      }
+      list.appendChild(t);
+    });
+    return list;
+  }
+
+  /* Drag to reorder, with a pointer (mouse, pen or touch) or the arrow
+     keys. The PRIMARY pill follows whichever tile is on top. onCommit
+     gets the new order and the one before it. */
+  function makeSortable(list, onCommit){
+    const order = () => Array.from(list.children).map(t => t.dataset.src);
+    const relabel = () => Array.from(list.children).forEach((t, i) => {
+      const pill = t.querySelector('.pill');
+      if(i===0 && !pill) t.insertAdjacentHTML('beforeend', '<span class="pill primary">PRIMARY</span>');
+      if(i>0 && pill) pill.remove();
+    });
+    let drag = null;
+
+    list.addEventListener('pointerdown', e => {
+      const tile = e.target.closest('.stile');
+      if(!tile || e.button!==0 || list.getAttribute('aria-busy')==='true') return;
+      drag = {tile, id:e.pointerId, before:order()};
+      list.setPointerCapture(e.pointerId);
+      tile.classList.add('dragging');
+      hideTip();
+      e.preventDefault();
+    });
+    list.addEventListener('pointermove', e => {
+      if(!drag || e.pointerId!==drag.id) return;
+      const next = Array.from(list.children).find(t =>
+        t!==drag.tile && e.clientY < t.getBoundingClientRect().top + t.offsetHeight/2);
+      if(next ? drag.tile.nextElementSibling!==next : list.lastElementChild!==drag.tile){
+        list.insertBefore(drag.tile, next || null);
+        relabel();
+      }
+    });
+    const end = e => {
+      if(!drag || e.pointerId!==drag.id) return;
+      const {tile, before} = drag;
+      drag = null;
+      tile.classList.remove('dragging');
+      const after = order();
+      if(after.join('\n')!==before.join('\n')) onCommit(after, before);
+    };
+    list.addEventListener('pointerup', end);
+    list.addEventListener('pointercancel', end);
+
+    list.addEventListener('keydown', e => {
+      const tile = e.target.closest('.stile');
+      if(!tile || (e.key!=='ArrowUp' && e.key!=='ArrowDown')) return;
+      e.preventDefault();
+      if(list.getAttribute('aria-busy')==='true') return;
+      const before = order();
+      if(e.key==='ArrowUp' && tile.previousElementSibling) list.insertBefore(tile, tile.previousElementSibling);
+      else if(e.key==='ArrowDown' && tile.nextElementSibling) list.insertBefore(tile.nextElementSibling, tile);
+      else return;
+      relabel();
+      tile.focus();
+      onCommit(order(), before, tile.dataset.src);
+    });
+  }
+
+  /* Only the primary is configurable (PUT /api/source-roles/<metric>);
+     every source below it keeps OpenFit's default order. So a drop that
+     changes the top saves it, and one that doesn't snaps back. */
+  async function commitPriority(row, list, after, before, focusSrc){
+    if(after[0]===before[0]){
+      state.note[row.id] = {cls:'info', text:'Only the primary is yours to set - the sources below it keep OpenFit’s default order.'};
+      repaintPanel(row, focusSrc);
+      return;
+    }
+    list.setAttribute('aria-busy','true');
+    const res = await api.setPrimary(row.key, after[0]);
+    if(!res.ok){
+      // Repainting from state.roles puts the order back as it was.
+      state.note[row.id] = {cls:'bad', text:res.error || 'Could not change the primary source.'};
+      repaintPanel(row, focusSrc);
+      return;
+    }
+    try{ state.roles = await api.sourceRoles(); }
+    catch(e){
+      const role = state.roles[row.key] || {};
+      state.roles[row.key] = Object.assign({}, role, {primary:after[0], configured:true, sources:after});
+    }
+    state.note[row.id] = {cls:'ok', text:`Saved - ${srcName(after[0])} is now the primary source.`};
+    repaintPanel(row, focusSrc);
+  }
+
+  /* A session kind's sources aren't in the catalog: read its sessions
+     once, on first expand, and list who reported them (most first). */
+  async function loadSessionSources(row){
+    state.sessionSources[row.key] = 'loading';
+    const list = await api.sessions(row.key);
+    if(!Array.isArray(list)){
+      state.sessionSources[row.key] = 'error';
+    }else{
+      const counts = {};
+      list.forEach(s => { counts[s.source] = (counts[s.source] || 0) + 1; });
+      state.sessionSources[row.key] = Object.keys(counts).sort((a, b) => counts[b] - counts[a] || a.localeCompare(b));
+    }
+    repaintPanel(row);
+  }
+
+  /* ---------- the 5-week grid (expanded, right) ----------
+     The 35 days ending today, 7 to a row; a day is on if any source has
+     data for it. Binary and source-agnostic, like the rhombuses. */
+  function weekGrid(dates){
+    const have = new Set(dates);
+    const end = dayNum(todayISO()), start = end - 34;
+    let on = 0;
+    let html = '<span></span>';
+    for(let i = 0; i < 7; i++) html += `<span class="wd">${esc(weekday1(isoOf(start + i)))}</span>`;
+    for(let r = 0; r < 5; r++){
+      const first = start + r*7;
+      html += `<span class="wl">${esc(fmtDay(isoOf(first)))}</span>`;
+      for(let i = 0; i < 7; i++){
+        const iso = isoOf(first + i);
+        const hit = have.has(iso);
+        if(hit) on++;
+        html += `<span class="day${hit ? ' on' : ''}${first + i===end ? ' today' : ''}" data-tip="${esc(fmtDayW(iso) + (hit ? ' · data' : ' · no data'))}"></span>`;
+      }
+    }
+    const g = el('div','wk', html);
+    g.setAttribute('role','img');
+    g.setAttribute('aria-label', `${on} of the last 35 days have data`);
+    return g;
+  }
+
+  /* =========================================================
+     TOOLTIP - one shared bubble for anything with data-tip
+     ========================================================= */
+  const tip = el('div','tip');
+  tip.hidden = true;
+  document.body.appendChild(tip);
+  let tipFor = null;
+  function showTip(target){
+    tipFor = target;
+    tip.textContent = target.getAttribute('data-tip');
+    tip.hidden = false;
+    const r = target.getBoundingClientRect();
+    const w = tip.offsetWidth, h = tip.offsetHeight;
+    let top = r.top - h - 8;
+    if(top < 6) top = r.bottom + 8;
+    tip.style.top = top + 'px';
+    tip.style.left = Math.max(6, Math.min(r.left + r.width/2 - w/2, window.innerWidth - w - 6)) + 'px';
+  }
+  function hideTip(){ tip.hidden = true; tipFor = null; }
+  function tipTarget(e){
+    const t = e.target && e.target.closest ? e.target.closest('[data-tip]') : null;
+    if(t===tipFor) return;
+    if(t && t.getAttribute('data-tip')) showTip(t); else hideTip();
+  }
+  // mousemove rather than mouseover, so a tip hidden by a scroll comes
+  // back as soon as the pointer moves again.
+  document.addEventListener('mousemove', tipTarget);
+  document.addEventListener('mouseout', e => { if(!e.relatedTarget) hideTip(); });
+  document.addEventListener('focusin', tipTarget);
+  document.addEventListener('focusout', hideTip);
+
+  /* =========================================================
+     CONNECTED SOURCES
+     ========================================================= */
+  /* Connected devices, from /api/connectors. A device is "connected"
+     when an account has been stored for it; the credentials themselves
+     never come back over the API, only the fact that they exist. */
+  function paintSources(){
+    const card = $('#sourcesCard');
+    card.innerHTML = '<h3>Connected sources</h3>';
+
+    if(state.connectors===null){
+      card.appendChild(el('p','hint','Loading…'));
+      return;
+    }
+    const connected = state.connectors.filter(c => c.connected);
+    if(!connected.length){
+      card.appendChild(el('p','hint',
+        'No devices connected yet. Add one below - OpenFit pulls from it on a schedule, or when you press Sync now.'));
+    }
+    connected.forEach(c => card.appendChild(sourceRow(c)));
+    card.appendChild(addSourceRow());
+  }
+
+  function sourceRow(c){
+    const row = el('div','src', `
+      <div class="src-name">${esc(c.name)}</div>
+      <div class="src-r">
+        <span class="pill ok">● connected</span>
+        <button class="btn sm" type="button" data-act="sync">Sync now</button>
+        <button class="btn sm" type="button" data-act="remove">Remove</button>
+      </div>`);
+
+    const syncBtn = row.querySelector('[data-act="sync"]');
+    syncBtn.onclick = async ()=>{
+      syncBtn.disabled = true; syncBtn.title = ''; syncBtn.textContent = 'Syncing…';
+      const res = await api.syncPlugin(c.id);
+      if(res.ok){
+        syncBtn.textContent = 'Synced ✓';
+        state.activity = await api.listActivity(ACTIVITY_DAYS);
+        paintSync();
+        loadData();   // the sync re-derived its window: refresh the rows
+      }else{
+        syncBtn.textContent = res.error==='a sync is already in progress' ? 'Already syncing' : 'Failed';
+        syncBtn.title = res.error || 'Sync failed';
+      }
+      setTimeout(()=>{ syncBtn.textContent = 'Sync now'; syncBtn.disabled = false; }, 2200);
+    };
+
+    const rmBtn = row.querySelector('[data-act="remove"]');
+    rmBtn.onclick = async ()=>{
+      rmBtn.disabled = true; rmBtn.title = ''; rmBtn.textContent = 'Removing…';
+      const res = await api.removeConnector(c.id);
+      if(res.ok){
+        await refreshConnectors();
+      }else{
+        rmBtn.textContent = 'Failed';
+        rmBtn.title = res.error || 'Could not remove this device';
+        setTimeout(()=>{ rmBtn.textContent = 'Remove'; rmBtn.disabled = false; }, 2200);
+      }
+    };
+    return row;
+  }
+
+  /* The button at the foot of the card. Every connector the API offers
+     that isn't connected yet is addable; add_flow decides which modal
+     it opens. */
+  function addSourceRow(){
+    const addable = state.connectors.filter(c => !c.connected);
+    const wrap = el('div','src-add');
+    const btn = el('button','btn sm','＋ Add source');
+    btn.type = 'button';
+    wrap.appendChild(btn);
+
+    if(!addable.length){
+      btn.disabled = true;
+      wrap.appendChild(el('span','src-add-note', state.connectors.length
+        ? 'Every device OpenFit can add is already connected.'
+        : 'No devices are available to add.'));
+      return wrap;
+    }
+    btn.setAttribute('aria-haspopup','menu');
+    btn.onclick = e => openAddMenu(e, addable);
+    return wrap;
+  }
+
   let popEl = null;
-  function openTileMenu(e, slot){
+  function openAddMenu(e, addable){
     e.stopPropagation(); closePop();
-    const cur = state.tiles[slot];
     const p = el('div','pop');
-    p.appendChild(el('div','pop-h','Show in this tile'));
-    Object.entries(WIDGETS).forEach(([id,w])=>{
-      const b = el('button','pop-item'+(id===cur?' cur':''),
-        `<span class="sw" style="background:var(${w.sw})"></span>${esc(w.name)}${id===cur?' ✓':''}`);
-      b.onclick = ()=>{
-        state.tiles[slot] = id;
-        saveTiles();
-        closePop();
-        renderHome();
-      };
+    p.setAttribute('role','menu');
+    p.appendChild(el('div','pop-h','Add a source'));
+    addable.forEach(c => {
+      const b = el('button','pop-item', esc(c.name));
+      b.type = 'button';
+      b.setAttribute('role','menuitem');
+      b.onclick = () => { closePop(); openAddDevice(c); };
       p.appendChild(b);
     });
     document.body.appendChild(p);
     const r = e.currentTarget.getBoundingClientRect();
-    p.style.top = (r.bottom+6)+'px';
-    p.style.left = Math.max(10, Math.min(r.right-p.offsetWidth, window.innerWidth-p.offsetWidth-10))+'px';
+    p.style.top = (r.bottom + 6) + 'px';
+    p.style.left = Math.max(10, Math.min(r.left, window.innerWidth - p.offsetWidth - 10)) + 'px';
     popEl = p;
+    const first = p.querySelector('.pop-item'); if(first) first.focus();
     setTimeout(()=>document.addEventListener('click', closePop, {once:true}), 0);
   }
-  function closePop(){ if(popEl){ popEl.remove(); popEl=null; } }
-
-  /* ---- layout persistence ---- */
-  function normaliseTiles(raw){
-    const out = Object.assign({}, DEFAULT_TILES);
-    if(raw && typeof raw === 'object'){
-      // Per-slot validation: a slot naming a widget this build does not
-      // have (an older or newer layout) falls back rather than blanking.
-      SLOTS.forEach(s=>{ if(WIDGETS[raw[s]]) out[s] = raw[s]; });
-    }
-    return out;
-  }
-  async function loadTiles(){
-    const value = await api.getSetting(TILES_KEY);
-    if(!value) return Object.assign({}, DEFAULT_TILES);
-    try{ return normaliseTiles(JSON.parse(value)); }
-    catch(e){ return Object.assign({}, DEFAULT_TILES); }
-  }
-  function saveTiles(){ api.putSetting(TILES_KEY, JSON.stringify(state.tiles)); }
-
-  /* =========================================================
-     PLAN - static for now; goals and sessions are a later release
-     ========================================================= */
-  function renderPlan(){
-    const m = $('#main'); m.innerHTML='';
-    const stack = el('div','stack');
-
-    stack.appendChild(el('div','card', `
-      <h3>Overall goal</h3>
-      <p class="hint">Nothing here saves yet - the goal engine lands in a later release.</p>
-      <div class="goal-type" id="goalType">
-        <button type="button" class="on"><b>Reach a target</b><span>a target value, no deadline</span></button>
-        <button type="button"><b>Target by a date</b><span>a target, by a date you pick</span></button>
-        <button type="button"><b>Maintain weekly</b><span>a weekly figure to keep hitting</span></button>
-      </div>
-      <div class="row2">
-        <div class="field"><label>Metric</label>
-          <select class="input"><option>Body weight</option><option>Steps</option><option>Resting HR</option><option>Sleep</option></select></div>
-        <div class="field"><label>Target value</label><input class="input" placeholder="target"></div>
-        <div class="field"><label>By date <span style="text-transform:none;color:var(--muted)">(optional)</span></label><input class="input" type="date"></div>
-        <div class="field"><label>Starting from</label><input class="input" placeholder="today’s value"></div>
-      </div>
-      <div style="margin-top:16px;"><button class="btn primary" disabled>Save goal</button></div>`));
-
-    stack.appendChild(el('div','card', `
-      <h3>Weekly plan</h3>
-      <div class="empty" style="min-height:120px;border:1.5px dashed var(--border-strong);border-radius:12px;">
-        <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
-        <div>No sessions yet</div>
-        <button class="btn primary sm" style="margin-top:6px;" disabled>＋ Add a session</button>
-      </div>`));
-
-    m.appendChild(stack);
-    // Selection is visual only until the goal engine exists.
-    stack.querySelectorAll('#goalType button').forEach(b=> b.onclick = ()=>{
-      stack.querySelectorAll('#goalType button').forEach(x=>x.classList.remove('on'));
-      b.classList.add('on');
-    });
-  }
-
-  /* =========================================================
-     CONFIGURATION
-     ========================================================= */
-  function renderConfig(){
-    const m = $('#main'); m.innerHTML='';
-    const stack = el('div','stack');
-
-    stack.appendChild(sourcesCard());
-
-    stack.appendChild(el('div','card', `
-      <h3>Custom tabs</h3>
-      <p class="hint">Not built yet - the widget system lands in a later release.</p>
-      <div class="addtab">
-        <div style="font-family:var(--font-display);font-weight:700;font-size:15px;">Add a tab</div>
-        <div style="color:var(--muted);font-size:13px;margin-top:3px;">Two ways in:</div>
-        <div class="tab-choose">
-          <button class="choose" disabled><b>Paste a definition</b><span>A small YAML/JSON widget spec for data tiles, or a self-contained HTML/JS widget for a full custom console.</span></button>
-          <button class="choose" disabled><b>Upload from file</b><span>Drop in a <span class="mono">.yaml</span> or <span class="mono">.html</span> widget. Runs sandboxed - it can read your data but can’t reach the network.</span></button>
-        </div>
-      </div>`));
-
-    stack.appendChild(el('div','card', `
-      <h3>Appearance</h3>
-      <p class="hint">Remembered in this browser only - it is not stored with your data.</p>
-      <div class="seg" id="cfgTheme">
-        <button type="button" data-t="auto">Auto</button><button type="button" data-t="light">Light</button><button type="button" data-t="dark">Dark</button>
-      </div>
-      <div class="note-box" style="margin-top:14px;">
-        Want to go further than the theme? Every colour, font and radius is a CSS variable in the
-        <span class="mono">CUSTOMISE OPENFIT HERE</span> block at the top of <span class="mono">index.html</span>.
-        Change a handful of tokens and the whole interface re-skins - no hunting through markup.
-      </div>`));
-
-    m.appendChild(stack);
-    stack.querySelectorAll('#cfgTheme button').forEach(b=> b.onclick = ()=> setTheme(b.dataset.t));
-    reflectTheme();
-  }
-
-  /* Connected devices, from /api/connectors. A device is "connected"
-     when an account has been stored for it; the credentials themselves
-     never come back over the API, only the fact that they exist. */
-  function sourcesCard(){
-    const card = el('div','card',
-      `<h3>Connected sources</h3>
-       <p class="hint">add fitness devices here</p>`);
-
-    const connected = state.connectors.filter(c=>c.connected);
-
-    if(!connected.length){
-      card.appendChild(el('div','empty',
-        `<div style="font-weight:600;color:var(--ink-2)">No devices connected</div>
-         <div style="font-size:12.5px;max-width:320px">Add one below. OpenFit runs fine without one - you just log everything by hand.</div>`));
-    }
-
-    connected.forEach(c=>{
-      const row = el('div','src', `
-        <div class="src-l">
-          <div style="min-width:0;">
-            <div style="font-weight:600">${esc(c.name)}</div>
-            <div style="color:var(--muted);font-size:12.5px">steps · resting HR · sleep</div>
-          </div>
-        </div>
-        <div class="src-r">
-          <span class="pill ok">● connected</span>
-          <button class="btn sm" data-act="sync">Sync now</button>
-          <button class="btn sm" data-act="remove">Remove</button>
-        </div>`);
-
-      const syncBtn = row.querySelector('[data-act="sync"]');
-      syncBtn.onclick = async ()=>{
-        syncBtn.disabled = true; syncBtn.title = ''; syncBtn.textContent = 'Syncing…';
-        const res = await api.syncPlugin(c.id);
-        if(res.ok){
-          syncBtn.textContent = 'Synced ✓';
-          state.activity = await api.listActivity(ACTIVITY_DAYS);
-          paintSync();
-        }else{
-          syncBtn.textContent = 'Failed';
-          syncBtn.title = res.error || 'Sync failed';
-        }
-        setTimeout(()=>{ syncBtn.textContent = 'Sync now'; syncBtn.disabled = false; }, 2200);
-      };
-
-      const rmBtn = row.querySelector('[data-act="remove"]');
-      rmBtn.onclick = async ()=>{
-        rmBtn.disabled = true; rmBtn.title = ''; rmBtn.textContent = 'Removing…';
-        const res = await api.removeConnector(c.id);
-        if(res.ok){
-          await refreshConnectors();
-        }else{
-          rmBtn.textContent = 'Failed';
-          rmBtn.title = res.error || 'Could not remove this device';
-          setTimeout(()=>{ rmBtn.textContent = 'Remove'; rmBtn.disabled = false; }, 2200);
-        }
-      };
-
-      card.appendChild(row);
-    });
-
-    card.appendChild(addDeviceRow());
-    return card;
-  }
-
-  /* The picker at the foot of the card. Every connector the API offers
-     is addable here; add_flow decides which modal it opens. */
-  function addDeviceRow(){
-    const addable = state.connectors.filter(c=> !c.connected);
-    const wrap = el('div','src-add');
-
-    if(!addable.length){
-      wrap.appendChild(el('div', null,
-        `<span style="color:var(--muted);font-size:12.5px">Every device OpenFit can add is already connected.</span>`));
-      return wrap;
-    }
-
-    wrap.innerHTML = `
-      <label for="addDevice">Add a device</label>
-      <select class="input" id="addDevice">
-        <option value="">Choose a device…</option>
-        ${addable.map(c=>`<option value="${esc(c.id)}">${esc(c.name)}</option>`).join('')}
-      </select>`;
-
-    const sel = wrap.querySelector('#addDevice');
-    sel.onchange = ()=>{
-      const chosen = addable.find(c=> c.id === sel.value);
-      sel.value = '';                       // the picker is an action, not a state
-      if(chosen) openAddDevice(chosen);
-    };
-    return wrap;
-  }
+  function closePop(){ if(popEl){ popEl.remove(); popEl = null; } }
 
   /* Add-device modals, built from the connector's own manifest: whatever
      fields the plugin declares are the fields rendered, and add_flow picks
@@ -1224,27 +1233,13 @@ svg.chart{width:100%;height:auto;display:block;overflow:visible;}
 
   async function refreshConnectors(){
     state.connectors = await api.listConnectors();
-    renderConfig();
+    paintSources();
   }
-
 
   /* =========================================================
      shared bits
      ========================================================= */
-  function emptyState(icon, title, sub){
-    const icons = {
-      scale:'<path d="M4 7h16l-2 13H6z"/><path d="M9 7a3 3 0 016 0"/><path d="M12 11v4"/>',
-      flag: '<path d="M5 21V4M5 4h11l-2 4 2 4H5"/>',
-      pulse:'<path d="M3 12h4l2-6 4 12 2-6h6"/>',
-      moon: '<path d="M20 14a7 7 0 11-9-9 6 6 0 009 9z"/>',
-    };
-    return el('div','empty',
-      `<svg viewBox="0 0 24 24">${icons[icon]||''}</svg>
-       <div style="font-weight:600;color:var(--ink-2)">${esc(title)}</div>
-       <div style="font-size:12.5px;max-width:250px">${sub}</div>`);
-  }
-
-  /* ---- theme (per browser, like the unit choice) ---- */
+  /* ---- theme (per browser) ---- */
   function setTheme(t){
     if(t==='auto'){
       document.documentElement.removeAttribute('data-theme');
@@ -1265,6 +1260,7 @@ svg.chart{width:100%;height:auto;display:block;overflow:visible;}
     const order = ['auto','light','dark'];
     setTheme(order[(order.indexOf(curTheme())+1) % order.length]);
   };
+  document.querySelectorAll('#cfgTheme button').forEach(b=> b.onclick = ()=> setTheme(b.dataset.t));
   (function initTheme(){
     const t = curTheme();
     if(t!=='auto') document.documentElement.setAttribute('data-theme', t);
@@ -1283,32 +1279,25 @@ svg.chart{width:100%;height:auto;display:block;overflow:visible;}
     const holder = $('#dsSync');
     const when = best && parseStamp(best.synced_at);
     holder.innerHTML = when
-      ? `<span class="dot"></span> ${esc(sourceInfo(best.source).name)} · ${esc(when.toLocaleTimeString('en-GB', {hour:'2-digit', minute:'2-digit'}))}`
+      ? `<span class="dot"></span> ${esc(srcName(best.source))} · ${esc(when.toLocaleTimeString('en-GB', {hour:'2-digit', minute:'2-digit'}))}`
       : `<span class="dot idle"></span> no sync yet`;
   }
 
   /* =========================================================
      BOOT - paint the shell straight away, then fill it in
      ========================================================= */
-  async function init(){
-    const [tiles, weights, activity, connectors] = await Promise.all([
-      loadTiles(),
-      api.listWeights(),
-      api.listActivity(ACTIVITY_DAYS),
-      api.listConnectors(),
-    ]);
-    state.tiles = tiles;
-    state.weights = weights;
-    state.activity = activity;
-    state.connectors = connectors;
-    paintSync();
-    route();
-  }
+  function closeFloating(){ closePop(); hideTip(); }
+  window.addEventListener('resize', closeFloating);
+  window.addEventListener('scroll', closeFloating, {passive:true, capture:true});
+  document.addEventListener('keydown', e => { if(e.key==='Escape') closeFloating(); });
 
-  window.addEventListener('resize', closePop);
   paintDate();
-  route();
-  init();
+  paintSources();
+  paintData();
+  // In parallel: each part paints as soon as its own reads land.
+  refreshConnectors();
+  api.listActivity(ACTIVITY_DAYS).then(rows => { state.activity = Array.isArray(rows) ? rows : []; paintSync(); });
+  loadData();
 })();
 </script>
 

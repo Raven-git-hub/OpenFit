@@ -58,6 +58,14 @@ own calls to its device API. Full direction:
 - `app/derived.py` — the one place a source is picked per `(date, metric)`:
   `recompute_derived()` writes `derived_metrics`. Never pick a source anywhere else.
 - `app/crypto.py` — Fernet encrypt/decrypt for stored credentials.
+- `app/templates/index.html` — the data console, one self-contained page
+  (vanilla JS, no build step, no external calls or web fonts; every colour/font/
+  radius in its `CUSTOMISE OPENFIT HERE` token block). Reads
+  `/api/catalog?include_empty=1`, `/api/coverage` and `/api/source-roles`
+  (dragging a daily metric's sources `PUT`s `/api/source-roles/<metric>`), plus
+  the connector endpoints (`/api/connectors`, the OAuth add flow,
+  `/api/sync/<plugin>`); `/api/activity?by_source=1` only for the last-sync
+  stamp. See `docs/architecture/frontend-redesign-and-widget-model.md`.
 - `tests/` — pytest, temp DB, no network.
 - `docs/architecture/` — design direction (read first). `docs/design/` — frontend references.
 
@@ -253,8 +261,9 @@ own calls to its device API. Full direction:
   token is the one exception). Multi-user is a future per-container Host layer.
 - Privacy-first: no telemetry, no external calls except a plugin's own device API.
   Credentials encrypted at rest, never returned over the API.
-- Ships no tracking apps. `app/templates/index.html` is a legacy/disposable UI
-  slated to become a barebones data viewer — don't build tracker features into core.
+- Ships no tracking apps. `app/templates/index.html` is the data console — what
+  the dataset holds, its continuity, and which source wins each metric (see
+  Layout) — not a tracker; don't build tracker features into core.
 
 ## Workflow
 - Always work on a branch and open a PR — never push to `main`.
@@ -291,13 +300,14 @@ same PR:
   come: pushing sessions (sleep, workouts) through it.
 - **The access contract:** landed (see Data model): discovery, range queries
   with provenance, sessions, intraday series (passthrough); for the
-  data-collation console (its UI a later PR), each catalog entry's
+  data-collation console, each catalog entry's
   `grain`/`cadence` (`cadence_for()`, `MANUAL_METRICS`), the catalog's
   `?include_empty=1` and per-day presence via `GET /api/coverage` (no
-  migration). Still to come: a
+  migration); the console itself is `index.html` (frontend only). Still to come: a
   `?by_source` option for raw per-source reads, a derived pick for sessions
   (one per night across devices), and the series stitch.
 Keep `GET /api/activity` returning its current flat shape, and `/api/weights` its
 `[{date, weight}]` shape (manual `weight_kg` readings only), as compatibility shims
-during the data-model change. Remove the orphaned `workouts` table +
-`/api/workouts` when convenient (unused by the UI).
+during the data-model change (the console no longer reads `/api/weights`; it
+reads `/api/activity` only for the last-sync stamp). Remove the orphaned
+`workouts` table + `/api/workouts` when convenient (unused by the UI).
