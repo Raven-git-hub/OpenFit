@@ -44,9 +44,11 @@ continuous it is, and which source wins each metric — not the product.
   per-night session with stages), workouts (a session per
   activity), and intraday series: heart rate and respiration rate (a sample
   every couple of minutes) and SpO2 (hourly averages).
-- **Google Health** plugin — steps, resting HR, sleep and workouts, from Pixel
-  Watch / Fitbit via Google's cloud Health API (not the legacy Fitbit Web API,
-  retired September 2026).
+- **Google Health** plugin — steps, distance, floors, elevation gain, active and
+  total calories, Active Zone Minutes, sedentary minutes, resting HR, HRV,
+  VO2 max (cardio fitness score), SpO2 and respiration rate (nightly averages),
+  sleep and workouts, from Pixel Watch / Fitbit via Google's cloud Health API
+  (not the legacy Fitbit Web API, retired September 2026).
 - Scheduled background sync plus a manual sync (`POST /api/sync/<plugin>`), with
   device connections managed in-app and credentials encrypted at rest. Each
   source's sync frequency is set from its Settings popup: every 1h, 3h, 6h (the

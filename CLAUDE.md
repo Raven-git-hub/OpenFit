@@ -166,11 +166,12 @@ own calls to its device API. Full direction:
   hydration: `hydration_ml`/ml, `calories_in`/kcal, `carbs_g`, `protein_g`,
   `fat_g` (g). Other: the instant `mood`/scale (1–5). Garmin fills its v2
   keys (below: basal, sedentary, elevation, and the body-composition
-  masses, water and visceral fat); Google Health's come in PR 3; the rest
-  (`active_minutes`, blood pressure/glucose, body/skin temperature,
-  `height_cm`, nutrition, `mood`) wait for a source — Garmin must not write
-  `active_minutes`: it files the moderate/vigorous split, and a
-  single-number active-minutes figure is another vendor's measurement. An
+  masses, water and visceral fat); Google Health its daily ones (below:
+  `active_minutes` from Active Zone Minutes among them); the rest (blood
+  pressure/glucose, body/skin temperature, `height_cm`, nutrition, `mood`)
+  wait for a source — Garmin must not write `active_minutes`: it files the
+  moderate/vigorous split, and a single-number active-minutes figure is
+  another vendor's measurement (Google's AZM). An
   instant reading is still one per `(date, source)` here. There is no daily
   sleep metric (see `sessions`). Garmin files nine activity metrics from the same
   `get_stats` response as steps and resting HR, through its `STATS_METRICS`
@@ -219,6 +220,42 @@ own calls to its device API. Full direction:
   read (schema v2, law 5). As with the vitals, a missing/null/non-number
   field writes nothing and isn't logged, a failed fetch costs only its own
   metrics, and a day holding only these still lands.
+  Google Health files thirteen daily metrics, every one over the same
+  window — the sync's `days` (today − (days−1) … today) — and drops a point
+  dated outside it, so a sync writes one consistent span. Field names and
+  units are the v4 discovery doc's
+  (`https://health.googleapis.com/$discovery/rest?version=v4`), each type
+  in its own fetch (a failed or empty one costs only its metric). Two
+  tables in `app/plugins/google_health/plugin.py`: `DAILY_ROLLUPS`, via
+  `dailyRollUp` (Google's own per-day sums; 90 days a request, 14 for
+  `total-calories`): `steps` `countSum` → `steps`, `distance`
+  `millimetersSum` → `distance_m` (`/ 1000`), `floors` `countSum` →
+  `floors`, `altitude` `gainMillimetersSum` → `elevation_gain_m`
+  (`/ 1000`), `active-energy-burned` / `total-calories` `kcalSum` (kcal, no
+  kJ) → `active_kcal` / `total_kcal`, `active-zone-minutes` → the sum of
+  whichever of `sumInFatBurnHeartZone`/`sumInCardioHeartZone`/
+  `sumInPeakHeartZone` are present (cardio/peak already count double; a
+  zero is left out) → `active_minutes`, and `sedentary-period`
+  `durationSum` (a duration string, seconds) → `sedentary_min` (`/ 60`) —
+  each rounded to a whole number. `DAILY_SUMMARIES`, via list, filtered
+  `<type>.date >= start AND <type>.date < day-after-today` (the filter
+  takes `>=`/`<`, not `<=`), stored as reported (resting HR rounded):
+  `daily-resting-heart-rate` `beatsPerMinute` → `resting_hr_bpm`,
+  `daily-heart-rate-variability` `averageHeartRateVariabilityMilliseconds`
+  (the night's RMSSD) → `hrv_ms`, `daily-vo2-max` `vo2Max` → `vo2_max`
+  (the daily summary type — not the sample type `vo2-max` nor
+  `run-vo2-max`), `daily-oxygen-saturation` `averagePercentage` →
+  `spo2_pct` and `daily-respiratory-rate` `breathsPerMinute` →
+  `respiratory_rate_brpm`. Only a finite number (never a bool) within the
+  metric's `PLAUSIBLE_RANGES` once converted is written; a null or absent
+  field writes nothing, and a day holding only one of these still lands.
+  Every type logs one line a sync: the days filed with the latest raw
+  fields beside the converted value, or "no data", or — points but none
+  with the field — a sample point and its keys; values not filed and
+  out-of-window points are logged too. The mappings are confirmed against
+  the discovery doc only, not yet a real sync. Not fetched: `basal_kcal`
+  (`basal-energy-burned` has no rollup in v4, only raw interval points),
+  Google's series, body composition, nutrition and skin temperature.
   Migration `005` unpivoted the old wide `activity` table into it and dropped
   `activity`; migration `006` moved the old `weights` table in as `weight_kg`
   readings under source `manual` (hand entry; `synced_at` NULL for migrated
@@ -475,9 +512,14 @@ same PR:
   its new keys — basal, sedentary and elevation from `get_stats`, muscle and
   bone mass, body water and visceral fat from `get_body_composition` (field
   names/units unverified, logged on absence or out of range; no migration).
-  Still to come: PR 3 — Google Health enrichment (incl. its baseline-relative skin
-  temperature); PR 4 — the console regroups by category/grain and the
-  `cadence_for()`/`MANUAL_METRICS` shim is deleted. Deferred until a plugin
+  PR 3 landed: Google Health's daily metrics — distance, floors, elevation,
+  active/total calories, Active Zone Minutes as `active_minutes`,
+  sedentary, HRV, VO2 max, SpO2 and respiratory rate — every daily fetch
+  over the one sync window (no migration). Still to come: Google's intraday
+  series (PR 3b), body composition, nutrition, skin temperature and basal
+  calories (no rollup — a decision on summing raw points); PR 4 — the
+  console regroups by category/grain and the `cadence_for()`/`MANUAL_METRICS`
+  shim is deleted. Deferred until a plugin
   targets them: `hr_zone_minutes`, Women's-health keys, `ecg`, `symptoms`.
 - **Webhook / push ingestion:** landed for metrics (see Data model); still to
   come: pushing sessions (sleep, workouts) through it.

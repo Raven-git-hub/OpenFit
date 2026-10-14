@@ -322,12 +322,11 @@ def test_a_token_that_never_runs_out_stops_at_the_page_cap(conn, google, fetcher
     google.sync()
 
     assert len(google.requests_for(fetcher)) == MAX_PAGES
-    # Each page's day was kept on the way - for sleep, only those inside
-    # the sync window. This fake pages out 100 days of nights whatever the
-    # filter; a real account's would stop at the window, and the plugin
-    # drops any night that began before it.
-    kept = days_back(SYNC_DAYS) if fetcher is FETCHERS["sleep"] else days_back(MAX_PAGES)
-    assert readings(conn, fetcher) == expected(fetcher, kept)
+    # Each page's day inside the sync window was kept on the way. This
+    # fake pages out 100 days whatever the range or filter; a real
+    # account's would stop at the window, and the plugin drops any day -
+    # or night that began - before it.
+    assert readings(conn, fetcher) == expected(fetcher, days_back(SYNC_DAYS))
     assert f"stopped after {MAX_PAGES} pages" in capsys.readouterr().out
 
 
