@@ -60,12 +60,18 @@ own calls to its device API. Full direction:
 - `app/crypto.py` — Fernet encrypt/decrypt for stored credentials.
 - `app/templates/index.html` — the data console, one self-contained page
   (vanilla JS, no build step, no external calls or web fonts; every colour/font/
-  radius in its `CUSTOMISE OPENFIT HERE` token block). Reads
+  radius in its `CUSTOMISE OPENFIT HERE` token block). Under the top bar
+  (date, a `settings` button, the theme toggle) sits the original angled tab
+  strip, restored verbatim: **Home** (far left, a blank panel for now) and
+  **Data** (far right, the console; open on load), then the dashed **＋ Add**.
+  Settings, ＋ Add, and Add source once every connector is connected each open
+  one shared coming-soon placeholder modal (`comingSoon(title)`); while a
+  connector is still unconnected, Add source opens its real add flow. Reads
   `/api/catalog?include_empty=1`, `/api/coverage` and `/api/source-roles`
   (dragging a daily metric's sources `PUT`s `/api/source-roles/<metric>`), plus
   the connector endpoints (`/api/connectors`, the OAuth add flow,
-  `/api/sync/<plugin>`); `/api/activity?by_source=1` only for the last-sync
-  stamp. See `docs/architecture/frontend-redesign-and-widget-model.md`.
+  `/api/sync/<plugin>`); not `/api/activity` (the last-sync stamp that read it
+  is gone). See `docs/architecture/frontend-redesign-and-widget-model.md`.
 - `tests/` — pytest, temp DB, no network.
 - `docs/architecture/` — design direction (read first). `docs/design/` — frontend references.
 
@@ -308,6 +314,5 @@ same PR:
   (one per night across devices), and the series stitch.
 Keep `GET /api/activity` returning its current flat shape, and `/api/weights` its
 `[{date, weight}]` shape (manual `weight_kg` readings only), as compatibility shims
-during the data-model change (the console no longer reads `/api/weights`; it
-reads `/api/activity` only for the last-sync stamp). Remove the orphaned
+during the data-model change (the console reads neither any more). Remove the orphaned
 `workouts` table + `/api/workouts` when convenient (unused by the UI).

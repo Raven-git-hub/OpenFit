@@ -128,11 +128,11 @@ button{font-family:inherit;cursor:pointer;}
 :focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:4px;}
 .tnum{font-variant-numeric:tabular-nums;}
 
-/* ---------- app shell: top bar ---------- */
+/* ---------- app shell: top bar + rhombus tab strip ---------- */
 .app{min-height:100vh;}
 .topbar{
   display:flex;align-items:flex-start;justify-content:space-between;gap:16px;
-  padding:20px 30px 18px;border-bottom:1px solid var(--border);
+  padding:20px 30px 0;
 }
 .brand{display:flex;align-items:center;gap:11px;}
 .brand-mark{
@@ -147,21 +147,39 @@ button{font-family:inherit;cursor:pointer;}
 .brand-name b{color:var(--accent);}
 
 .status-stack{display:flex;flex-direction:column;align-items:flex-end;gap:8px;}
-.datesync{
-  display:flex;align-items:center;gap:12px;
+.datepill{
   background:var(--surface);border:1px solid var(--border);border-radius:22px;
   padding:7px 15px;box-shadow:var(--shadow);
+  font-family:var(--font-display);font-weight:700;font-size:13px;color:var(--ink);
 }
-.datesync .ds-date{font-family:var(--font-display);font-weight:700;font-size:13px;color:var(--ink);}
-.datesync .ds-sep{width:1px;height:16px;background:var(--border-strong);}
-.datesync .ds-sync{display:flex;align-items:center;gap:7px;font-family:var(--font-mono);font-size:11.5px;color:var(--muted);}
-.dot{width:7px;height:7px;border-radius:50%;background:var(--good);flex:none;box-shadow:0 0 0 3px color-mix(in srgb,var(--good) 22%,transparent);}
-.dot.idle{background:var(--muted);box-shadow:0 0 0 3px color-mix(in srgb,var(--muted) 20%,transparent);}
-.theme-toggle{
+/* the small pill buttons under the date: Settings, then the theme toggle */
+.bar-btns{display:flex;gap:8px;}
+.bar-btn{
   border:1px solid var(--border);border-radius:20px;background:var(--surface);
   color:var(--muted);font-size:11.5px;font-family:var(--font-mono);padding:6px 13px;
 }
-.theme-toggle:hover{border-color:var(--accent);color:var(--accent);}
+.bar-btn:hover{border-color:var(--accent);color:var(--accent);}
+
+.tabstrip{
+  display:flex;gap:8px;align-items:flex-end;
+  padding:18px 30px 0;margin-top:8px;
+  border-bottom:1px solid var(--border);overflow-x:auto;scrollbar-width:none;
+}
+.tabstrip::-webkit-scrollbar{display:none;}
+.tab{
+  border:none;background:var(--surface-2);color:var(--ink-2);
+  font-family:var(--font-display);font-weight:700;font-size:13.5px;letter-spacing:.3px;
+  padding:11px 30px;transform:skewX(-14deg);border-radius:7px 7px 0 0;
+  white-space:nowrap;position:relative;top:1px;transition:background .12s,color .12s;
+}
+.tab>span{display:inline-block;transform:skewX(14deg);}
+.tab:hover{background:var(--surface);color:var(--ink);}
+.tab.active{background:var(--accent);color:var(--accent-ink);}
+.tab-add{margin-left:auto;background:transparent;border:1.5px dashed var(--border-strong);color:var(--muted);font-weight:600;}
+.tab-add:hover{background:transparent;border-color:var(--accent);color:var(--accent);}
+/* Home holds the left end alone; Data sits at the right end, beside Add */
+.tab-end{margin-left:auto;}
+.tab-end + .tab-add{margin-left:0;}
 
 .main{padding:24px 30px 60px;min-width:0;}
 
@@ -186,9 +204,6 @@ a.btn{display:inline-block;text-decoration:none;}
   border-radius:var(--radius-sm);padding:10px 11px;font-size:14px;font-family:var(--font-body);width:100%;
 }
 .input:focus{border-color:var(--accent);outline:none;}
-.seg{display:inline-flex;border:1px solid var(--border);border-radius:8px;overflow:hidden;}
-.seg button{border:none;background:var(--surface);color:var(--muted);padding:7px 12px;font-size:12.5px;font-weight:600;}
-.seg button.on{background:var(--accent-soft);color:var(--accent);}
 .form-msg{font-size:12px;font-family:var(--font-mono);margin-top:8px;min-height:16px;}
 .form-msg.ok{color:var(--good);}
 .form-msg.bad{color:var(--crit);}
@@ -221,17 +236,14 @@ a.btn{display:inline-block;text-decoration:none;}
 /* the Add source button at the foot of Connected sources */
 .src-add{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding-top:14px;margin-top:2px;border-top:1px solid var(--border);}
 .src + .src-add{border-top:none;margin-top:0;}
-.src-add-note{color:var(--muted);font-size:12.5px;}
 
-/* ---------- floating add-device modal ---------- */
+/* ---------- floating modal: add-device flows + the coming-soon stub ---------- */
 .modal-bg{position:fixed;inset:0;z-index:80;background:color-mix(in srgb,var(--ink) 45%,transparent);display:grid;place-items:center;padding:20px;}
 .modal{background:var(--surface);border:1px solid var(--border-strong);border-radius:var(--radius);box-shadow:var(--shadow);padding:20px;width:min(420px,100%);max-height:88vh;overflow:auto;}
 .modal h4{font-family:var(--font-display);font-weight:700;font-size:16px;margin:0 0 3px;}
 .modal .hint{color:var(--muted);font-size:13px;margin:0 0 16px;}
 .modal .field{margin-bottom:12px;}
 .modal-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:16px;}
-.note-box{font-size:12.5px;color:var(--ink-2);background:var(--inset);border:1px solid var(--border);border-left:3px solid var(--accent);border-radius:8px;padding:11px 13px;line-height:1.55;}
-.mono{font-family:var(--font-mono);}
 
 /* ---------- the data card ----------
    One row per metric, series and session kind:
@@ -239,7 +251,8 @@ a.btn{display:inline-block;text-decoration:none;}
    The caption row uses the same grid, so its captions sit over the
    columns they name. */
 .card.data{padding:20px 10px 10px;}
-.card.data .card-head{padding:0 10px;}
+.card.data .card-head{padding:0 10px 12px;}
+.card.data .card-head .form-msg{margin:4px 0 0;min-height:0;}
 .dgrid{display:grid;grid-template-columns:16px minmax(0,200px) 120px 90px 1fr auto;align-items:center;column-gap:12px;}
 .dcap{
   padding:0 10px 8px;border-bottom:1px solid var(--border);
@@ -266,7 +279,7 @@ a.btn{display:inline-block;text-decoration:none;}
 }
 .dgroup::after{content:"";flex:1;height:1px;background:var(--border);}
 
-/* continuity rhombuses - skewed like the tab strip they replaced.
+/* continuity rhombuses - skewed like the tab strip.
    Fill opacity (--op) is the coverage; an outline alone means none. */
 .rhs{display:flex;}
 .rh-cell{width:34px;display:grid;place-items:center;text-align:center;}
@@ -311,19 +324,12 @@ h5 + .dnote{margin-top:0;}
   padding:5px 9px;border-radius:7px;box-shadow:var(--shadow);
 }
 
-/* ---------- settings disclosure ---------- */
-details.settings > summary{list-style:none;display:flex;align-items:center;justify-content:space-between;cursor:pointer;}
-details.settings > summary::-webkit-details-marker{display:none;}
-details.settings > summary h3{margin:0;}
-details.settings .chev{color:var(--muted);transition:transform .15s;}
-details.settings[open] .chev{transform:rotate(90deg);}
-.set-body{margin-top:16px;display:flex;flex-direction:column;gap:10px;align-items:flex-start;}
-.set-body .hint{margin:0;}
-
 /* ---------- responsive: phone ---------- */
 @media (max-width:860px){
-  .topbar{padding:14px 15px 14px;}
+  .topbar{padding:14px 15px 0;}
   .brand-name{font-size:20px;}
+  .tabstrip{padding:14px 15px 0;gap:6px;}
+  .tab{padding:10px 20px;font-size:12.5px;}
   .main{padding:18px 15px 60px;}
 }
 @media (max-width:640px){
@@ -345,36 +351,30 @@ details.settings[open] .chev{transform:rotate(90deg);}
       <div class="brand-name">Open<b>Fit</b></div>
     </div>
     <div class="status-stack">
-      <div class="datesync">
-        <span class="ds-date" id="dsDate"></span>
-        <span class="ds-sep"></span>
-        <span class="ds-sync" id="dsSync"><span class="dot idle"></span> no sync yet</span>
+      <div class="datepill" id="today"></div>
+      <div class="bar-btns">
+        <button class="bar-btn" id="settingsBtn" type="button">settings</button>
+        <button class="bar-btn" id="themeToggle" type="button">theme <span id="themeState">auto</span></button>
       </div>
-      <button class="theme-toggle" id="themeToggle">theme <span id="themeState">auto</span></button>
     </div>
   </header>
 
-  <main class="main">
-    <div class="console">
-      <section class="card" id="sourcesCard" aria-label="Connected sources"></section>
-      <section class="card data" id="dataCard" aria-label="Your data"></section>
+  <nav class="tabstrip" aria-label="Tabs">
+    <button class="tab" data-tab="home" type="button"><span>Home</span></button>
+    <button class="tab tab-end active" data-tab="data" type="button" aria-current="page"><span>Data</span></button>
+    <button class="tab tab-add" id="addTabBtn" type="button"><span>＋ Add</span></button>
+  </nav>
 
-      <details class="card settings">
-        <summary><h3>Settings</h3><span class="chev" aria-hidden="true">›</span></summary>
-        <div class="set-body">
-          <div class="field"><label>Appearance</label></div>
-          <div class="seg" id="cfgTheme">
-            <button type="button" data-t="auto">Auto</button><button type="button" data-t="light">Light</button><button type="button" data-t="dark">Dark</button>
-          </div>
-          <p class="hint">Remembered in this browser only - it is not stored with your data.</p>
-          <div class="note-box">
-            Want to go further than the theme? Every colour, font and radius is a CSS variable in the
-            <span class="mono">CUSTOMISE OPENFIT HERE</span> block at the top of <span class="mono">index.html</span>.
-            Change a handful of tokens and the whole interface re-skins - no hunting through markup.
-          </div>
-        </div>
-      </details>
-    </div>
+  <main class="main">
+    <!-- HOME: blank for now -->
+    <section data-panel="home" aria-label="Home" hidden></section>
+    <!-- DATA: the console -->
+    <section data-panel="data" aria-label="Data">
+      <div class="console">
+        <section class="card" id="sourcesCard" aria-label="Connected sources"></section>
+        <section class="card data" id="dataCard" aria-label="Your data"></section>
+      </div>
+    </section>
   </main>
 </div>
 
@@ -417,7 +417,6 @@ details.settings[open] .chev{transform:rotate(90deg);}
     }catch(e){ return {ok:false, error:'network error'}; }
   }
 
-  const ACTIVITY_DAYS = 14;
   const api = {
     /* The access contract: what there is, which days hold it, and who
        is primary for each metric. */
@@ -426,9 +425,6 @@ details.settings[open] .chev{transform:rotate(90deg);}
     sourceRoles:  ()             => fetchJSON('/api/source-roles'),
     setPrimary:   (metric, src)  => send('/api/source-roles/'+enc(metric), 'PUT', {primary:src}),
     sessions:     (kind, from)   => getJSON('/api/sessions/'+enc(kind)+(from ? '?from='+enc(from) : ''), null),
-    /* Only for the top bar's last-sync stamp: the per-source rows carry
-       synced_at, which nothing in the access contract does. */
-    listActivity: days           => getJSON('/api/activity?days='+days+'&by_source=1', []),
     /* Connectors = plugins + whatever account has been attached to them.
        Credentials go one way only: they are posted here and never read
        back, so nothing on this page can display a stored password. */
@@ -474,7 +470,6 @@ details.settings[open] .chev{transform:rotate(90deg);}
      ========================================================= */
   const state = {
     connectors:null,   // [{id, name, fields, add_flow, add_note, connected, configured}]; null until loaded
-    activity:[],       // per-source rows, only for the last-sync stamp
     status:'loading',  // the data card: loading | ready | error
     stale:false,       // a refresh failed; the last good load is still shown
     data:null,         // {rows, coverage, win}
@@ -502,14 +497,6 @@ details.settings[open] .chev{transform:rotate(90deg);}
     const d = new Date();
     return new Date(d.getTime() - d.getTimezoneOffset()*60000).toISOString().slice(0,10);
   };
-  /* Plugins stamp synced_at with SQLite's datetime('now') - UTC, in
-     'YYYY-MM-DD HH:MM:SS' form, which Date() does not parse consistently.
-     Normalise to ISO/UTC so it can be shown in the viewer's local time. */
-  function parseStamp(s){
-    if(!s) return null;
-    const d = new Date(s.includes('T') ? s : s.replace(' ','T')+'Z');
-    return isNaN(d.getTime()) ? null : d;
-  }
 
   /* =========================================================
      THE DATASET - catalog + coverage + source roles, one load
@@ -658,14 +645,10 @@ details.settings[open] .chev{transform:rotate(90deg);}
       return;
     }
 
-    const {rows, win} = state.data;
+    const {rows} = state.data;
     const reporting = rows.filter(r => r.count > 0);
     const waiting   = rows.filter(r => !r.count);
-    head.appendChild(el('p','hint',
-      (reporting.length
-        ? `${reporting.length} of ${rows.length} reporting. Day / Wk / Mth show how continuously each is covered since ${esc(fmtDayY(isoOf(win.start)))}, from any source.`
-        : 'Nothing has reported yet - connect a source above and sync.') +
-      (state.stale ? ' <span style="color:var(--crit)">Couldn’t refresh - showing the last load.</span>' : '')));
+    if(state.stale) head.appendChild(el('div','form-msg bad', 'Couldn’t refresh - showing the last load.'));
 
     const list = el('div','dlist');
     list.appendChild(el('div','dcap dgrid',
@@ -996,8 +979,6 @@ details.settings[open] .chev{transform:rotate(90deg);}
       const res = await api.syncPlugin(c.id);
       if(res.ok){
         syncBtn.textContent = 'Synced ✓';
-        state.activity = await api.listActivity(ACTIVITY_DAYS);
-        paintSync();
         loadData();   // the sync re-derived its window: refresh the rows
       }else{
         syncBtn.textContent = res.error==='a sync is already in progress' ? 'Already syncing' : 'Failed';
@@ -1023,7 +1004,8 @@ details.settings[open] .chev{transform:rotate(90deg);}
 
   /* The button at the foot of the card. Every connector the API offers
      that isn't connected yet is addable; add_flow decides which modal
-     it opens. */
+     it opens. With nothing left to add it opens a placeholder until the
+     add-source popup lands. */
   function addSourceRow(){
     const addable = state.connectors.filter(c => !c.connected);
     const wrap = el('div','src-add');
@@ -1032,10 +1014,8 @@ details.settings[open] .chev{transform:rotate(90deg);}
     wrap.appendChild(btn);
 
     if(!addable.length){
-      btn.disabled = true;
-      wrap.appendChild(el('span','src-add-note', state.connectors.length
-        ? 'Every device OpenFit can add is already connected.'
-        : 'No devices are available to add.'));
+      btn.setAttribute('aria-haspopup','dialog');
+      btn.onclick = () => comingSoon('Add a source');
       return wrap;
     }
     btn.setAttribute('aria-haspopup','menu');
@@ -1091,6 +1071,20 @@ details.settings[open] .chev{transform:rotate(90deg);}
     bg.onclick = e => { if(e.target === bg) close(); };
 
     return {box, close};
+  }
+
+  /* A stand-in for popups that aren't built yet: Add source (when nothing
+     is left to add), Settings and Add tab. */
+  function comingSoon(title){
+    const {box, close} = openModal(`
+      <h4>${esc(title)}</h4>
+      <p class="hint">Coming soon.</p>
+      <div class="modal-actions">
+        <button class="btn sm" data-act="close" type="button">Close</button>
+      </div>`);
+    const btn = box.querySelector('[data-act="close"]');
+    btn.onclick = close;
+    btn.focus();
   }
 
   /* The manifest rendered as inputs - the same markup for step one of
@@ -1252,41 +1246,43 @@ details.settings[open] .chev{transform:rotate(90deg);}
   }
   function curTheme(){ try{ return localStorage.getItem('of-theme') || 'auto'; }catch(e){ return 'auto'; } }
   function reflectTheme(){
-    const t = curTheme();
-    const st = $('#themeState'); if(st) st.textContent = t;
-    document.querySelectorAll('#cfgTheme button').forEach(b=>b.classList.toggle('on', b.dataset.t===t));
+    const st = $('#themeState'); if(st) st.textContent = curTheme();
   }
   $('#themeToggle').onclick = ()=>{
     const order = ['auto','light','dark'];
     setTheme(order[(order.indexOf(curTheme())+1) % order.length]);
   };
-  document.querySelectorAll('#cfgTheme button').forEach(b=> b.onclick = ()=> setTheme(b.dataset.t));
   (function initTheme(){
     const t = curTheme();
     if(t!=='auto') document.documentElement.setAttribute('data-theme', t);
     reflectTheme();
   })();
 
-  /* ---- top bar: today's date, and the most recent sync ---- */
+  /* ---- top bar: today's date, and Settings (not built yet) ---- */
   function paintDate(){
-    $('#dsDate').textContent = new Date().toLocaleDateString('en-GB',{weekday:'short',day:'numeric',month:'short'});
+    $('#today').textContent = new Date().toLocaleDateString('en-GB',{weekday:'short',day:'numeric',month:'short'});
   }
-  function paintSync(){
-    let best = null;
-    state.activity.forEach(r=>{
-      if(r.synced_at && (!best || r.synced_at > best.synced_at)) best = r;
+  $('#settingsBtn').onclick = () => comingSoon('Settings');
+
+  /* ---- tabs: Home (blank for now) and Data (the console) ----
+     Switching only shows one panel and hides the other; the console
+     keeps its state underneath. */
+  function closeFloating(){ closePop(); hideTip(); }
+  function showTab(name){
+    document.querySelectorAll('.tab[data-tab]').forEach(b => {
+      const on = b.dataset.tab===name;
+      b.classList.toggle('active', on);
+      if(on) b.setAttribute('aria-current','page'); else b.removeAttribute('aria-current');
     });
-    const holder = $('#dsSync');
-    const when = best && parseStamp(best.synced_at);
-    holder.innerHTML = when
-      ? `<span class="dot"></span> ${esc(srcName(best.source))} · ${esc(when.toLocaleTimeString('en-GB', {hour:'2-digit', minute:'2-digit'}))}`
-      : `<span class="dot idle"></span> no sync yet`;
+    document.querySelectorAll('[data-panel]').forEach(p => { p.hidden = p.dataset.panel!==name; });
+    closeFloating();
   }
+  document.querySelectorAll('.tab[data-tab]').forEach(b => { b.onclick = () => showTab(b.dataset.tab); });
+  $('#addTabBtn').onclick = () => comingSoon('Add a tab');
 
   /* =========================================================
      BOOT - paint the shell straight away, then fill it in
      ========================================================= */
-  function closeFloating(){ closePop(); hideTip(); }
   window.addEventListener('resize', closeFloating);
   window.addEventListener('scroll', closeFloating, {passive:true, capture:true});
   document.addEventListener('keydown', e => { if(e.key==='Escape') closeFloating(); });
@@ -1296,7 +1292,6 @@ details.settings[open] .chev{transform:rotate(90deg);}
   paintData();
   // In parallel: each part paints as soon as its own reads land.
   refreshConnectors();
-  api.listActivity(ACTIVITY_DAYS).then(rows => { state.activity = Array.isArray(rows) ? rows : []; paintSync(); });
   loadData();
 })();
 </script>
