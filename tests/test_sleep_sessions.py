@@ -1,18 +1,18 @@
 """
 Sleep sessions from the real plugins, with the network stubbed.
 
-Both plugins already fetch sleep to file the daily sleep_minutes reading;
-the same response carries the night as an interval with its stage
-breakdown, which they now also write as a `sleep` session. These tests
-feed each plugin a response in its provider's documented shape and pin
-both halves of the dual track: the daily total exactly as before, and
-the session beside it.
+Each plugin's sleep response carries the night as an interval with its
+stage breakdown, which it writes as a `sleep` session - and only that:
+since schema v2 there is no daily sleep_minutes metric (the night's
+total is the session's asleep_minutes). These tests feed each plugin a
+response in its provider's documented shape and pin the session, and
+that no sleep_minutes reading is filed beside it.
 
 The shapes are what Garmin's dailySleepDTO and the Google Health API v4
 Sleep resource look like on paper. They still need checking against a
 real account - which is why the defensive cases matter as much as the
 happy path: a field that isn't where it's expected must cost the
-session at most, never the metric or the sync.
+session at most, never the sync.
 
 No network: the Garmin client is a fake handed to sync(), and Google's
 HTTP calls are stubbed the way test_oauth_connector.py stubs the token
@@ -26,7 +26,10 @@ from datetime import date
 import pytest
 
 from crypto import encrypt
-from metrics import SLEEP_MINUTES
+
+# The retired daily sleep metric: no longer in the vocabulary, spelled
+# out here only to check nothing files it.
+SLEEP_MINUTES = "sleep_minutes"
 
 
 class FrozenDate(date):
@@ -176,17 +179,28 @@ def garmin_night(**dto_changes):
     return {"2026-01-02": night}
 
 
-def test_garmin_writes_the_night_as_a_session_beside_sleep_minutes(conn, garmin):
+def test_garmin_writes_the_night_as_a_session_only(conn, garmin):
     stats = {"2026-01-02": {"totalSteps": 9000, "restingHeartRate": 52}}
 
     assert garmin(conn, garmin_night(), stats=stats) == 1
 
-    # The daily track, exactly as before: seconds asleep in whole minutes.
-    assert sleep_readings(conn, "garmin") == [("2026-01-02", 443)]
+    # No daily sleep metric: the day's readings are its stats alone...
+    assert sleep_readings(conn, "garmin") == []
     assert [tuple(r) for r in conn.execute(
         "SELECT metric, value FROM metrics WHERE source = 'garmin' ORDER BY metric"
-    )] == [("resting_hr_bpm", 52), ("sleep_minutes", 443), ("steps", 9000)]
-    # ...and the night itself, from the GMT timestamps and stage seconds.
+    )] == [("resting_hr_bpm", 52), ("steps", 9000)]
+    # ...and the night is its session, from the GMT timestamps and stage
+    # seconds, seconds asleep in whole minutes.
+    assert sleep_sessions(conn, "garmin") == [
+        (f"garmin:sleep:{GARMIN_START}", GARMIN_START, GARMIN_END, GARMIN_SUMMARY)
+    ]
+
+
+def test_garmin_night_alone_still_lands_its_session(conn, garmin):
+    """A day with nothing but sleep is still a day written."""
+    assert garmin(conn, garmin_night()) == 1
+
+    assert conn.execute("SELECT COUNT(*) FROM metrics").fetchone()[0] == 0
     assert sleep_sessions(conn, "garmin") == [
         (f"garmin:sleep:{GARMIN_START}", GARMIN_START, GARMIN_END, GARMIN_SUMMARY)
     ]
@@ -196,7 +210,7 @@ def test_garmin_resync_of_the_same_night_upserts(conn, garmin):
     garmin(conn, garmin_night(sleepTimeSeconds=25000, deepSleepSeconds=4000))
     garmin(conn, garmin_night())
 
-    assert sleep_readings(conn, "garmin") == [("2026-01-02", 443)]
+    assert sleep_readings(conn, "garmin") == []
     assert sleep_sessions(conn, "garmin") == [
         (f"garmin:sleep:{GARMIN_START}", GARMIN_START, GARMIN_END, GARMIN_SUMMARY)
     ]
@@ -216,7 +230,6 @@ def test_garmin_without_stage_fields_still_writes_the_session(conn, garmin, caps
         deepSleepSeconds=..., lightSleepSeconds=..., remSleepSeconds=..., awakeSleepSeconds=...,
     ))
 
-    assert sleep_readings(conn, "garmin") == [("2026-01-02", 443)]
     assert sleep_sessions(conn, "garmin") == [
         (f"garmin:sleep:{GARMIN_START}", GARMIN_START, GARMIN_END, {"asleep_minutes": 443})
     ]
@@ -224,11 +237,11 @@ def test_garmin_without_stage_fields_still_writes_the_session(conn, garmin, caps
 
 
 @pytest.mark.parametrize("start", [..., None, "2026-01-01T22:30:00Z"])
-def test_garmin_without_a_usable_start_keeps_the_metric(conn, garmin, capsys, start):
-    """No interval, no session - but the daily total is still filed."""
-    garmin(conn, garmin_night(sleepStartTimestampGMT=start))
+def test_garmin_without_a_usable_start_writes_no_sleep(conn, garmin, capsys, start):
+    """No interval, no session - and no daily total in its place."""
+    assert garmin(conn, garmin_night(sleepStartTimestampGMT=start)) == 0
 
-    assert sleep_readings(conn, "garmin") == [("2026-01-02", 443)]
+    assert sleep_readings(conn, "garmin") == []
     assert sleep_sessions(conn, "garmin") == []
     assert "no session written" in capsys.readouterr().out
 
@@ -241,11 +254,10 @@ def test_garmin_without_an_end_still_writes_the_session(conn, garmin):
     ]
 
 
-def test_garmin_night_with_no_sleep_writes_neither(conn, garmin):
-    """Nothing recorded (the 1st here): no reading and no session."""
-    garmin(conn, garmin_night(), days=2)
+def test_garmin_night_with_no_sleep_writes_no_session(conn, garmin):
+    """Nothing recorded (the 1st here): no session for it."""
+    assert garmin(conn, garmin_night(), days=2) == 1
 
-    assert sleep_readings(conn, "garmin") == [("2026-01-02", 443)]
     assert len(sleep_sessions(conn, "garmin")) == 1
 
 
@@ -408,13 +420,14 @@ def google_night(**summary_changes):
     return night
 
 
-def test_google_writes_each_sleep_as_a_session_beside_sleep_minutes(conn, google):
+def test_google_writes_each_sleep_as_a_session_only(conn, google):
+    # The day with sleep counts as written...
     assert google(GOOGLE_NIGHT, GOOGLE_NAP) == 1
 
-    # The daily track, exactly as before: minutesAsleep summed per civil
-    # start day, night and nap together.
-    assert sleep_readings(conn, "google_health") == [("2026-01-01", 421 + 44)]
-    # ...and each sleep as its own session, stages mapped to minutes.
+    # ...but no daily sleep metric is filed for it...
+    assert sleep_readings(conn, "google_health") == []
+    assert conn.execute("SELECT COUNT(*) FROM metrics").fetchone()[0] == 0
+    # ...each sleep is its own session, stages mapped to minutes.
     assert sleep_sessions(conn, "google_health") == [
         NAP_SESSION,
         (f"google_health:sleep:{NIGHT_START}", NIGHT_START, NIGHT_END, NIGHT_SUMMARY),
@@ -431,9 +444,8 @@ def test_google_asks_for_sleep_by_its_civil_end_date(conn, google):
     assert google.sleep_requests == [
         {"filter": 'sleep.interval.civil_end_time >= "2025-12-27"'}
     ]
-    # Asked the documented way, the same realistic answer still files the
-    # daily total and both sessions.
-    assert sleep_readings(conn, "google_health") == [("2026-01-01", 421 + 44)]
+    # Asked the documented way, the same realistic answer still files
+    # both sessions.
     assert sleep_sessions(conn, "google_health") == [
         NAP_SESSION,
         (f"google_health:sleep:{NIGHT_START}", NIGHT_START, NIGHT_END, NIGHT_SUMMARY),
@@ -476,17 +488,17 @@ TODAY_NAP = google_sleep("2026-01-02T13:10:00Z", "2026-01-02T13:40:00Z", 28)
 
 def test_google_drops_sleep_that_began_before_the_window(conn, google):
     """Filtered by end date, the answer runs back past the window's first
-    day. What began before it is dropped from the daily total and the
-    sessions both; every day inside keeps its full total and sessions."""
-    google(TODAY_NAP, GOOGLE_NIGHT, GOOGLE_NAP, PRE_WINDOW_NIGHT, PRE_WINDOW_NAP, days=2)
+    day. What began before it is dropped; every day inside keeps all its
+    sessions."""
+    # Two days written - the 1st and the 2nd - not the 31st.
+    assert google(
+        TODAY_NAP, GOOGLE_NIGHT, GOOGLE_NAP, PRE_WINDOW_NIGHT, PRE_WINDOW_NAP, days=2,
+    ) == 2
 
     assert google.sleep_requests == [
         {"filter": 'sleep.interval.civil_end_time >= "2026-01-01"'}
     ]
-    # Nothing for the 31st - neither a total nor a session...
-    assert sleep_readings(conn, "google_health") == [
-        ("2026-01-01", 421 + 44), ("2026-01-02", 28),
-    ]
+    # No session for the 31st.
     assert sleep_sessions(conn, "google_health") == [
         NAP_SESSION,
         (f"google_health:sleep:{NIGHT_START}", NIGHT_START, NIGHT_END, NIGHT_SUMMARY),
@@ -494,17 +506,15 @@ def test_google_drops_sleep_that_began_before_the_window(conn, google):
     ]
 
 
-def test_a_day_that_leaves_the_window_keeps_its_full_total(conn, google):
-    """The daily sync this guards: a day's total, written whole while it
-    was inside the window, isn't cut back to its night alone once the
-    window moves past it."""
+def test_a_day_that_leaves_the_window_keeps_its_sessions(conn, google):
+    """A day's sleep, written whole while it was inside the window, is
+    left as it is once the window moves past it."""
     # A 7-day sync has all of the 1st: its night and its afternoon nap.
     google(GOOGLE_NIGHT, GOOGLE_NAP, days=7)
     # A 1-day sync starts on the 2nd. Google sends the night that began
     # on the 1st, which ended on the 2nd, but not the nap, which didn't.
     google(GOOGLE_NIGHT, days=1)
 
-    assert sleep_readings(conn, "google_health") == [("2026-01-01", 421 + 44)]
     assert sleep_sessions(conn, "google_health") == [
         NAP_SESSION,
         (f"google_health:sleep:{NIGHT_START}", NIGHT_START, NIGHT_END, NIGHT_SUMMARY),
@@ -515,7 +525,7 @@ def test_google_resync_of_the_same_sleep_upserts(conn, google):
     google(google_night(minutesAsleep="400"), GOOGLE_NAP)
     google(GOOGLE_NIGHT, GOOGLE_NAP)
 
-    assert sleep_readings(conn, "google_health") == [("2026-01-01", 465)]
+    assert sleep_readings(conn, "google_health") == []
     sessions = sleep_sessions(conn, "google_health")
     assert len(sessions) == 2
     assert sessions[1][3] == NIGHT_SUMMARY
@@ -532,7 +542,6 @@ def test_google_falls_back_to_minutes_awake_without_stages(conn, google):
 def test_google_without_any_stage_fields_still_writes_the_session(conn, google, capsys):
     google(google_night(stagesSummary=..., minutesAwake=...))
 
-    assert sleep_readings(conn, "google_health") == [("2026-01-01", 421)]
     assert sleep_sessions(conn, "google_health") == [
         (f"google_health:sleep:{NIGHT_START}", NIGHT_START, NIGHT_END, {"asleep_minutes": 421})
     ]
@@ -553,21 +562,20 @@ def test_google_skips_a_stage_it_cannot_read(conn, google):
     }
 
 
-def test_google_without_a_start_time_keeps_the_metric(conn, google, capsys):
+def test_google_without_a_start_time_costs_only_that_session(conn, google, capsys):
     night = copy.deepcopy(GOOGLE_NIGHT)
     del night["sleep"]["interval"]["startTime"]
 
     google(night, GOOGLE_NAP)
 
-    assert sleep_readings(conn, "google_health") == [("2026-01-01", 465)]
+    assert sleep_readings(conn, "google_health") == []
     assert sleep_sessions(conn, "google_health") == [NAP_SESSION]
     assert "no session written" in capsys.readouterr().out
 
 
 def test_an_unreadable_session_never_breaks_the_sync(conn, google, capsys):
     """A summary in a shape nobody expected costs the session, not the day."""
-    google(google_night(stagesSummary={"LIGHT": "243"}), GOOGLE_NAP)
+    assert google(google_night(stagesSummary={"LIGHT": "243"}), GOOGLE_NAP) == 1
 
-    assert sleep_readings(conn, "google_health") == [("2026-01-01", 465)]
     assert sleep_sessions(conn, "google_health") == [NAP_SESSION]
     assert "could not read a sleep session" in capsys.readouterr().out

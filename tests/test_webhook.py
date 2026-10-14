@@ -17,24 +17,9 @@ import pytest
 import main
 from derived import recompute_derived
 from metrics import (
-    ACTIVE_KCAL,
-    BMI,
-    BODY_FAT_PCT,
-    DISTANCE_M,
-    FLOORS,
-    HRV_MS,
-    HYDRATION_ML,
-    INTENSITY_MODERATE_MIN,
-    INTENSITY_VIGOROUS_MIN,
     METRICS,
     PLAUSIBLE_RANGES,
-    RESPIRATORY_RATE_BRPM,
-    RESTING_HR_BPM,
-    SLEEP_MINUTES,
-    SPO2_PCT,
     STEPS,
-    TOTAL_KCAL,
-    VO2_MAX,
     WEIGHT_KG,
 )
 
@@ -272,8 +257,7 @@ def test_a_push_is_derived_at_once(client, conn):
     assert picked(conn, today, WEIGHT_KG) == (82.4, "webhook")
     assert picked(conn, today, STEPS) == (9000, "webhook")
     assert client.get("/api/activity").get_json() == [{
-        "date": today, "steps": 9000, "resting_hr": None, "sleep_hours": None,
-        "source": "webhook",
+        "date": today, "steps": 9000, "resting_hr": None, "source": "webhook",
     }]
 
 
@@ -319,7 +303,9 @@ def assert_nothing_written(conn):
     assert derived(conn) == []
 
 
-@pytest.mark.parametrize("metric", ["stepz", "Steps", "", None, 5, ["steps"], {"k": "steps"}])
+@pytest.mark.parametrize(
+    "metric", ["stepz", "Steps", "", None, 5, ["steps"], {"k": "steps"}, "sleep_minutes"]
+)
 def test_an_unknown_metric_is_a_400(client, conn, metric):
     assert_rejected(push(client, {"metric": metric, "value": 1}))
     assert_nothing_written(conn)
@@ -344,32 +330,16 @@ def test_a_missing_value_is_a_400(client, conn):
 @pytest.mark.parametrize("raw", ["NaN", "Infinity", "-Infinity", "1" + "0" * 400])
 def test_a_non_finite_or_unstorable_value_is_a_400(client, conn, raw):
     # Python's JSON parser takes NaN and Infinity, and any length of integer.
-    assert_rejected(push_raw(client, '{"metric": "sleep_minutes", "value": %s}' % raw))
+    assert_rejected(push_raw(client, '{"metric": "steps", "value": %s}' % raw))
     assert_nothing_written(conn)
 
 
-def test_the_plausible_ranges():
-    assert PLAUSIBLE_RANGES == {
-        STEPS: (0, 200_000),
-        RESTING_HR_BPM: (20, 250),
-        SLEEP_MINUTES: (0, 1440),
-        WEIGHT_KG: (20, 400),
-        DISTANCE_M: (0, 500_000),
-        ACTIVE_KCAL: (0, 30_000),
-        TOTAL_KCAL: (0, 30_000),
-        FLOORS: (0, 10_000),
-        INTENSITY_MODERATE_MIN: (0, 1440),
-        INTENSITY_VIGOROUS_MIN: (0, 1440),
-        SPO2_PCT: (50, 100),
-        RESPIRATORY_RATE_BRPM: (3, 60),
-        HRV_MS: (0, 500),
-        VO2_MAX: (10, 90),
-        BODY_FAT_PCT: (2, 70),
-        BMI: (8, 80),
-        HYDRATION_ML: (0, 20_000),
-    }
-    for metric in PLAUSIBLE_RANGES:
-        assert metric in METRICS
+def test_every_metric_has_a_plausible_range():
+    # The values themselves are pinned with the rest of the vocabulary,
+    # in test_metrics.py.
+    assert set(PLAUSIBLE_RANGES) == set(METRICS)
+    for low, high in PLAUSIBLE_RANGES.values():
+        assert low < high
 
 
 @pytest.mark.parametrize("metric", sorted(PLAUSIBLE_RANGES))

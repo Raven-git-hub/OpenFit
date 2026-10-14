@@ -1,10 +1,10 @@
 """
 The access contract: the read API apps build on.
 
-GET /api/catalog says what there is (each key labelled with its grain
-and cadence), GET /api/coverage which days hold it, GET
+GET /api/catalog says what there is (each key labelled with its grain,
+category and cadence), GET /api/coverage which days hold it, GET
 /api/metric/<metric> serves one metric's derived series, GET
-/api/sessions/<kind> one kind's sessions and GET /api/series/<metric>
+/api/sessions/<kind> one kind's sessions (by source priority) and GET /api/series/<metric>
 one series metric's intraday samples, each with its provenance. Metrics
 come from derived_metrics - the picked value - never the raw per-source
 rows; samples have no pick yet, so every source's are served. Also here: manual /api/weights writes
@@ -13,29 +13,42 @@ re-derive their days, so a weigh-in reaches the contract at once.
 
 from datetime import datetime, timedelta, timezone
 
+import json
+
 import pytest
 
-from derived import recompute_derived, set_source_role
+from derived import SOURCE_ROLES_KEY, recompute_derived, set_source_role
 from metrics import (
+    ACTIVE_KCAL,
+    BLOOD_GLUCOSE,
     BMI,
     BODY_FAT_PCT,
+    DISTANCE_M,
+    FLOORS,
     HEART_RATE,
+    HRV_MS,
     HYDRATION_ML,
+    INTENSITY_MODERATE_MIN,
+    INTENSITY_VIGOROUS_MIN,
     MANUAL_METRICS,
     METRICS,
+    MOOD,
     RESPIRATION,
     RESPIRATORY_RATE_BRPM,
     RESTING_HR_BPM,
     SERIES_METRICS,
     SESSION_KINDS,
     SLEEP,
-    SLEEP_MINUTES,
     SPO2,
     SPO2_PCT,
     STEPS,
+    TOTAL_KCAL,
+    VO2_MAX,
     WEIGHT_KG,
     WORKOUT,
     cadence_for,
+    category_for,
+    grain_for,
 )
 from plugins.base import iso_utc, write_sample, write_session
 
@@ -111,12 +124,13 @@ def test_catalog_lists_each_metric_with_data(client, conn):
 
     catalog = client.get("/api/catalog").get_json()
 
-    # Vocabulary order; sleep_minutes has no data, so isn't listed.
+    # Vocabulary order; a metric with no data isn't listed.
     assert catalog["metrics"] == [
         {
             "metric": STEPS,
             "unit": "count",
             "grain": "daily",
+            "category": "Activity",
             "cadence": "daily",
             "sources": ["garmin", "google_health"],
             "first": "2026-01-01",
@@ -129,6 +143,7 @@ def test_catalog_lists_each_metric_with_data(client, conn):
             "metric": RESTING_HR_BPM,
             "unit": "bpm",
             "grain": "daily",
+            "category": "Vitals",
             "cadence": "daily",
             "sources": ["garmin"],
             "first": "2026-01-01",
@@ -140,7 +155,9 @@ def test_catalog_lists_each_metric_with_data(client, conn):
         {
             "metric": WEIGHT_KG,
             "unit": "kg",
-            "grain": "daily",
+            # Instant in v2, while the deprecated cadence keeps its old label.
+            "grain": "instant",
+            "category": "Body composition",
             "cadence": "manual",
             "sources": ["manual"],
             "first": "2026-01-02",
@@ -203,6 +220,7 @@ def test_catalog_lists_each_session_kind_with_data(client, conn):
         {
             "kind": SLEEP,
             "grain": "session",
+            "category": "Sleep",
             "cadence": "session",
             "count": 3,
             "first": "2026-01-01T23:00:00Z",
@@ -232,6 +250,7 @@ def test_catalog_lists_each_series_metric_with_data(client, conn):
             "metric": HEART_RATE,
             "unit": "bpm",
             "grain": "series",
+            "category": "Vitals",
             "cadence": "reading",
             "sources": ["garmin", "polar"],
             "first": "2026-01-01T23:58:00Z",
@@ -255,23 +274,30 @@ def test_catalog_series_sources_are_in_default_precedence(client, conn):
     assert hr["sources"] == ["garmin", "google_health", "apple"]
 
 
-def test_catalog_labels_every_entry_with_its_grain_and_cadence(client, conn):
-    insert(conn, "2026-01-01", "garmin", steps=9000, body_fat_pct=18.5)
+def test_catalog_labels_every_entry_with_its_grain_category_and_cadence(client, conn):
+    insert(conn, "2026-01-01", "garmin", steps=9000, body_fat_pct=18.5, vo2_max=48)
+    insert(conn, "2026-01-01", "cgm", blood_glucose=5.4)
     recompute_derived(conn)
     session(conn, "garmin", WORKOUT, "2026-01-01T07:00:00Z", "2026-01-01T07:30:00Z", {})
+    session(conn, "garmin", SLEEP, "2026-01-01T22:00:00Z", "2026-01-02T06:00:00Z", {})
     sample(conn, "garmin", "2026-01-01T08:00:00Z", 97, metric=SPO2)
 
     catalog = client.get("/api/catalog").get_json()
 
     def labels(entries, name):
-        return [(e[name], e["grain"], e["cadence"]) for e in entries]
+        return [(e[name], e["grain"], e["category"], e["cadence"]) for e in entries]
 
     assert labels(catalog["metrics"], "metric") == [
-        (STEPS, "daily", "daily"),
-        (BODY_FAT_PCT, "daily", "manual"),
+        (STEPS, "daily", "Activity", "daily"),
+        (BLOOD_GLUCOSE, "instant", "Vitals", "daily"),
+        (BODY_FAT_PCT, "instant", "Body composition", "manual"),
+        (VO2_MAX, "daily", "Fitness", "daily"),
     ]
-    assert labels(catalog["sessions"], "kind") == [(WORKOUT, "session", "session")]
-    assert labels(catalog["series"], "metric") == [(SPO2, "series", "reading")]
+    assert labels(catalog["sessions"], "kind") == [
+        (SLEEP, "session", "Sleep", "session"),
+        (WORKOUT, "session", "Activity", "session"),
+    ]
+    assert labels(catalog["series"], "metric") == [(SPO2, "series", "Vitals", "reading")]
 
 
 def test_catalog_with_include_empty_lists_the_whole_vocabulary(client, conn):
@@ -288,7 +314,8 @@ def test_catalog_with_include_empty_lists_the_whole_vocabulary(client, conn):
     assert [s["kind"] for s in catalog["sessions"]] == sorted(SESSION_KINDS)
     # Every entry is labelled, empty or not.
     for entry in catalog["metrics"]:
-        assert entry["grain"] == "daily"
+        assert entry["grain"] == grain_for(entry["metric"])
+        assert entry["category"] == category_for(entry["metric"])
         assert entry["cadence"] == cadence_for(entry["metric"])
 
     metrics = {m["metric"]: m for m in catalog["metrics"]}
@@ -300,6 +327,7 @@ def test_catalog_with_include_empty_lists_the_whole_vocabulary(client, conn):
         "metric": STEPS,
         "unit": "count",
         "grain": "daily",
+        "category": "Activity",
         "cadence": "daily",
         "sources": [],
         "first": None,
@@ -309,9 +337,9 @@ def test_catalog_with_include_empty_lists_the_whole_vocabulary(client, conn):
         "last_date": None,
     }
     assert catalog["sessions"] == [
-        {"kind": SLEEP, "grain": "session", "cadence": "session",
+        {"kind": SLEEP, "grain": "session", "category": "Sleep", "cadence": "session",
          "count": 0, "first": None, "last": None},
-        {"kind": WORKOUT, "grain": "session", "cadence": "session",
+        {"kind": WORKOUT, "grain": "session", "category": "Activity", "cadence": "session",
          "count": 1, "first": "2026-01-01T07:00:00Z", "last": "2026-01-01T07:00:00Z"},
     ]
     series = {s["metric"]: s for s in catalog["series"]}
@@ -320,6 +348,7 @@ def test_catalog_with_include_empty_lists_the_whole_vocabulary(client, conn):
         "metric": HEART_RATE,
         "unit": "bpm",
         "grain": "series",
+        "category": "Vitals",
         "cadence": "reading",
         "sources": [],
         "first": None,
@@ -353,23 +382,39 @@ def test_catalog_without_include_empty_leaves_out_keys_with_no_data(client, conn
     assert catalog["series"] == []
 
 
-# ---------- cadence ----------
+# ---------- cadence (the deprecated shim the console still groups by) ----------
 
 
 @pytest.mark.parametrize(
     "key, cadence",
     [
+        # Every pre-v2 key still in the vocabulary, with the label it had
+        # before v2: the console's groups must not move until it switches
+        # to grain and category.
         (STEPS, "daily"),
         (RESTING_HR_BPM, "daily"),
-        (SLEEP_MINUTES, "daily"),
+        (DISTANCE_M, "daily"),
+        (ACTIVE_KCAL, "daily"),
+        (TOTAL_KCAL, "daily"),
+        (FLOORS, "daily"),
+        (INTENSITY_MODERATE_MIN, "daily"),
+        (INTENSITY_VIGOROUS_MIN, "daily"),
+        (SPO2_PCT, "daily"),
+        (RESPIRATORY_RATE_BRPM, "daily"),
+        (HRV_MS, "daily"),
+        (VO2_MAX, "daily"),
         (WEIGHT_KG, "manual"),
         (BODY_FAT_PCT, "manual"),
         (BMI, "manual"),
         (HYDRATION_ML, "manual"),
         (HEART_RATE, "reading"),
+        (RESPIRATION, "reading"),
         (SPO2, "reading"),
         (SLEEP, "session"),
         (WORKOUT, "session"),
+        # A v2 key is a plain daily one to the shim, whatever its grain.
+        (MOOD, "daily"),
+        (BLOOD_GLUCOSE, "daily"),
     ],
 )
 def test_cadence_for(key, cadence):
@@ -381,7 +426,7 @@ def test_every_manual_metric_is_a_daily_metric():
     assert MANUAL_METRICS <= set(METRICS)
 
 
-@pytest.mark.parametrize("key", ["heartrate", "nap", ""])
+@pytest.mark.parametrize("key", ["heartrate", "nap", "", "sleep_minutes"])
 def test_cadence_for_an_unknown_key_raises(key):
     with pytest.raises(ValueError, match="unknown metric"):
         cadence_for(key)
@@ -597,13 +642,13 @@ def test_sessions_oldest_first_with_parsed_summary(client, conn):
     later = {"asleep_minutes": 420, "deep_minutes": 80}
     earlier = {"asleep_minutes": 450, "light_minutes": 250, "rem_minutes": 100}
     session(conn, "garmin", SLEEP, "2026-01-02T22:30:00Z", "2026-01-03T06:00:00Z", later)
-    session(conn, "google_health", SLEEP, "2026-01-01T23:00:00Z", "2026-01-02T07:00:00Z", earlier)
+    session(conn, "garmin", SLEEP, "2026-01-01T23:00:00Z", "2026-01-02T07:00:00Z", earlier)
 
     assert sessions(client, SLEEP) == [
         {
             "start": "2026-01-01T23:00:00Z",
             "end": "2026-01-02T07:00:00Z",
-            "source": "google_health",
+            "source": "garmin",
             "summary": earlier,
         },
         {
@@ -636,6 +681,71 @@ def test_sessions_from_two_sources_are_both_listed(client, conn):
     session(conn, "garmin", SLEEP, "2026-01-01T23:00:00Z", "2026-01-02T06:55:00Z", {})
 
     assert [s["source"] for s in sessions(client, SLEEP)] == ["garmin", "google_health"]
+
+
+def two_sources_of_nights(conn):
+    """Two nights from each of Google Health and Garmin, Google's earlier
+    on both nights, so start order alone would interleave them."""
+    for start in ("2026-01-01T22:00:00Z", "2026-01-02T22:00:00Z"):
+        session(conn, "google_health", SLEEP, start, None, {})
+    for start in ("2026-01-01T23:00:00Z", "2026-01-02T23:00:00Z"):
+        session(conn, "garmin", SLEEP, start, None, {})
+
+
+def listed(client, kind, query=""):
+    return [(s["source"], s["start"]) for s in sessions(client, kind, query)]
+
+
+def test_sessions_list_the_priority_source_first(client, conn):
+    """A priority-ordered passthrough: every source's sessions, the one
+    the default precedence would pick first, each source's by start."""
+    two_sources_of_nights(conn)
+
+    assert listed(client, SLEEP) == [
+        ("garmin", "2026-01-01T23:00:00Z"),
+        ("garmin", "2026-01-02T23:00:00Z"),
+        ("google_health", "2026-01-01T22:00:00Z"),
+        ("google_health", "2026-01-02T22:00:00Z"),
+    ]
+
+
+def test_sessions_follow_a_primary_configured_for_the_kind(client, conn):
+    two_sources_of_nights(conn)
+    conn.execute(
+        "INSERT INTO settings (key, value) VALUES (?, ?)",
+        (SOURCE_ROLES_KEY, json.dumps({SLEEP: "google_health"})),
+    )
+    conn.commit()
+
+    assert listed(client, SLEEP) == [
+        ("google_health", "2026-01-01T22:00:00Z"),
+        ("google_health", "2026-01-02T22:00:00Z"),
+        ("garmin", "2026-01-01T23:00:00Z"),
+        ("garmin", "2026-01-02T23:00:00Z"),
+    ]
+    # Only that kind's: workouts keep the default order.
+    session(conn, "google_health", WORKOUT, "2026-01-01T07:00:00Z", None, {})
+    session(conn, "garmin", WORKOUT, "2026-01-01T08:00:00Z", None, {})
+    assert [source for source, _ in listed(client, WORKOUT)] == ["garmin", "google_health"]
+
+
+def test_sessions_from_unranked_sources_come_last_by_name(client, conn):
+    session(conn, "polar", SLEEP, "2026-01-01T21:00:00Z", None, {})
+    session(conn, "apple", SLEEP, "2026-01-01T21:30:00Z", None, {})
+    two_sources_of_nights(conn)
+
+    assert [source for source, _ in listed(client, SLEEP)] == [
+        "garmin", "garmin", "google_health", "google_health", "apple", "polar",
+    ]
+
+
+def test_sessions_priority_order_holds_within_a_range(client, conn):
+    two_sources_of_nights(conn)
+
+    assert listed(client, SLEEP, "?from=2026-01-02") == [
+        ("garmin", "2026-01-02T23:00:00Z"),
+        ("google_health", "2026-01-02T22:00:00Z"),
+    ]
 
 
 def test_session_with_no_summary_or_end(client, conn):

@@ -8,8 +8,8 @@ MFA enabled, run first_login.py once (see repo README) before starting the
 scheduled sync.
 
 Fetched per day: get_stats (steps, resting HR, distance, calories,
-floors and intensity minutes), get_sleep_data (the
-daily sleep total plus the night as a sleep session), get_spo2_data,
+floors and intensity minutes), get_sleep_data (the night as a sleep
+session - there is no daily sleep metric), get_spo2_data,
 get_respiration_data and get_hrv_data (the day's SpO2, respiration rate
 and HRV, and from the same SpO2 and respiration responses their
 intraday series, as samples), get_training_status and
@@ -42,7 +42,6 @@ from metrics import (
     RESPIRATORY_RATE_BRPM,
     RESTING_HR_BPM,
     SLEEP,
-    SLEEP_MINUTES,
     SPO2,
     SPO2_PCT,
     STEPS,
@@ -239,9 +238,9 @@ class GarminPlugin(SyncPlugin):
                 seconds = dto.get("sleepTimeSeconds")
                 if seconds:
                     sleep_minutes = round(seconds / 60)
-                    # The same response carries the night as an interval
-                    # with its stages. Never raises - a shape mismatch
-                    # costs the session, not the metric.
+                    # Sleep is filed as the night's session only, an
+                    # interval with its stages. Never raises - a shape
+                    # mismatch costs the session, not the day.
                     sleep_session = _sleep_session(dto, sleep_minutes, d_str)
             except Exception as e:
                 print(f"[garmin] sleep fetch failed for {d_str}: {e}")
@@ -290,7 +289,7 @@ class GarminPlugin(SyncPlugin):
             if (
                 steps is None
                 and resting_hr is None
-                and sleep_minutes is None
+                and sleep_session is None
                 and not stats_metrics
                 and not vitals
                 and not body_metrics
@@ -303,7 +302,6 @@ class GarminPlugin(SyncPlugin):
             write_metric(conn, d_str, self.id, RESTING_HR_BPM, resting_hr)
             for metric, value in stats_metrics.items():
                 write_metric(conn, d_str, self.id, metric, value)
-            write_metric(conn, d_str, self.id, SLEEP_MINUTES, sleep_minutes)
             for metric, value in vitals.items():
                 write_metric(conn, d_str, self.id, metric, value)
             for metric, value in body_metrics.items():
@@ -442,8 +440,8 @@ def _sleep_session(dto, asleep_minutes, d_str):
     (epoch milliseconds, real UTC - the *Local pair is shifted by the
     timezone and garminconnect warns it can be shifted twice), and each
     stage from its *SleepSeconds field, rounded to whole minutes.
-    asleep_minutes is the night's sleep_minutes reading, so the session
-    and the daily total always agree.
+    asleep_minutes is sleepTimeSeconds in whole minutes - sleep has no
+    daily metric, so the session is where the night's total lives.
 
     Defensive throughout: a missing stage is left out of the summary, a
     missing start means no session (logged), and nothing here raises.

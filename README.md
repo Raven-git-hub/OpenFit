@@ -38,8 +38,8 @@ continuous it is, and which source wins each metric — not the product.
 - **Garmin Connect** plugin — steps, resting HR, daily distance, active and
   total calories, floors climbed, moderate and vigorous intensity minutes, daily
   SpO2, respiration rate and HRV (on devices that measure them), VO2 max,
-  hydration, body fat, BMI and weight (from a compatible scale), sleep (daily
-  total plus a per-night session with stages), workouts (a session per
+  hydration, body fat, BMI and weight (from a compatible scale), sleep (a
+  per-night session with stages), workouts (a session per
   activity), and intraday series: heart rate and respiration rate (a sample
   every couple of minutes) and SpO2 (hourly averages).
 - **Google Health** plugin — steps, resting HR, sleep and workouts, from Pixel
@@ -77,23 +77,28 @@ curl -X POST http://<your-server-ip>:8080/api/webhook/<token> \
   -d '{"metric": "weight_kg", "value": 82.4, "source": "eufy"}'
 ```
 
-- `metric` is a canonical key (`steps`, `resting_hr_bpm`, `sleep_minutes`,
-  `weight_kg`, `distance_m`, `active_kcal`, `total_kcal`, `floors`,
-  `intensity_moderate_min`, `intensity_vigorous_min`, `spo2_pct`,
-  `respiratory_rate_brpm`, `hrv_ms`, `vo2_max`, `body_fat_pct`, `bmi`,
-  `hydration_ml`) and `value` a number in its unit
-  (`app/metrics.py`).
+- `metric` is a canonical key and `value` a number in its unit — the
+  vocabulary is [metric schema v2](docs/architecture/metric-schema-v2.md)
+  (`app/metrics.py`), 35 keys grouped by category: activity (`steps`,
+  `distance_m`, `floors`, `active_kcal`, `total_kcal`, `basal_kcal`,
+  `sedentary_min`, `elevation_gain_m`, `intensity_moderate_min`,
+  `intensity_vigorous_min`, `active_minutes`), vitals (`resting_hr_bpm`,
+  `hrv_ms`, `spo2_pct`, `respiratory_rate_brpm`, `skin_temperature`,
+  `body_temperature`, `blood_pressure_systolic`, `blood_pressure_diastolic`,
+  `blood_glucose` in mmol/L), body composition (`weight_kg`, `body_fat_pct`,
+  `bmi`, `height_cm`, `muscle_mass_kg`, `bone_mass_kg`, `body_water_pct`,
+  `visceral_fat`), fitness (`vo2_max`), nutrition & hydration
+  (`hydration_ml`, `calories_in`, `carbs_g`, `protein_g`, `fat_g`) and
+  `mood` (1–5). There is no daily sleep metric: sleep is sessions only.
 - `date` (`YYYY-MM-DD`) is optional and defaults to today; `source` is optional
   and defaults to `webhook`. Name your device (`"eufy"`) and it takes part in
   source roles like any other source — make it a metric's primary and it wins.
   A pull plugin's id (`garmin`, `google_health`) is refused: its syncs own those
   readings.
 - A value outside the metric's plausible range is refused (400), so a misfired
-  automation can't corrupt your data: steps 0–200000, resting HR 20–250 bpm,
-  sleep 0–1440 min, weight 20–400 kg, distance 0–500000 m, active and total
-  calories 0–30000 kcal each, floors 0–10000, each kind of intensity minutes
-  0–1440, SpO2 50–100 %, respiration 3–60 breaths/min, HRV 0–500 ms, VO2 max
-  10–90 ml/kg/min, body fat 2–70 %, BMI 8–80 kg/m², and hydration 0–20000 ml.
+  automation can't corrupt your data — e.g. steps 0–100000, resting HR 20–200
+  bpm, weight 20–400 kg, blood glucose 1–40 mmol/L, mood 1–5. Every key's
+  range is in the [v2 table](docs/architecture/metric-schema-v2.md#the-canonical-metrics).
 - Pushing the same metric and source for a day again replaces the reading, and
   the day's derived value is updated at once.
 
@@ -122,18 +127,20 @@ has data:
 ```json
 {
   "metrics": [
-    {"metric": "steps", "unit": "count", "grain": "daily", "cadence": "daily",
+    {"metric": "steps", "unit": "count", "grain": "daily",
+     "category": "Activity", "cadence": "daily",
      "sources": ["garmin", "google_health"],
      "first": "2026-10-07", "last": "2026-10-08", "count": 2,
      "last_value": 10450.0, "last_date": "2026-10-08"}
   ],
   "sessions": [
-    {"kind": "sleep", "grain": "session", "cadence": "session", "count": 1,
+    {"kind": "sleep", "grain": "session", "category": "Sleep",
+     "cadence": "session", "count": 1,
      "first": "2026-10-07T22:41:00Z", "last": "2026-10-07T22:41:00Z"}
   ],
   "series": [
     {"metric": "heart_rate", "unit": "bpm", "grain": "series",
-     "cadence": "reading", "sources": ["garmin"],
+     "category": "Vitals", "cadence": "reading", "sources": ["garmin"],
      "first": "2026-10-07T00:00:00Z", "last": "2026-10-08T23:58:00Z",
      "count": 1440}
   ]
@@ -148,10 +155,13 @@ sample of it, and `first`/`last` its earliest and latest sample. An empty
 install returns three empty lists.
 
 Every entry is labelled with its `grain` — `daily` (one value per day),
-`session` (intervals) or `series` (intraday samples) — and its `cadence`, how
-it's collected: `daily` (a device's once-a-day figure), `manual` (expected from
-a scale or hand entry: weight, body fat, BMI, hydration — a device may still
-supply it), `session` or `reading` (sampled through the day). Add
+`instant` (a single timestamped point, like a weigh-in or a blood-pressure
+reading; still one value per day for now), `session` (intervals) or `series`
+(intraday samples) — and its `category`: Activity, Vitals, Body composition,
+Fitness, Sleep, Nutrition & hydration, Women's health or Other. `cadence` is
+the older label — `daily`, `manual` (weight, body fat, BMI, hydration),
+`session` or `reading` — kept for the built-in console and deprecated: build on
+`grain` and `category`. Add
 `?include_empty=1` to list every metric, session kind and series OpenFit knows,
 including those with no data yet — `"count": 0`, `"sources": []` and null
 `first`/`last` (and `last_value`/`last_date`) — in the same order, for showing
@@ -198,10 +208,13 @@ Oldest first, one point per day, in the metric's canonical unit
               "rem_minutes": 102, "awake_minutes": 20}}]
 ```
 
-Oldest start first; times are ISO 8601 UTC, and `summary` holds the kind's
-fields that the device reported (`{}` if none). Sessions aren't picked between
-sources yet, so a night both devices tracked appears once per device. An unknown
-kind is a 404.
+Times are ISO 8601 UTC, and `summary` holds the kind's fields that the device
+reported (`{}` if none). Sessions aren't picked between sources yet, so a night
+both devices tracked appears once per device — but they're listed by source
+priority: the source OpenFit would pick first (Garmin, then Google Health, then
+any other, by default), then the rest, each source's oldest start first. Sleep
+is sessions only — there is no daily sleep total; sum `asleep_minutes` the way
+your app wants. An unknown kind is a 404.
 
 **Intraday series — `GET /api/series/<metric>?from=YYYY-MM-DD&to=YYYY-MM-DD`**
 (`heart_rate` in bpm, `respiration` in breaths/min, `spo2` in %).
@@ -298,8 +311,10 @@ Data lives in SQLite on a persistent Docker volume. Devices sync through plugins
 into a per-source store, and OpenFit derives a single value per metric per day
 from it while keeping every source's raw rows. That store is the tidy `metrics`
 table — one row per `(date, source, metric)` reading, filed under a canonical
-vocabulary (`steps`, `resting_hr_bpm`, `sleep_minutes`, `weight_kg`, ... in
-`app/metrics.py`) — so a new metric needs no migration. Weight is one of those
+vocabulary (`steps`, `resting_hr_bpm`, `weight_kg`, ... in `app/metrics.py`,
+each with its unit, category, grain and plausible range — see
+[metric schema v2](docs/architecture/metric-schema-v2.md)) — so a new metric
+needs no migration. Weight is one of those
 metrics: hand-entered weigh-ins are `weight_kg` readings (in kg) under the source
 `manual` (Garmin files its own from a compatible scale, under `garmin`), and
 there is no separate weights table any more. Beside `metrics`, a `sessions`
@@ -307,9 +322,9 @@ table holds interval records, each with a start/end and a summary, filed under
 a session kind from the same vocabulary. A `sleep` session is one
 night (or nap) from each device, with its stage breakdown in minutes
 (`asleep_minutes`, plus `light_minutes`/`deep_minutes`/`rem_minutes`/
-`awake_minutes` where the device reports them); sleep is dual-track: the daily
-`sleep_minutes` total is filed exactly as before, and the session is written
-beside it. A `workout` session is one activity, with no daily metric beside it:
+`awake_minutes` where the device reports them); sleep is sessions only, with no
+daily total beside it (schema v2 retired the old `sleep_minutes` metric). A
+`workout` session is one activity, with no daily metric beside it:
 its `type` (the device's activity type, lowercased), `duration_minutes`,
 `distance_m`, `avg_hr_bpm` and `calories_kcal`, whichever the device reports.
 A third table, `samples`, is the series (intraday) grain: one row per
@@ -372,7 +387,7 @@ source and write each reading with
 `app/metrics.py`, with the value already in that metric's unit. Interval data
 goes in as a session with `write_session(conn, self.id, kind, start, end,
 summary)`, `kind` a session kind from the same module: a night's sleep
-(`SLEEP`) beside the daily metric, a workout (`WORKOUT`) on its own. Register
+(`SLEEP`) or a workout (`WORKOUT`), neither with a daily metric. Register
 it with one line in `app/plugins/__init__.py` — no changes to
 `main.py`, the API, or the UI. Oura's clean public API makes it the natural next
 plugin.

@@ -155,7 +155,6 @@ def test_activity_returns_flat_rows(client, conn):
         [
             ("steps", 9000, "count"),
             ("resting_hr_bpm", 52, "bpm"),
-            ("sleep_minutes", 450, "min"),
         ],
     )
     conn.commit()
@@ -167,7 +166,6 @@ def test_activity_returns_flat_rows(client, conn):
             "date": "2026-01-01",
             "steps": 9000,
             "resting_hr": 52,
-            "sleep_hours": 7.5,
             "source": "garmin",
         }
     ]

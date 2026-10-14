@@ -50,7 +50,28 @@ def db_path(tmp_path):
 
 
 @pytest.fixture
-def db_at_version(tmp_path):
+def migrations_upto(tmp_path):
+    """Factory: a folder of the migrations up to `version` and no further.
+
+    run_migrations(conn, migrations_dir=migrations_upto(7)) applies what
+    is pending up to 7 - for testing what one migration does, without a
+    later one changing the same rows.
+    """
+
+    def make(version):
+        partial = tmp_path / f"migrations-upto-{version}"
+        if not partial.exists():
+            partial.mkdir()
+            for v, filename, path in discover_migrations():
+                if v <= version:
+                    shutil.copy(path, partial / filename)
+        return str(partial)
+
+    return make
+
+
+@pytest.fixture
+def db_at_version(tmp_path, migrations_upto):
     """Factory: path to a database migrated up to `version` and no further.
 
     For testing a migration against the schema it really runs on - a
@@ -59,14 +80,9 @@ def db_at_version(tmp_path):
     """
 
     def make(version, name="at-version.db"):
-        partial = tmp_path / f"migrations-upto-{version}"
-        partial.mkdir()
-        for v, filename, path in discover_migrations():
-            if v <= version:
-                shutil.copy(path, partial / filename)
         path = str(tmp_path / name)
         conn = sqlite3.connect(path)
-        run_migrations(conn, migrations_dir=str(partial))
+        run_migrations(conn, migrations_dir=migrations_upto(version))
         conn.close()
         return path
 

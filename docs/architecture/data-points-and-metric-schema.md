@@ -4,6 +4,13 @@ _Canonical reference · updated 2026-10-13. The consolidation **engine** (grains
 derive-and-pick, access contract) is specified in `data-consolidation-model.md`;
 this doc is the catalogue of the data points themselves — the target vocabulary._
 
+> **Superseded for the vocabulary by
+> [`metric-schema-v2.md`](metric-schema-v2.md)** (2026-10-14): its laws, grains
+> (with `instant`), categories and canonical key table win where this doc
+> differs — notably, `sleep_minutes` is retired (sleep is sessions only) and the
+> body-composition keys are `instant`. The source-mapping table below remains a
+> useful reference.
+
 ## Principle
 
 The dataset is the **cross-vendor, raw / standard health metrics** — the ones

@@ -61,17 +61,30 @@ own calls to its device API. Full direction:
   `self.get_credentials(conn)`, writes readings via `write_metric()`,
   interval records via `write_session()` and intraday samples via
   `write_sample()`. Never bypass this pattern.
-- `app/metrics.py` — the canonical metric vocabulary (key → unit), plus the
-  session kinds (`SLEEP`, `WORKOUT` in `SESSION_KINDS`) and the series metrics
-  (`HEART_RATE`, `RESPIRATION`, `SPO2` in `SERIES_METRICS`). Import keys and
-  kinds from here; never
-  spell metric or kind strings out in plugins or the API. Also how each key
-  is collected: `cadence_for(key)` → `"reading"` (in `SERIES_METRICS`),
-  `"session"` (in `SESSION_KINDS`), `"manual"` (in `MANUAL_METRICS` =
-  `weight_kg`, `body_fat_pct`, `bmi`, `hydration_ml` — daily metrics whose
-  expected input is a scale or hand entry, though a device may supply them
-  too), else `"daily"` (in `METRICS`); any other key raises `ValueError`. A
-  pure label: nothing is stored or picked by it.
+- `app/metrics.py` — the canonical vocabulary, schema v2
+  (`docs/architecture/metric-schema-v2.md`). One table, `METRIC_DEFS`, gives
+  each metric its unit, category, grain and plausible range
+  (`key → (unit, category, grain, (low, high))`); `METRICS` (key → unit, in
+  the order the API lists metrics) and `PLAUSIBLE_RANGES` are built from it.
+  Beside it the session kinds (`SLEEP`, `WORKOUT` in `SESSION_KINDS`) and the
+  series metrics (`HEART_RATE`, `RESPIRATION`, `SPO2` in `SERIES_METRICS`).
+  Import keys and kinds from here; never spell metric or kind strings out in
+  plugins or the API. `CATEGORIES` is the 8 labels in display order —
+  Activity, Vitals, Body composition, Fitness, Sleep, Nutrition & hydration,
+  Women's health (no keys yet), Other — and `GRAINS` the 4: `daily`,
+  `instant` (a timestamped point like a weigh-in; a label for now, still
+  filed one per day in `metrics`), `session`, `series`. `grain_for(key)` →
+  `"series"` (in `SERIES_METRICS`), `"session"` (in `SESSION_KINDS`), else
+  the metric's declared `"daily"`/`"instant"`; `category_for(key)` → its
+  category (series metrics Vitals, `sleep` Sleep, `workout` Activity); both
+  raise `ValueError` on any other key. Deprecated, kept unchanged only as a
+  shim for the console until PR 4 of the v2 rollout switches it to
+  grain/category and deletes them: `cadence_for(key)` → `"reading"`
+  (series), `"session"`, `"manual"` (in `MANUAL_METRICS` = `weight_kg`,
+  `body_fat_pct`, `bmi`, `hydration_ml`), else `"daily"` (any other metric,
+  an instant one included — so a weigh-in reads grain `instant`, cadence
+  `manual`). There is no `manual` grain: hand entry is a source. Grain,
+  category and cadence are labels: nothing is stored or picked by them.
 - `app/derived.py` — the one place a source is picked per `(date, metric)`:
   `recompute_derived()` writes `derived_metrics`. Never pick a source anywhere else.
 - `app/crypto.py` — Fernet encrypt/decrypt for stored credentials.
@@ -109,7 +122,11 @@ own calls to its device API. Full direction:
   the wipe path), then refreshes the sources card and `loadData()`.
   "Your data" groups its reporting rows by `cadence`
   — Daily, Manual, Session, Reading, a `.dgroup` header per non-empty group —
-  above the one ungrouped "Not yet reporting" group. A round voice button
+  above the one ungrouped "Not yet reporting" group. A row from the
+  catalog's `metrics` list (`row.cov === 'metrics'`) — `daily` or `instant`
+  grain — renders as a picked metric (latest value, draggable source
+  priority); a session kind's latest session is the one with the latest
+  `start`, since `/api/sessions` lists by source priority. A round voice button
   after the "Connected sources" and "Your data" titles plays that card's clip
   (`/audio/connected-sources.mp3`, `/audio/your-data.mp3`) through one shared
   `<audio>`: one clip at a time, a second click stops it, and a missing file
@@ -133,13 +150,24 @@ own calls to its device API. Full direction:
 ## Data model
 - Current: a tidy `metrics(date, source, metric, value, unit, synced_at)` keyed
   `(date, source, metric)` — one row per reading, so a new metric is data not a
-  migration. Keys and units come from `app/metrics.py` (`steps`/count,
-  `resting_hr_bpm`/bpm, `sleep_minutes`/min, `weight_kg`/kg, and the daily
-  activity metrics `distance_m`/m, `active_kcal`/kcal, `total_kcal`/kcal,
-  `floors`/count, `intensity_moderate_min`/min, `intensity_vigorous_min`/min,
-  the daily vitals `spo2_pct`/%, `respiratory_rate_brpm`/brpm,
-  `hrv_ms`/ms, and `vo2_max`/ml/kg/min, `body_fat_pct`/%, `bmi`/kg/m2,
-  `hydration_ml`/ml). Garmin files those six activity metrics from the same
+  migration. Keys, units, categories, grains and plausible ranges come from
+  `app/metrics.py` — the v2 vocabulary, 35 keys (the full table is
+  `docs/architecture/metric-schema-v2.md`). Activity: `steps`/count,
+  `distance_m`/m, `floors`/count, `active_kcal`, `total_kcal`, `basal_kcal`
+  (kcal), `sedentary_min`/min, `elevation_gain_m`/m,
+  `intensity_moderate_min`, `intensity_vigorous_min`, `active_minutes` (min).
+  Vitals: `resting_hr_bpm`/bpm, `hrv_ms`/ms, `spo2_pct`/%,
+  `respiratory_rate_brpm`/brpm, `skin_temperature`/°C (absolute), and the
+  instant `body_temperature`/°C, `blood_pressure_systolic`/`_diastolic`
+  (mmHg), `blood_glucose`/mmol/L. Body composition, all instant:
+  `weight_kg`/kg, `body_fat_pct`/%, `bmi`/kg/m2, `height_cm`/cm,
+  `muscle_mass_kg`/kg, `bone_mass_kg`/kg, `body_water_pct`/%,
+  `visceral_fat`/rating. Fitness: `vo2_max`/ml/kg/min. Nutrition &
+  hydration: `hydration_ml`/ml, `calories_in`/kcal, `carbs_g`, `protein_g`,
+  `fat_g` (g). Other: the instant `mood`/scale (1–5). No source fills the
+  new v2 keys yet (Garmin's come in PR 2, Google Health's in PR 3); an
+  instant reading is still one per `(date, source)` here. There is no daily
+  sleep metric (see `sessions`). Garmin files its six activity metrics from the same
   `get_stats` response as steps and resting HR, through its `STATS_METRICS`
   field map (`app/plugins/garmin/plugin.py`; each rounded to a whole number):
   a field absent or not a finite number writes nothing (an absent one is
@@ -176,7 +204,10 @@ own calls to its device API. Full direction:
   Migration `005` unpivoted the old wide `activity` table into it and dropped
   `activity`; migration `006` moved the old `weights` table in as `weight_kg`
   readings under source `manual` (hand entry; `synced_at` NULL for migrated
-  rows) and dropped `weights`.
+  rows) and dropped `weights`; migration `010` deleted every `sleep_minutes`
+  row from `metrics` and `derived_metrics` — nothing else — when schema v2
+  retired the key (a night only ever filed as a daily total, from before
+  `007`, went with it; a longer sync window re-fetches it as a session).
 - Beside it, `sessions(id, source, kind, "start", "end", summary_json, synced_at)`
   (migration `007`, purely additive) for interval records: `id` is
   `source:kind:start` so a re-sync upserts, `start`/`end` are ISO 8601 UTC
@@ -188,8 +219,9 @@ own calls to its device API. Full direction:
   gives:
   - `sleep` — one session per night/nap, summary in minutes: `asleep_minutes`
     plus `light_minutes`/`deep_minutes`/`rem_minutes`/`awake_minutes`. Sleep is
-    dual-track: the daily `sleep_minutes` metric is written exactly as before
-    and the session sits beside it.
+    sessions only: there is no daily sleep metric (v2 retired `sleep_minutes`
+    — a daily total is an aggregate, an app's to compute), and neither plugin
+    files one.
   - `workout` — one session per activity, and no daily metric: `type` (the
     source's activity type, lowercased — not yet mapped across sources),
     `duration_minutes`, `distance_m`, `avg_hr_bpm`, `calories_kcal`.
@@ -289,8 +321,10 @@ own calls to its device API. Full direction:
     have won any day, in pick order; a series' = every source with a sample
     of it, in default precedence (no pick yet). Session `first`/`last` are
     start timestamps, a series' its earliest/latest sample `ts`. Every entry
-    also carries `grain` (`"daily"` for metrics, `"session"`, `"series"`) and
-    `cadence` (`cadence_for()`). `?include_empty=1` (also `true`/`yes`;
+    also carries `grain` (`grain_for()`: a metric's declared `"daily"` or
+    `"instant"`, `"session"`, `"series"`), `category` (`category_for()`) and
+    `cadence` (`cadence_for()`, the deprecated shim the console still groups
+    by — kept exactly as before until PR 4). `?include_empty=1` (also `true`/`yes`;
     default off = the above) lists every vocabulary key in each list, in the
     same order — one with no data as `count: 0`, `sources: []`,
     `first`/`last` null (metrics also `last_value`/`last_date` null) — so a
@@ -309,11 +343,14 @@ own calls to its device API. Full direction:
   - `GET /api/metric/<metric>?from=&to=` → `{metric, unit, points: [{date,
     value, source}]}` ascending; `value` as stored (a float). Unknown metric
     404; known with no data → `points: []`.
-  - `GET /api/sessions/<kind>?from=&to=` → `[{start, end, source, summary}]`
-    ascending by start (then source); `summary` parsed from `summary_json`
-    (`{}` if none), `end` may be null. Sessions have no derived pick: each
-    source's session is listed, tagged with its source. `from`/`to` match the
-    start's UTC date. Unknown kind 404.
+  - `GET /api/sessions/<kind>?from=&to=` → `[{start, end, source, summary}]`,
+    a priority-ordered passthrough: every source's sessions — no pick, filter
+    or merge — the source the pick would rank first leading, then the rest
+    (`source_rank()`: a `source_roles` entry under the kind's own key if one
+    is stored, then `DEFAULT_PRIORITY`, then by name), each source's
+    ascending by start. `summary` parsed from `summary_json` (`{}` if none),
+    `end` may be null. `from`/`to` match the start's UTC date. Unknown kind
+    404.
   - `GET /api/series/<metric>?from=&to=` → `{metric, unit, points: [{ts, value,
     source}]}` from `samples`, ascending by `ts` then source; `value` a whole
     number as an int (`_whole()`: 77.0 reads as 77). A per-source passthrough,
@@ -411,6 +448,17 @@ same PR:
   stitch (pending a second series source), more series sources, verifying
   sources + history, and committing a sync per day (it still holds one write
   transaction for the whole run).
+- **Metric schema v2** (`docs/architecture/metric-schema-v2.md`), four PRs.
+  PR 1 landed: the v2 vocabulary (unit/category/grain/range per key,
+  `CATEGORIES`, `grain_for()`/`category_for()`), the catalog's `category`
+  and `grain_for()` grain, priority-ordered `/api/sessions`, `sleep_minutes`
+  retired (migration `010`; the Garmin and Google Health daily sleep writes
+  removed; `/api/activity` without `sleep_hours`). Still to come: PR 2 —
+  Garmin fills its new keys (basal, sedentary, elevation, body composition);
+  PR 3 — Google Health enrichment (incl. its baseline-relative skin
+  temperature); PR 4 — the console regroups by category/grain and the
+  `cadence_for()`/`MANUAL_METRICS` shim is deleted. Deferred until a plugin
+  targets them: `hr_zone_minutes`, Women's-health keys, `ecg`, `symptoms`.
 - **Webhook / push ingestion:** landed for metrics (see Data model); still to
   come: pushing sessions (sleep, workouts) through it.
 - **The access contract:** landed (see Data model): discovery, range queries
@@ -421,7 +469,9 @@ same PR:
   migration); the console itself is `index.html` (frontend only). Still to come: a
   `?by_source` option for raw per-source reads, a derived pick for sessions
   (one per night across devices), and the series stitch.
-Keep `GET /api/activity` returning its current flat shape, and `/api/weights` its
+Keep `GET /api/activity` returning its current flat shape (`{date, steps,
+resting_hr, source}`, plus `synced_at` with `?by_source=1` — its `sleep_hours`
+field went with `sleep_minutes` in v2), and `/api/weights` its
 `[{date, weight}]` shape (manual `weight_kg` readings only), as compatibility shims
 during the data-model change (the console reads neither any more). Remove the orphaned
 `workouts` table + `/api/workouts` when convenient (unused by the UI).
