@@ -48,7 +48,13 @@ own calls to its device API. Full direction:
   session kinds (`SLEEP`, `WORKOUT` in `SESSION_KINDS`) and the series metrics
   (`HEART_RATE`, `RESPIRATION`, `SPO2` in `SERIES_METRICS`). Import keys and
   kinds from here; never
-  spell metric or kind strings out in plugins or the API.
+  spell metric or kind strings out in plugins or the API. Also how each key
+  is collected: `cadence_for(key)` → `"reading"` (in `SERIES_METRICS`),
+  `"session"` (in `SESSION_KINDS`), `"manual"` (in `MANUAL_METRICS` =
+  `weight_kg`, `body_fat_pct`, `bmi`, `hydration_ml` — daily metrics whose
+  expected input is a scale or hand entry, though a device may supply them
+  too), else `"daily"` (in `METRICS`); any other key raises `ValueError`. A
+  pure label: nothing is stored or picked by it.
 - `app/derived.py` — the one place a source is picked per `(date, metric)`:
   `recompute_derived()` writes `derived_metrics`. Never pick a source anywhere else.
 - `app/crypto.py` — Fernet encrypt/decrypt for stored credentials.
@@ -199,7 +205,24 @@ own calls to its device API. Full direction:
     empty install has three empty lists. A metric's `sources` = sources that
     have won any day, in pick order; a series' = every source with a sample
     of it, in default precedence (no pick yet). Session `first`/`last` are
-    start timestamps, a series' its earliest/latest sample `ts`.
+    start timestamps, a series' its earliest/latest sample `ts`. Every entry
+    also carries `grain` (`"daily"` for metrics, `"session"`, `"series"`) and
+    `cadence` (`cadence_for()`). `?include_empty=1` (also `true`/`yes`;
+    default off = the above) lists every vocabulary key in each list, in the
+    same order — one with no data as `count: 0`, `sources: []`,
+    `first`/`last` null (metrics also `last_value`/`last_date` null) — so a
+    console can show "not yet reporting" slots; split them by `count`.
+  - `GET /api/coverage?from=&to=` → `{"metrics": {metric: [date, ...]},
+    "series": {metric: [date, ...]}, "sessions": {kind: [date, ...]}}` — which
+    `YYYY-MM-DD` dates hold any data, source-agnostic, ascending and
+    de-duplicated, so a console draws continuity without pulling samples.
+    Metrics from `derived_metrics.date`; series from `date(ts)` of `samples`
+    (filtered on `ts` bounds as `/api/series` is, for the index); sessions
+    from `date("start")`. Series/session dates are UTC-bucketed (SQLite's
+    `date()` reads `iso_utc()`'s `Z`); a user-local day boundary is a later
+    refinement. Only vocabulary keys with ≥1 date in range are listed (the
+    empty slots come from the catalog's `?include_empty`), so an empty
+    install has three empty maps.
   - `GET /api/metric/<metric>?from=&to=` → `{metric, unit, points: [{date,
     value, source}]}` ascending; `value` as stored (a float). Unknown metric
     404; known with no data → `points: []`.
@@ -267,7 +290,11 @@ same PR:
 - **Webhook / push ingestion:** landed for metrics (see Data model); still to
   come: pushing sessions (sleep, workouts) through it.
 - **The access contract:** landed (see Data model): discovery, range queries
-  with provenance, sessions, intraday series (passthrough). Still to come: a
+  with provenance, sessions, intraday series (passthrough); for the
+  data-collation console (its UI a later PR), each catalog entry's
+  `grain`/`cadence` (`cadence_for()`, `MANUAL_METRICS`), the catalog's
+  `?include_empty=1` and per-day presence via `GET /api/coverage` (no
+  migration). Still to come: a
   `?by_source` option for raw per-source reads, a derived pick for sessions
   (one per night across devices), and the series stitch.
 Keep `GET /api/activity` returning its current flat shape, and `/api/weights` its

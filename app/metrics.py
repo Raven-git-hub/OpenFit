@@ -16,6 +16,7 @@ Session kinds (the bottom of this module) are governed the same way: a
 kind is a constant here, and the sessions table holds any kind, so a new
 one is an entry in SESSION_KINDS rather than a migration. So are series
 metrics - intraday samples, in the samples table - in SERIES_METRICS.
+cadence_for() (at the end) labels any of these keys by how it's collected.
 """
 
 STEPS = "steps"
@@ -143,3 +144,34 @@ SLEEP = "sleep"
 WORKOUT = "workout"
 
 SESSION_KINDS = {SLEEP, WORKOUT}
+
+
+# ---- cadence ----
+#
+# How a key is collected, as a console labels it: "reading" for a series
+# metric (sampled through the day), "session" for a session kind (one per
+# interval), "manual" for a daily metric whose expected input is a scale
+# or hand entry, and "daily" for any other daily metric (a device's
+# once-a-day figure). A label, not a rule: nothing is stored or picked by
+# it, and a device may still supply a manual metric - Garmin's weight_kg
+# sits beside the manual one.
+
+MANUAL_METRICS = {WEIGHT_KG, BODY_FAT_PCT, BMI, HYDRATION_ML}
+
+
+def cadence_for(key):
+    """How a metric, series metric or session kind is collected.
+
+    One of "reading", "session", "manual" or "daily" (see above). Raises
+    ValueError for a key in none of the vocabularies.
+    """
+    if key in SERIES_METRICS:
+        return "reading"
+    if key in SESSION_KINDS:
+        return "session"
+    # Before the plain daily fallback: every manual metric is in METRICS too.
+    if key in MANUAL_METRICS:
+        return "manual"
+    if key in METRICS:
+        return "daily"
+    raise ValueError(f"unknown metric: {key!r}")

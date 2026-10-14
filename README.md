@@ -100,7 +100,7 @@ yet.
 
 ## Reading the data (the access contract)
 
-Apps read OpenFit through four read-only endpoints. Daily metrics are served
+Apps read OpenFit through five read-only endpoints. Daily metrics are served
 from the **derived** profile — the one value OpenFit picked per metric per day,
 each tagged with the source it came from — never the raw per-source readings, so
 an app gets one trusted answer and never has to reconcile devices itself.
@@ -115,16 +115,18 @@ has data:
 ```json
 {
   "metrics": [
-    {"metric": "steps", "unit": "count", "sources": ["garmin", "google_health"],
+    {"metric": "steps", "unit": "count", "grain": "daily", "cadence": "daily",
+     "sources": ["garmin", "google_health"],
      "first": "2026-10-07", "last": "2026-10-08", "count": 2,
      "last_value": 10450.0, "last_date": "2026-10-08"}
   ],
   "sessions": [
-    {"kind": "sleep", "count": 1,
+    {"kind": "sleep", "grain": "session", "cadence": "session", "count": 1,
      "first": "2026-10-07T22:41:00Z", "last": "2026-10-07T22:41:00Z"}
   ],
   "series": [
-    {"metric": "heart_rate", "unit": "bpm", "sources": ["garmin"],
+    {"metric": "heart_rate", "unit": "bpm", "grain": "series",
+     "cadence": "reading", "sources": ["garmin"],
      "first": "2026-10-07T00:00:00Z", "last": "2026-10-08T23:58:00Z",
      "count": 1440}
   ]
@@ -137,6 +139,34 @@ and `last_value` the value on `last_date`. A session kind's `first`/`last` are
 its earliest and latest start. A series' `sources` are every source with a
 sample of it, and `first`/`last` its earliest and latest sample. An empty
 install returns three empty lists.
+
+Every entry is labelled with its `grain` — `daily` (one value per day),
+`session` (intervals) or `series` (intraday samples) — and its `cadence`, how
+it's collected: `daily` (a device's once-a-day figure), `manual` (expected from
+a scale or hand entry: weight, body fat, BMI, hydration — a device may still
+supply it), `session` or `reading` (sampled through the day). Add
+`?include_empty=1` to list every metric, session kind and series OpenFit knows,
+including those with no data yet — `"count": 0`, `"sources": []` and null
+`first`/`last` (and `last_value`/`last_date`) — in the same order, for showing
+what isn't reporting yet.
+
+**Coverage — `GET /api/coverage?from=YYYY-MM-DD&to=YYYY-MM-DD`.** Which days
+hold any data, whatever the source, for drawing continuity without fetching
+every sample:
+
+```json
+{
+  "metrics":  {"steps": ["2026-10-07", "2026-10-08"], "weight_kg": ["2026-10-08"]},
+  "series":   {"heart_rate": ["2026-10-07", "2026-10-08"]},
+  "sessions": {"sleep": ["2026-10-07"]}
+}
+```
+
+A metric's dates are its derived days, a series' the dates it has a sample on,
+and a session kind's the dates a session starts on — ascending, each once.
+Series and session dates are UTC dates for now (a user-local day boundary is
+planned). Only keys with data in range are listed, so an empty install returns
+three empty maps.
 
 **One metric — `GET /api/metric/<metric>?from=YYYY-MM-DD&to=YYYY-MM-DD`.**
 
@@ -184,8 +214,9 @@ own vocabulary, so a daily key such as `resting_hr_bpm` or `spo2_pct` is a 404
 here, like any unknown metric; a known one with no samples has `"points": []`.
 
 `from` and `to` are optional and inclusive; leave one out for an open end. For
-sessions they match the start's UTC date, and for series the sample's. A
-malformed date, or `from` after `to`, is a 400.
+sessions they match the start's UTC date, and for series the sample's; coverage
+filters each of its dates the same way. A malformed date, or `from` after `to`,
+is a 400.
 
 ## Quick start
 

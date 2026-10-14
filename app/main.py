@@ -34,6 +34,7 @@ from metrics import (
     SLEEP_MINUTES,
     STEPS,
     WEIGHT_KG,
+    cadence_for,
 )
 
 DB_PATH = os.getenv("DB_PATH", "/data/tracker.db")
@@ -315,11 +316,11 @@ def get_activity():
 
 # ---------- the access contract ----------
 
-# The stable read API apps build on: discovery (/api/catalog), then range
-# queries - one metric's series (/api/metric/<metric>), one kind of
-# session (/api/sessions/<kind>) or one series metric's intraday samples
-# (/api/series/<metric>). Read-only, on the same trusted-network model as
-# everything else.
+# The stable read API apps build on: discovery (/api/catalog) and which
+# days hold data (/api/coverage), then range queries - one metric's series
+# (/api/metric/<metric>), one kind of session (/api/sessions/<kind>) or one
+# series metric's intraday samples (/api/series/<metric>). Read-only, on the
+# same trusted-network model as everything else.
 #
 # Metrics are served from derived_metrics - the one value per metric per
 # day picked in derived.py, each point tagged with the source it came
@@ -381,10 +382,15 @@ def get_catalog():
     the earliest and latest start. A series entry is {metric, unit,
     sources, first, last, count}: `sources` are every source with a
     sample of it, in default precedence (there is no pick yet), and
-    first/last the earliest and latest sample ts. Metrics and series are
-    in vocabulary order, kinds by name; one with no data is left out, so
-    an empty install has three empty lists.
+    first/last the earliest and latest sample ts. Every entry also has
+    `grain` ("daily", "session" or "series" - the table it lives in) and
+    `cadence` (cadence_for() in metrics.py). Metrics and series are in
+    vocabulary order, kinds by name; one with no data is left out, so an
+    empty install has three empty lists - unless ?include_empty=1, which
+    lists every key in the vocabulary, one with no data as count 0,
+    sources [] and null first/last (and last_value/last_date).
     """
+    include_empty = request.args.get("include_empty", "").lower() in ("1", "true", "yes")
     conn = get_conn()
     roles = load_source_roles(conn)
     # One statement, so the coverage and the last value are one snapshot
@@ -420,14 +426,23 @@ def get_catalog():
     }
     conn.close()
 
+    # What a key with no data reads as: with ?include_empty, an entry with
+    # no sources and nothing to bound; without it, None - left out.
+    nothing = (
+        {"sources": "[]", "first": None, "last": None, "count": 0, "last_value": None}
+        if include_empty else None
+    )
+
     metrics = []
     for metric, unit in METRICS.items():
-        row = coverage.get(metric)
+        row = coverage.get(metric, nothing)
         if row is None:
             continue
         metrics.append({
             "metric": metric,
             "unit": unit,
+            "grain": "daily",
+            "cadence": cadence_for(metric),
             "sources": sorted(
                 json.loads(row["sources"]),
                 key=lambda s: source_rank(s, roles.get(metric)),
@@ -439,24 +454,72 @@ def get_catalog():
             "last_date": row["last"],
         })
     sessions = [
-        {"kind": kind, "count": kinds[kind]["count"],
-         "first": kinds[kind]["first"], "last": kinds[kind]["last"]}
+        {"kind": kind, "grain": "session", "cadence": cadence_for(kind),
+         "count": row["count"], "first": row["first"], "last": row["last"]}
         for kind in sorted(SESSION_KINDS)
-        if kind in kinds
+        if (row := kinds.get(kind, nothing)) is not None
     ]
     series = [
         {
             "metric": metric,
             "unit": unit,
-            "sources": sorted(json.loads(sampled[metric]["sources"]), key=source_rank),
-            "first": sampled[metric]["first"],
-            "last": sampled[metric]["last"],
-            "count": sampled[metric]["count"],
+            "grain": "series",
+            "cadence": cadence_for(metric),
+            "sources": sorted(json.loads(row["sources"]), key=source_rank),
+            "first": row["first"],
+            "last": row["last"],
+            "count": row["count"],
         }
         for metric, unit in SERIES_METRICS.items()
-        if metric in sampled
+        if (row := sampled.get(metric, nothing)) is not None
     ]
     return jsonify({"metrics": metrics, "sessions": sessions, "series": series})
+
+
+@app.route("/api/coverage", methods=["GET"])
+def get_coverage():
+    """Which days hold data: {"metrics": {...}, "series": {...}, "sessions": {...}}.
+
+    Each maps a metric, series metric or session kind to its dates with
+    any data - ["YYYY-MM-DD", ...], ascending, each once - whichever
+    source supplied it: a metric's derived days, the dates a series has a
+    sample on, and the dates a kind has a session starting on. Only keys
+    with at least one date are listed (?include_empty on the catalog
+    names the rest), so an empty install has three empty maps. ?from= and
+    ?to= (YYYY-MM-DD, inclusive) narrow the dates.
+    """
+    bounds, error = _date_range(request.args)
+    if error:
+        return jsonify({"ok": False, "error": error}), 400
+
+    since, until = bounds
+    daily = _in_range("date", since, until)
+    # As /api/series bounds samples: on ts itself, which the (metric, ts)
+    # index holds, rather than on date(ts).
+    sampled = _in_range(
+        "ts",
+        f"{since}T00:00:00Z" if since else None,
+        f"{until}T23:59:59Z" if until else None,
+    )
+    started = _in_range('date("start")', since, until)
+    conn = get_conn()
+    coverage = {}
+    # Series and session dates are UTC-bucketed; a user-local day boundary is
+    # a later refinement (docs/architecture/data-consolidation-model.md).
+    for grain, vocabulary, select, (in_range, params) in (
+        ("metrics", METRICS, "SELECT metric, date FROM derived_metrics", daily),
+        ("series", SERIES_METRICS, "SELECT metric, date(ts) FROM samples", sampled),
+        ("sessions", sorted(SESSION_KINDS), 'SELECT kind, date("start") FROM sessions', started),
+    ):
+        dates = {}
+        for key, day in conn.execute(
+            f"{select} WHERE {in_range} GROUP BY 1, 2 ORDER BY 1, 2", params
+        ):
+            dates.setdefault(key, []).append(day)
+        # Only the vocabulary's keys, as the catalog lists them.
+        coverage[grain] = {key: dates[key] for key in vocabulary if key in dates}
+    conn.close()
+    return jsonify(coverage)
 
 
 @app.route("/api/metric/<metric>", methods=["GET"])
