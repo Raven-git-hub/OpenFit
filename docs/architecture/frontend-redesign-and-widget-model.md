@@ -13,20 +13,44 @@ uses them if installed locally, and otherwise falls back to system fonts. Every
 colour, radius and font comes from the `CUSTOMISE OPENFIT HERE` token block at
 the top of the file.
 
-## One page
+## The page: top bar, tab strip, two tabs
 
-The old Home / Plan / Configuration tabs are gone. The page is one column under
-the top bar. The bar keeps the logo, today's date, the last-sync indicator and the
-Auto / Light / Dark theme toggle (per browser, in `localStorage` as `of-theme`).
+**Top bar.** The logo on the left. On the right, today's date in a pill, and
+under it two small pill buttons: **settings**, then the **theme** toggle, which
+cycles Auto / Light / Dark (per browser, in `localStorage` as `of-theme`). The
+bar no longer shows a last-sync stamp. Settings opens the coming-soon
+placeholder (below) until a settings popup lands.
+
+**Tab strip.** The angled tab strip from before the console, restored with its
+original markup and CSS (`.tabstrip`, `.tab`, `.tab-add`), so it looks exactly as
+it did. It holds two tabs:
+
+- **Home**, at the far left. A blank panel for now.
+- **Data**, at the far right, just left of the dashed **＋ Add**. It holds the
+  whole console, below, and is the tab open on load.
+
+Switching tabs shows one panel and hides the other. Nothing is re-fetched or
+repainted, so the console keeps its state (open rows, notes) underneath. The
+active tab isn't remembered: a reload opens Data. **＋ Add** opens the
+coming-soon placeholder until an add-a-tab popup lands.
+
+**The Data tab** is one column:
 
 1. **Connected sources.** One compact row per connected device: name, status
-   pill, **Sync now**, **Remove**. Below them, **Add source** opens a menu of
-   the connectors that aren't connected yet. Picking one opens the existing
-   add flow, built from the connector's manifest: the credentials modal, or the
-   two-step OAuth paste-back modal.
-2. **Your data.** One row per catalog entry (below). Click a row to expand it.
-3. **Settings.** A plain disclosure holding the theme control and the note about
-   the token block.
+   pill, **Sync now**, **Remove**. Below them, **Add source**. When a connector
+   isn't connected yet, it opens a menu of those connectors, and picking one
+   opens the existing add flow, built from the connector's manifest: the
+   credentials modal, or the two-step OAuth paste-back modal. When every
+   connector is connected, it opens the coming-soon placeholder, until it is
+   wired to the add-source popup that replaces it.
+2. **Your data.** The heading, then the list straight away: one row per catalog
+   entry (below). Click a row to expand it.
+
+**The coming-soon placeholder.** One reusable modal (`comingSoon(title)`),
+built on the same `.modal` chrome as the add-device flows: a title, "Coming
+soon." and a Close button (Escape and a backdrop click close it too). Add
+source (with nothing left to add), Settings and ＋ Add all open it, each with
+its own title.
 
 ## The rows: `GET /api/catalog?include_empty=1`
 
@@ -64,7 +88,7 @@ Coverage lists, for every key, the `YYYY-MM-DD` dates that hold any data from
 any source. All of the continuity UI is **source-agnostic**: one colour (the
 `--coverage` token, the accent by default), with opacity as the only signal.
 
-**Rhombuses (Day / Wk / Mth).** These are skewed like the old tab strip. Every
+**Rhombuses (Day / Wk / Mth).** These are skewed like the tab strip. Every
 row is measured over the same window, so rows can be compared directly: from
 the earliest date in any coverage list to today, or the last 90 days if there is
 no data at all. For a row's dates inside that window:
@@ -125,20 +149,24 @@ On load the page fetches `/api/catalog?include_empty=1`, `/api/coverage` and
 it shows a loading line. If any of them fails, the card shows "Couldn't load the
 dataset" with a retry button. A successful **Sync now** re-reads all three.
 Expanded rows stay open across the refresh. If a refresh fails, the last good
-load stays on screen with a note.
+load stays on screen with a "Couldn't refresh" note under the heading.
 
-The top bar's last-sync stamp still comes from `GET
-/api/activity?by_source=1` (its `synced_at`). Nothing in the access contract
-carries sync times. That is the page's only use of that compatibility shim.
+The page doesn't read `GET /api/activity` at all. It used to, only for the top
+bar's last-sync stamp (nothing in the access contract carries sync times), and
+that stamp is gone.
 
 ## What went with the old tabs
 
-The 2×2 Home tile grid went (weight chart, add-data accordion, activity log,
-steps/sleep tiles, and the `home_tiles` setting they were saved in). So did the
-Plan tab, which saved nothing, and the "Custom tabs" placeholder. Those were
-tracker features, and trackers are external apps. The manual weigh-in form went
-with them. `POST /api/weights` and the webhook still accept hand-entered
-readings, and a manual-entry surface can come back as an app.
+The strip is back, but not what was in it. The 2×2 Home tile grid went (weight
+chart, add-data accordion, activity log, steps/sleep tiles, and the `home_tiles`
+setting they were saved in), and today's Home tab is blank. The Plan tab went,
+which saved nothing, and so did the Configuration tab and its "Custom tabs"
+placeholder. Those were tracker features, and trackers are external apps. The
+manual weigh-in form went with them. `POST /api/weights` and the webhook still
+accept hand-entered readings, and a manual-entry surface can come back as an
+app. The Settings disclosure that briefly sat at the foot of the console went
+too: the theme toggle in the top bar covers it, and the token-block note lives
+in the `CUSTOMISE OPENFIT HERE` comment itself.
 
 ## The widget model
 

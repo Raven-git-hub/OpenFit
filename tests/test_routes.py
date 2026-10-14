@@ -214,3 +214,15 @@ def test_index_serves_the_data_console(client):
     # The console is wired to these reads; renaming one breaks the page.
     for route in ("/api/catalog?include_empty=1", "/api/coverage", "/api/source-roles", "/api/connectors"):
         assert route in page
+
+
+def test_index_has_the_home_and_data_tabs_and_no_activity_read(client):
+    resp = client.get("/")
+    assert resp.status_code == 200
+    page = resp.get_data(as_text=True)
+    resp.close()
+    # The tab strip: Home (blank) and Data (the console, open on load).
+    assert 'data-tab="home"' in page and 'data-panel="home"' in page
+    assert 'data-tab="data"' in page and 'data-panel="data"' in page
+    # The last-sync stamp went, and /api/activity with it.
+    assert "/api/activity" not in page
