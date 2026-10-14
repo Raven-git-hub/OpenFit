@@ -253,9 +253,10 @@ own calls to its device API. Full direction:
   fields beside the converted value, or "no data", or — points but none
   with the field — a sample point and its keys; values not filed and
   out-of-window points are logged too. The mappings are confirmed against
-  the discovery doc only, not yet a real sync. Not fetched: `basal_kcal`
+  the discovery doc only, not yet a real sync. Google also files two
+  intraday series as `samples` (see below). Not fetched: `basal_kcal`
   (`basal-energy-burned` has no rollup in v4, only raw interval points),
-  Google's series, body composition, nutrition and skin temperature.
+  body composition, nutrition and skin temperature.
   Migration `005` unpivoted the old wide `activity` table into it and dropped
   `activity`; migration `006` moved the old `weights` table in as `weight_kg`
   readings under source `manual` (hand entry; `synced_at` NULL for migrated
@@ -308,9 +309,46 @@ own calls to its device API. Full direction:
     sentinels in these arrays being negative (-1/-2) — non-positive values;
     never raises. A failed fetch costs that vital's metric and series.
   All three are written ahead of the day's no-summary skip, so a day with
-  samples but no daily figures keeps them. Nothing derives from them; apps
-  read them through the access contract (`GET /api/series/<metric>`, below) as
-  a per-source passthrough — the cross-source stitch is a later slice.
+  samples but no daily figures keeps them.
+  Google Health is the second `heart_rate` and `spo2` source (no
+  `respiration` — Google has no continuous respiration series, only the
+  nightly `daily-respiratory-rate`), at one value a minute:
+  `SERIES_WINDOW_SECONDS = 60` in `app/plugins/google_health/plugin.py`, the
+  one place that resolution is set. Its `INTRADAY_SERIES` table, each type
+  its own fetch through `_fetch_series()`, in its own try/except (a failed or
+  empty one costs only its own samples, never the other series or the daily
+  metrics):
+  - `heart_rate` — `heart-rate`, which Google keeps at ~1 s, via the windowed
+    `rollUp` (`POST .../dataTypes/heart-rate/dataPoints:rollUp`, body
+    `{range: {startTime, endTime}, windowSize: "60s", pageSize: 1440}`):
+    Google averages each minute server-side, so only per-minute buckets cross
+    the wire — never the per-second points. Each bucket's
+    `heartRate.beatsPerMinuteAvg`, rounded, at its `startTime`. rollUp takes
+    at most 14 days of `heart-rate` a request (`MAX_SERIES_DAYS`).
+  - `spo2` — `oxygen-saturation` (already ~1 a minute, valid sleep minutes
+    only) via list, filtered `oxygen_saturation.sample_time.physical_time
+    >= start AND < end`: each point's `percentage`, rounded, at its own
+    `sampleTime.physicalTime` — no downsampling.
+  Both over the sync window's days in the server's local time (the zone
+  `date.today()` reads): local midnight on its first day up to the start of
+  the current minute, in back-to-back windows of at most 14 days of elapsed
+  time (`_spans()`, so a clock change never stretches one past rollUp's
+  limit), `SERIES_PAGE_SIZE` = 1440 (a day of minutes) to a page, so a full
+  window is 14 pages and `MAX_PAGES` only stops a runaway. Each window's
+  points are converted as they arrive (`_series_reading()`); a failed window
+  costs only its span. A null value is no reading; a non-finite, non-positive
+  or bool value, or a point with no usable time, is dropped and logged, as is
+  a point timed outside the window. One log line per series per sync: the
+  sample count and span with the latest raw value beside the one filed, or
+  "no data", or — points but none with the field — a sample point and its
+  keys. Samples don't count toward a sync's days written (as with Garmin).
+  Names are the v4 discovery doc's (`HeartRateRollupValue`,
+  `OxygenSaturation`), not yet confirmed by a real sync.
+  Nothing derives from samples; apps read them through the access contract
+  (`GET /api/series/<metric>`, below) as a per-source passthrough — Garmin's
+  and Google's heart rate (and SpO2) both listed, each tagged. The
+  cross-source stitch is still a later slice, though a second series source
+  now exists.
 - `derived_metrics(date, metric, value, unit, source, synced_at)` keyed
   `(date, metric)` (migration `008`, purely additive): the one trusted value per
   metric per day, every metric including `weight_kg`. `source` is the winning
@@ -409,8 +447,10 @@ own calls to its device API. Full direction:
   - `GET /api/series/<metric>?from=&to=` → `{metric, unit, points: [{ts, value,
     source}]}` from `samples`, ascending by `ts` then source; `value` a whole
     number as an int (`_whole()`: 77.0 reads as 77). A per-source passthrough,
-    no pick: every source's samples are listed, tagged (the cross-source
-    stitch comes once a second series source exists). `from`/`to` match the
+    no pick: every source's samples are listed, tagged — Garmin's and
+    Google Health's `heart_rate`/`spo2` side by side, a minute both sampled
+    listed once per source (the cross-source stitch is deferred, though a
+    second series source now exists). `from`/`to` match the
     sample's UTC date, as `ts` bounds (`>= fromT00:00:00Z`, `<= toT23:59:59Z`)
     so the `(metric, ts)` index is used. 404 unless `<metric>` is in
     `SERIES_METRICS` (`heart_rate`, `respiration`, `spo2`) — a daily key like
@@ -499,8 +539,12 @@ same PR:
   overlapping sync gets 409 and a scheduled tick skips — and unbuffered logs;
   no migration); per-source sync cadence (a `sync_cadences` settings row of
   overrides on the 6h baseline, one scheduler job per connected plugin, set
-  from each source's Settings popup — no migration). Still to come: the cross-source `/api/series`
-  stitch (pending a second series source), more series sources, verifying
+  from each source's Settings popup — no migration); Google Health's
+  intraday `heart_rate` (windowed rollUp, per-minute averages) and `spo2`
+  (list, as-is) as the second series source, at one value a minute — no
+  migration. Still to come: the cross-source `/api/series` stitch (deferred;
+  the second series source it was waiting on now exists), more series
+  sources, verifying
   sources + history, and committing a sync per day (it still holds one write
   transaction for the whole run).
 - **Metric schema v2** (`docs/architecture/metric-schema-v2.md`), four PRs.
@@ -515,8 +559,11 @@ same PR:
   PR 3 landed: Google Health's daily metrics — distance, floors, elevation,
   active/total calories, Active Zone Minutes as `active_minutes`,
   sedentary, HRV, VO2 max, SpO2 and respiratory rate — every daily fetch
-  over the one sync window (no migration). Still to come: Google's intraday
-  series (PR 3b), body composition, nutrition, skin temperature and basal
+  over the one sync window (no migration). PR 3b landed: Google's intraday
+  series — `heart_rate` via a 60-second windowed rollUp and `spo2` from
+  `oxygen-saturation`, as samples at one value a minute (no migration; no
+  respiration series, Google has none). Still to come: Google's body
+  composition, nutrition, skin temperature and basal
   calories (no rollup — a decision on summing raw points); PR 4 — the
   console regroups by category/grain and the `cadence_for()`/`MANUAL_METRICS`
   shim is deleted. Deferred until a plugin

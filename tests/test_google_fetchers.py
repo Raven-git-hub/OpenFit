@@ -81,7 +81,8 @@ class FakeGoogle:
     inside the request's range, newest first, `page_size` to a page - and,
     like Google, refuses a range over 90 days. A range whose first day is
     in `failing` gets a 500. The resting-HR list answers with
-    `hr_points` as given; every other list is empty.
+    `hr_points` as given; every other list, and the series rollUp, is
+    empty.
     """
 
     def __init__(self):
@@ -107,6 +108,8 @@ class FakeGoogle:
         if "oauth2" in url:
             return FakeResponse({"access_token": "access-xyz"})
         self.requests.append((data_type_of(url), json))
+        if url.endswith(":rollUp"):
+            return FakeResponse({"rollupDataPoints": []})
         first = from_civil(json["range"]["start"]["date"])
         end = from_civil(json["range"]["end"]["date"])
         if (end - first).days > 90:

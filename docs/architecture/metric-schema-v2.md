@@ -25,16 +25,22 @@ v2 lands in four PRs:
    logged so the logs say which to correct. Garmin's physique rating and
    metabolic age are excluded (law 5), and it doesn't write
    `active_minutes` (see *Intensity*).
-3. **Google Health enrichment (built: daily metrics).** Via dailyRollUp:
+3. **Google Health enrichment (built: daily metrics and intraday series).**
+   Via dailyRollUp:
    distance, floors, elevation gain (`altitude`), active and total calories,
    Active Zone Minutes (summed across zones, as `active_minutes`) and
    sedentary minutes; via list, one point a day: HRV, VO2 max (the daily
    cardio fitness score), SpO2 and respiratory rate. Every daily fetch asks
    for, and files, the same window as the sync. Names and units come from
    the v4 discovery doc, not yet a real sync, so each type logs what it got.
-   Still to come: Google's intraday series (3b), body composition, nutrition
-   and skin temperature; `basal_kcal` waits on a decision, since v4 has no
-   rollup for `basal-energy-burned`, only raw interval points.
+   3b added Google's intraday series, as samples at one value a minute:
+   `heart_rate` from `heart-rate` (kept by Google at about one a second, so
+   asked for as a rollUp windowed to 60 seconds — per-minute averages,
+   computed by Google) and `spo2` from `oxygen-saturation` (already about one
+   a minute, listed as it comes). Google has no respiration series. Still to
+   come: body composition, nutrition and skin temperature; `basal_kcal` waits
+   on a decision, since v4 has no rollup for `basal-energy-burned`, only raw
+   interval points.
 4. **The console regroups by category and grain**, and the deprecated
    `cadence_for()` / `MANUAL_METRICS` shim is deleted. _To come._ Until then the
    console still groups its rows by the old `cadence` labels, which the catalog

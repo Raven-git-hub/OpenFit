@@ -140,8 +140,9 @@ class FakeGoogle:
     under the type's rollup key - and, like Google, refuses a range over
     90 days, or over 14 for total-calories. The list endpoint answers with
     every day it holds, whatever the filter, as a Google that ignored it
-    would. A data type in `failing` gets a 500; sleep and exercise are
-    empty. `raw[data_type]` serves those points verbatim instead.
+    would. A data type in `failing` gets a 500; sleep, exercise and the
+    intraday series (test_google_series.py) are empty. `raw[data_type]`
+    serves those points verbatim instead.
     """
 
     def __init__(self):
@@ -161,8 +162,10 @@ class FakeGoogle:
         if "oauth2" in url:
             return FakeResponse({"access_token": "access-xyz"})
         data_type = data_type_of(url)
-        assert url.endswith(":dailyRollUp")
         self.requests.append((data_type, json))
+        if url.endswith(":rollUp"):
+            return FakeResponse({"rollupDataPoints": []})
+        assert url.endswith(":dailyRollUp")
         first = from_civil(json["range"]["start"]["date"])
         end = from_civil(json["range"]["end"]["date"])
         if (end - first).days > (14 if data_type == "total-calories" else 90):
@@ -271,10 +274,14 @@ def test_every_type_files_on_the_same_day(conn, google):
 def test_each_type_is_asked_for_once_by_its_documented_name(google):
     google.sync()
 
-    rollups = [t for t, fields in google.requests if "range" in (fields or {})]
+    rollups = [t for t, fields in google.requests if "windowSizeDays" in (fields or {})]
+    series_rollups = [t for t, fields in google.requests if "windowSize" in (fields or {})]
     lists = [t for t, fields in google.requests if "filter" in (fields or {})]
     assert sorted(rollups) == sorted(t for t, *_ in ROLLUPS)
-    assert sorted(lists) == sorted([t for t, *_ in SUMMARIES] + ["sleep", "exercise"])
+    assert series_rollups == ["heart-rate"]
+    assert sorted(lists) == sorted(
+        [t for t, *_ in SUMMARIES] + ["sleep", "exercise", "oxygen-saturation"]
+    )
 
 
 def test_rollups_ask_for_one_day_windows(google):
