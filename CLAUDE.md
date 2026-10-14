@@ -63,10 +63,24 @@ own calls to its device API. Full direction:
   radius in its `CUSTOMISE OPENFIT HERE` token block). Under the top bar
   (date, a `settings` button, the theme toggle) sits the original angled tab
   strip, restored verbatim: **Home** (far left, a blank panel for now) and
-  **Data** (far right, the console; open on load), then the dashed **＋ Add**.
-  Settings, ＋ Add, and Add source once every connector is connected each open
-  one shared coming-soon placeholder modal (`comingSoon(title)`); while a
-  connector is still unconnected, Add source opens its real add flow. Reads
+  **Data** (far right, the console), then the dashed **＋ Add**. `settings`
+  opens the Settings popup (the `.modal` chrome): one control, **Opening
+  page**, a dropdown built from the tab strip (`.tab[data-tab]`, so a new tab
+  appears in it), saved per browser in `localStorage` `of-opening-tab`; boot
+  opens that tab via `showTab()` (Data if unset or no longer a tab) in place
+  of a hardcoded default. ＋ Add, and Add source once every connector is
+  connected, each open one shared coming-soon placeholder modal
+  (`comingSoon(title)`); while a connector is still unconnected, Add source
+  opens its real add flow. "Your data" groups its reporting rows by `cadence`
+  — Daily, Manual, Session, Reading, a `.dgroup` header per non-empty group —
+  above the one ungrouped "Not yet reporting" group. A round voice button
+  after the "Connected sources" and "Your data" titles plays that card's clip
+  (`/audio/connected-sources.mp3`, `/audio/your-data.mp3`) through one shared
+  `<audio>`: one clip at a time, a second click stops it, and a missing file
+  (404) just resets the button, which stays. `GET /audio/<name>`
+  (`app/main.py`) serves them via `send_from_directory` from `AUDIO_DIR`
+  (`$AUDIO_DIR`, default `/data/audio` — the persistent volume, so clips are
+  dropped in without a rebuild); static serving is otherwise off. Reads
   `/api/catalog?include_empty=1`, `/api/coverage` and `/api/source-roles`
   (dragging a daily metric's sources `PUT`s `/api/source-roles/<metric>`), plus
   the connector endpoints (`/api/connectors`, the OAuth add flow,
