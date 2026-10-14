@@ -47,8 +47,10 @@ continuous it is, and which source wins each metric — not the product.
 - **Google Health** plugin — steps, distance, floors, elevation gain, active and
   total calories, Active Zone Minutes, sedentary minutes, resting HR, HRV,
   VO2 max (cardio fitness score), SpO2 and respiration rate (nightly averages),
-  sleep and workouts, from Pixel Watch / Fitbit via Google's cloud Health API
-  (not the legacy Fitbit Web API, retired September 2026).
+  sleep, workouts, and intraday series: heart rate (a per-minute average,
+  computed by Google) and SpO2 (a reading a minute while asleep), from Pixel
+  Watch / Fitbit via Google's cloud Health API (not the legacy Fitbit Web API,
+  retired September 2026).
 - Scheduled background sync plus a manual sync (`POST /api/sync/<plugin>`), with
   device connections managed in-app and credentials encrypted at rest. Each
   source's sync frequency is set from its Settings popup: every 1h, 3h, 6h (the
@@ -232,8 +234,9 @@ your app wants. An unknown kind is a 404.
 
 Every recorded sample, oldest first, each tagged with its source; times are ISO
 8601 UTC. For now this is a straight passthrough: if two devices both sampled a
-stretch, both devices' samples are listed. Stitching them into one timeline by
-source priority comes once a second series source exists. Series keys are their
+stretch — Garmin and Google Health both record heart rate and SpO2 — both
+devices' samples are listed, a minute both covered once per device. Stitching
+them into one timeline by source priority is a later step. Series keys are their
 own vocabulary, so a daily key such as `resting_hr_bpm` or `spo2_pct` is a 404
 here, like any unknown metric; a known one with no samples has `"points": []`.
 
@@ -339,7 +342,11 @@ minutes, filed under its own series vocabulary (`heart_rate` in bpm,
 dropped rather than stored, as are Garmin's negative "no reading" markers in its
 respiration and SpO2 arrays. Garmin fills it with intraday heart rate,
 respiration and SpO2 (the last two from the same responses as its daily vitals,
-so no extra requests), and apps read it through `GET /api/series/<metric>`.
+so no extra requests). Google Health fills heart rate and SpO2 at one value a
+minute: Google keeps heart rate at about a reading a second, so OpenFit asks
+for 60-second roll-ups (each minute's average, computed on Google's side), and
+lists SpO2, already about a reading a minute, as it comes. Apps read it through
+`GET /api/series/<metric>`.
 The per-day value is stored, not worked out on each read: a `derived_metrics`
 table holds one value per `(date, metric)`, tagged with the source it came from,
 picked by `app/derived.py` after every sync (for the days that sync covered) and

@@ -50,8 +50,9 @@ extensible, since other sources carry types Google doesn't.)
    *kind*, source as an attribute. Table: `sessions`. **Built** (sleep, workout).
 3. **Series** — timestamped samples (HR, SpO2, …), one row per sample per source.
    Table: `samples`. **Storage and read built** (Garmin intraday HR,
-   respiration and SpO2, `GET /api/series` as a per-source passthrough); the
-   cross-source stitch is designed, not built. This is the "intraday" grain.
+   respiration and SpO2; Google Health intraday HR and SpO2 at one value a
+   minute; `GET /api/series` as a per-source passthrough); the cross-source
+   stitch is designed, not built. This is the "intraday" grain.
 
 A session is two things: an **interval** (universal, source-agnostic — any app
 can slice the series with it) and a **summary** (a vendor interpretation OpenFit
@@ -140,11 +141,19 @@ hourly averages). Respiration and SpO2 come out of the same `get_respiration_dat
 both grains — through one reusable `[timestamp, value]` row converter that
 drops Garmin's negative "no reading" sentinels (-1/-2) along with nulls and
 unreadable rows: the series counterpart of the daily field maps. The read
-side exists as a **single-source passthrough**: `GET /api/series/<metric>` (§8)
+side exists as a **per-source passthrough**: `GET /api/series/<metric>` (§8)
 lists every source's raw samples in a range, each tagged, with no priority
-applied — with Garmin the only series source there is nothing to stitch yet.
-The stitch below replaces the passthrough once a second series source exists to
-build and test it against.
+applied.
+
+Google Health is the second series source: heart rate (`heart_rate`) and SpO2
+(`spo2`), stored at one value a minute. Google keeps heart rate at about one
+reading a second; a `rollUp` windowed to 60 seconds averages it per minute on
+Google's side, so only per-minute buckets are fetched. SpO2 is already about one
+a minute (valid sleep minutes only) and is listed as it comes. Google has no
+continuous respiration series, so `respiration` stays Garmin's alone. Garmin's
+and Google's heart rate now sit side by side in the passthrough, each tagged; the
+stitch below, which replaces the passthrough, is the next slice and now has a
+second source to build and test against.
 
 **The graph is a read-time stitch, not a stored copy.** When something requests a
 range, OpenFit walks it and emits the samples of the **highest-priority source
@@ -234,7 +243,8 @@ vocabulary — not a home for app context (rosters, calendars). See §1 scope.
 
 **Designed additions:**
 - The stitch in `GET /api/series/<metric>` — the intraday timeline picked by
-  priority, provenance per segment (§5), pending a second series source.
+  priority, provenance per segment (§5). Deferred, though the second series
+  source it waited on (Google Health) now exists.
 - A preferred-source session view (per-event dedup, §6).
 - An opt-in to include the `app` tier (§7).
 
@@ -254,8 +264,10 @@ vocabulary — not a home for app context (rosters, calendars). See §1 scope.
 - Webhook push ingestion (metrics only, token auth, own-source enforcement).
 - Access contract (catalog, metric range, sessions, intraday series as a
   per-source passthrough).
-- Four Google data types fetched (steps via daily roll-up, daily resting HR,
-  sleep sessions, exercise sessions) + Garmin equivalents + manual weight.
+- Google Health's daily metrics (daily roll-ups and daily summaries), sleep
+  and exercise sessions, and its intraday heart rate and SpO2 series at one
+  value a minute (heart rate via a 60-second windowed roll-up) + Garmin
+  equivalents + manual weight.
 - Garmin daily metrics beyond steps + resting HR — the first of the cross-vendor
   daily core: distance, active/total calories, floors, and moderate/vigorous
   intensity minutes, from the `get_stats` response it already fetches.
@@ -264,8 +276,9 @@ vocabulary — not a home for app context (rosters, calendars). See §1 scope.
   SpO2 and respiration responses also give their intraday series (above).
 
 **Designed, to-build:**
-- The **series stitch** (compute-on-read priority pick in `GET /api/series`,
-  pending a second series source) and further series sources.
+- The **series stitch** (compute-on-read priority pick in `GET /api/series`;
+  Google Health is now the second series source it needed) and further series
+  sources.
 - **Wide expansion** — more daily/session/series types, each a fetcher + a
   canonical key/kind (a new metric is data, not a migration).
 - **Per-event session dedup** + preferred-source-per-kind selection view.

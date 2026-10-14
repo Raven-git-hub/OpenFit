@@ -39,13 +39,28 @@ span across all of them (see DAILY_ROLLUPS and DAILY_SUMMARIES):
                                  session (no daily metric). Asked for by civil
                                  start date; every point that comes back is kept
 
+The intraday series (see INTRADAY_SERIES) are filed as samples, one value
+per SERIES_WINDOW_SECONDS (a minute) - the one place that resolution is
+set - over the sync window's days, from local midnight on its first day
+up to the current minute:
+  - heart-rate        -> heart_rate, via rollUp: Google keeps it at about
+                         one reading a second, and a rollUp windowed to
+                         SERIES_WINDOW_SECONDS averages it per minute
+                         server-side, so only the per-minute values cross
+                         the wire (at most MAX_SERIES_DAYS per request)
+  - oxygen-saturation -> spo2, via list: already about one a minute, and
+                         only for valid minutes asleep, so each point is
+                         stored as it comes, at its own time
+No respiration series: Google has none, only the nightly summary above.
+
 Not fetched: basal-energy-burned has no rollup in v4 (neither dailyRollUp
 nor rollUp lists it), only raw interval points, so basal_kcal would mean
 summing those here - not done until that is decided.
 
 Every fetch reads all its pages (see _all_pages): Google answers a page at
 a time, newest first, and a sleep or exercise page holds at most 25
-points, so a backfill longer than that spans several.
+points, so a backfill longer than that spans several. A series page holds
+SERIES_PAGE_SIZE points, a day of minutes.
 
 Field names - list filters and the fields read back - follow the v4
 discovery document (https://health.googleapis.com/$discovery/rest?version=v4).
@@ -58,7 +73,7 @@ import math
 import os
 import re
 import urllib.parse
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 import requests
 
@@ -68,12 +83,14 @@ from metrics import (
     DISTANCE_M,
     ELEVATION_GAIN_M,
     FLOORS,
+    HEART_RATE,
     HRV_MS,
     PLAUSIBLE_RANGES,
     RESPIRATORY_RATE_BRPM,
     RESTING_HR_BPM,
     SEDENTARY_MIN,
     SLEEP,
+    SPO2,
     SPO2_PCT,
     STEPS,
     TOTAL_KCAL,
@@ -81,7 +98,7 @@ from metrics import (
     WORKOUT,
 )
 
-from ..base import SyncPlugin, iso_utc, write_metric, write_session
+from ..base import SyncPlugin, iso_utc, write_metric, write_sample, write_session
 
 AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 TOKEN_URL = "https://oauth2.googleapis.com/token"
@@ -168,6 +185,32 @@ DAILY_SUMMARIES = [
      "fields": ("averagePercentage",), "metric": SPO2_PCT, "convert": None},
     {"data_type": "daily-respiratory-rate", "key": "dailyRespiratoryRate",
      "fields": ("breathsPerMinute",), "metric": RESPIRATORY_RATE_BRPM, "convert": None},
+]
+
+# The resolution intraday series are stored at: one value per this many
+# seconds. Heart rate's rollUp buckets are this wide; change it here alone.
+SERIES_WINDOW_SECONDS = 60
+
+# The longest span one series request asks for: rollUp takes at most 14
+# days of heart-rate (RollUpDataPointsRequest.range), and oxygen-saturation
+# is asked for in the same windows. At SERIES_PAGE_SIZE - Google's default,
+# a day of minutes - a full window is 14 pages, so MAX_PAGES only ever
+# stops a runaway.
+MAX_SERIES_DAYS = 14
+SERIES_PAGE_SIZE = 1440
+
+# The intraday series, filed as samples, each its own fetch. Per entry: the
+# data type, the key each point carries its value under, the field read
+# from it, the series metric it files as, and the endpoint asked: rollUp,
+# a point per SERIES_WINDOW_SECONDS bucket timed by its startTime, or list,
+# a point per reading timed by its sampleTime.physicalTime. Names are the
+# v4 discovery doc's (RollupDataPoint/HeartRateRollupValue, DataPoint/
+# OxygenSaturation). Each value is filed as a whole number.
+INTRADAY_SERIES = [
+    {"data_type": "heart-rate", "key": "heartRate", "field": "beatsPerMinuteAvg",
+     "metric": HEART_RATE, "endpoint": "rollUp"},
+    {"data_type": "oxygen-saturation", "key": "oxygenSaturation", "field": "percentage",
+     "metric": SPO2, "endpoint": "list"},
 ]
 
 SCOPES = [
@@ -331,6 +374,12 @@ class GoogleHealthPlugin(SyncPlugin):
             daily[spec["metric"]] = self._fetch_daily_summary(headers, spec, start, today)
         sleep_by_date, sleep_sessions = self._fetch_sleep(headers, start, today)
         workouts = self._fetch_workouts(headers, start)
+        # Each series over the same days, as {metric: [(ts, value)]}; one
+        # that fails or comes back empty costs only its own samples.
+        series = {
+            spec["metric"]: self._fetch_series(headers, spec, start, today)
+            for spec in INTRADAY_SERIES
+        }
 
         # A day with sleep counts as written: its sleep is filed below, as
         # sessions - there is no daily sleep metric. So does a day holding
@@ -350,6 +399,11 @@ class GoogleHealthPlugin(SyncPlugin):
         # Workouts are sessions only - there is no daily workout metric.
         for session in workouts:
             write_session(conn, self.id, WORKOUT, *session)
+        # Samples go in whatever the day's daily metrics hold, as Garmin's
+        # do, and don't count toward the days written.
+        for metric, samples in series.items():
+            for ts, value in samples:
+                write_sample(conn, self.id, metric, ts, value)
 
         conn.commit()
         return written
@@ -507,6 +561,112 @@ class GoogleHealthPlugin(SyncPlugin):
                   f"heart rate or calories in any. Sample point: {points[0]}")
         return sessions
 
+    def _fetch_series(self, headers, spec, start, end):
+        """One INTRADAY_SERIES type's samples, from local midnight on
+        `start` to local midnight after `end` or the start of the current
+        minute, whichever is sooner, as [(ts, value)]: ts an iso_utc()
+        timestamp, value a whole number.
+
+        The days are the sync window's, in the server's local time - the
+        zone date.today() reads. The rest of today holds nothing yet, so
+        it isn't asked for - a rollUp could answer an empty bucket for
+        every minute of it - and a minute still under way is left to the
+        next sync. Asked for MAX_SERIES_DAYS at a time; each
+        window's points are read as they arrive, so a long backfill never
+        holds more than one window's raw points, and a window that fails
+        is logged and costs only its own span.
+
+        Logged like the daily types, one line unless something was off:
+        how many samples over what span, with the latest raw value beside
+        the one filed; or no data; or - points but none with the field -
+        a sample point and its keys. Points not filed (no usable time, not
+        a finite number, or not positive - no reading) and points timed
+        outside the window are logged too.
+        """
+        label, metric = spec["data_type"], spec["metric"]
+        lo = _local_midnight(start)
+        hi = min(_local_midnight(end + timedelta(days=1)),
+                 _now().replace(second=0, microsecond=0))
+        first, last = iso_utc(lo), iso_utc(hi)
+        samples = []
+        earliest = latest = example = first_rejected = None
+        seen = rejected = outside = 0
+        fetched = False
+        for window_start, window_end in _spans(lo, hi, timedelta(days=MAX_SERIES_DAYS)):
+            try:
+                points = self._series_window(headers, spec, window_start, window_end)
+                fetched = True
+            except Exception as e:
+                print(f"[google_health] {label} fetch failed for {iso_utc(window_start)} "
+                      f"to {iso_utc(window_end)}: {e}")
+                continue
+            seen += len(points)
+            if example is None and points:
+                example = points[0]
+            for point in points:
+                ts, value, raw = _series_reading(spec, point)
+                if raw is None:
+                    continue
+                # ISO UTC timestamps compare in time order as strings.
+                if ts is not None and not first <= ts < last:
+                    outside += 1
+                    continue
+                if ts is None or value is None:
+                    rejected += 1
+                    first_rejected = first_rejected or (ts, raw)
+                    continue
+                samples.append((ts, value))
+                earliest = min(earliest or ts, ts)
+                if latest is None or ts > latest[0]:
+                    latest = (ts, raw, value)
+        if not fetched:
+            return []
+
+        if samples:
+            ts, raw, value = latest
+            print(f"[google_health] {label} -> {metric}: {len(samples)} samples from "
+                  f"{earliest} to {ts}, latest: {{{spec['field']!r}: {raw!r}}} -> {value}")
+        elif not seen:
+            print(f"[google_health] {label}: no data from {first} to {last}")
+        elif not rejected and not outside:
+            keys = sorted(example) if isinstance(example, dict) else type(example).__name__
+            print(f"[google_health] {label}: got data but no {spec['field']} in {spec['key']}. "
+                  f"Sample point: {example} (keys: {keys})")
+        if rejected:
+            print(f"[google_health] {label}: {rejected} not filed as {metric} - no usable time, "
+                  f"not a finite number, or not positive. First: {first_rejected}")
+        if outside:
+            print(f"[google_health] {label}: dropped {outside} points timed outside "
+                  f"{first} to {last}")
+        return samples
+
+    def _series_window(self, headers, spec, start, end):
+        """One series request's points, start (inclusive) to end
+        (exclusive), following every page. rollUp takes its range, bucket
+        width and page token in the body; list takes a filter on the
+        sample's physical time, and its token, as query params. Raises if
+        the first page fails."""
+        label = spec["data_type"]
+        if spec["endpoint"] == "rollUp":
+            body = {
+                "range": {"startTime": iso_utc(start), "endTime": iso_utc(end)},
+                "windowSize": f"{SERIES_WINDOW_SECONDS}s",
+                "pageSize": SERIES_PAGE_SIZE,
+            }
+            return _all_pages(label, "rollupDataPoints", lambda token: requests.post(
+                f"{API_BASE}/dataTypes/{label}/dataPoints:rollUp",
+                headers=headers, json=_with_page_token(body, token), timeout=20,
+            ))
+        field = f"{label.replace('-', '_')}.sample_time.physical_time"
+        params = {
+            "filter": f'{field} >= "{iso_utc(start)}" AND {field} < "{iso_utc(end)}"',
+            "pageSize": SERIES_PAGE_SIZE,
+        }
+        return _all_pages(label, "dataPoints", lambda token: requests.get(
+            f"{API_BASE}/dataTypes/{label}/dataPoints",
+            headers=headers, params=_with_page_token(params, token), timeout=20,
+        ))
+
 
 def _all_pages(label, items_key, request_page):
     """Every item under items_key, following nextPageToken to the last page.
@@ -652,6 +812,28 @@ def _finite(value):
     return number if number is not None and math.isfinite(number) else None
 
 
+def _series_reading(spec, point):
+    """One INTRADAY_SERIES point as (ts, value, raw): its time as an
+    iso_utc() timestamp, its value rounded to a whole number, and the raw
+    value read. raw is None if the point holds nothing under the spec's
+    key and field - no reading. Otherwise ts is None if the point has no
+    usable time, and value None if raw isn't a finite number or isn't
+    positive: Google's "no reading" is no sample. Nothing here raises.
+    """
+    payload = point.get(spec["key"]) if isinstance(point, dict) else None
+    raw = payload.get(spec["field"]) if isinstance(payload, dict) else None
+    if raw is None:
+        return None, None, None
+    if spec["endpoint"] == "rollUp":
+        moment = point.get("startTime")
+    else:
+        sample_time = payload.get("sampleTime")
+        moment = sample_time.get("physicalTime") if isinstance(sample_time, dict) else None
+    number = _finite(raw)
+    value = round(number) if number is not None else None
+    return _rfc3339_iso(moment), value if value is not None and value > 0 else None, raw
+
+
 def _sleep_session(sleep):
     """One sleep data point as a (start, end, summary) session, or None.
 
@@ -793,3 +975,27 @@ def _windows(start, end, max_days):
         windows.append((start, last))
         start = last + timedelta(days=1)
     return windows
+
+
+def _spans(start, end, step):
+    """start to end, datetimes with end exclusive, as consecutive (first,
+    stop) pairs no longer than step each, oldest first. Measured in
+    elapsed time, not local days, so a span over a clock change is never
+    longer than step."""
+    spans = []
+    while start < end:
+        stop = min(start + step, end)
+        spans.append((start, stop))
+        start = stop
+    return spans
+
+
+def _local_midnight(d):
+    """The moment day d begins in the server's local time - the zone
+    date.today() reads - as an aware UTC datetime."""
+    return datetime(d.year, d.month, d.day).astimezone(timezone.utc)
+
+
+def _now():
+    """The current moment, as an aware UTC datetime."""
+    return datetime.now(timezone.utc)
