@@ -88,7 +88,9 @@ own calls to its device API. Full direction:
   of a hardcoded default. ＋ Add, and Add source once every connector is
   connected, each open one shared coming-soon placeholder modal
   (`comingSoon(title)`); while a connector is still unconnected, Add source
-  opens its real add flow. Each connected source's row has **Sync now** and a
+  opens its real add flow, from a `.pop` menu of the unconnected ones —
+  alphabetical (the API's order), and scrolling (`max-height`/`overflow-y`)
+  when long. Each connected source's row has **Sync now** and a
   gear **Settings** button (there is no bare Remove): Settings opens a
   per-source `.modal` that reads `GET /api/connectors/<id>/detail` into an
   info list — Login (`—` if null), Connected via (Password / OAuth), Last
@@ -328,8 +330,10 @@ own calls to its device API. Full direction:
   one row per connected plugin, `credentials` a Fernet-encrypted JSON blob
   (the manifest fields, plus an oauth connector's refresh token). `GET
   /api/connectors` lists every plugin with its manifest and `connected`/
-  `configured`. `GET /api/connectors/<plugin>/detail` → `{connected_via,
-  login, added, last_sync, sync_hours, sync_is_default}` for the source's
+  `configured`, ordered by display `name` (case-insensitive; display only —
+  `PLUGINS` and the scheduler keep registration order). `GET
+  /api/connectors/<plugin>/detail` → `{connected_via, login, added,
+  last_sync, sync_hours, sync_is_default}` for the source's
   Settings popup:
   `connected_via` is the plugin's `add_flow`; `login` its non-secret account
   identifier (`_login()` in `app/main.py`), read only from the manifest

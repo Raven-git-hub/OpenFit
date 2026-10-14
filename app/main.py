@@ -963,7 +963,9 @@ def list_connectors():
             # though no account row exists yet.
             "configured": p.status(conn)["configured"],
         }
-        for p in PLUGINS.values()
+        # By display name, not registration order: the console's source
+        # list and its Add-source menu both render this list as-is.
+        for p in sorted(PLUGINS.values(), key=lambda p: p.name.lower())
     ]
     conn.close()
     return jsonify(out)
