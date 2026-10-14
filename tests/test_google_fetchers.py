@@ -6,7 +6,8 @@ with the network stubbed.
 On a real account steps came through but resting HR never did: its list
 request filtered on a field the endpoint doesn't take, and the parser
 looked for the value under names Google doesn't use. These pin the
-documented ones - a `daily_resting_heart_rate.date` filter, and the
+documented ones - a `daily_resting_heart_rate.date` filter over the sync
+window, and the
 reading in dailyRestingHeartRate.beatsPerMinute, an int64 that arrives as
 a JSON string. (Sleep had the same filter problem; its test sits beside
 the realistic sleep fixtures in test_sleep_sessions.py.)
@@ -186,9 +187,11 @@ def hr_point(d, bpm):
 def test_resting_hr_filters_on_the_documented_date_field(google):
     google.sync(days=7)
 
-    # A 7-day sync on 2026-06-30 starts on 2026-06-24.
+    # A 7-day sync on 2026-06-30 runs 2026-06-24 to 2026-06-30: the
+    # filter takes < but not <=, so its end is < the day after.
     assert google.requests_for("daily-resting-heart-rate") == [
-        {"filter": 'daily_resting_heart_rate.date >= "2026-06-24"'}
+        {"filter": 'daily_resting_heart_rate.date >= "2026-06-24" AND '
+                   'daily_resting_heart_rate.date < "2026-07-01"'}
     ]
 
 
@@ -219,7 +222,7 @@ def test_resting_hr_in_an_unexpected_shape_says_what_it_got(conn, google, capsys
 
     assert readings(conn, RESTING_HR_BPM) == []
     out = capsys.readouterr().out
-    assert "no date and beatsPerMinute" in out
+    assert "no beatsPerMinute in dailyRestingHeartRate" in out
     assert "'bpm': 58" in out
 
 

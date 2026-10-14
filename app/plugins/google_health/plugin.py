@@ -15,17 +15,33 @@ authorize.py does the same thing from a terminal and stays for installs
 that were set up that way; its on-disk token file is still read as a
 fallback when the stored account has no refresh token of its own.
 
-Data types used (Google Health API v4):
-  - steps                     -> dailyRollUp (clean daily sums), at most
-                                 MAX_ROLLUP_DAYS per request
+Data types used (Google Health API v4). Every daily metric is asked for
+over the same window - the sync's `days`, today - (days - 1) to today -
+and a point dated outside it is dropped, so a sync writes one consistent
+span across all of them (see DAILY_ROLLUPS and DAILY_SUMMARIES):
+  - dailyRollUp (Google's own per-day sums, over every data source with
+    non-wear excluded), at most MAX_ROLLUP_DAYS per request (14 for
+    total-calories):
+      steps -> steps, distance -> distance_m, floors -> floors,
+      altitude -> elevation_gain_m, active-energy-burned -> active_kcal,
+      total-calories -> total_kcal, active-zone-minutes -> active_minutes,
+      sedentary-period -> sedentary_min
+  - list, one point a day, filtered on the type's `.date`:
+      daily-resting-heart-rate -> resting_hr_bpm,
+      daily-heart-rate-variability -> hrv_ms, daily-vo2-max -> vo2_max,
+      daily-oxygen-saturation -> spo2_pct,
+      daily-respiratory-rate -> respiratory_rate_brpm
   - sleep                     -> list, each data point stored as a sleep session
                                  (no daily metric). Asked for by end date; sleep
                                  that began before the sync window is dropped
                                  (see _fetch_sleep)
-  - daily-resting-heart-rate  -> list (no rollup available for this type)
   - exercise                  -> list, each data point stored as a workout
                                  session (no daily metric). Asked for by civil
                                  start date; every point that comes back is kept
+
+Not fetched: basal-energy-burned has no rollup in v4 (neither dailyRollUp
+nor rollUp lists it), only raw interval points, so basal_kcal would mean
+summing those here - not done until that is decided.
 
 Every fetch reads all its pages (see _all_pages): Google answers a page at
 a time, newest first, and a sleep or exercise page holds at most 25
@@ -38,6 +54,7 @@ so a wrong name here costs that data type quietly.
 """
 
 import json
+import math
 import os
 import re
 import urllib.parse
@@ -45,7 +62,24 @@ from datetime import date, datetime, timedelta
 
 import requests
 
-from metrics import RESTING_HR_BPM, SLEEP, STEPS, WORKOUT
+from metrics import (
+    ACTIVE_KCAL,
+    ACTIVE_MINUTES,
+    DISTANCE_M,
+    ELEVATION_GAIN_M,
+    FLOORS,
+    HRV_MS,
+    PLAUSIBLE_RANGES,
+    RESPIRATORY_RATE_BRPM,
+    RESTING_HR_BPM,
+    SEDENTARY_MIN,
+    SLEEP,
+    SPO2_PCT,
+    STEPS,
+    TOTAL_KCAL,
+    VO2_MAX,
+    WORKOUT,
+)
 
 from ..base import SyncPlugin, iso_utc, write_metric, write_session
 
@@ -68,9 +102,73 @@ SLEEP_STAGE_KEYS = {
 # stops one that never runs out. 100 pages of sleep is years of nights.
 MAX_PAGES = 100
 
-# The longest range dailyRollUp takes for steps (DailyRollUpDataPointsRequest.
-# range in the discovery doc); a longer one is rejected outright.
+# The longest range one dailyRollUp request takes (DailyRollUpDataPointsRequest.
+# range in the discovery doc): 90 days, or 14 for total-calories (and
+# heart-rate, active-minutes, calories-in-heart-rate-zone, none read here).
+# A longer one is rejected outright.
 MAX_ROLLUP_DAYS = 90
+MAX_ROLLUP_DAYS_SHORT = 14
+
+# The daily metrics Google sums per civil day itself, read via dailyRollUp.
+# Per entry: the data type (its URL segment), the key each rollup point
+# carries its value under, the field(s) read from that value, the metric
+# it files as and how to convert to that metric's unit - plus, where it
+# differs, the longest range a request may take and how to read a field
+# that isn't a plain number. Names and units are the v4 discovery doc's
+# (DailyRollupDataPoint and the *RollupValue schemas); int64 fields arrive
+# as JSON strings. A value of several fields is their sum, of whichever
+# are present: Google leaves a zero out.
+DAILY_ROLLUPS = [
+    {"data_type": "steps", "key": "steps", "fields": ("countSum",),
+     "metric": STEPS, "convert": round},
+    {"data_type": "distance", "key": "distance", "fields": ("millimetersSum",),
+     "metric": DISTANCE_M, "convert": lambda mm: round(mm / 1000)},
+    {"data_type": "floors", "key": "floors", "fields": ("countSum",),
+     "metric": FLOORS, "convert": round},
+    # Altitude gain - the sum of the day's climbs, not height above sea level.
+    {"data_type": "altitude", "key": "altitude", "fields": ("gainMillimetersSum",),
+     "metric": ELEVATION_GAIN_M, "convert": lambda mm: round(mm / 1000)},
+    # Both energy sums are kcalSum, documented in kilocalories - no kJ.
+    {"data_type": "active-energy-burned", "key": "activeEnergyBurned", "fields": ("kcalSum",),
+     "metric": ACTIVE_KCAL, "convert": round},
+    {"data_type": "total-calories", "key": "totalCalories", "fields": ("kcalSum",),
+     "metric": TOTAL_KCAL, "convert": round, "max_days": MAX_ROLLUP_DAYS_SHORT},
+    # Active Zone Minutes come back per heart-rate zone, cardio and peak
+    # minutes already counting double; their sum is the day's AZM total,
+    # filed as active_minutes. Never split into moderate/vigorous minutes.
+    {"data_type": "active-zone-minutes", "key": "activeZoneMinutes",
+     "fields": ("sumInFatBurnHeartZone", "sumInCardioHeartZone", "sumInPeakHeartZone"),
+     "metric": ACTIVE_MINUTES, "convert": round},
+    # durationSum is a duration string in seconds, like "30600s".
+    {"data_type": "sedentary-period", "key": "sedentaryPeriod", "fields": ("durationSum",),
+     "metric": SEDENTARY_MIN, "convert": lambda seconds: round(seconds / 60),
+     "parse": lambda value: _duration_seconds(value)},
+]
+
+# The daily summary types - one point a day, each dated - read via list,
+# filtered on the type's `.date` (its data type in snake case). Same
+# entries as DAILY_ROLLUPS, the value under the point's key beside its
+# `date`. Each is already in its metric's unit; a convert of None stores
+# it as reported.
+DAILY_SUMMARIES = [
+    # No rollup for this one; beatsPerMinute is an int64.
+    {"data_type": "daily-resting-heart-rate", "key": "dailyRestingHeartRate",
+     "fields": ("beatsPerMinute",), "metric": RESTING_HR_BPM, "convert": round},
+    # The night's RMSSD average, in ms (deepSleepRootMeanSquare... beside it
+    # is deep sleep only).
+    {"data_type": "daily-heart-rate-variability", "key": "dailyHeartRateVariability",
+     "fields": ("averageHeartRateVariabilityMilliseconds",), "metric": HRV_MS,
+     "convert": None},
+    # The daily cardio fitness score, ml/kg/min. Not vo2-max, which is
+    # timestamped samples, nor run-vo2-max, from runs alone.
+    {"data_type": "daily-vo2-max", "key": "dailyVo2Max", "fields": ("vo2Max",),
+     "metric": VO2_MAX, "convert": None},
+    # Both averaged over the night's sleep.
+    {"data_type": "daily-oxygen-saturation", "key": "dailyOxygenSaturation",
+     "fields": ("averagePercentage",), "metric": SPO2_PCT, "convert": None},
+    {"data_type": "daily-respiratory-rate", "key": "dailyRespiratoryRate",
+     "fields": ("breathsPerMinute",), "metric": RESPIRATORY_RATE_BRPM, "convert": None},
+]
 
 SCOPES = [
     "https://www.googleapis.com/auth/googlehealth.activity_and_fitness.readonly",
@@ -223,20 +321,27 @@ class GoogleHealthPlugin(SyncPlugin):
         today = date.today()
         start = today - timedelta(days=days - 1)
 
-        steps_by_date = self._fetch_steps(headers, start, today)
+        # Every daily metric over the one window, start to today, as
+        # {metric: {date: value}}. Each type is its own fetch: one that
+        # fails or comes back empty costs only its own metric.
+        daily = {}
+        for spec in DAILY_ROLLUPS:
+            daily[spec["metric"]] = self._fetch_rollup(headers, spec, start, today)
+        for spec in DAILY_SUMMARIES:
+            daily[spec["metric"]] = self._fetch_daily_summary(headers, spec, start, today)
         sleep_by_date, sleep_sessions = self._fetch_sleep(headers, start, today)
-        hr_by_date = self._fetch_resting_hr(headers, start, today)
         workouts = self._fetch_workouts(headers, start)
 
         # A day with sleep counts as written: its sleep is filed below, as
-        # sessions - there is no daily sleep metric.
-        all_dates = set(steps_by_date) | set(sleep_by_date) | set(hr_by_date)
+        # sessions - there is no daily sleep metric. So does a day holding
+        # only one daily metric.
+        all_dates = set(sleep_by_date).union(*daily.values())
         written = 0
         for d_str in all_dates:
             # Every date here has at least one reading; the metrics it
             # lacks come back None and are left as they were.
-            write_metric(conn, d_str, self.id, STEPS, steps_by_date.get(d_str))
-            write_metric(conn, d_str, self.id, RESTING_HR_BPM, hr_by_date.get(d_str))
+            for metric, by_date in daily.items():
+                write_metric(conn, d_str, self.id, metric, by_date.get(d_str))
             written += 1
 
         # Each night (and nap) as its own session.
@@ -251,24 +356,34 @@ class GoogleHealthPlugin(SyncPlugin):
 
     # ---- individual data type fetchers ----
 
-    def _fetch_steps(self, headers, start, end):
-        """Daily step totals via the dailyRollUp endpoint - clean sums, no
-        manual aggregation needed.
+    def _fetch_rollup(self, headers, spec, start, end):
+        """One DAILY_ROLLUPS type's daily values, start to end inclusive,
+        as {date: value} - clean sums from Google, no manual aggregation.
 
-        dailyRollUp rejects a range longer than MAX_ROLLUP_DAYS, so a
-        longer backfill asks for it a window at a time and merges the
-        days. The windows don't overlap, and one that fails costs only
-        its own days.
+        dailyRollUp rejects a range longer than the type's limit (90 days,
+        or 14), so a longer backfill asks for it a window at a time and
+        merges the days. The windows don't overlap, and one that fails is
+        logged and costs only its own days.
         """
-        out = {}
-        for window_start, window_end in _windows(start, end, MAX_ROLLUP_DAYS):
-            out.update(self._fetch_steps_window(headers, window_start, window_end))
-        return out
+        label = spec["data_type"]
+        points = []
+        fetched = False
+        max_days = spec.get("max_days", MAX_ROLLUP_DAYS)
+        for window_start, window_end in _windows(start, end, max_days):
+            try:
+                points.extend(self._rollup_window(headers, label, window_start, window_end))
+                fetched = True
+            except Exception as e:
+                print(f"[google_health] {label} fetch failed for {window_start} to "
+                      f"{window_end}: {e}")
+        if not fetched:
+            return {}
+        return _daily_values(spec, points, start, end, _rollup_day)
 
-    def _fetch_steps_window(self, headers, start, end):
-        """One dailyRollUp request, start to end inclusive. Its page token
-        goes in the body, beside the rest of the request repeated
-        unchanged."""
+    def _rollup_window(self, headers, data_type, start, end):
+        """One dailyRollUp request's points, start to end inclusive. Its
+        page token goes in the body, beside the rest of the request
+        repeated unchanged. Raises if the first page fails."""
         body = {
             "range": {
                 "start": {"date": {"year": start.year, "month": start.month, "day": start.day}},
@@ -276,24 +391,33 @@ class GoogleHealthPlugin(SyncPlugin):
             },
             "windowSizeDays": 1,
         }
+        return _all_pages(data_type, "rollupDataPoints", lambda token: requests.post(
+            f"{API_BASE}/dataTypes/{data_type}/dataPoints:dailyRollUp",
+            headers=headers, json=_with_page_token(body, token), timeout=20,
+        ))
+
+    def _fetch_daily_summary(self, headers, spec, start, end):
+        """One DAILY_SUMMARIES type's daily values via the list endpoint,
+        start to end inclusive, as {date: value}.
+
+        A daily type, so it filters on `.date`, which takes >= and < (not
+        <=) joined by AND - so the window's end is asked for as < the day
+        after. A failed fetch is logged and costs only this type.
+        """
+        label = spec["data_type"]
+        field = label.replace("-", "_")
+        after_end = (end + timedelta(days=1)).isoformat()
+        params = {"filter": f'{field}.date >= "{start.isoformat()}" AND '
+                            f'{field}.date < "{after_end}"'}
         try:
-            points = _all_pages("steps", "rollupDataPoints", lambda token: requests.post(
-                f"{API_BASE}/dataTypes/steps/dataPoints:dailyRollUp",
-                headers=headers, json=_with_page_token(body, token), timeout=20,
+            points = _all_pages(label, "dataPoints", lambda token: requests.get(
+                f"{API_BASE}/dataTypes/{label}/dataPoints",
+                headers=headers, params=_with_page_token(params, token), timeout=20,
             ))
-            out = {}
-            for point in points:
-                d = point.get("civilStartTime", {}).get("date", {})
-                if not d:
-                    continue
-                d_str = f"{d['year']:04d}-{d['month']:02d}-{d['day']:02d}"
-                count = point.get("steps", {}).get("countSum")
-                if count is not None:
-                    out[d_str] = int(count)
-            return out
         except Exception as e:
-            print(f"[google_health] steps fetch failed for {start} to {end}: {e}")
+            print(f"[google_health] {label} fetch failed: {e}")
             return {}
+        return _daily_values(spec, points, start, end, lambda point: _summary_day(spec, point))
 
     def _fetch_sleep(self, headers, start, end):
         """Each data point via the list endpoint as a (start, end, summary)
@@ -350,37 +474,6 @@ class GoogleHealthPlugin(SyncPlugin):
         except Exception as e:
             print(f"[google_health] sleep fetch failed: {e}")
             return {}, []
-
-    def _fetch_resting_hr(self, headers, start, end):
-        """Daily resting heart rate via the list endpoint (the type has no
-        rollup).
-
-        A daily type, so it filters on `.date` like the doc's other daily
-        summaries. Each point's dailyRestingHeartRate carries the day as
-        `date` and the reading as `beatsPerMinute` - an int64, so Google
-        sends it as a JSON string.
-        """
-        params = {"filter": f'daily_resting_heart_rate.date >= "{start.isoformat()}"'}
-        try:
-            points = _all_pages("resting HR", "dataPoints", lambda token: requests.get(
-                f"{API_BASE}/dataTypes/daily-resting-heart-rate/dataPoints",
-                headers=headers, params=_with_page_token(params, token), timeout=20,
-            ))
-            out = {}
-            for point in points:
-                payload = point.get("dailyRestingHeartRate", {})
-                civil = payload.get("date")
-                bpm = _int_or_none(payload.get("beatsPerMinute"))
-                if civil and bpm is not None:
-                    d_str = f"{civil['year']:04d}-{civil['month']:02d}-{civil['day']:02d}"
-                    out[d_str] = bpm
-            if not out and points:
-                print(f"[google_health] resting HR: got data but no date and beatsPerMinute "
-                      f"in dailyRestingHeartRate. Sample point: {points[0]}")
-            return out
-        except Exception as e:
-            print(f"[google_health] resting HR fetch failed: {e}")
-            return {}
 
     def _fetch_workouts(self, headers, start):
         """Each exercise data point that began on or after `start` as a
@@ -452,6 +545,111 @@ def _all_pages(label, items_key, request_page):
 def _with_page_token(fields, token):
     """A request's params or body, plus the page token once there is one."""
     return {**fields, "pageToken": token} if token else fields
+
+
+def _daily_values(spec, points, start, end, day_of):
+    """A DAILY_ROLLUPS or DAILY_SUMMARIES type's points as {date: value},
+    in its metric's unit.
+
+    A point counts if the dict under the spec's key holds any of its
+    fields; day_of(point) gives its civil date. The value is _reading()'s.
+    A point dated outside start..end is dropped, so every type files the
+    same window whatever comes back. A point with a value but no usable
+    date, a value that isn't a finite number, or one outside the metric's
+    plausible range writes nothing. Nothing here raises.
+
+    What came back is logged, one line a type unless something was off,
+    so a sync's logs say which types returned data: the days filed with
+    the latest raw fields beside the converted value; or no data at all;
+    or - points but none with the fields - a sample point and its keys,
+    the mark of a wrong field name. Values not filed, and points dropped
+    for their date, are logged too.
+    """
+    label, key, metric = spec["data_type"], spec["key"], spec["metric"]
+    first, last = start.isoformat(), end.isoformat()
+    out, raw = {}, {}
+    rejected, outside = [], 0
+    for point in points:
+        try:
+            payload = point.get(key) if isinstance(point, dict) else None
+            if not isinstance(payload, dict):
+                continue
+            present = {f: payload[f] for f in spec["fields"] if payload.get(f) is not None}
+            if not present:
+                continue
+            d_str = _civil_date(day_of(point))
+            if d_str is not None and not first <= d_str <= last:
+                outside += 1
+                continue
+            value = _reading(spec, present)
+            if d_str is None or value is None:
+                rejected.append((d_str, present))
+                continue
+            out[d_str] = value
+            raw[d_str] = present
+        except Exception:
+            rejected.append((None, point))
+
+    if out:
+        latest = max(out)
+        print(f"[google_health] {label} -> {metric}: {len(out)} days from {first} to {last}, "
+              f"latest {latest}: {raw[latest]} -> {out[latest]}")
+    elif not points:
+        print(f"[google_health] {label}: no data from {first} to {last}")
+    elif not rejected and not outside:
+        sample = points[0]
+        keys = sorted(sample) if isinstance(sample, dict) else type(sample).__name__
+        print(f"[google_health] {label}: got data but no {'/'.join(spec['fields'])} in "
+              f"{key}. Sample point: {sample} (keys: {keys})")
+    if rejected:
+        low, high = PLAUSIBLE_RANGES[metric]
+        print(f"[google_health] {label}: {len(rejected)} not filed as {metric} - no date, "
+              f"not a number, or outside {low}..{high} once converted. First: {rejected[0]}")
+    if outside:
+        print(f"[google_health] {label}: dropped {outside} points dated outside "
+              f"{first} to {last}")
+    return out
+
+
+def _reading(spec, present):
+    """The value of a point's fields, {field: raw value}: their sum,
+    converted to the metric's unit, or None if any isn't a finite number
+    or the result is outside the metric's PLAUSIBLE_RANGES."""
+    parse = spec.get("parse")
+    numbers = [_finite(parse(v) if parse else v) for v in present.values()]
+    if None in numbers:
+        return None
+    total = sum(numbers)
+    value = spec["convert"](total) if spec["convert"] else total
+    low, high = PLAUSIBLE_RANGES[spec["metric"]]
+    return value if low <= value <= high else None
+
+
+def _rollup_day(point):
+    """A dailyRollUp point's day: the civil date its window starts on."""
+    return point.get("civilStartTime", {}).get("date")
+
+
+def _summary_day(spec, point):
+    """A daily summary point's day: the `date` beside its value."""
+    return point[spec["key"]].get("date")
+
+
+def _civil_date(civil):
+    """A Google civil date ({year, month, day}) as YYYY-MM-DD, or None."""
+    try:
+        return date(civil["year"], civil["month"], civil["day"]).isoformat()
+    except (TypeError, KeyError, ValueError):
+        return None
+
+
+def _finite(value):
+    """A number Google sent - a JSON number, or an int64 as a JSON string -
+    as a float, or None if it isn't a finite one. A bool is no number."""
+    if isinstance(value, bool):
+        return None
+    number = _float_or_none(value)
+    return number if number is not None and math.isfinite(number) else None
 
 
 def _sleep_session(sleep):
