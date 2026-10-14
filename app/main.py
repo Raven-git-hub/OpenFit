@@ -12,6 +12,8 @@ import urllib.parse
 from datetime import date, datetime, timedelta, timezone
 
 from flask import Flask, jsonify, request, send_from_directory
+from apscheduler.executors.pool import ThreadPoolExecutor
+from apscheduler.jobstores.base import JobLookupError
 from apscheduler.schedulers.background import BackgroundScheduler
 
 from migrations import connect, run_migrations
@@ -985,7 +987,12 @@ def _manifest_values(plugin, body):
 
 
 def _store_account(plugin_id, credentials):
-    """Encrypt and upsert one plugin's credentials blob."""
+    """Encrypt and upsert one plugin's credentials blob, and schedule its syncs.
+
+    Both add flows - the credentials POST and the oauth finish - come
+    through here, so this is where a new source gets its sync job (and a
+    re-added one has its job refreshed).
+    """
     conn = get_conn()
     conn.execute(
         "INSERT INTO accounts (plugin_id, credentials, created_at) VALUES (?, ?, ?) "
@@ -996,6 +1003,7 @@ def _store_account(plugin_id, credentials):
     )
     conn.commit()
     conn.close()
+    reschedule_plugin(plugin_id)
 
 
 @app.route("/api/connectors/<plugin_id>", methods=["POST"])
@@ -1208,13 +1216,17 @@ def _login(plugin, credentials):
 def connector_detail(plugin_id):
     """One source's account, for its Settings popup.
 
-    {connected_via, login, added, last_sync}: `connected_via` is the
-    plugin's add_flow ("credentials" or "oauth"); `login` the account's
-    non-secret identifier (_login()); `added` when the account was
-    stored (accounts.created_at); `last_sync` the latest synced_at across
-    the source's metrics, samples and sessions, as stored (UTC), null
-    before its first sync. With no account - not connected - login,
-    added and last_sync are all null.
+    {connected_via, login, added, last_sync, sync_hours, sync_is_default}:
+    `connected_via` is the plugin's add_flow ("credentials" or "oauth");
+    `login` the account's non-secret identifier (_login()); `added` when
+    the account was stored (accounts.created_at); `last_sync` the latest
+    synced_at across the source's metrics, samples and sessions, as
+    stored (UTC), null before its first sync. With no account - not
+    connected - login, added and last_sync are all null.
+
+    `sync_hours` is how often it syncs (effective_cadence()), and
+    `sync_is_default` whether that's the baseline rather than an
+    override - reported whether or not it is connected.
     """
     plugin = PLUGINS.get(plugin_id)
     if not plugin:
@@ -1223,6 +1235,7 @@ def connector_detail(plugin_id):
     login = added = last_sync = None
     conn = get_conn()
     try:
+        override = load_sync_cadences(conn).get(plugin_id)
         account = conn.execute(
             "SELECT created_at FROM accounts WHERE plugin_id = ?", (plugin_id,)
         ).fetchone()
@@ -1246,7 +1259,41 @@ def connector_detail(plugin_id):
         "login": login,
         "added": added,
         "last_sync": last_sync,
+        "sync_hours": override or SYNC_INTERVAL_HOURS,
+        "sync_is_default": override is None,
     })
+
+
+@app.route("/api/connectors/<plugin_id>/cadence", methods=["PUT"])
+def set_connector_cadence(plugin_id):
+    """Set how often a source syncs: {"hours": <1, 3, 12 or 24 | null>}.
+
+    A null or absent `hours` clears the override, back to the baseline
+    (SYNC_INTERVAL_HOURS). The baseline itself is never stored, so 6 -
+    or any value outside ALLOWED_CADENCE_HOURS - is a 400: "default" is
+    null, not a number. Takes effect at once: the source's sync job is
+    rescheduled at its new cadence, its next sync that far from now.
+    """
+    if plugin_id not in PLUGINS:
+        return jsonify({"ok": False, "error": f"no such connector: {plugin_id}"}), 404
+    body = request.get_json(force=True, silent=True)
+    if not isinstance(body, dict):
+        return jsonify({"ok": False, "error": 'expected {"hours": <hours>|null}'}), 400
+    hours = body.get("hours")
+    if hours is not None and not _allowed_cadence(hours):
+        allowed = ", ".join(str(h) for h in ALLOWED_CADENCE_HOURS)
+        return jsonify({
+            "ok": False,
+            "error": f"hours must be one of {allowed}, or null for the default",
+        }), 400
+
+    conn = get_conn()
+    try:
+        set_sync_cadence(conn, plugin_id, hours)
+    finally:
+        conn.close()
+    reschedule_plugin(plugin_id)
+    return jsonify({"ok": True})
 
 
 @app.route("/api/connectors/<plugin_id>", methods=["DELETE"])
@@ -1294,6 +1341,8 @@ def disconnect_connector(plugin_id):
     # A leftover session token would mean the device still syncs after
     # you removed it, so this is part of the delete, not a nicety.
     plugin.clear_cached_auth()
+    # And its job goes, so a removed source stops ticking at all.
+    remove_plugin_job(plugin_id)
     return jsonify({"ok": True})
 
 
@@ -1358,7 +1407,29 @@ def trigger_sync(plugin_id):
         _sync_lock.release()
 
 
+def _run_scheduled(plugin):
+    """One plugin's scheduled sync, logged. The caller holds _sync_lock.
+
+    A failure is logged, not raised: one source's bad sync must not stop
+    the others in scheduled_sync()'s loop, or take its job down.
+    """
+    try:
+        conn = get_conn()
+        try:
+            # Skip anything with no account and no env credentials -
+            # it would only fail with a "not connected" error.
+            if not plugin.status(conn)["configured"]:
+                return
+            n = _sync(plugin, conn, 7)
+        finally:
+            conn.close()
+        print(f"[scheduler] {plugin.id} wrote {n} day(s)")
+    except Exception as e:
+        print(f"[scheduler] {plugin.id} failed: {e}")
+
+
 def scheduled_sync():
+    """Sync every configured plugin, one after another: the startup catch-up."""
     if not _sync_lock.acquire(blocking=False):
         # Never queued behind it: a manual sync is mid-pull, and the
         # next tick catches up on anything it didn't cover.
@@ -1366,33 +1437,212 @@ def scheduled_sync():
         return
     try:
         for plugin in PLUGINS.values():
-            try:
-                conn = get_conn()
-                try:
-                    # Skip anything with no account and no env credentials -
-                    # it would only fail with a "not connected" error.
-                    if not plugin.status(conn)["configured"]:
-                        continue
-                    n = _sync(plugin, conn, 7)
-                finally:
-                    conn.close()
-                print(f"[scheduler] {plugin.id} wrote {n} day(s)")
-            except Exception as e:
-                print(f"[scheduler] {plugin.id} failed: {e}")
+            _run_scheduled(plugin)
     finally:
         _sync_lock.release()
 
 
+def sync_one(plugin_id):
+    """One plugin's scheduled tick: its own sync job, at its own cadence.
+
+    Takes the same lock as every other sync, so sources still sync one
+    at a time, and backs off the same way when one is already running.
+    """
+    if not _sync_lock.acquire(blocking=False):
+        print(f"[scheduler] sync already running, skipping {plugin_id}")
+        return
+    try:
+        plugin = PLUGINS.get(plugin_id)
+        if plugin is not None:
+            _run_scheduled(plugin)
+    finally:
+        _sync_lock.release()
+
+
+# ---------- sync cadence ----------
+
+# How often each source syncs. Every source runs at the baseline,
+# SYNC_INTERVAL_HOURS ($SYNC_INTERVAL_HOURS, default 6), unless its
+# Settings popup picks one of the override presets. Kept as the
+# sync_cadences settings row, the way source_roles keeps each metric's
+# primary: JSON {plugin_id: hours} holding the overrides only, so a
+# source absent from it runs at the baseline, and choosing Default
+# clears its entry. No migration - it's a settings key.
+
+SYNC_CADENCES_KEY = "sync_cadences"
+
+# The override presets, in hours. The baseline isn't one of them: it's
+# expressed by clearing the override, never stored as a number.
+ALLOWED_CADENCE_HOURS = (1, 3, 12, 24)
+
+
+def _allowed_cadence(hours):
+    """Whether `hours` is an override preset. bool is an int to Python, but true isn't 1h."""
+    return (
+        isinstance(hours, int)
+        and not isinstance(hours, bool)
+        and hours in ALLOWED_CADENCE_HOURS
+    )
+
+
+def load_sync_cadences(conn):
+    """The cadence overrides: {plugin_id: hours}.
+
+    Read from the SYNC_CADENCES_KEY settings row; no row means none. A
+    value that isn't a JSON object, or an entry that isn't one of
+    ALLOWED_CADENCE_HOURS (a stored 6 included), is ignored rather than
+    raised, as load_source_roles() ignores a bad role: the row can also
+    be written through /api/settings, and a bad value there must not
+    stop the scheduler - that source just runs at the baseline.
+    """
+    row = conn.execute(
+        "SELECT value FROM settings WHERE key = ?", (SYNC_CADENCES_KEY,)
+    ).fetchone()
+    try:
+        cadences = json.loads(row[0]) if row and row[0] else {}
+    except ValueError:
+        return {}
+    if not isinstance(cadences, dict):
+        return {}
+    return {
+        plugin_id: hours
+        for plugin_id, hours in cadences.items()
+        if _allowed_cadence(hours)
+    }
+
+
+def set_sync_cadence(conn, plugin_id, hours):
+    """Override `plugin_id`'s cadence with `hours`; None clears it, back to the baseline.
+
+    Raises ValueError for anything but None or one of
+    ALLOWED_CADENCE_HOURS. Only stores the config - moving the plugin's
+    job is reschedule_plugin()'s.
+
+    Commits.
+    """
+    if hours is not None and not _allowed_cadence(hours):
+        raise ValueError(f"not a cadence preset: {hours!r}")
+
+    # The insert goes first, as in set_source_role(): it opens the write
+    # transaction, so two changes at once can't both read the old map
+    # and one lose the other's entry.
+    conn.execute(
+        "INSERT OR IGNORE INTO settings (key, value) VALUES (?, '{}')",
+        (SYNC_CADENCES_KEY,),
+    )
+    cadences = load_sync_cadences(conn)
+    if hours is None:
+        cadences.pop(plugin_id, None)
+    else:
+        cadences[plugin_id] = hours
+    conn.execute(
+        "UPDATE settings SET value = ? WHERE key = ?",
+        (json.dumps(cadences, sort_keys=True), SYNC_CADENCES_KEY),
+    )
+    conn.commit()
+
+
+def effective_cadence(conn, plugin_id):
+    """How often `plugin_id` syncs, in hours: its override, else the baseline."""
+    return load_sync_cadences(conn).get(plugin_id, SYNC_INTERVAL_HOURS)
+
+
+# ---------- the scheduler ----------
+
+# One interval job per connected plugin, `sync:<plugin_id>`, ticking
+# sync_one() at that plugin's effective cadence, plus a one-off
+# scheduled_sync() of every plugin at startup. Connecting a source adds
+# its job (_store_account()), changing its cadence moves it (PUT
+# .../cadence) and removing it drops it (disconnect_connector()).
+#
+# The running scheduler, once serve() has started it. None until then -
+# and always in the tests, which import main without starting one - so
+# the helpers below change nothing until there is a scheduler to change.
+_scheduler = None
+
+
+def _job_id(plugin_id):
+    return f"sync:{plugin_id}"
+
+
+def _wants_job(conn, plugin):
+    """Whether a plugin gets a sync job: it has an account, or env credentials.
+
+    The env is the pre-UI install's way in (SyncPlugin.get_credentials()),
+    and it kept syncing on the old global job, so it keeps a job here.
+    """
+    has_account = conn.execute(
+        "SELECT 1 FROM accounts WHERE plugin_id = ?", (plugin.id,)
+    ).fetchone()
+    return has_account is not None or plugin.status(conn)["configured"]
+
+
+def _add_sync_job(scheduler, plugin_id, hours):
+    """Add `plugin_id`'s job, replacing any it has: its interval restarts from now."""
+    scheduler.add_job(
+        sync_one, "interval", hours=hours, args=[plugin_id],
+        id=_job_id(plugin_id), replace_existing=True,
+    )
+
+
+def reschedule_plugin(plugin_id):
+    """Bring one plugin's sync job in line with its account and cadence.
+
+    A plugin that wants a job (_wants_job()) gets one at its effective
+    cadence, its next tick that far from now; one that doesn't has none.
+    Safe to repeat. A no-op until the scheduler is running.
+    """
+    if _scheduler is None:
+        return
+    conn = get_conn()
+    try:
+        wanted = _wants_job(conn, PLUGINS[plugin_id])
+        hours = effective_cadence(conn, plugin_id)
+    finally:
+        conn.close()
+    if wanted:
+        _add_sync_job(_scheduler, plugin_id, hours)
+    else:
+        remove_plugin_job(plugin_id)
+
+
+def remove_plugin_job(plugin_id):
+    """Drop one plugin's sync job, if it has one. A no-op until the scheduler is running."""
+    if _scheduler is None:
+        return
+    try:
+        _scheduler.remove_job(_job_id(plugin_id))
+    except JobLookupError:
+        pass
+
+
 def start_scheduler():
-    """Start the background sync jobs.
+    """Start the background sync jobs: the startup catch-up, then a job per plugin.
 
     Called from serve() only - importing main.py (as the tests do) must
     not start a scheduler or fire off syncs.
     """
-    scheduler = BackgroundScheduler()
+    global _scheduler
+    scheduler = BackgroundScheduler(
+        # One worker, so jobs that come due together - two sources on the
+        # same cadence, started together, tick in step for good - queue
+        # and run one after the other. With the default pool they would
+        # race for _sync_lock and all but one skip, every tick. Queued, a
+        # job can start late, so it must never be dropped as missed: no
+        # misfire cutoff (APScheduler's default is one second).
+        executors={"default": ThreadPoolExecutor(1)},
+        job_defaults={"misfire_grace_time": None},
+    )
     scheduler.add_job(scheduled_sync, "date")  # run once shortly after startup
-    scheduler.add_job(scheduled_sync, "interval", hours=SYNC_INTERVAL_HOURS)
+    conn = get_conn()
+    try:
+        for plugin in PLUGINS.values():
+            if _wants_job(conn, plugin):
+                _add_sync_job(scheduler, plugin.id, effective_cadence(conn, plugin.id))
+    finally:
+        conn.close()
     scheduler.start()
+    _scheduler = scheduler
     return scheduler
 
 

@@ -46,8 +46,11 @@ continuous it is, and which source wins each metric — not the product.
   Watch / Fitbit via Google's cloud Health API (not the legacy Fitbit Web API,
   retired September 2026).
 - Scheduled background sync plus a manual sync (`POST /api/sync/<plugin>`), with
-  device connections managed in-app and credentials encrypted at rest. One sync
-  runs at a time: a manual sync asked for while one is running gets
+  device connections managed in-app and credentials encrypted at rest. Each
+  source's sync frequency is set from its Settings popup: every 1h, 3h, 6h (the
+  default), 12h or 24h. `SYNC_INTERVAL_HOURS` still sets the default (6 unless
+  you change it); a source on Default follows it. One sync runs at a time: a
+  manual sync asked for while one is running gets
   `409 {"ok": false, "error": "a sync is already in progress"}` instead of a
   second pull, and a scheduled run that finds one running skips that tick.
 - A **webhook** any automation can push a reading to, guarded by a
@@ -57,8 +60,8 @@ continuous it is, and which source wins each metric — not the product.
   from), sleep/workout sessions, and intraday series like heart rate,
   respiration and SpO2.
 - A built-in **data console**: connected devices (add, sync, and a per-source
-  Settings popup showing the account and removing it, keeping or wiping its
-  data), every metric, series and session kind with its latest reading and
+  Settings popup showing the account, setting how often it syncs, and removing
+  it, keeping or wiping its data), every metric, series and session kind with its latest reading and
   cadence, how continuously each is covered (day / week / month, and the last
   five weeks), and drag-to-reorder source priority per metric.
 
@@ -239,7 +242,10 @@ Devices are added in the app, not a config file: **Connected sources → Add
 source**. Pick the device, fill in what it asks for, hit Add.
 Credentials are encrypted before they're stored; a source's **Settings** shows
 its login (never the password or a token), how it connected, its last sync and
-when it was added. **Remove source** there deletes the credentials along with
+when it was added. **Sync every** there sets how often that source syncs — 1h,
+3h, Default (6h, or whatever `SYNC_INTERVAL_HOURS` is set to), 12h or 24h —
+taking effect at once (`PUT /api/connectors/<plugin>/cadence`, `{"hours": 3}`,
+or `null` for Default). **Remove source** there deletes the credentials along with
 any cached session token, and asks whether to keep the source's historical data
 or wipe it from the database (`DELETE /api/connectors/<plugin>?wipe=1`, which
 also re-derives the days it covered). An install that predates this flow keeps

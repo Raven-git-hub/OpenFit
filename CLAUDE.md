@@ -23,11 +23,28 @@ own calls to its device API. Full direction:
   run on import (tests import it). Every connection comes from `get_conn()`,
   per call (one per request or scheduled run — never a shared global one).
   One sync at a time: a process-level `_sync_lock` (`threading.Lock`, taken
-  with `acquire(blocking=False)`, released in a `finally`) guards both
-  `POST /api/sync/<plugin>` and `scheduled_sync()`. A manual sync that finds
-  one running gets a 409 and starts nothing:
+  with `acquire(blocking=False)`, released in a `finally`) guards
+  `POST /api/sync/<plugin>`, `scheduled_sync()` and `sync_one()`. A manual
+  sync that finds one running gets a 409 and starts nothing:
   `{"ok": false, "error": "a sync is already in progress"}`. A scheduled tick
-  that finds one logs `[scheduler] sync already running, skipping` and returns.
+  that finds one logs `[scheduler] sync already running, skipping` (plus the
+  plugin id, for a plugin's own tick) and returns.
+  The scheduler (`start_scheduler()`, stashed in the module-level
+  `_scheduler`) runs `scheduled_sync()` — every configured plugin, in turn —
+  once at startup as the catch-up, then one `interval` job per connected
+  plugin (or env-configured one, as a pre-UI install is), id
+  `sync:<plugin_id>`, ticking `sync_one(plugin_id)` — that plugin only — at
+  its effective cadence: `effective_cadence()`, its `sync_cadences` override
+  (see Data model) else the baseline `SYNC_INTERVAL_HOURS` (env, default 6).
+  Connecting a source (`_store_account()`, which both add flows go through)
+  adds or refreshes its job via `reschedule_plugin()`, `PUT
+  /api/connectors/<id>/cadence` moves it (its next tick that far from now),
+  and `disconnect_connector()` drops it via `remove_plugin_job()`; both
+  helpers no-op while `_scheduler` is None, as it always is in tests. One
+  worker (`ThreadPoolExecutor(1)`) and `misfire_grace_time=None`: jobs that
+  come due together — two sources on the same cadence, started together,
+  tick in step — queue and run in turn instead of racing for the lock and
+  all but one skipping, every tick.
 - `app/migrations/` — hand-rolled runner. Numbered `NNN_name.sql`, applied once,
   tracked in `schema_migrations`. New schema change = a new numbered migration;
   migrations must be additive and safe against a populated production DB.
@@ -76,7 +93,13 @@ own calls to its device API. Full direction:
   per-source `.modal` that reads `GET /api/connectors/<id>/detail` into an
   info list — Login (`—` if null), Connected via (Password / OAuth), Last
   sync (the stored UTC stamp as a local date + time; null → Never), Added (a
-  date) — with **Remove source** at its foot. Remove is a two-step gate in
+  date), and **Sync every**: preset buttons 1h · 3h · Default · 12h · 24h, the
+  active one `.primary` (`sync_is_default` → Default, else the `sync_hours`
+  one); clicking another `PUT`s `/api/connectors/<id>/cadence` (`{hours: N}`,
+  Default `{hours: null}`) and moves the highlight, or shows the error in the
+  popup's `.src-msg` and leaves it — with **Remove source** at its foot. No
+  global cadence control: the universal Settings popup keeps Opening page
+  only. Remove is a two-step gate in
   the same modal, no `confirm()`: "Disconnecting stops future syncs." over a
   danger panel "Wipe data?" ([Keep data] / [Wipe data]), then "Are you
   sure?" naming the source and whether its data goes ([Cancel] / [Remove] or
@@ -98,7 +121,8 @@ own calls to its device API. Full direction:
   `/api/catalog?include_empty=1`, `/api/coverage` and `/api/source-roles`
   (dragging a daily metric's sources `PUT`s `/api/source-roles/<metric>`), plus
   the connector endpoints (`/api/connectors`, the OAuth add flow,
-  `/api/connectors/<id>/detail`, `DELETE /api/connectors/<id>`,
+  `/api/connectors/<id>/detail`, `PUT /api/connectors/<id>/cadence`,
+  `DELETE /api/connectors/<id>`,
   `/api/sync/<plugin>`); not `/api/activity` (the last-sync stamp that read it
   is gone). See `docs/architecture/frontend-redesign-and-widget-model.md`.
 - `tests/` — pytest, temp DB, no network.
@@ -226,6 +250,18 @@ own calls to its device API. Full direction:
   (in pick order); `PUT /api/source-roles/<metric>` `{"primary": "<source>"}`
   sets it, `null`/empty clears it. Forward-only: a change re-derives nothing —
   it applies from the next sync's window.
+- Sync cadences: the `settings` row `sync_cadences` (no migration) holds JSON
+  `{plugin_id: hours}`, overrides only, e.g. `{"garmin": 1}`; a plugin absent
+  from it syncs at the baseline, `SYNC_INTERVAL_HOURS` (6h). The override
+  presets are `ALLOWED_CADENCE_HOURS` = 1, 3, 12, 24 — the baseline is
+  Default, expressed by clearing the entry, never stored as 6. Read by
+  `load_sync_cadences()` (a malformed value reads as no overrides; an entry
+  outside the presets, a stored 6 or a bool included, is dropped), written by
+  `set_sync_cadence()` (`None` clears; anything else outside the presets
+  raises `ValueError`), resolved by `effective_cadence()` — all in
+  `app/main.py`, beside the scheduler. Set per source through `PUT
+  /api/connectors/<id>/cadence` (see Connectors); the baseline itself isn't
+  user-configurable.
 - Webhook (push input, no migration): `POST /api/webhook/<token>` with
   `{"metric", "value", "date"?, "source"?}` writes one reading via
   `write_metric()` then `recompute_derived(since=date, until=date)`, in one
@@ -293,7 +329,8 @@ own calls to its device API. Full direction:
   (the manifest fields, plus an oauth connector's refresh token). `GET
   /api/connectors` lists every plugin with its manifest and `connected`/
   `configured`. `GET /api/connectors/<plugin>/detail` → `{connected_via,
-  login, added, last_sync}` for the source's Settings popup:
+  login, added, last_sync, sync_hours, sync_is_default}` for the source's
+  Settings popup:
   `connected_via` is the plugin's `add_flow`; `login` its non-secret account
   identifier (`_login()` in `app/main.py`), read only from the manifest
   fields whose `type` isn't `"password"` (Garmin's `email`; Google Health's
@@ -301,10 +338,19 @@ own calls to its device API. Full direction:
   and never a key outside the manifest (an oauth refresh/access token);
   `added` is `accounts.created_at`; `last_sync` the MAX `synced_at` over the
   source's `metrics`, `samples` and `sessions` rows, as stored (UTC
-  `YYYY-MM-DD HH:MM:SS`), null before a first sync. Not connected → `login`/
-  `added`/`last_sync` all null; unknown plugin → 404. `DELETE
-  /api/connectors/<plugin>` removes the account and the plugin's cached auth
-  (`clear_cached_auth()`) and keeps its data. With `?wipe=1` (also
+  `YYYY-MM-DD HH:MM:SS`), null before a first sync; `sync_hours` its
+  `effective_cadence()` (an int) and `sync_is_default` true when no override
+  is stored — both reported whether or not it's connected. Not connected →
+  `login`/`added`/`last_sync` all null; unknown plugin → 404. `PUT
+  /api/connectors/<plugin>/cadence` `{"hours": <1|3|12|24|null>}` sets the
+  source's cadence override (`null` or no `hours` clears it, back to
+  Default) and reschedules its job, → `{"ok": true}`; any other `hours` —
+  `6`, a float, a string, a bool, out of the set — or a body that isn't an
+  object → 400 (nothing stored); unknown plugin → 404. A cadence is kept
+  through a disconnect, like a source role, and applies again on re-add.
+  `DELETE
+  /api/connectors/<plugin>` removes the account, the plugin's cached auth
+  (`clear_cached_auth()`) and its scheduler job, and keeps its data. With `?wipe=1` (also
   `true`/`yes`; anything else keeps) it also deletes every `metrics`
   (`RETURNING date`), `samples` and `sessions` row with `source = <plugin>`
   and `recompute_derived()`s the min..max of those dates — a day only that
@@ -355,7 +401,9 @@ same PR:
   block — no migration); write-lock robustness (busy_timeout 30s + WAL on
   every connection via `connect()`, a process-level sync lock — an
   overlapping sync gets 409 and a scheduled tick skips — and unbuffered logs;
-  no migration). Still to come: the cross-source `/api/series`
+  no migration); per-source sync cadence (a `sync_cadences` settings row of
+  overrides on the 6h baseline, one scheduler job per connected plugin, set
+  from each source's Settings popup — no migration). Still to come: the cross-source `/api/series`
   stitch (pending a second series source), more series sources, verifying
   sources + history, and committing a sync per day (it still holds one write
   transaction for the whole run).

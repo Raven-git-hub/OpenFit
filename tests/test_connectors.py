@@ -39,8 +39,12 @@ def no_device_env(monkeypatch):
     """Start from "nothing configured", whatever the dev's shell holds.
 
     A developer with GARMIN_EMAIL exported would otherwise see different
-    results from CI, since the env is the fallback credential source.
+    results from CI, since the env is the fallback credential source -
+    and likewise SYNC_INTERVAL_HOURS, the baseline /detail reports.
     """
+    import main
+
+    monkeypatch.setattr(main, "SYNC_INTERVAL_HOURS", 6)
     for var in (
         "GARMIN_EMAIL",
         "GARMIN_PASSWORD",
@@ -387,6 +391,8 @@ def test_detail_shows_a_connected_sources_account(client, db_path):
         "login": "me@example.com",
         "added": stored_row(db_path)[2],
         "last_sync": "2026-10-01 06:00:01",
+        "sync_hours": 6,
+        "sync_is_default": True,
     }
 
 
@@ -433,6 +439,8 @@ def test_detail_of_a_source_that_isnt_connected_is_null(client, db_path):
         "login": None,
         "added": None,
         "last_sync": None,
+        "sync_hours": 6,
+        "sync_is_default": True,
     }
 
 
