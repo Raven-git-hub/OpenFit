@@ -220,11 +220,25 @@ def test_index_has_the_home_and_data_tabs_and_no_activity_read(client):
     assert resp.status_code == 200
     page = resp.get_data(as_text=True)
     resp.close()
-    # The tab strip: Home (blank) and Data (the console, open on load).
+    # The tab strip: Home (the app tiles) and Data (the console, open on load).
     assert 'data-tab="home"' in page and 'data-panel="home"' in page
     assert 'data-tab="data"' in page and 'data-panel="data"' in page
     # The last-sync stamp went, and /api/activity with it.
     assert "/api/activity" not in page
+
+
+def test_index_draws_home_from_the_app_host(client):
+    resp = client.get("/")
+    page = resp.get_data(as_text=True)
+    resp.close()
+    # Home lists the installed apps and renders each one's spec.
+    assert "'/api/apps'" in page
+    assert "'/api/app/'+enc(id)+'/render'" in page
+    # The display vocabulary the renderer draws (host.py's builders).
+    for spec in ("number:", "line:", "panel:", "empty:", "error:"):
+        assert spec in page
+    # No Configure, grid lines or drag in this slice: tiles only flow.
+    assert "const layoutTiles = autoLayout;" in page
 
 
 def test_index_wires_the_voice_buttons_to_the_audio_route(client):

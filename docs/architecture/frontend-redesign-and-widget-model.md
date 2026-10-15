@@ -25,7 +25,9 @@ bar no longer shows a last-sync stamp. Settings opens the Settings popup
 original markup and CSS (`.tabstrip`, `.tab`, `.tab-add`), so it looks exactly as
 it did. It holds two tabs:
 
-- **Home**, at the far left. A blank panel for now.
+- **Home**, at the far left. The installed apps' tiles: each app's display
+  spec, rendered server-side, flowed down the page at its default size (see
+  [app-host.md](app-host.md)).
 - **Data**, at the far right, just left of the dashed **＋ Add**. It holds the
   whole console, below.
 
@@ -264,7 +266,8 @@ that stamp is gone.
 
 The strip is back, but not what was in it. The 2×2 Home tile grid went (weight
 chart, add-data accordion, activity log, steps/sleep tiles, and the `home_tiles`
-setting they were saved in), and today's Home tab is blank. The Plan tab went,
+setting they were saved in). Home's tiles are now installed apps, drawn by the
+app host (below), and none ship with OpenFit. The Plan tab went,
 which saved nothing, and so did the Configuration tab and its "Custom tabs"
 placeholder. Those were tracker features, and trackers are external apps. The
 manual weigh-in form went with them. `POST /api/weights` and the webhook still
@@ -276,11 +279,14 @@ in the `CUSTOMISE OPENFIT HERE` comment itself.
 ## The widget model
 
 The console is the only page OpenFit ships. Anything that *uses* the data (a
-weight trend, a training planner, a sleep dashboard) is an external app reading
-the access contract: discovery from `/api/catalog`, values from
-`/api/metric/<metric>`, `/api/sessions/<kind>` and `/api/series/<metric>`. Each
-reads the derived profile and never reconciles sources itself. Phase 4 of
-`ROADMAP.md` gives those apps a sandboxed host (no build, no network beyond the
-contract). Until then they're just pages or scripts that call the API. The
-console stays a verification view: what is there, how continuous it is, and
-who wins.
+weight trend, a training planner, a sleep dashboard) is an app, and none ship
+with OpenFit. An app can be a page or script reading the access contract:
+discovery from `/api/catalog`, values from `/api/metric/<metric>`,
+`/api/sessions/<kind>` and `/api/series/<metric>`. Or it can be installed in
+the app host: a folder in `/data/apps` whose `render(ctx, cfg)` returns a
+display spec the Home tab draws as a tile, reading the derived profile through
+`ctx.metric()` ([app-host.md](app-host.md)). Either way an app reads the
+derived profile and never reconciles sources itself. This first host slice
+runs apps as trusted code. Phase 4 of `ROADMAP.md` sandboxes it (no build, no
+network beyond the contract). The console stays a verification view: what is
+there, how continuous it is, and who wins.

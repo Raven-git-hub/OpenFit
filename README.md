@@ -72,6 +72,8 @@ continuous it is, and which source wins each metric — not the product.
   reporting yet folded away under its category), how continuously each is
   covered (day / week / month, and the last five weeks), and drag-to-reorder
   source priority per metric.
+- A first **app host**: the Home tab shows the apps you install (none ship with
+  OpenFit) as live tiles — see [Apps on the Home tab](#apps-on-the-home-tab).
 
 ## Webhook input (push)
 
@@ -241,7 +243,44 @@ here, like any unknown metric; a known one with no samples has `"points": []`.
 `from` and `to` are optional and inclusive; leave one out for an open end. For
 sessions they match the start's UTC date, and for series the sample's; coverage
 filters each of its dates the same way. A malformed date, or `from` after `to`,
-is a 400.
+is a 400. Instead of them, `?days=N` keeps the trailing N days — today (the
+server's date) and the N − 1 before it — so `GET /api/metric/steps?days=7` is
+this week's steps, at most seven points; `days` with `from` or `to`, or one
+that isn't a whole number from 1 up, is a 400.
+
+## Apps on the Home tab
+
+OpenFit ships no apps, but it hosts the ones you install: each is drawn as a
+tile on the Home tab, from your live data. An app is a folder in `/data/apps`
+(on the data volume; `$APPS_DIR` moves it) holding an `app.yaml` manifest and
+an `app.py`:
+
+```yaml
+# /data/apps/steps/app.yaml
+id: steps
+name: Steps
+default_size: {w: 2, h: 2}   # tile size, in grid cells
+reads: [steps]
+```
+
+```python
+# /data/apps/steps/app.py
+def render(ctx, cfg):
+    points = ctx.metric("steps", days=7)["points"]
+    if not points:
+        return ctx.empty("No steps yet")
+    return ctx.panel(ctx.number(points[-1]["value"], label="steps"), ctx.line(points))
+```
+
+`render()` runs on the server each time Home loads. `ctx.metric()` is its one
+data path — a metric's derived points, as `/api/metric` serves them — and it
+returns a display spec built from `number`, `line` (a sparkline), `panel` and
+`empty`. Tiles flow left to right at their default size; an app that fails to
+load is logged and left out, and one whose `render()` fails shows as an error
+tile, never a broken page. `GET /api/apps` lists what's installed and
+`GET /api/app/<id>/render` returns one app's spec. Apps run as trusted code
+for now (a sandbox is Phase 4). The full contract is in
+[docs/architecture/app-host.md](docs/architecture/app-host.md).
 
 ## Quick start
 
@@ -309,7 +348,9 @@ authorization returns a fresh refresh token.
 ```
 app/
   main.py                     Flask API + scheduler, loads plugins from plugins/
-  templates/index.html        The data console (vanilla JS, no build step)
+  apps.py                     Finds and loads the installed apps (/data/apps)
+  host.py                     The app host: an app's ctx, its spec builders, render
+  templates/index.html        The data console + Home's app tiles (vanilla JS, no build step)
   audio/                      The console's voice clips, baked into the image
   plugins/
     base.py                   SyncPlugin interface every pull plugin implements

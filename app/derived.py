@@ -123,6 +123,26 @@ def recompute_derived(conn, since=None, until=None):
     return len(best)
 
 
+def derived_points(conn, metric, since=None, until=None):
+    """One metric's stored picks, oldest first: [{date, value, source}].
+
+    `since` and `until` are inclusive ISO dates, None leaving that end
+    open. What GET /api/metric/<metric> serves and an app's ctx.metric()
+    returns - the pick as stored, never a fresh one.
+    """
+    bounds = [("date >= ?", since), ("date <= ?", until)]
+    in_range = " AND ".join(clause for clause, d in bounds if d is not None) or "1"
+    params = tuple(d for _, d in bounds if d is not None)
+    return [
+        {"date": row[0], "value": row[1], "source": row[2]}
+        for row in conn.execute(
+            "SELECT date, value, source FROM derived_metrics "
+            f"WHERE metric = ? AND {in_range} ORDER BY date",
+            (metric, *params),
+        )
+    ]
+
+
 def load_source_roles(conn):
     """The configured primary source per metric: {metric: source}.
 

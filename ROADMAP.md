@@ -68,6 +68,12 @@ planners all live here as external apps — none are bundled. Charting stays wit
 the no-build constraint (hand-rolled SVG or a no-build library via a plain
 `<script>`, no bundler).
 
+First slice landed (not yet sandboxed — apps run as trusted code): apps
+installed as folders in `/data/apps` (an `app.yaml` manifest + a
+`render(ctx, cfg)` returning a display spec), drawn as tiles that flow down the
+Home tab at their default size — `docs/architecture/app-host.md`. Next: the
+grid pass (Configure, drag/resize, saved layout) and the Library.
+
 ## Phase 5 — OpenFit Host (per-user provisioning)
 
 A separate project: reverse proxy with dynamic routing, a control-plane service

@@ -4,6 +4,7 @@ import hmac
 import json
 import math
 import os
+import re
 import secrets
 import sqlite3
 import threading
@@ -19,9 +20,11 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from migrations import connect, run_migrations
 from plugins import PLUGINS
 from plugins.base import OAUTH_REDIRECT_URI, write_metric
+from apps import find_app, scan_apps
 from crypto import encrypt
 from derived import (
     backfill_derived,
+    derived_points,
     load_source_roles,
     recompute_derived,
     set_source_role,
@@ -38,9 +41,11 @@ from metrics import (
     category_for,
     grain_for,
 )
+from host import render_app, trailing_window
 
 DB_PATH = os.getenv("DB_PATH", "/data/tracker.db")
 AUDIO_DIR = os.getenv("AUDIO_DIR", "/app/audio")
+APPS_DIR = os.getenv("APPS_DIR", "/data/apps")
 SYNC_INTERVAL_HOURS = int(os.getenv("SYNC_INTERVAL_HOURS", "6"))
 
 app = Flask(__name__, static_folder=None)
@@ -49,8 +54,9 @@ app = Flask(__name__, static_folder=None)
 # temp file. It still defaults to $DB_PATH, so nothing changes in the
 # container.
 app.config["DB_PATH"] = DB_PATH
-# Likewise the console's voice clips.
+# Likewise the console's voice clips, and the installed apps.
 app.config["AUDIO_DIR"] = AUDIO_DIR
+app.config["APPS_DIR"] = APPS_DIR
 
 
 def get_conn():
@@ -352,8 +358,21 @@ def _date_range(args):
     """((from, to), None) for a contract read's query args, or (None, what's wrong).
 
     ?from= and ?to= are optional YYYY-MM-DD dates, both inclusive; one
-    that is missing or empty is None, leaving that end open.
+    that is missing or empty is None, leaving that end open. ?days=N
+    instead keeps the trailing N days - today (the server's local date)
+    and the N - 1 before it, as a sync's days count - and can't be
+    combined with them.
     """
+    raw_days = args.get("days", "")
+    if raw_days:
+        if args.get("from") or args.get("to"):
+            return None, "days can't be combined with from or to"
+        # Nine digits at most: more is past the calendar, and int() of a
+        # few thousand digits raises rather than returning.
+        if not re.fullmatch(r"[0-9]{1,9}", raw_days) or int(raw_days) < 1:
+            return None, "days must be a whole number from 1 to 999999999"
+        return trailing_window(int(raw_days)), None
+
     bounds = []
     for name in ("from", "to"):
         raw = args.get(name, "")
@@ -543,8 +562,8 @@ def get_metric_series(metric):
 
     One point per day with a derived value, oldest first, `source` naming
     the source it was picked from. ?from= and ?to= (YYYY-MM-DD, inclusive)
-    narrow it. 404 for a metric outside the vocabulary; a known one with
-    no data in range has no points.
+    narrow it, or ?days=N to the trailing N days. 404 for a metric outside
+    the vocabulary; a known one with no data in range has no points.
     """
     if metric not in METRICS:
         return jsonify({"ok": False, "error": f"unknown metric: {metric}"}), 404
@@ -552,16 +571,8 @@ def get_metric_series(metric):
     if error:
         return jsonify({"ok": False, "error": error}), 400
 
-    in_range, params = _in_range("date", *bounds)
     conn = get_conn()
-    points = [
-        dict(row)
-        for row in conn.execute(
-            "SELECT date, value, source FROM derived_metrics "
-            f"WHERE metric = ? AND {in_range} ORDER BY date",
-            (metric, *params),
-        )
-    ]
+    points = derived_points(conn, metric, *bounds)
     conn.close()
     return jsonify({"metric": metric, "unit": METRICS[metric], "points": points})
 
@@ -653,6 +664,44 @@ def get_samples(metric):
         for row in rows
     ]
     return jsonify({"metric": metric, "unit": SERIES_METRICS[metric], "points": points})
+
+
+# ---------- the app host ----------
+
+# The Home tab's tiles. Each installed app is a folder in APPS_DIR
+# (apps.py) whose render(ctx, cfg) returns a display spec (host.py); the
+# page lists the apps, renders each and draws the specs. The folder is
+# scanned on every request, so an app added, edited or removed shows on
+# the next load, with no restart.
+
+
+@app.route("/api/apps", methods=["GET"])
+def list_apps():
+    """The installed apps: [{id, name, default_size: {w, h}}], in folder order.
+
+    Only apps that load: a malformed one is logged and left out.
+    """
+    return jsonify([a.summary() for a in scan_apps(app.config["APPS_DIR"])])
+
+
+@app.route("/api/app/<app_id>/render", methods=["GET"])
+def render_installed_app(app_id):
+    """One app's display spec, rendered now with cfg {}.
+
+    Always a 200 for an installed app: a render that raises, or returns
+    something that isn't a spec, comes back as {"type": "error",
+    "message"} so the page shows one error tile, not a failed load. 404
+    for an id with no app that loads.
+    """
+    installed = find_app(app.config["APPS_DIR"], app_id)
+    if installed is None:
+        return jsonify({"ok": False, "error": f"unknown app: {app_id}"}), 404
+    conn = get_conn()
+    try:
+        spec = render_app(installed, conn)
+    finally:
+        conn.close()
+    return jsonify(spec)
 
 
 # ---------- settings ----------

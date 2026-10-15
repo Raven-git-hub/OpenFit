@@ -57,6 +57,13 @@
   --coverage-off:var(--surface-2);      /* a grid day with none */
   --coverage-edge:var(--border-strong); /* the outline of an empty rhombus */
 
+  /* home - the app tiles. A tile is its app's default_size in cells,
+     each --tile-cell square with --tile-gap between; --spark draws a
+     sparkline (follows the theme through the accent). */
+  --tile-cell:110px;
+  --tile-gap:12px;
+  --spark:var(--accent);
+
   --radius:14px;
   --radius-sm:9px;
   --shadow:0 1px 2px rgba(20,28,27,.06), 0 8px 24px rgba(20,28,27,.05);
@@ -378,6 +385,53 @@ h5 + .dnote{margin-top:0;}
   padding:5px 9px;border-radius:7px;box-shadow:var(--shadow);
 }
 
+/* ---------- home: the installed apps' tiles ----------
+   Each tile is its app's default_size in cells and is placed on an
+   invisible grid of --tile-cell squares: in reading order, wrapping,
+   unless the layout gives it a cell (x, y). No grid lines, no handles.
+   A tile is chromeless - the app's spec is the whole face. */
+.home{container-type:inline-size;}
+.tiles{
+  display:grid;gap:var(--tile-gap);
+  grid-template-columns:repeat(auto-fill, var(--tile-cell));
+  grid-auto-rows:var(--tile-cell);
+}
+.tile{
+  background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow);
+  padding:16px 18px;min-width:0;min-height:0;overflow:hidden;
+  display:flex;flex-direction:column;
+  /* the spec sizes its type to the tile (cqi units) */
+  container-type:size;
+}
+.tile > *{flex:1;min-height:0;}
+/* number: a large value, its label beneath, a smaller muted caption */
+.spec-number{display:flex;flex-direction:column;justify-content:center;min-width:0;}
+.spec-panel > .spec-number{flex:none;}
+.spec-number .v{
+  font-family:var(--font-display);font-weight:800;line-height:1.05;letter-spacing:-.5px;
+  font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+  font-size:40px;font-size:clamp(22px, 19cqi, 56px);
+}
+.spec-number .u{font-size:.42em;font-weight:600;color:var(--ink-2);margin-left:5px;letter-spacing:0;}
+.spec-number .l{font-size:13.5px;font-weight:600;color:var(--ink-2);margin-top:5px;}
+.spec-number .c{font-size:11.5px;font-family:var(--font-mono);color:var(--muted);margin-top:2px;}
+/* line: a sparkline filling its box, a dot on the latest point */
+.spec-line{position:relative;min-height:28px;}
+.spec-line svg{position:absolute;inset:0;width:100%;height:100%;overflow:visible;}
+.spec-line polyline{fill:none;stroke:var(--spark);stroke-width:2;stroke-linejoin:round;stroke-linecap:round;vector-effect:non-scaling-stroke;}
+.spec-line .dot{position:absolute;width:6px;height:6px;margin:-3px 0 0 -3px;border-radius:50%;background:var(--spark);}
+.spec-line .dot.end{width:8px;height:8px;margin:-4px 0 0 -4px;box-shadow:0 0 0 2px var(--surface);}
+.spec-line > .spec-msg{position:absolute;inset:0;}
+/* panel: its children, stacked */
+.spec-panel{display:flex;flex-direction:column;gap:12px;}
+.spec-panel > .spec-line{flex:1;}
+/* empty and error: muted, centred */
+.spec-msg{display:grid;place-content:center;gap:4px;text-align:center;color:var(--muted);font-size:13px;padding:4px;}
+.spec-msg b{color:var(--ink-2);font-weight:600;font-size:13.5px;}
+.spec-msg code{font-family:var(--font-mono);font-size:11px;overflow-wrap:anywhere;}
+.home-state{padding:40px 10px;text-align:center;color:var(--muted);font-size:13.5px;}
+.home-state .btn{margin-top:12px;}
+
 /* ---------- responsive: phone ---------- */
 @media (max-width:860px){
   .topbar{padding:14px 15px 0;}
@@ -392,6 +446,8 @@ h5 + .dnote{margin-top:0;}
   .rh-cell{width:28px;}
   .dpanel{grid-template-columns:1fr;padding-left:10px;}
   .src{flex-wrap:wrap;}
+  /* four cells across Home's width, so two 2-wide tiles sit side by side */
+  .tiles{--tile-cell:calc((100cqi - 3 * var(--tile-gap)) / 4);}
 }
 @media (prefers-reduced-motion:reduce){*{transition:none!important;}}
 </style>
@@ -420,8 +476,10 @@ h5 + .dnote{margin-top:0;}
   </nav>
 
   <main class="main">
-    <!-- HOME: blank for now -->
-    <section data-panel="home" aria-label="Home" hidden></section>
+    <!-- HOME: the installed apps' tiles -->
+    <section data-panel="home" aria-label="Home" hidden>
+      <div class="home" id="home"></div>
+    </section>
     <!-- DATA: the console -->
     <section data-panel="data" aria-label="Data">
       <div class="console">
@@ -499,6 +557,9 @@ h5 + .dnote{margin-top:0;}
     oauthStart:      (id, values)  => send('/api/connectors/'+enc(id)+'/oauth/start', 'POST', values),
     oauthFinish:     (id, code)    => send('/api/connectors/'+enc(id)+'/oauth/finish', 'POST', {code}),
     syncPlugin:   id             => send('/api/sync/'+enc(id)+'?days=7', 'POST'),
+    /* The app host: the installed apps, and one app's display spec. */
+    apps:         ()             => fetchJSON('/api/apps'),
+    renderApp:    id             => fetchJSON('/api/app/'+enc(id)+'/render'),
   };
 
   /* =========================================================
@@ -1178,6 +1239,7 @@ h5 + .dnote{margin-top:0;}
       if(res.ok){
         syncBtn.textContent = 'Synced ✓';
         loadData();   // the sync re-derived its window: refresh the rows
+        loadHome();   // ... and the tiles drawn from it
       }else{
         syncBtn.textContent = res.error==='a sync is already in progress' ? 'Already syncing' : 'Failed';
         syncBtn.title = res.error || 'Sync failed';
@@ -1331,6 +1393,7 @@ h5 + .dnote{margin-top:0;}
         // the days it covered - the data card must show what's left.
         refreshConnectors();
         loadData();
+        loadHome();
       }else{
         msg.textContent = res.error || 'Could not remove this source';
         confirmBtn.disabled = false; confirmBtn.textContent = label;
@@ -1604,6 +1667,167 @@ h5 + .dnote{margin-top:0;}
   }
 
   /* =========================================================
+     HOME - the installed apps' tiles
+     Each app (a folder in the server's apps directory) renders a
+     display spec server-side (app/host.py); this page only draws
+     specs. Three parts, kept apart so the layout can change
+     without touching the others:
+       loadHome()   the apps and their specs -> [{app_id, name, spec, w, h}]
+       layoutTiles  gives each a cell (x, y), or null to flow it
+       paintTiles() any such list -> the tiles, each spec drawn by renderSpec()
+     ========================================================= */
+  const home = {status:'loading', tiles:null};   // status: loading | ready | error
+  const cells = n => Math.max(1, Math.round(+n) || 2);
+
+  async function loadHome(){
+    try{
+      const apps = await api.apps();
+      // An app that can't be fetched is one error tile, not a failed Home.
+      const specs = await Promise.all(apps.map(a => api.renderApp(a.id)
+        .catch(() => ({type:'error', message:"Couldn't load this app."}))));
+      home.tiles = layoutTiles(apps.map((a, i) => {
+        const size = a.default_size || {};
+        return {app_id:a.id, name:a.name, spec:specs[i], w:cells(size.w), h:cells(size.h)};
+      }));
+      home.status = 'ready';
+    }catch(e){
+      // A failed refresh leaves the tiles already drawn.
+      if(!home.tiles) home.status = 'error';
+    }
+    paintHome();
+  }
+
+  /* Where each tile goes, in grid cells. For now none is placed: x and y
+     are null, so the grid flows the tiles in order, left to right,
+     wrapping. A saved layout swaps in here, giving each tile its cell. */
+  function autoLayout(tiles){ return tiles.map(t => Object.assign({}, t, {x:null, y:null})); }
+  const layoutTiles = autoLayout;
+
+  function paintHome(){
+    const box = $('#home');
+    if(home.status==='loading'){
+      box.innerHTML = '<p class="home-state">Loading apps…</p>';
+    }else if(home.status==='error'){
+      box.innerHTML = `<div class="home-state">Couldn't load your apps.<br>
+        <button class="btn sm" type="button">Retry</button></div>`;
+      box.querySelector('button').onclick = () => { home.status = 'loading'; paintHome(); loadHome(); };
+    }else if(!home.tiles.length){
+      box.innerHTML = `<p class="home-state">No apps installed yet. An app is a folder in the
+        server's apps directory (<code>/data/apps</code> by default): add one and reload.</p>`;
+    }else{
+      paintTiles(box, home.tiles);
+    }
+  }
+
+  /* tiles: [{app_id, name, spec, w, h, x, y}], w/h/x/y in cells. */
+  function paintTiles(box, tiles){
+    const grid = el('div','tiles');
+    tiles.forEach(t => {
+      const tile = el('section','tile');
+      tile.dataset.app = t.app_id;
+      tile.setAttribute('aria-label', t.name || t.app_id);
+      // With x/y, from that cell; without, from the next free one.
+      tile.style.gridColumn = (t.x!=null ? (t.x+1)+' / ' : '') + 'span '+t.w;
+      tile.style.gridRow    = (t.y!=null ? (t.y+1)+' / ' : '') + 'span '+t.h;
+      tile.appendChild(renderSpec(t.spec, t.name));
+      grid.appendChild(tile);
+    });
+    box.replaceChildren(grid);
+  }
+
+  /* ---- spec -> DOM: the display vocabulary ----
+     Everything an app sends is set as text, never as markup. */
+  const SPECS = {
+    number: s => {
+      const box = el('div','spec-number');
+      const v = el('div','v');
+      v.textContent = fmtSpecValue(s.value);
+      if(s.unit!=null && s.unit!==''){ const u = el('span','u'); u.textContent = s.unit; v.appendChild(u); }
+      box.appendChild(v);
+      if(s.label!=null && s.label!==''){ const l = el('div','l'); l.textContent = s.label; box.appendChild(l); }
+      if(s.caption!=null && s.caption!==''){ const c = el('div','c'); c.textContent = s.caption; box.appendChild(c); }
+      return box;
+    },
+    line: s => sparkline(Array.isArray(s.points) ? s.points : []),
+    panel: (s, name) => {
+      const box = el('div','spec-panel');
+      (Array.isArray(s.children) ? s.children : []).forEach(c => box.appendChild(renderSpec(c, name)));
+      return box;
+    },
+    empty: s => specMsg(null, s.message || 'No data yet'),
+    error: (s, name) => specMsg("Couldn't render "+(name || 'this app'), s.message),
+  };
+  function renderSpec(spec, name){
+    const type = spec && typeof spec==='object' ? spec.type : null;
+    return Object.prototype.hasOwnProperty.call(SPECS, type)
+      ? SPECS[type](spec, name)
+      : specMsg("Couldn't render "+(name || 'this app'), 'Unknown spec type: '+type);
+  }
+  const fmtSpecValue = v => v==null ? '—'
+    : typeof v==='number' ? (Number.isFinite(v) ? v.toLocaleString() : '—')
+    : String(v);
+  function specMsg(title, text){
+    const box = el('div','spec-msg');
+    if(title){ const b = el('b'); b.textContent = title; box.appendChild(b); }
+    if(text){ const t = el(title ? 'code' : 'span'); t.textContent = text; box.appendChild(t); }
+    return box;
+  }
+
+  /* A sparkline of the points present, evenly spaced. A gap - a null
+     value, or a day missing between two dated points - breaks the line
+     there: nothing is joined across it, and nothing is drawn as zero.
+     The line is drawn in a 100x100 box stretched to the tile; the dots
+     are HTML, so they stay round. */
+  function sparkline(raw){
+    const pts = raw.map(p => {
+      const obj = p!==null && typeof p==='object';
+      const v = obj ? p.value : p;
+      const d = obj && typeof p.date==='string' && /^\d{4}-\d{2}-\d{2}$/.test(p.date) ? p.date : null;
+      return {v: typeof v==='number' && Number.isFinite(v) ? v : null, d};
+    });
+    const box = el('div','spec-line');
+    const vals = pts.filter(p => p.v!==null).map(p => p.v);
+    if(!vals.length){ box.appendChild(specMsg(null, 'No data')); return box; }
+
+    const n = pts.length, lo = Math.min(...vals), hi = Math.max(...vals);
+    const X = i => n===1 ? 50 : i/(n-1)*100;
+    const Y = v => hi===lo ? 50 : 6 + (1-(v-lo)/(hi-lo))*88;
+    // Runs of indexes with nothing missing between them.
+    const runs = []; let run = [];
+    pts.forEach((p, i) => {
+      const prev = pts[i-1];
+      const gap = p.v===null || (prev && prev.d && p.d && dayNum(p.d) - dayNum(prev.d) > 1);
+      if(gap && run.length){ runs.push(run); run = []; }
+      if(p.v!==null) run.push(i);
+    });
+    if(run.length) runs.push(run);
+
+    const NS = 'http://www.w3.org/2000/svg';
+    const svg = document.createElementNS(NS, 'svg');
+    svg.setAttribute('viewBox', '0 0 100 100');
+    svg.setAttribute('preserveAspectRatio', 'none');
+    runs.filter(r => r.length > 1).forEach(r => {
+      const pl = document.createElementNS(NS, 'polyline');
+      pl.setAttribute('points', r.map(i => X(i).toFixed(2)+','+Y(pts[i].v).toFixed(2)).join(' '));
+      svg.appendChild(pl);
+    });
+    box.appendChild(svg);
+    const last = runs[runs.length-1].slice(-1)[0];
+    const dot = (i, cls) => {
+      const d = el('span', cls);
+      d.style.left = X(i)+'%'; d.style.top = Y(pts[i].v)+'%';
+      box.appendChild(d);
+    };
+    // A point with a gap either side has no line to sit on: a dot shows it.
+    runs.filter(r => r.length===1 && r[0]!==last).forEach(r => dot(r[0], 'dot'));
+    dot(last, 'dot end');
+    box.setAttribute('role', 'img');
+    box.setAttribute('aria-label', `Trend of ${vals.length} value${vals.length===1 ? '' : 's'}, `
+      + `between ${fmtSpecValue(lo)} and ${fmtSpecValue(hi)}`);
+    return box;
+  }
+
+  /* =========================================================
      shared bits
      ========================================================= */
   /* ---- theme (per browser) ---- */
@@ -1636,7 +1860,7 @@ h5 + .dnote{margin-top:0;}
     $('#today').textContent = new Date().toLocaleDateString('en-GB',{weekday:'short',day:'numeric',month:'short'});
   }
 
-  /* ---- tabs: Home (blank for now) and Data (the console) ----
+  /* ---- tabs: Home (the app tiles) and Data (the console) ----
      Switching only shows one panel and hides the other; the console
      keeps its state underneath. */
   function closeFloating(){ closePop(); hideTip(); }
@@ -1698,9 +1922,11 @@ h5 + .dnote{margin-top:0;}
   paintDate();
   paintSources();
   paintData();
+  paintHome();
   // In parallel: each part paints as soon as its own reads land.
   refreshConnectors();
   loadData();
+  loadHome();
 })();
 </script>
 
