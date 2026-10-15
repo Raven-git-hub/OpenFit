@@ -75,6 +75,10 @@ from ..base import SyncPlugin, iso_utc, write_metric, write_sample, write_sessio
 # summary at all. There is no active_minutes here, deliberately: Garmin
 # reports the moderate/vigorous split, and a single-number "active
 # minutes" is another vendor's measurement (schema v2, law 3).
+#
+# Every one but bmrKilocalories is written only on a day the device
+# recorded (see sync()): on a day it wasn't worn, get_stats still fills
+# these in with full-day defaults, which aren't readings.
 STATS_METRICS = {
     "totalDistanceMeters": (DISTANCE_M, round),
     "activeKilocalories": (ACTIVE_KCAL, round),
@@ -266,6 +270,39 @@ class GarminPlugin(SyncPlugin):
                 steps = stats.get("totalSteps")
                 resting_hr = stats.get("restingHeartRate")
                 stats_metrics = _stats_metrics(stats, d_str)
+
+                # On a day the watch wasn't worn, get_stats still reports
+                # the day's activity totals - activeKilocalories 0,
+                # sedentarySeconds 86400, floorsAscended 0 - as full-day
+                # defaults, not measurements. Written, they'd outrank
+                # another source's real reading in the derived pick. Heart
+                # rate tells the two apart: a day the device recorded has
+                # a resting or a max HR (either can be missing alone on a
+                # day worn only by day or only overnight); a no-wear day
+                # has neither.
+                #
+                # Not includesWellnessData or includesActivityData: on a
+                # probed account they read True and False on a worn and a
+                # no-wear day alike, so neither says whether it was worn.
+                #
+                # bmrKilocalories is kept: a constant from the user's
+                # profile, the same worn or not, so basal_kcal stays a
+                # continuous series and a no-wear day still lands. Steps
+                # and the sensor vitals (SpO2, respiration, HRV) need no
+                # gate - Garmin reports them as null on a no-wear day.
+                day_recorded = (
+                    resting_hr is not None or stats.get("maxHeartRate") is not None
+                )
+                if not day_recorded:
+                    kept = {m: v for m, v in stats_metrics.items() if m == BASAL_KCAL}
+                    # Only when there was something to skip: a day with no
+                    # stats at all is quiet, as before.
+                    if len(kept) < len(stats_metrics):
+                        print(
+                            f"[garmin] {d_str}: no device data (no HR) - "
+                            f"skipping daily activity accumulators, keeping basal"
+                        )
+                    stats_metrics = kept
             except Exception as e:
                 print(f"[garmin] stats fetch failed for {d_str}: {e}")
 

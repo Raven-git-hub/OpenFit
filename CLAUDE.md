@@ -60,7 +60,16 @@ own calls to its device API. Full direction:
   declares a connector manifest (`fields`, `add_flow`), reads creds via
   `self.get_credentials(conn)`, writes readings via `write_metric()`,
   interval records via `write_session()` and intraday samples via
-  `write_sample()`. Never bypass this pattern.
+  `write_sample()`. Never bypass this pattern. A plugin writes only what the
+  device measured — never a source's no-data default (a 0/placeholder it
+  fills in for a calendar day it had no data), so the derived pick never
+  reconciles a phantom (the contract is in `SyncPlugin.sync()`'s
+  docstring). Series, sessions, instant readings and the daily vitals meet
+  this by nature (each exists, or is non-null, only where something was
+  measured), so the one path gated is the daily activity accumulators a
+  source computes for the whole day regardless of wear — Garmin's (see
+  Data model). Google Health is compliant by construction: it returns a
+  daily point only for a day it has data. Don't extend the gate elsewhere.
 - `app/metrics.py` — the canonical vocabulary, schema v2
   (`docs/architecture/metric-schema-v2.md`). One table, `METRIC_DEFS`, gives
   each metric its unit, category, grain and plausible range
@@ -191,7 +200,22 @@ own calls to its device API. Full direction:
   finite number writes nothing (an absent one is logged with the response's
   keys — the floors, intensity, basal, sedentary and elevation field names
   are unverified guesses, and `floorsAscendedInMeters` may not be in the
-  daily summary at all), and a day holding only these still lands. The three
+  daily summary at all), and a day holding only these still lands. Those
+  accumulators are written only on a day Garmin recorded heart rate
+  (`restingHeartRate` or `maxHeartRate` present — either alone counts, for
+  a day worn only by day or only overnight): on a no-wear day `get_stats`
+  still fills in full-day defaults (`activeKilocalories` 0,
+  `sedentarySeconds` 86400, `floorsAscended` 0), so that day files none of
+  them and logs `no device data (no HR) - skipping daily activity
+  accumulators, keeping basal`. `basal_kcal` is excepted — `bmrKilocalories`
+  is a profile constant, the same worn or not — so it stays a continuous
+  series and a no-wear day still lands on it. `includesWellnessData` and
+  `includesActivityData` are not wear signals (True and False on a worn and
+  a no-wear day alike), so the gate doesn't read them. Steps and the sensor
+  vitals (SpO2, respiration, HRV) need no gate: Garmin reports them null on a
+  no-wear day. A forward fix:
+  defaults filed before it stay until the source is wiped and re-synced.
+  The three
   vitals are a request a day each, through the plugin's `GARMIN_VITALS` table
   (each entry's `daily` path and metric): `get_spo2_data` → `averageSpO2`,
   `get_respiration_data` → `avgWakingRespirationValue`, `get_hrv_data` → the
@@ -255,6 +279,8 @@ own calls to its device API. Full direction:
   `respiratory_rate_brpm`. Only a finite number (never a bool) within the
   metric's `PLAUSIBLE_RANGES` once converted is written; a null or absent
   field writes nothing, and a day holding only one of these still lands.
+  Google returns a point only for a day it has data (no 0 for a missing
+  day), so it writes only measured values by construction — no wear gate.
   Every type logs one line a sync: the days filed with the latest raw
   fields beside the converted value, or "no data", or — points but none
   with the field — a sample point and its keys; values not filed and
