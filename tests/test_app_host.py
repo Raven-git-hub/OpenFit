@@ -6,7 +6,8 @@ app.py (its render(ctx, cfg)). scan_apps() lists the ones that load and
 logs and skips the rest; GET /api/apps lists them, and GET
 /api/app/<id>/render runs one's render() against a fresh ctx and returns
 its display spec - or an error spec, never a 500. ctx.metric() is an
-app's one data path: a metric's derived points, trailing `days` days.
+app's one data path: a metric's derived points as a list of Points,
+trailing `days` days.
 Every test gets its own temp apps folder; nothing reads /data/apps.
 """
 
@@ -23,28 +24,50 @@ from derived import recompute_derived
 from metrics import DISTANCE_M, METRICS, STEPS
 
 
-# A steps tile like the one Home is built for: the latest day as a number
-# over a week's sparkline.
-STEPS_APP = """
-def render(ctx, cfg):
-    week = ctx.metric("steps", days=7)
-    points = week["points"]
-    if not points:
-        return ctx.empty("No steps yet")
-    latest = points[-1]
-    caption = "so far today" if latest["date"] == ctx.today() else latest["date"]
-    return ctx.panel(
-        ctx.number(latest["value"], label="steps", caption=caption),
-        ctx.line(points),
-    )
+# The two apps Home was first built for, as they use the host: ctx.metric()
+# read as a list of points (data[-1] the latest day, .date/.value on each),
+# (date, value) pairs for the line, and config as an ordered list of fields.
+# steps: the latest day as a number over a week's sparkline.
+STEPS_MANIFEST = """
+id: steps
+name: Steps
+default_size: {w: 2, h: 2}
+reads: [steps]
+config:
+  - {key: days, label: Days shown, type: int, default: 7}
 """
 
-DISTANCE_APP = """
+STEPS_APP = """
 def render(ctx, cfg):
-    points = ctx.metric("distance_m", days=1)["points"]
-    if not points:
-        return ctx.empty()
-    return ctx.number(points[-1]["value"], label="metres")
+    data = ctx.metric("steps", cfg.get("days", 7))
+    if not data:
+        return ctx.empty("No steps yet")
+    latest = data[-1]
+    caption = "so far today" if latest.date == ctx.today() else latest.date
+    return ctx.panel([
+        ctx.number(latest.value, label="steps", caption=caption),
+        ctx.line([(p.date, p.value) for p in data]),
+    ])
+"""
+
+# steps-metres: today's steps as metres walked, one number.
+METRES_MANIFEST = """
+id: steps-metres
+name: Distance
+default_size: {w: 2, h: 2}
+reads: [steps]
+config:
+  - {key: stride_m, label: Stride length (m), type: float, default: 0.75}
+  - {key: label, label: Label, type: text, default: metres today}
+"""
+
+METRES_APP = """
+def render(ctx, cfg):
+    data = ctx.metric("steps", 1)
+    if not data:
+        return ctx.empty("No steps today")
+    metres = round(data[-1].value * cfg.get("stride_m", 0.75))
+    return ctx.number(metres, label=cfg.get("label", "metres today"), unit="m")
 """
 
 
@@ -109,7 +132,9 @@ def test_a_loaded_app_carries_its_manifest_and_render(apps_dir):
         name: Steps
         default_size: {w: 3, h: 2}
         reads: [steps]
-        config: {days: 7}
+        config:
+          - {key: days, label: Days shown, type: int, default: 7}
+          - {key: goal, label: Daily goal, type: int, default: 10000}
         """,
         STEPS_APP,
     )
@@ -117,7 +142,11 @@ def test_a_loaded_app_carries_its_manifest_and_render(apps_dir):
     [app] = apps.scan_apps(str(apps_dir))
     assert (app.id, app.name, app.default_size) == ("steps", "Steps", {"w": 3, "h": 2})
     assert app.reads == ["steps"]
-    assert app.config == {"days": 7}
+    # In the manifest's order: it's the order the config form will use.
+    assert app.config == [
+        {"key": "days", "label": "Days shown", "type": "int", "default": 7},
+        {"key": "goal", "label": "Daily goal", "type": "int", "default": 10000},
+    ]
     assert app.path == str(apps_dir / "steps")
     assert callable(app.render)
 
@@ -128,7 +157,7 @@ def test_a_manifest_can_leave_everything_but_render_to_the_defaults(apps_dir):
 
     [app] = apps.scan_apps(str(apps_dir))
     assert (app.id, app.name, app.default_size) == ("steps", "steps", {"w": 2, "h": 2})
-    assert (app.reads, app.config) == ([], {})
+    assert (app.reads, app.config) == ([], [])
 
 
 MALFORMED = {
@@ -153,7 +182,12 @@ MALFORMED = {
     "default_size a float": ("default_size: {w: 2.5, h: 2}\n", STEPS_APP),
     "reads not a list": ("reads: steps\n", STEPS_APP),
     "reads not strings": ("reads: [1, 2]\n", STEPS_APP),
-    "config not a mapping": ("config: [days]\n", STEPS_APP),
+    "config a mapping": ("config: {days: 7}\n", STEPS_APP),
+    "config a string": ("config: days\n", STEPS_APP),
+    "config field not a mapping": ("config: [days]\n", STEPS_APP),
+    "config field with no key": ("config: [{label: Days}]\n", STEPS_APP),
+    "config field key not a string": ("config: [{key: 7}]\n", STEPS_APP),
+    "config field listed twice": ("config: [{key: days}, {key: days}]\n", STEPS_APP),
 }
 
 
@@ -222,7 +256,7 @@ def test_find_app_by_id(apps_dir):
 
 def test_api_apps_lists_the_installed_apps(client, apps_dir):
     make_app(apps_dir, "steps", "id: steps\nname: Steps\ndefault_size: {w: 2, h: 2}\n", STEPS_APP)
-    make_app(apps_dir, "steps-metres", "name: Distance\ndefault_size: {w: 2, h: 1}\n", DISTANCE_APP)
+    make_app(apps_dir, "steps-metres", "name: Distance\ndefault_size: {w: 2, h: 1}\n", METRES_APP)
     make_app(apps_dir, "broken", "name: Broken\n", None)
 
     resp = client.get("/api/apps")
@@ -238,6 +272,26 @@ def test_api_apps_with_none_installed(client, apps_dir):
 
 
 # ---------- GET /api/app/<id>/render ----------
+
+
+def test_the_first_two_apps_are_listed_and_both_render_specs(client, conn, apps_dir):
+    # Home's acceptance: steps and steps-metres both listed, and both
+    # rendering their specs over live data - neither an error tile.
+    make_app(apps_dir, "steps", STEPS_MANIFEST, STEPS_APP)
+    make_app(apps_dir, "steps-metres", METRES_MANIFEST, METRES_APP)
+    insert(conn, today_minus(1), "garmin", steps=8000)
+    insert(conn, today_minus(0), "garmin", steps=4000)
+    recompute_derived(conn)
+
+    assert client.get("/api/apps").get_json() == [
+        {"id": "steps", "name": "Steps", "default_size": {"w": 2, "h": 2}},
+        {"id": "steps-metres", "name": "Distance", "default_size": {"w": 2, "h": 2}},
+    ]
+    steps = client.get("/api/app/steps/render").get_json()
+    assert [child["type"] for child in steps["children"]] == ["number", "line"]
+    assert client.get("/api/app/steps-metres/render").get_json() == {
+        "type": "number", "value": 3000, "label": "metres today", "caption": None, "unit": "m",
+    }
 
 
 def test_render_returns_the_apps_spec_over_live_data(client, conn, apps_dir):
@@ -325,7 +379,7 @@ def test_a_render_that_returns_no_spec_is_an_error_spec(client, apps_dir, return
 
 
 def test_render_is_given_an_empty_cfg(client, apps_dir):
-    make_app(apps_dir, "cfg", "config: {days: 7}\n",
+    make_app(apps_dir, "cfg", "config: [{key: days, default: 7}]\n",
              "def render(ctx, cfg):\n    return ctx.number(len(cfg), label=repr(cfg))\n")
 
     assert client.get("/api/app/cfg/render").get_json()["label"] == "{}"
@@ -337,20 +391,25 @@ def test_render_is_given_an_empty_cfg(client, apps_dir):
 TODAY = date(2026, 10, 15)
 
 
-def test_ctx_metric_is_the_derived_points_oldest_first(conn):
+def test_ctx_metric_is_a_list_of_the_derived_points_oldest_first(conn):
     insert(conn, "2026-10-14", "garmin", steps=9000)
     insert(conn, "2026-10-14", "google_health", steps=8000)
     insert(conn, "2026-10-12", "google_health", steps=7000)
     recompute_derived(conn)
 
-    got = host.Ctx(conn, today=TODAY).metric(STEPS)
-    assert got["metric"] == STEPS and got["unit"] == "count"
-    assert got["points"] == [
-        {"date": "2026-10-12", "value": 7000, "source": "google_health"},
-        {"date": "2026-10-14", "value": 9000, "source": "garmin"},
+    data = host.Ctx(conn, today=TODAY).metric(STEPS)
+    assert isinstance(data, list)
+    assert data == [
+        host.Point("2026-10-12", 7000, "google_health"),
+        host.Point("2026-10-14", 9000, "garmin"),
     ]
-    # The name the dev harness used, for the apps written against it.
-    assert got["series"] == got["points"]
+    # The latest day is the last, read by attribute.
+    latest = data[-1]
+    assert (latest.date, latest.value, latest.source) == ("2026-10-14", 9000, "garmin")
+
+
+def test_ctx_metric_with_no_data_is_an_empty_list(conn):
+    assert host.Ctx(conn).metric(STEPS, 7) == []
 
 
 @pytest.mark.parametrize(
@@ -369,8 +428,7 @@ def test_ctx_metric_keeps_the_trailing_days(conn, days, dates):
         insert(conn, day, "garmin", steps=1)
     recompute_derived(conn)
 
-    points = host.Ctx(conn, today=TODAY).metric(STEPS, days)["points"]
-    assert [p["date"] for p in points] == dates
+    assert [p.date for p in host.Ctx(conn, today=TODAY).metric(STEPS, days)] == dates
 
 
 @pytest.mark.parametrize("days", [0, -1, True, 2.0, "7"])
@@ -400,17 +458,45 @@ def test_number_spec():
     assert host.number(math.inf)["value"] is None
 
 
-def test_line_spec_takes_numbers_or_points_and_keeps_gaps():
-    assert host.line([1, None, 2.5, math.nan]) == {"type": "line", "points": [1, None, 2.5, None]}
+def test_line_spec_takes_date_value_pairs_and_keeps_gaps():
+    assert host.line([
+        ("2026-10-14", 9000.0),
+        ("2026-10-15", None),
+        (date(2026, 10, 16), math.nan),
+        ["2026-10-17", 7000],
+    ]) == {"type": "line", "points": [
+        {"date": "2026-10-14", "value": 9000.0},
+        {"date": "2026-10-15", "value": None},
+        {"date": "2026-10-16", "value": None},
+        {"date": "2026-10-17", "value": 7000},
+    ]}
+    assert host.line([]) == {"type": "line", "points": []}
+
+
+def test_line_spec_takes_points_dicts_or_bare_numbers():
     # ctx.metric()'s points go straight in; their source is dropped.
+    assert host.line([host.Point("2026-10-14", 9000.0, "garmin")]) == {
+        "type": "line", "points": [{"date": "2026-10-14", "value": 9000.0}],
+    }
     assert host.line([
         {"date": "2026-10-14", "value": 9000, "source": "garmin"},
         {"value": None},
     ]) == {"type": "line", "points": [{"date": "2026-10-14", "value": 9000}, {"value": None}]}
-    assert host.line([]) == {"type": "line", "points": []}
+    assert host.line([1, None, 2.5, math.nan]) == {"type": "line", "points": [1, None, 2.5, None]}
 
 
-@pytest.mark.parametrize("bad", [True, "9000", {"date": "2026-10-14"}, [1, 2]])
+@pytest.mark.parametrize(
+    "bad",
+    [
+        True,
+        "9000",
+        {"date": "2026-10-14"},
+        [1, 2],                          # a pair's date is YYYY-MM-DD
+        ("2026-10-14",),                 # a pair is two
+        ("2026-10-14", 9000, "garmin"),
+        ("2026-10-14", "9000"),
+    ],
+)
 def test_line_spec_rejects_what_isnt_a_value(bad):
     with pytest.raises(TypeError):
         host.line([bad])

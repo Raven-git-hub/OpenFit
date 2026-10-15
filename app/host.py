@@ -7,22 +7,26 @@ index.html). render() runs here, server-side, once per request, with a
 fresh Ctx built over that request's connection:
 
     def render(ctx, cfg):
-        steps = ctx.metric("steps", days=7)
-        values = [p["value"] for p in steps["points"]]
-        if not values:
+        data = ctx.metric("steps", 7)
+        if not data:
             return ctx.empty("No steps yet")
-        return ctx.panel(ctx.number(values[-1], label="steps"), ctx.line(steps["points"]))
+        latest = data[-1]
+        return ctx.panel(
+            ctx.number(latest.value, label="steps"),
+            ctx.line([(p.date, p.value) for p in data]),
+        )
 
 ctx.metric() is the only data an app gets: one metric's derived points,
-read as GET /api/metric/<metric> serves them, so an app never sees raw
-per-source readings. ctx.today() is the server's local date.
+the ones GET /api/metric/<metric> serves, as a list of Points (.date,
+.value, .source), oldest first - so an app never sees raw per-source
+readings. ctx.today() is the server's local date.
 
 The spec vocabulary, built by the ctx's builders (an app may also return
 the dicts directly):
 
     {"type": "number", "value", "label", "caption", "unit"}
         a large value; label, caption and unit may be null
-    {"type": "line", "points": [value | {"date", "value"}, ...]}
+    {"type": "line", "points": [value | {"date", "value"} | [date, value], ...]}
         a sparkline; a null value is a gap
     {"type": "panel", "children": [spec, ...]}
         its children, stacked in order
@@ -39,9 +43,18 @@ import json
 import math
 import traceback
 from datetime import date, timedelta
+from typing import NamedTuple
 
 from derived import derived_points
 from metrics import METRICS
+
+
+class Point(NamedTuple):
+    """One day of a metric, as ctx.metric() lists them."""
+
+    date: str      # YYYY-MM-DD
+    value: float   # in the metric's canonical unit (metrics.py)
+    source: str    # the source it was picked from
 
 
 def trailing_window(days, today=None):
@@ -93,21 +106,35 @@ def _line_value(raw):
     return _finite_or_none(raw)
 
 
+def _dated(day, value):
+    if isinstance(day, date):
+        day = day.isoformat()
+    elif day is not None and not isinstance(day, str):
+        raise TypeError(f"a line point's date must be YYYY-MM-DD: {day!r}")
+    point = {"value": _line_value(value)}
+    if day is not None:
+        point["date"] = day
+    return point
+
+
 def _line_point(raw):
+    if isinstance(raw, Point):
+        return _dated(raw.date, raw.value)
+    if isinstance(raw, (tuple, list)):
+        if len(raw) != 2:
+            raise TypeError(f"a line point pair is (date, value): {raw!r}")
+        return _dated(*raw)
     if isinstance(raw, dict):
         if "value" not in raw:
             raise TypeError(f"a line point needs a value: {raw!r}")
-        point = {"value": _line_value(raw["value"])}
-        if raw.get("date") is not None:
-            point["date"] = str(raw["date"])
-        return point
+        return _dated(raw.get("date"), raw["value"])
     return _line_value(raw)
 
 
 def line(points):
-    """A sparkline over `points`: numbers, or {date, value} dicts - ctx.metric()'s
-    points as they come. A None value (or a non-finite one) is a gap, never a zero;
-    a dict's other keys (its source) are dropped."""
+    """A sparkline over `points`, oldest first: (date, value) pairs, ctx.metric()'s
+    Points as they come, {date, value} dicts or bare numbers. A None value (or a
+    non-finite one) is a gap, never a zero; a point's source is dropped."""
     return {"type": "line", "points": [_line_point(p) for p in points]}
 
 
@@ -147,13 +174,14 @@ class Ctx:
         return self._today.isoformat()
 
     def metric(self, key, days=None):
-        """One metric's derived points: {metric, unit, points: [{date, value, source}]}.
+        """One metric's derived points: a list of Point(date, value, source).
 
-        Oldest first, one point per day that has a value - a day with none
-        is missing, not a zero. `days` keeps the trailing days: today and
+        Oldest first, so data[-1] is the latest day; one point per day
+        that has a value - a day with none is missing, not a zero - and []
+        when there are none. Each value is in the metric's canonical unit
+        (METRICS in metrics.py). `days` keeps the trailing days: today and
         the days - 1 before it, as GET /api/metric/<key>?days= does; None
-        is the whole history. `series` is the same list as `points`, kept
-        for apps written against the dev harness, which named it so.
+        is the whole history.
 
         Raises ValueError for a key outside the vocabulary.
         """
@@ -162,8 +190,10 @@ class Ctx:
         since = until = None
         if days is not None:
             since, until = trailing_window(_positive_days(days), self._today)
-        points = derived_points(self._conn, key, since, until)
-        return {"metric": key, "unit": METRICS[key], "points": points, "series": points}
+        return [
+            Point(p["date"], p["value"], p["source"])
+            for p in derived_points(self._conn, key, since, until)
+        ]
 
 
 def render_app(installed, conn, cfg=None, today=None):

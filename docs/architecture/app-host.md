@@ -25,30 +25,39 @@ id: steps                     # optional: defaults to the folder's name
 name: Steps                   # optional: defaults to the id
 default_size: {w: 2, h: 2}    # optional: tile size in grid cells, 1-12 each; default 2x2
 reads: [steps]                # optional: the metric keys it reads (declared, not enforced yet)
-config: {}                    # optional: the app's settings (not yet passed to render)
+config:                       # optional: the app's settings, an ordered list of fields
+  - {key: days, label: Days shown, type: int, default: 7}
 ```
 
 The id is part of the app's URL, so it's letters, digits, `-` and `_`,
 starting with a letter or digit. Each field is optional, but one that's
 present must have the right type.
 
+**`config`** is an **ordered list** of fields, not a mapping, because the
+order is the order the app's config form will show them in. Each field is a
+mapping, `{key, label, type, default}`. `key` is required: a non-empty string,
+used once per app. `label`, `type` and `default` are the app's to give; the
+host keeps them as written and in order, and doesn't check them yet. A
+mapping, or a field without a key, is malformed, so the app is skipped. The
+fields aren't passed to `render()` yet: `cfg` is `{}` (below).
+
 **`app.py`** defines `render(ctx, cfg)`, which returns a display spec:
 
 ```python
 def render(ctx, cfg):
-    week = ctx.metric("steps", days=7)
-    points = week["points"]
-    if not points:
+    data = ctx.metric("steps", 7)          # [Point(date, value, source), ...], oldest first
+    if not data:
         return ctx.empty("No steps yet")
-    latest = points[-1]
-    caption = "so far today" if latest["date"] == ctx.today() else latest["date"]
-    return ctx.panel(
-        ctx.number(latest["value"], label="steps", caption=caption),
-        ctx.line(points),
-    )
+    latest = data[-1]                      # the latest day
+    caption = "so far today" if latest.date == ctx.today() else latest.date
+    return ctx.panel([
+        ctx.number(latest.value, label="steps", caption=caption),
+        ctx.line([(p.date, p.value) for p in data]),
+    ])
 ```
 
-`cfg` is `{}` for now. Per-instance config, and the UI to edit it, come later.
+`cfg` is `{}` for now. Per-instance config, and the UI to edit it, come later;
+an app reads a setting with a fallback, such as `cfg.get("days", 7)`.
 
 ### Loading: `app/apps.py`
 
@@ -77,16 +86,22 @@ reuse it.
 `render()` runs server-side, once per render request, with a fresh `Ctx` over
 that request's database connection.
 
-- **`ctx.metric(key, days=None)`** is the app's only data path. It returns
-  `{"metric", "unit", "points": [{"date", "value", "source"}]}`: one
-  metric's **derived** points, the same as `GET /api/metric/<key>` serves
-  them. They're oldest first, with one point per day that has a value. A day
-  with no value is missing from the list, never a zero. `days` keeps the
-  trailing N days: today and the N − 1 days before it. `None` returns the
-  whole history. `series` is the same list as `points`. It's kept because
-  the dev harness the first apps were written against used that name; new
-  apps should read `points`. An unknown key, or a `days` that isn't a whole
-  number ≥ 1, raises `ValueError`, which the app's tile shows as an error.
+- **`ctx.metric(key, days=None)`** is the app's only data path. It
+  **returns a list of points**: `list[Point]`, in ascending date order. So
+  `data[-1]` is the latest day, and an empty list `[]` means no data. Each
+  `Point` is a named tuple (`host.Point`) with three attributes:
+  - `.date`: the day, a `YYYY-MM-DD` string.
+  - `.value`: a float, in the metric's canonical unit (`METRICS` in
+    `app/metrics.py`).
+  - `.source`: the source the value was picked from, such as `garmin`.
+
+  These are the metric's **derived** points, the same ones
+  `GET /api/metric/<key>` serves, so an app never sees raw per-source
+  readings. There's one point per day that has a value; a day with no value
+  is missing from the list, never a zero. `days` keeps the trailing N days:
+  today and the N − 1 days before it. `None` returns the whole history. An
+  unknown key, or a `days` that isn't a whole number ≥ 1, raises
+  `ValueError`, which the app's tile shows as an error.
 - **`ctx.today()`** returns today as `YYYY-MM-DD`, the format points' dates
   use. It's the server's local date until a `base_tz` setting lands.
 - **The spec builders**, also importable from `host`, are described in the
@@ -100,7 +115,7 @@ the dicts itself.
 | Builder | Spec | Drawn as |
 |---|---|---|
 | `ctx.number(value, label=None, caption=None, unit=None)` | `{"type": "number", "value", "label", "caption", "unit"}` | A large value in tabular figures, `unit` small beside it, `label` beneath, and `caption` smaller and muted. A null value reads `—`, and a null label, caption or unit is left out. A number is shown with thousands separators; a string is shown as given. |
-| `ctx.line(points)` | `{"type": "line", "points": [v \| {"date", "value"}, ...]}` | A sparkline filling its box, evenly spaced (by index, not date), with a dot on the latest point. `points` can be numbers or `ctx.metric()`'s points as they come (their `source` is dropped). A `None` or non-finite value is a gap. The line is also broken between two dated points with a day missing between them: nothing is joined across a gap or drawn as zero. A point with a gap on both sides gets a dot. No points shows "No data", and a single point is a dot. |
+| `ctx.line(points)` | `{"type": "line", "points": [v \| {"date", "value"}, ...]}` | A sparkline filling its box, evenly spaced (by index, not date), with a dot on the latest point. `points` are oldest first: `(date, value)` pairs (`[(p.date, p.value) for p in data]`), `ctx.metric()`'s points as they come (their `source` is dropped), `{date, value}` dicts or bare numbers. A pair's date is a `YYYY-MM-DD` string, a `date` or `None`. The page also draws a hand-built spec's `[date, value]` arrays. A `None` or non-finite value is a gap. The line is also broken between two dated points with a day missing between them: nothing is joined across a gap or drawn as zero. A point with a gap on both sides gets a dot. No points shows "No data", and a single point is a dot. |
 | `ctx.panel(*children)` or `ctx.panel([children])` | `{"type": "panel", "children": [...]}` | Its children stacked in order. A number keeps its height and a line takes the rest. |
 | `ctx.empty(message=None)` | `{"type": "empty", "message"}` | Muted, centred text (default "No data yet"). |
 | (the host's) | `{"type": "error", "message"}` | Muted, centred: "Couldn't render <app name>" over the message. |

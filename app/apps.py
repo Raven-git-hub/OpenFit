@@ -6,6 +6,7 @@ default) holding two files:
 
     <apps dir>/steps/
         app.yaml    the manifest: id, name, default_size, reads, config
+                    (config an ordered list of fields: {key, label, type, default})
         app.py      def render(ctx, cfg): -> a display spec (see host.py)
 
 scan_apps() lists every app that loads. A folder without an app.yaml
@@ -56,7 +57,7 @@ class InstalledApp:
     name: str
     default_size: dict
     reads: list
-    config: dict
+    config: list
     path: str
     render: object = field(repr=False)
 
@@ -82,6 +83,31 @@ def _size(raw):
             raise AppError(f"default_size.{axis} must be a whole number from 1 to {MAX_CELLS}")
         size[axis] = cells
     return size
+
+
+def _config(raw):
+    """The manifest's config fields, in order: [{key, label, type, default}, ...].
+
+    A list, not a mapping, because the order is the order the app's
+    config form will show them in. Each field needs a key, once; label,
+    type and default are the app's to give and aren't checked yet.
+    """
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise AppError("config must be a list of fields, each {key, label, type, default}")
+    fields, keys = [], set()
+    for field in raw:
+        if not isinstance(field, dict):
+            raise AppError(f"each config field must be a mapping: {field!r}")
+        key = field.get("key")
+        if not isinstance(key, str) or not key:
+            raise AppError(f"each config field needs a key: {field!r}")
+        if key in keys:
+            raise AppError(f"config field {key!r} is listed twice")
+        keys.add(key)
+        fields.append(dict(field))
+    return fields
 
 
 def _manifest(folder):
@@ -110,15 +136,12 @@ def _manifest(folder):
     reads = raw.get("reads") or []
     if not isinstance(reads, list) or not all(isinstance(key, str) for key in reads):
         raise AppError("reads must be a list of metric keys")
-    config = raw.get("config") or {}
-    if not isinstance(config, dict):
-        raise AppError("config must be a mapping")
     return {
         "id": app_id,
         "name": name.strip(),
         "default_size": _size(raw.get("default_size")),
         "reads": list(reads),
-        "config": dict(config),
+        "config": _config(raw.get("config")),
     }
 
 

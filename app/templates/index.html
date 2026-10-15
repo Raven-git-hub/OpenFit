@@ -1779,10 +1779,12 @@ h5 + .dnote{margin-top:0;}
      The line is drawn in a 100x100 box stretched to the tile; the dots
      are HTML, so they stay round. */
   function sparkline(raw){
+    // A point is a value, {date, value} or [date, value].
     const pts = raw.map(p => {
-      const obj = p!==null && typeof p==='object';
-      const v = obj ? p.value : p;
-      const d = obj && typeof p.date==='string' && /^\d{4}-\d{2}-\d{2}$/.test(p.date) ? p.date : null;
+      const pair = Array.isArray(p), obj = !pair && p!==null && typeof p==='object';
+      const v = pair ? p[1] : obj ? p.value : p;
+      const day = pair ? p[0] : obj ? p.date : null;
+      const d = typeof day==='string' && /^\d{4}-\d{2}-\d{2}$/.test(day) ? day : null;
       return {v: typeof v==='number' && Number.isFinite(v) ? v : null, d};
     });
     const box = el('div','spec-line');

@@ -99,8 +99,10 @@ own calls to its device API. Full direction:
   default `/data/apps`, on the data volume; `app.config["APPS_DIR"]` in tests)
   with an `app.yaml` (`id` (default: the folder's name, `[A-Za-z0-9][A-Za-z0-9_-]*`),
   `name` (default: the id), `default_size` `{w, h}` (1–12 each, default 2×2),
-  `reads` (a list of keys — recorded, not enforced), `config` (a mapping), all
-  optional but type-checked) and an `app.py` whose `render(ctx, cfg)` is
+  `reads` (a list of keys — recorded, not enforced), `config` (an ordered
+  list of field mappings `{key, label, type, default}` — order drives the
+  config form; `key` a non-empty string, unique; the rest kept as written,
+  unchecked; a mapping is malformed), all optional but type-checked) and an `app.py` whose `render(ctx, cfg)` is
   imported by `importlib` from its absolute path (nothing added to
   `sys.path`/`sys.modules`). A folder with no `app.yaml` isn't an app (no
   log); one that doesn't load — bad YAML or field, no `app.py`, an import
@@ -110,17 +112,20 @@ own calls to its device API. Full direction:
   its `app.yaml`/`app.py` mtime or size changes, so a broken one logs once per
   change. `find_app(apps_dir, id)` picks one.
 - `app/host.py` — the app host: `Ctx(conn, today=None)`, built per render
-  call, is all an app's `render()` gets. `ctx.metric(key, days=None)` → `{metric,
-  unit, points: [{date, value, source}]}`, the derived points exactly as
-  `GET /api/metric/<key>` serves them (`derived_points()` in `app/derived.py`,
-  shared by both), trailing `days` (`trailing_window()`: today − (days−1) …
-  today) or all history; `series` is the same list, an alias for the apps
-  written against the dev harness (prefer `points`); unknown key or a `days`
-  not an int ≥ 1 (bools refused) → `ValueError`. `ctx.today()` → the server's
+  call, is all an app's `render()` gets. `ctx.metric(key, days=None)` → a
+  list of `Point(date, value, source)` (a `NamedTuple`: `.date` a
+  `YYYY-MM-DD` str, `.value` a float in the canonical unit, `.source`),
+  ascending by date — `data[-1]` the latest day, `[]` for none — the derived
+  points `GET /api/metric/<key>` serves (`derived_points()` in
+  `app/derived.py`, shared by both), trailing `days` (`trailing_window()`:
+  today − (days−1) … today) or all history; unknown key or a `days` not an
+  int ≥ 1 (bools refused) → `ValueError`. `ctx.today()` → the server's
   local date as `YYYY-MM-DD`. The spec builders (also module functions):
-  `number(value, label, caption, unit)`, `line(points)` (numbers or
-  `{date, value}` dicts — `ctx.metric()`'s points go straight in, `source`
-  dropped; `None`/non-finite is a gap; anything else `TypeError`),
+  `number(value, label, caption, unit)`, `line(points)` (`(date, value)`
+  pairs — the apps' `[(p.date, p.value) for p in data]` — or `Point`s,
+  `{date, value}` dicts or numbers, each to `{date?, value}`; a date a
+  `YYYY-MM-DD` str, `date` or `None`; `None`/non-finite is a gap; anything
+  else `TypeError`),
   `panel(*children)` (or one list), `empty(message)`; the host's own is
   `{"type": "error", "message"}`. `render_app(app, conn, cfg=None,
   today=None)` calls `render(ctx, {})` and never raises: an exception, a
@@ -220,7 +225,8 @@ own calls to its device API. Full direction:
   surface, no title bar). `renderSpec()` draws the vocabulary, all as text,
   never markup: `number` (big tabular value, `unit` beside, `label` beneath,
   muted `caption`; null → `—`/left out; `--font-display`, sized to the tile
-  with `cqi`), `line` (an index-spaced SVG sparkline in `--spark`, dot on the
+  with `cqi`), `line` (points a value, `{date, value}` or `[date, value]`; an
+  index-spaced SVG sparkline in `--spark`, dot on the
   latest point; broken at a null and between two dated points with a day
   missing between them — never interpolated or zeroed — a lone point a dot,
   none "No data"),
