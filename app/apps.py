@@ -2,19 +2,23 @@
 Installed apps: the scanner and loader the app host runs on.
 
 An app is a folder in the apps directory (APPS_DIR, /data/apps by
-default) holding two files:
+default) holding its manifest and, usually, its engine:
 
     <apps dir>/steps/
         app.yaml    the manifest: id, name, default_size, reads, config
                     (config an ordered list of fields: {key, label, type, default})
         app.py      def render(ctx, cfg): -> a display spec (see host.py)
 
+app.py is optional: an app with a manifest alone loads and lists, and
+its tile says it has nothing to draw. Any other files in the folder
+(reference data, helpers) are the app's own; the host doesn't read them.
+
 scan_apps() lists every app that loads. A folder without an app.yaml
 isn't an app and is passed over quietly; one with an app.yaml that
-doesn't load - bad YAML, a manifest field of the wrong type, no app.py,
-an app.py that fails to import or has no callable render - is logged
-and skipped, so one broken app never stops the rest from being listed,
-and never takes the server down.
+doesn't load - bad YAML, a manifest field of the wrong type, an app.py
+that fails to import or has no callable render - is logged and skipped,
+so one broken app never stops the rest from being listed, and never
+takes the server down.
 
 Loading imports app.py from its absolute path; nothing is added to
 sys.path or sys.modules. A loaded app is kept until either of its files
@@ -145,10 +149,22 @@ def _manifest(folder):
     }
 
 
+# What the tile of an app with no app.py says.
+NOTHING_TO_DRAW = f"Nothing to draw yet: this app has no {MODULE}"
+
+
+def _nothing_to_draw(ctx, cfg):
+    """The render() of an app with a manifest alone."""
+    return {"type": "empty", "message": NOTHING_TO_DRAW}
+
+
 def _render_function(folder, app_id):
     path = os.path.join(folder, MODULE)
     if not os.path.isfile(path):
-        raise AppError(f"no {MODULE}")
+        # app.py is optional: the app still loads and lists, and its
+        # tile says there's nothing to draw. Adding one later is picked
+        # up like any edit (_signature watches it).
+        return _nothing_to_draw
     spec = importlib.util.spec_from_file_location(f"openfit_app_{app_id}", path)
     module = importlib.util.module_from_spec(spec)
     try:
