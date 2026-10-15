@@ -1,0 +1,4 @@
+id: steps
+name: Steps
+default_size: { w: 2, h: 2 }
+reads: [steps]

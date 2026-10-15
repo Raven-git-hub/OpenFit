@@ -9,7 +9,8 @@ own calls to its device API. Full direction:
 `docs/architecture/openfit-overview-and-design-pathway.md`.
 
 ## Stack (keep it lightweight — no frameworks without a real reason)
-- Python + Flask, raw `sqlite3` (NOT SQLAlchemy/an ORM)
+- Python + Flask, raw `sqlite3` (NOT SQLAlchemy/an ORM); PyYAML only to read
+  an installed app's `app.yaml`
 - Vanilla JS, no build step
 - Docker + docker-compose; one container, SQLite at `/data/tracker.db` (in WAL
   mode, so `tracker.db-wal`/`tracker.db-shm` beside it are part of the
@@ -92,12 +93,57 @@ own calls to its device API. Full direction:
 - `app/derived.py` — the one place a source is picked per `(date, metric)`:
   `recompute_derived()` writes `derived_metrics`. Never pick a source anywhere else.
 - `app/crypto.py` — Fernet encrypt/decrypt for stored credentials.
+- `app/apps.py` — the app scanner/loader, the one way the host finds an app
+  (the Library reuses it): `scan_apps(apps_dir)` → the `InstalledApp`s that
+  load, in folder-name order. An app is a folder in `APPS_DIR` (`$APPS_DIR`,
+  default `/data/apps`, on the data volume; `app.config["APPS_DIR"]` in tests)
+  with an `app.yaml` (`id` (default: the folder's name, `[A-Za-z0-9][A-Za-z0-9_-]*`),
+  `name` (default: the id), `default_size` `{w, h}` (1–12 each, default 2×2),
+  `reads` (a list of keys — recorded, not enforced), `config` (an ordered
+  list of field mappings `{key, label, type, default}` — order drives the
+  config form; `key` a non-empty string, unique; the rest kept as written,
+  unchecked; a mapping is malformed), all optional but type-checked) and an `app.py` whose `render(ctx, cfg)` is
+  imported by `importlib` from its absolute path (nothing added to
+  `sys.path`/`sys.modules`). A folder with no `app.yaml` isn't an app (no
+  log); one that doesn't load — bad YAML or field, no `app.py`, an import
+  error, no callable `render` — logs `[apps] skipping <folder>: <why>` and is
+  left out, never raising; a duplicate id keeps the first folder. Scanned
+  on every request (no restart for a new app); a loaded app is cached until
+  its `app.yaml`/`app.py` mtime or size changes, so a broken one logs once per
+  change. `find_app(apps_dir, id)` picks one.
+- `app/host.py` — the app host: `Ctx(conn, today=None)`, built per render
+  call, is all an app's `render()` gets. `ctx.metric(key, days=None)` → a
+  list of `Point(date, value, source)` (a `NamedTuple`: `.date` a
+  `YYYY-MM-DD` str, `.value` a float in the canonical unit, `.source`),
+  ascending by date — `data[-1]` the latest day, `[]` for none — the derived
+  points `GET /api/metric/<key>` serves (`derived_points()` in
+  `app/derived.py`, shared by both), trailing `days` (`trailing_window()`:
+  today − (days−1) … today) or all history; unknown key or a `days` not an
+  int ≥ 1 (bools refused) → `ValueError`. `ctx.today()` → the server's
+  local date as `YYYY-MM-DD`. The spec builders (also module functions):
+  `number(value, label, caption, unit)`, `line(points, title=None)` →
+  `{"type": "line", "points": [[date, value], ...], "title"}` (points
+  `(date, value)` pairs — the apps' `[(p.date, p.value) for p in data]` — or
+  `Point`s, `{date, value}` dicts or numbers, each to a `[date, value]` pair,
+  date null for a bare number; a date a `YYYY-MM-DD` str, `date` or `None`;
+  `None`/non-finite is a gap; anything else `TypeError`; `title` text or
+  `None`, else `TypeError`),
+  `panel(*children)` (or one list), `empty(message)`; the host's own is
+  `{"type": "error", "message"}`. `render_app(app, conn, cfg=None,
+  today=None)` calls `render(ctx, {})` and never raises: an exception, a
+  non-spec (not a dict with a string `type`) or a spec that isn't plain JSON
+  (NaN, a set) is logged (`[apps] <id>: ...`, with the traceback) and comes
+  back as an error spec. Full contract: `docs/architecture/app-host.md`.
+  The two real apps, `steps` and `steps-metres`, are committed verbatim in
+  `tests/fixtures/apps/` (as deployed in `/data/apps`) and run against the
+  host by `tests/test_app_host.py`: they're correct per the contract, so a
+  failure there is fixed in the host, never by editing them.
 - `app/templates/index.html` — the data console, one self-contained page
   (vanilla JS, no build step, no external calls or web fonts; every colour/font/
   radius in its `CUSTOMISE OPENFIT HERE` token block). Under the top bar
   (date, a `settings` button, the theme toggle) sits the original angled tab
-  strip, restored verbatim: **Home** (far left, a blank panel for now) and
-  **Data** (far right, the console), then the dashed **＋ Add**. `settings`
+  strip, restored verbatim: **Home** (far left, the installed apps' tiles —
+  below) and **Data** (far right, the console), then the dashed **＋ Add**. `settings`
   opens the Settings popup (the `.modal` chrome): one control, **Opening
   page**, a dropdown built from the tab strip (`.tab[data-tab]`, so a new tab
   appears in it), saved per browser in `localStorage` `of-opening-tab`; boot
@@ -171,6 +217,31 @@ own calls to its device API. Full direction:
   `DELETE /api/connectors/<id>`,
   `/api/sync/<plugin>`); not `/api/activity` (the last-sync stamp that read it
   is gone). See `docs/architecture/frontend-redesign-and-widget-model.md`.
+  **Home** reads `GET /api/apps`, then every `GET /api/app/<id>/render` in
+  parallel (a failed fetch is that app's error tile), and is re-read after
+  a Sync now or a source removal, as the data card is. Three parts, kept
+  apart so the grid pass (Configure, drag/resize, saved layout) swaps only
+  the middle one: `loadHome()` → `[{app_id, name, spec, w, h}]`;
+  `layoutTiles` (= `autoLayout`, every `x`/`y` null) gives each tile a cell
+  or flows it; `paintTiles(box, tiles)` draws any such list on an invisible
+  CSS grid of `--tile-cell` squares (110px, `--tile-gap` 12px, in the token
+  block; on a phone a quarter of the width, so two 2×2 tiles sit side by
+  side), a tile spanning `w`×`h` from `x`/`y` or flowed into the next free
+  cell. No grid lines, no Configure, no drag. Tiles are chromeless (the card
+  surface, no title bar). `renderSpec()` draws the vocabulary, all as text,
+  never markup: `number` (big tabular value, `unit` beside, `label` beneath,
+  muted `caption`, clamped to 2 lines — 1 in a tile under 190px tall, an
+  `@container` query, so a panel's line keeps its room on a phone — full text
+  on hover; null → `—`/left out; `--font-display`, sized to the tile
+  with `cqi`), `line` (its `title`, if any, small and uppercase over the plot;
+  points a value, `{date, value}` or `[date, value]`; an
+  index-spaced SVG sparkline in `--spark`, dot on the
+  latest point; broken at a null and between two dated points with a day
+  missing between them — never interpolated or zeroed — a lone point a dot,
+  none "No data"),
+  `panel` (children stacked; the line takes the rest), `empty`/`error` (muted,
+  centred; error under "Couldn't render <name>"), any other type an error
+  tile. No apps → a note saying where they go; `/api/apps` failing → a Retry.
 - `tests/` — pytest, temp DB, no network.
 - `docs/architecture/` — design direction (read first). `docs/design/` — frontend references.
 
@@ -506,7 +577,12 @@ own calls to its device API. Full direction:
     `SERIES_METRICS` (`heart_rate`, `respiration`, `spo2`) — a daily key like
     `resting_hr_bpm` included; known with no samples → `points: []`.
   - `from`/`to`: optional, inclusive `YYYY-MM-DD` (empty = omitted); malformed,
-    or `from` after `to` → 400. Errors are `{"ok": false, "error"}`.
+    or `from` after `to` → 400. Or `days=N` (every read above; one parser,
+    `_date_range()`): the trailing N days, `trailing_window()` (today, the
+    server's local date, − (N−1) … today), so `?days=7` is ≤ 7 points and a
+    reading dated after today is out; `1`–`999999999` digits only, else 400;
+    with a non-empty `from`/`to` → 400; empty = omitted. Errors are
+    `{"ok": false, "error"}`.
   These shapes are the stable contract: change them additively only.
 - Connectors (no migration): `accounts(plugin_id, credentials, created_at)`,
   one row per connected plugin, `credentials` a Fernet-encrypted JSON blob
@@ -635,6 +711,16 @@ same PR:
   targets them: `hr_zone_minutes`, Women's-health keys, `ecg`, `symptoms`.
 - **Webhook / push ingestion:** landed for metrics (see Data model); still to
   come: pushing sessions (sleep, workouts) through it.
+- **The app host** (`docs/architecture/app-host.md`): the first slice landed —
+  the scanner (`app/apps.py`), the ctx and spec builders (`app/host.py`),
+  `GET /api/apps`, `GET /api/app/<id>/render` (an error spec, never a 500),
+  `?days=` on the contract reads, and Home drawing the tiles flowed at their
+  default size (no migration). Apps run as trusted code in the server's
+  process. Still to come: the grid pass (Configure, a visible grid,
+  drag/resize, collision, positions saved in `settings` — it swaps
+  `layoutTiles` only), the Library (reusing the scanner and `/api/apps`),
+  per-instance `cfg` and its UI, metric write-back, a custom `app.js`,
+  enforcing `reads`, and the sandbox (Phase 4).
 - **The access contract:** landed (see Data model): discovery, range queries
   with provenance, sessions, intraday series (passthrough); for the
   data-collation console, each catalog entry's
