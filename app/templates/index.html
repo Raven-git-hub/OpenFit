@@ -271,10 +271,18 @@ a.btn{display:inline-block;text-decoration:none;}
 .src + .src-add{border-top:none;margin-top:0;}
 
 /* ---------- applications ----------
-   Built from Connected sources' own rows and foot (.src, .src-add), so
-   the two read as one kind of card: one row per installed app, then
-   Add Application, with Browse / Build / Create grouped at the far end. */
+   Two blocks, stacked in the Data tab's right column. On top, the
+   controls card: its title, then Add Application, with Browse / Build /
+   Create grouped at the far end. Under it, the list: one row per
+   installed app, in a container as Your data's rows are (.ditem, .drow) -
+   these are the rows that will expand. */
+.app-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:14px;}
 .app-tools{display:flex;flex-wrap:wrap;gap:6px;margin-left:auto;}
+.card.applist{padding:10px;}
+.aitem{border-bottom:1px solid var(--border);}
+.aitem:last-child{border-bottom:none;}
+.arow{padding:11px 10px;font-size:14px;}
+.a-name{display:block;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
 
 /* ---------- floating modal: add-device flows, Settings, the coming-soon stub ---------- */
 .modal-bg{position:fixed;inset:0;z-index:80;background:color-mix(in srgb,var(--ink) 45%,transparent);display:grid;place-items:center;padding:20px;}
@@ -521,6 +529,7 @@ h5 + .dnote{margin-top:0;}
         </div>
         <div class="console-col">
           <section class="card" id="appsCard" aria-label="Applications"></section>
+          <section class="card applist" id="appListCard" aria-label="Installed applications"></section>
         </div>
       </div>
     </section>
@@ -1709,11 +1718,12 @@ h5 + .dnote{margin-top:0;}
 
   /* =========================================================
      APPLICATIONS - the right-hand column of the Data tab
-     The mirror of Connected sources: one row per installed app, from
-     /api/apps (the list Home draws its tiles from), then Add
-     Application and Browse / Build / Create. For now those four are
-     placeholders - each opens the coming-soon modal - and the rows
-     don't expand. Nothing here writes anything.
+     Two blocks. On top, the controls card: the title, then Add
+     Application and Browse / Build / Create - for now placeholders,
+     each opening the coming-soon modal. Below it, the list: one row
+     per installed app, from /api/apps (the list Home draws its tiles
+     from), with its own loading, empty and error states. The rows
+     don't expand yet. Nothing here writes anything.
      ========================================================= */
   const appsList = {status:'loading', apps:null};   // status: loading | ready | error
 
@@ -1729,35 +1739,48 @@ h5 + .dnote{margin-top:0;}
     paintApps();
   }
 
-  function paintApps(){
+  /* The controls card. Nothing in it depends on the list, so it's
+     painted once, at boot. */
+  function paintAppControls(){
     const card = $('#appsCard');
     card.innerHTML = '';
     card.appendChild(cardTitle('Applications', 'apps'));
+    card.appendChild(appActionsRow());
+  }
+
+  /* The list, under the controls card, in Your data's shape: a container
+     of rows, each an item that will hold its detail once rows expand. */
+  function paintApps(){
+    const card = $('#appListCard');
+    card.innerHTML = '';
 
     if(appsList.status==='loading'){
-      card.appendChild(el('p','hint','Loading…'));
+      card.appendChild(el('div','dstate','Loading your applications…'));
     }else if(appsList.status==='error'){
-      const p = el('p','hint',`Couldn't load your applications. <button class="btn sm" type="button">Retry</button>`);
-      p.querySelector('button').onclick = () => { appsList.status = 'loading'; paintApps(); loadApps(); };
-      card.appendChild(p);
+      const box = el('div','dstate',
+        `Couldn't load your applications.
+         <div style="margin-top:12px;"><button class="btn sm" type="button">Retry</button></div>`);
+      box.querySelector('button').onclick = () => { appsList.status = 'loading'; paintApps(); loadApps(); };
+      card.appendChild(box);
     }else if(!appsList.apps.length){
-      card.appendChild(el('p','hint','No applications installed'));
+      card.appendChild(el('div','dstate','No applications installed'));
     }else{
-      appsList.apps.forEach(a => card.appendChild(appRow(a)));
+      const list = el('div','alist');
+      appsList.apps.forEach(a => list.appendChild(appRow(a)));
+      card.appendChild(list);
     }
-    card.appendChild(appActionsRow());
   }
 
   /* An installed app: its name. /api/apps lists only the apps that
      load, with no status of their own, so there's none to show yet. */
   function appRow(a){
-    const row = el('div','src', `<div class="src-name">${esc(a.name || a.id)}</div>`);
-    row.dataset.app = a.id;
-    return row;
+    const item = el('div','aitem', `<div class="arow"><span class="a-name">${esc(a.name || a.id)}</span></div>`);
+    item.dataset.app = a.id;
+    return item;
   }
 
-  /* The foot of the card, as Add source is Connected sources': Add
-     Application, then the other ways to get one, grouped. */
+  /* The controls card's buttons, Add Application in Add source's style,
+     then the other ways to get one, grouped at the far end. */
   const APP_ACTIONS = [
     ['browse', 'Browse', 'Browse applications'],
     ['build',  'Build',  'Build an application'],
@@ -1772,7 +1795,7 @@ h5 + .dnote{margin-top:0;}
       b.onclick = () => comingSoon(title);
       return b;
     };
-    const wrap = el('div','src-add');
+    const wrap = el('div','app-actions');
     wrap.appendChild(button('add-app', '＋ Add Application', 'Add an application'));
     const group = el('div','app-tools');
     group.setAttribute('role','group');
@@ -2047,6 +2070,7 @@ h5 + .dnote{margin-top:0;}
   paintDate();
   paintSources();
   paintData();
+  paintAppControls();
   paintApps();
   paintHome();
   // In parallel: each part paints as soon as its own reads land.

@@ -256,7 +256,8 @@ def test_index_lays_the_data_tab_out_in_two_columns(client):
     assert cols, "the console's two columns"
     left, right = cols.groups()
     assert left.index('id="sourcesCard"') < left.index('id="dataCard"')
-    assert 'id="appsCard"' in right and "sourcesCard" not in right
+    assert right.index('id="appsCard"') < right.index('id="appListCard"')
+    assert "sourcesCard" not in right
 
     # Two even columns that grow with the window, under a cap wider than
     # the old fixed 940px.
@@ -275,10 +276,17 @@ def test_index_lays_the_data_tab_out_in_two_columns(client):
     assert int(floor.group(1)) > 860
 
 
-def test_index_has_the_applications_card(client, monkeypatch):
+def _js_function(page, name):
+    """The body of a top-level function in the page's script."""
+    m = re.search(rf"\n  function {name}\(\w*\)\{{\n(.*?)\n  \}}\n", page, re.S)
+    assert m, name
+    return m.group(1)
+
+
+def test_index_splits_applications_into_controls_and_a_list(client, monkeypatch):
     import main
 
-    # What the card lists: the installed apps, as /api/apps returns them -
+    # What the list shows: the installed apps, as /api/apps returns them -
     # the two real apps.
     fixtures = os.path.join(os.path.dirname(__file__), "fixtures", "apps")
     monkeypatch.setitem(main.app.config, "APPS_DIR", fixtures)
@@ -288,27 +296,56 @@ def test_index_has_the_applications_card(client, monkeypatch):
     resp = client.get("/")
     page = resp.get_data(as_text=True)
     resp.close()
-    assert '<section class="card" id="appsCard" aria-label="Applications"></section>' in page
-    # Read from the same route as Home, painted at boot and once loaded.
+    # Two blocks, stacked in the right column: the controls card, then the
+    # list panel straight under it.
+    assert re.search(
+        r'<section class="card" id="appsCard" aria-label="Applications"></section>\s*'
+        r'<section class="card applist" id="appListCard" aria-label="Installed applications"></section>',
+        page,
+    )
+    # Read from the same route as Home; the controls painted once at boot,
+    # the list at boot and again once loaded.
     assert "'/api/apps'" in page
-    assert "paintApps();" in page and "loadApps();" in page
-    # The same title and voice button as Connected sources, on its own clip
-    # (a placeholder until it's recorded: a 404 just resets the button).
-    assert "cardTitle('Connected sources', 'sources')" in page
-    assert "cardTitle('Applications', 'apps')" in page
-    assert "apps:'/audio/applications.mp3'" in page
-    # One row per app, its name escaped - it's data - and an empty state.
-    assert "esc(a.name || a.id)" in page
-    assert "'No applications installed'" in page
+    boot = page[page.index("BOOT - paint the shell") :]
+    assert "paintAppControls();" in boot and "paintApps();" in boot and "loadApps();" in boot
 
-    # Add Application in Add source's style, then Browse / Build / Create:
-    # buttons that open the coming-soon placeholder.
+    # The controls card: the title and voice button (as Connected sources',
+    # on its own clip - a placeholder until it's recorded: a 404 just resets
+    # the button), then the buttons. No app rows, and none of the list's
+    # states.
+    controls = _js_function(page, "paintAppControls")
+    assert "$('#appsCard')" in controls
+    assert "cardTitle('Applications', 'apps')" in controls
+    assert "appActionsRow()" in controls
+    for list_part in ("appsList", "appRow", "No applications installed", "Retry", "#appListCard"):
+        assert list_part not in controls, list_part
+    assert "cardTitle('Connected sources', 'sources')" in page
+    assert "apps:'/audio/applications.mp3'" in page
+
+    # The list panel: one row per app in a container, as Your data's rows
+    # are, its name escaped - it's data - plus the empty and error states.
+    # No title, and none of the controls.
+    listing = _js_function(page, "paintApps")
+    assert "$('#appListCard')" in listing
+    assert "el('div','alist')" in listing
+    assert "appsList.apps.forEach(a => list.appendChild(appRow(a)));" in listing
+    assert "'No applications installed'" in listing
+    assert "Couldn't load your applications." in listing and ">Retry</button>" in listing
+    for control in ("cardTitle(", "appActionsRow", "comingSoon", "#appsCard"):
+        assert control not in listing, control
+    row = _js_function(page, "appRow")
+    assert "el('div','aitem'" in row and '<div class="arow">' in row
+    assert "esc(a.name || a.id)" in row
+
+    # The controls' buttons: Add Application in Add source's style, then
+    # Browse / Build / Create, each opening the coming-soon placeholder.
     assert "const btn = el('button','btn sm','＋ Add source');" in page
-    assert "button('add-app', '＋ Add Application', 'Add an application')" in page
+    actions = _js_function(page, "appActionsRow")
+    assert "button('add-app', '＋ Add Application', 'Add an application')" in actions
     for act, label in (("browse", "Browse"), ("build", "Build"), ("create", "Create")):
         assert re.search(rf"\['{act}',\s*'{label}',", page), label
-    assert "const b = el('button','btn sm', esc(label));" in page
-    assert "b.onclick = () => comingSoon(title);" in page
+    assert "const b = el('button','btn sm', esc(label));" in actions
+    assert "b.onclick = () => comingSoon(title);" in actions
 
 
 def test_the_applications_card_only_reads(client):

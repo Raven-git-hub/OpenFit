@@ -206,15 +206,20 @@ own calls to its device API. Full direction:
   grain — renders as a picked metric (latest value, draggable source
   priority); a session kind's latest session is the one with the latest
   `start`, since `/api/sessions` lists by source priority. **Applications**
-  (`#appsCard`) mirrors Connected sources, built from its `.src` rows and
-  `.src-add` foot: one row per app `GET /api/apps` lists, its name only
+  is two stacked blocks in the right column, never one card. On top, the
+  controls card (`#appsCard`, painted once at boot by `paintAppControls()`):
+  the title and its voice button, then **＋ Add Application** (Add source's
+  style) with **Browse** / **Build** / **Create** grouped at the far end —
+  placeholders, each opening `comingSoon()` — and no app rows. Below it,
+  the list panel (`#appListCard`, `paintApps()`), the right column's
+  equivalent of Your data's list: a `.alist` container of `.aitem` rows
+  (each an `.arow`), one per app `GET /api/apps` lists, its name only
   (`esc()`d; `/api/apps` lists only apps that load and carries no status),
-  "No applications installed" when there are none, a Retry when the read
-  fails; then **＋ Add Application** and a group of **Browse** / **Build** /
-  **Create** — placeholders, each opening `comingSoon()`. Read once at
-  boot (`loadApps()`), separately from Home; view only — it writes nothing,
-  and its rows don't expand yet (the Add popup, expandable rows and alerts
-  are later Library branches). A round voice button
+  and the list's states — "No applications installed" when there are none,
+  a Retry when the read fails. Read once at boot (`loadApps()`), separately
+  from Home; view only — it writes nothing, and its rows don't expand yet
+  (Library branch 3 makes them expandable — reads / files / ticker; the Add
+  popup and alerts are their own branches). A round voice button
   after the "Connected sources", "Your data" and "Applications" titles plays
   that card's clip (`/audio/connected-sources.mp3`, `/audio/your-data.mp3`,
   `/audio/applications.mp3` — the last not recorded yet, so it 404s and

@@ -72,8 +72,9 @@ continuous it is, and which source wins each metric — not the product.
   reporting yet folded away under its category), how continuously each is
   covered (day / week / month, and the last five weeks), and drag-to-reorder
   source priority per metric. Beside them, in a second column on a wide
-  window, an **Applications** panel lists the apps you've installed (adding,
-  browsing and building apps from it are still to come).
+  window, an **Applications** panel — its controls on top, the apps you've
+  installed listed below them (adding, browsing and building apps from it
+  are still to come).
 - A first **app host**: the Home tab shows the apps you install (none ship with
   OpenFit) as live tiles — see [Apps on the Home tab](#apps-on-the-home-tab).
 

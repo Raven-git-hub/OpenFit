@@ -60,18 +60,24 @@ metric's name. Left column:
 
 Right column:
 
-3. **Applications.** The structural mirror of Connected sources, built from the
-   same rows and foot (`.src`, `.src-add`) so the two read as one kind of card.
-   One row per installed app, from `GET /api/apps` (the list Home draws its
-   tiles from), showing its name. There's no status beside it: `/api/apps`
-   lists only the apps that load and carries no status of its own. With none
-   installed it reads "No applications installed"; if the read fails, a line
-   says so with a **Retry**. At the foot, **＋ Add Application** in Add source's
-   style, then **Browse**, **Build** and **Create** grouped at the far end. All
-   four are placeholders for now, each opening the coming-soon modal. The list
-   is read once at boot, and the card writes nothing. Its rows don't expand.
-   Still to come, each its own branch: the Add Application popup, then the
-   expandable rows (what an app reads, its files, its writes), then alerts.
+3. **Applications.** Two stacked blocks, not one card:
+   - **The controls card** (`#appsCard`): the "Applications" title and its
+     voice button, then **＋ Add Application** in Add source's style on the
+     left, with **Browse**, **Build** and **Create** grouped at the far end.
+     All four are placeholders for now, each opening the coming-soon modal.
+     It holds no app rows.
+   - **The app list** (`#appListCard`), directly below it: the right column's
+     equivalent of Your data's list, a container of rows (`.alist`, `.aitem`,
+     `.arow`), one per installed app from `GET /api/apps` (the list Home draws
+     its tiles from), showing its name. There's no status beside it:
+     `/api/apps` lists only the apps that load and carries no status of its
+     own. The list's states live here too: with none installed it reads "No
+     applications installed"; if the read fails, it says so with a **Retry**.
+
+   The list is read once at boot, and neither block writes anything. The rows
+   don't expand yet. Still to come, each its own branch: the Add Application
+   popup, then the expandable rows (what an app reads, its files, its writes),
+   then alerts.
 
 Each card's title has a voice button just after it (below).
 
