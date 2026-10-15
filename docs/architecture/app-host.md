@@ -26,7 +26,7 @@ name: Steps                   # optional: defaults to the id
 default_size: {w: 2, h: 2}    # optional: tile size in grid cells, 1-12 each; default 2x2
 reads: [steps]                # optional: the metric keys it reads (declared, not enforced yet)
 config:                       # optional: the app's settings, an ordered list of fields
-  - {key: days, label: Days shown, type: int, default: 7}
+  - {key: stride_m, label: Stride length (m), type: number, default: 0.75}
 ```
 
 The id is part of the app's URL, so it's letters, digits, `-` and `_`,
@@ -41,23 +41,36 @@ host keeps them as written and in order, and doesn't check them yet. A
 mapping, or a field without a key, is malformed, so the app is skipped. The
 fields aren't passed to `render()` yet: `cfg` is `{}` (below).
 
-**`app.py`** defines `render(ctx, cfg)`, which returns a display spec:
+**`app.py`** defines `render(ctx, cfg)`, which returns a display spec. This
+is the real `steps` app:
 
 ```python
 def render(ctx, cfg):
-    data = ctx.metric("steps", 7)          # [Point(date, value, source), ...], oldest first
+    data = ctx.metric("steps", days=7)     # [Point(date, value, source), ...], oldest first
     if not data:
-        return ctx.empty("No steps yet")
+        return ctx.empty("No step data yet")
+
     latest = data[-1]                      # the latest day
-    caption = "so far today" if latest.date == ctx.today() else latest.date
-    return ctx.panel([
-        ctx.number(latest.value, label="steps", caption=caption),
-        ctx.line([(p.date, p.value) for p in data]),
-    ])
+    caption = latest.date
+    if latest.date == ctx.today():          # today is a partial day
+        caption = f"{latest.date} · so far today"
+    if latest.source:
+        caption += f" · via {latest.source}"
+
+    return ctx.panel(
+        ctx.number(round(latest.value), label="steps", caption=caption),
+        ctx.line([(p.date, p.value) for p in data], title="last 7 days"),
+    )
 ```
 
 `cfg` is `{}` for now. Per-instance config, and the UI to edit it, come later;
-an app reads a setting with a fallback, such as `cfg.get("days", 7)`.
+an app reads a setting with a fallback, such as `cfg.get("stride_m", 0.75)`.
+
+**The reference apps.** The first two real apps, `steps` and `steps-metres`,
+are committed verbatim in `tests/fixtures/apps/`, exactly as they're deployed
+in `/data/apps`. The test suite runs them against the host on every change
+(`test_app_host.py`). They're correct by definition: when one fails, the host
+is fixed to match it, never the app.
 
 ### Loading: `app/apps.py`
 
@@ -114,11 +127,43 @@ the dicts itself.
 
 | Builder | Spec | Drawn as |
 |---|---|---|
-| `ctx.number(value, label=None, caption=None, unit=None)` | `{"type": "number", "value", "label", "caption", "unit"}` | A large value in tabular figures, `unit` small beside it, `label` beneath, and `caption` smaller and muted. A null value reads `—`, and a null label, caption or unit is left out. A number is shown with thousands separators; a string is shown as given. |
-| `ctx.line(points)` | `{"type": "line", "points": [v \| {"date", "value"}, ...]}` | A sparkline filling its box, evenly spaced (by index, not date), with a dot on the latest point. `points` are oldest first: `(date, value)` pairs (`[(p.date, p.value) for p in data]`), `ctx.metric()`'s points as they come (their `source` is dropped), `{date, value}` dicts or bare numbers. A pair's date is a `YYYY-MM-DD` string, a `date` or `None`. The page also draws a hand-built spec's `[date, value]` arrays. A `None` or non-finite value is a gap. The line is also broken between two dated points with a day missing between them: nothing is joined across a gap or drawn as zero. A point with a gap on both sides gets a dot. No points shows "No data", and a single point is a dot. |
+| `ctx.number(value, label=None, caption=None, unit=None)` | `{"type": "number", "value", "label", "caption", "unit"}` | A large value in tabular figures, `unit` small beside it, `label` beneath, and `caption` smaller and muted. A null value reads `—`, and a null label, caption or unit is left out. A number is shown with thousands separators; a string is shown as given. The caption is cut to two lines, or one in a short tile (a 2×2 on a phone), with the full text on hover. |
+| `ctx.line(points, title=None)` | `{"type": "line", "points": [[date, value], ...], "title"}` | A sparkline with its title above it. See [the line builder](#the-line-builder), below. |
 | `ctx.panel(*children)` or `ctx.panel([children])` | `{"type": "panel", "children": [...]}` | Its children stacked in order. A number keeps its height and a line takes the rest. |
 | `ctx.empty(message=None)` | `{"type": "empty", "message"}` | Muted, centred text (default "No data yet"). |
 | (the host's) | `{"type": "error", "message"}` | Muted, centred: "Couldn't render <app name>" over the message. |
+
+### The line builder
+
+```python
+ctx.line(points, title=None)
+# -> {"type": "line", "points": [[date, value], ...], "title": title}
+```
+
+- **`points`** are oldest first. Each one can be any of these:
+  - a `(date, value)` pair, as the apps build them:
+    `[(p.date, p.value) for p in data]`;
+  - one of `ctx.metric()`'s `Point`s, passed as it comes (its `source` is
+    dropped);
+  - a `{date, value}` dict;
+  - a bare number.
+
+  Each becomes a `[date, value]` pair in the spec. The date is a `YYYY-MM-DD`
+  string (a `date` is converted to one), or null for a bare number or a
+  missing date. A `None` or non-finite value is a gap, written `null`. Any
+  other point (a bool, text, a pair that isn't two items, a non-date date)
+  raises `TypeError`.
+- **`title`** is optional text, drawn small above the line, such as
+  `"last 7 days"`. With no title, the spec's `"title"` is `null` and nothing
+  is drawn above the line. A title that isn't text raises `TypeError`.
+
+**How it's drawn.** The line fills the space under its title, with its
+points evenly spaced (by index, not by date) and a dot on the latest point.
+Nothing is joined across a gap or drawn as zero. A null value breaks the
+line, and so do two dated points with a day missing between them. A point
+with a gap on both sides is drawn as a dot. No points shows "No data", and a
+single point is a dot. The page also draws a hand-built spec whose points
+are `{date, value}` objects or bare numbers.
 
 **Errors never fail the page.** `render_app()` catches anything `render()`
 raises and logs it with the traceback (`[apps] <id>: render failed`). It also

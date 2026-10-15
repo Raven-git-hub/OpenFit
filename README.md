@@ -271,17 +271,17 @@ def render(ctx, cfg):
     data = ctx.metric("steps", 7)    # [Point(date, value, source), ...], oldest first
     if not data:
         return ctx.empty("No steps yet")
-    return ctx.panel([
-        ctx.number(data[-1].value, label="steps"),
-        ctx.line([(p.date, p.value) for p in data]),
-    ])
+    return ctx.panel(
+        ctx.number(round(data[-1].value), label="steps"),
+        ctx.line([(p.date, p.value) for p in data], title="last 7 days"),
+    )
 ```
 
 `render()` runs on the server each time Home loads. `ctx.metric()` is its one
 data path — a metric's derived points, as `/api/metric` serves them, as a list
 of points with `.date`, `.value` and `.source` — and it
-returns a display spec built from `number`, `line` (a sparkline), `panel` and
-`empty`. Tiles flow left to right at their default size; an app that fails to
+returns a display spec built from `number`, `line` (a sparkline, with an
+optional title), `panel` and `empty`. Tiles flow left to right at their default size; an app that fails to
 load is logged and left out, and one whose `render()` fails shows as an error
 tile, never a broken page. `GET /api/apps` lists what's installed and
 `GET /api/app/<id>/render` returns one app's spec. Apps run as trusted code

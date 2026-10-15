@@ -26,8 +26,9 @@ the dicts directly):
 
     {"type": "number", "value", "label", "caption", "unit"}
         a large value; label, caption and unit may be null
-    {"type": "line", "points": [value | {"date", "value"} | [date, value], ...]}
-        a sparkline; a null value is a gap
+    {"type": "line", "points": [[date, value], ...], "title"}
+        a sparkline, oldest first; a null value is a gap, a null date an
+        undated point, and title (optional) names it
     {"type": "panel", "children": [spec, ...]}
         its children, stacked in order
     {"type": "empty", "message"}
@@ -107,14 +108,12 @@ def _line_value(raw):
 
 
 def _dated(day, value):
+    """A line point as the spec carries it: [date, value]."""
     if isinstance(day, date):
         day = day.isoformat()
     elif day is not None and not isinstance(day, str):
         raise TypeError(f"a line point's date must be YYYY-MM-DD: {day!r}")
-    point = {"value": _line_value(value)}
-    if day is not None:
-        point["date"] = day
-    return point
+    return [day, _line_value(value)]
 
 
 def _line_point(raw):
@@ -128,14 +127,21 @@ def _line_point(raw):
         if "value" not in raw:
             raise TypeError(f"a line point needs a value: {raw!r}")
         return _dated(raw.get("date"), raw["value"])
-    return _line_value(raw)
+    return _dated(None, raw)
 
 
-def line(points):
-    """A sparkline over `points`, oldest first: (date, value) pairs, ctx.metric()'s
-    Points as they come, {date, value} dicts or bare numbers. A None value (or a
-    non-finite one) is a gap, never a zero; a point's source is dropped."""
-    return {"type": "line", "points": [_line_point(p) for p in points]}
+def line(points, title=None):
+    """A sparkline over `points`, oldest first, with an optional title above it.
+
+    `points` are (date, value) pairs - [(p.date, p.value) for p in data] -
+    or ctx.metric()'s Points as they come, {date, value} dicts or bare
+    numbers; each becomes [date, value] in the spec, date null for a bare
+    number. A None value (or a non-finite one) is a gap, never a zero; a
+    point's source is dropped. `title` is text or None.
+    """
+    if title is not None and not isinstance(title, str):
+        raise TypeError(f"a line's title must be text: {title!r}")
+    return {"type": "line", "points": [_line_point(p) for p in points], "title": title}
 
 
 def panel(*children):

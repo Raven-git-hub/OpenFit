@@ -121,17 +121,23 @@ own calls to its device API. Full direction:
   today − (days−1) … today) or all history; unknown key or a `days` not an
   int ≥ 1 (bools refused) → `ValueError`. `ctx.today()` → the server's
   local date as `YYYY-MM-DD`. The spec builders (also module functions):
-  `number(value, label, caption, unit)`, `line(points)` (`(date, value)`
-  pairs — the apps' `[(p.date, p.value) for p in data]` — or `Point`s,
-  `{date, value}` dicts or numbers, each to `{date?, value}`; a date a
-  `YYYY-MM-DD` str, `date` or `None`; `None`/non-finite is a gap; anything
-  else `TypeError`),
+  `number(value, label, caption, unit)`, `line(points, title=None)` →
+  `{"type": "line", "points": [[date, value], ...], "title"}` (points
+  `(date, value)` pairs — the apps' `[(p.date, p.value) for p in data]` — or
+  `Point`s, `{date, value}` dicts or numbers, each to a `[date, value]` pair,
+  date null for a bare number; a date a `YYYY-MM-DD` str, `date` or `None`;
+  `None`/non-finite is a gap; anything else `TypeError`; `title` text or
+  `None`, else `TypeError`),
   `panel(*children)` (or one list), `empty(message)`; the host's own is
   `{"type": "error", "message"}`. `render_app(app, conn, cfg=None,
   today=None)` calls `render(ctx, {})` and never raises: an exception, a
   non-spec (not a dict with a string `type`) or a spec that isn't plain JSON
   (NaN, a set) is logged (`[apps] <id>: ...`, with the traceback) and comes
   back as an error spec. Full contract: `docs/architecture/app-host.md`.
+  The two real apps, `steps` and `steps-metres`, are committed verbatim in
+  `tests/fixtures/apps/` (as deployed in `/data/apps`) and run against the
+  host by `tests/test_app_host.py`: they're correct per the contract, so a
+  failure there is fixed in the host, never by editing them.
 - `app/templates/index.html` — the data console, one self-contained page
   (vanilla JS, no build step, no external calls or web fonts; every colour/font/
   radius in its `CUSTOMISE OPENFIT HERE` token block). Under the top bar
@@ -224,8 +230,11 @@ own calls to its device API. Full direction:
   cell. No grid lines, no Configure, no drag. Tiles are chromeless (the card
   surface, no title bar). `renderSpec()` draws the vocabulary, all as text,
   never markup: `number` (big tabular value, `unit` beside, `label` beneath,
-  muted `caption`; null → `—`/left out; `--font-display`, sized to the tile
-  with `cqi`), `line` (points a value, `{date, value}` or `[date, value]`; an
+  muted `caption`, clamped to 2 lines — 1 in a tile under 190px tall, an
+  `@container` query, so a panel's line keeps its room on a phone — full text
+  on hover; null → `—`/left out; `--font-display`, sized to the tile
+  with `cqi`), `line` (its `title`, if any, small and uppercase over the plot;
+  points a value, `{date, value}` or `[date, value]`; an
   index-spaced SVG sparkline in `--spark`, dot on the
   latest point; broken at a null and between two dated points with a day
   missing between them — never interpolated or zeroed — a lone point a dot,

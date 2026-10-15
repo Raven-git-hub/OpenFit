@@ -414,14 +414,25 @@ h5 + .dnote{margin-top:0;}
 }
 .spec-number .u{font-size:.42em;font-weight:600;color:var(--ink-2);margin-left:5px;letter-spacing:0;}
 .spec-number .l{font-size:13.5px;font-weight:600;color:var(--ink-2);margin-top:5px;}
-.spec-number .c{font-size:11.5px;font-family:var(--font-mono);color:var(--muted);margin-top:2px;}
-/* line: a sparkline filling its box, a dot on the latest point */
-.spec-line{position:relative;min-height:28px;}
+.spec-number .c{
+  font-size:11.5px;font-family:var(--font-mono);color:var(--muted);margin-top:2px;
+  display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden;
+}
+/* a short tile (a phone's 2x2): a panel keeps its caption to one line, so
+   the line under it still has room */
+@container (max-height:190px){
+  .spec-panel{gap:8px;}
+  .spec-panel .spec-number .c{-webkit-line-clamp:1;}
+}
+/* line: an optional title over a sparkline filling the rest, a dot on the latest point */
+.spec-line{display:flex;flex-direction:column;gap:6px;min-height:28px;}
+.spec-line .t{font-size:10.5px;text-transform:uppercase;letter-spacing:.8px;color:var(--muted);font-weight:600;}
+.spec-line .plot{position:relative;flex:1;min-height:22px;}
 .spec-line svg{position:absolute;inset:0;width:100%;height:100%;overflow:visible;}
 .spec-line polyline{fill:none;stroke:var(--spark);stroke-width:2;stroke-linejoin:round;stroke-linecap:round;vector-effect:non-scaling-stroke;}
 .spec-line .dot{position:absolute;width:6px;height:6px;margin:-3px 0 0 -3px;border-radius:50%;background:var(--spark);}
 .spec-line .dot.end{width:8px;height:8px;margin:-4px 0 0 -4px;box-shadow:0 0 0 2px var(--surface);}
-.spec-line > .spec-msg{position:absolute;inset:0;}
+.spec-line .plot > .spec-msg{position:absolute;inset:0;}
 /* panel: its children, stacked */
 .spec-panel{display:flex;flex-direction:column;gap:12px;}
 .spec-panel > .spec-line{flex:1;}
@@ -1745,10 +1756,13 @@ h5 + .dnote{margin-top:0;}
       if(s.unit!=null && s.unit!==''){ const u = el('span','u'); u.textContent = s.unit; v.appendChild(u); }
       box.appendChild(v);
       if(s.label!=null && s.label!==''){ const l = el('div','l'); l.textContent = s.label; box.appendChild(l); }
-      if(s.caption!=null && s.caption!==''){ const c = el('div','c'); c.textContent = s.caption; box.appendChild(c); }
+      if(s.caption!=null && s.caption!==''){
+        // Clamped to fit the tile, so the whole of it is on hover.
+        const c = el('div','c'); c.textContent = s.caption; c.title = String(s.caption); box.appendChild(c);
+      }
       return box;
     },
-    line: s => sparkline(Array.isArray(s.points) ? s.points : []),
+    line: s => sparkline(Array.isArray(s.points) ? s.points : [], s.title),
     panel: (s, name) => {
       const box = el('div','spec-panel');
       (Array.isArray(s.children) ? s.children : []).forEach(c => box.appendChild(renderSpec(c, name)));
@@ -1773,12 +1787,12 @@ h5 + .dnote{margin-top:0;}
     return box;
   }
 
-  /* A sparkline of the points present, evenly spaced. A gap - a null
-     value, or a day missing between two dated points - breaks the line
-     there: nothing is joined across it, and nothing is drawn as zero.
-     The line is drawn in a 100x100 box stretched to the tile; the dots
-     are HTML, so they stay round. */
-  function sparkline(raw){
+  /* A sparkline of the points present, evenly spaced, under its title
+     if it has one. A gap - a null value, or a day missing between two
+     dated points - breaks the line there: nothing is joined across it,
+     and nothing is drawn as zero. The line is drawn in a 100x100 box
+     stretched to the plot; the dots are HTML, so they stay round. */
+  function sparkline(raw, title){
     // A point is a value, {date, value} or [date, value].
     const pts = raw.map(p => {
       const pair = Array.isArray(p), obj = !pair && p!==null && typeof p==='object';
@@ -1787,9 +1801,12 @@ h5 + .dnote{margin-top:0;}
       const d = typeof day==='string' && /^\d{4}-\d{2}-\d{2}$/.test(day) ? day : null;
       return {v: typeof v==='number' && Number.isFinite(v) ? v : null, d};
     });
-    const box = el('div','spec-line');
+    const line = el('div','spec-line');
+    if(title!=null && title!==''){ const t = el('div','t'); t.textContent = title; line.appendChild(t); }
+    const box = el('div','plot');
+    line.appendChild(box);
     const vals = pts.filter(p => p.v!==null).map(p => p.v);
-    if(!vals.length){ box.appendChild(specMsg(null, 'No data')); return box; }
+    if(!vals.length){ box.appendChild(specMsg(null, 'No data')); return line; }
 
     const n = pts.length, lo = Math.min(...vals), hi = Math.max(...vals);
     const X = i => n===1 ? 50 : i/(n-1)*100;
@@ -1824,9 +1841,10 @@ h5 + .dnote{margin-top:0;}
     runs.filter(r => r.length===1 && r[0]!==last).forEach(r => dot(r[0], 'dot'));
     dot(last, 'dot end');
     box.setAttribute('role', 'img');
-    box.setAttribute('aria-label', `Trend of ${vals.length} value${vals.length===1 ? '' : 's'}, `
+    box.setAttribute('aria-label', (title ? title+': ' : '')
+      + `trend of ${vals.length} value${vals.length===1 ? '' : 's'}, `
       + `between ${fmtSpecValue(lo)} and ${fmtSpecValue(hi)}`);
-    return box;
+    return line;
   }
 
   /* =========================================================

@@ -13,8 +13,10 @@ Every test gets its own temp apps folder; nothing reads /data/apps.
 
 import math
 import os
+import shutil
 import textwrap
 from datetime import date, timedelta
+from pathlib import Path
 
 import pytest
 
@@ -24,51 +26,28 @@ from derived import recompute_derived
 from metrics import DISTANCE_M, METRICS, STEPS
 
 
-# The two apps Home was first built for, as they use the host: ctx.metric()
-# read as a list of points (data[-1] the latest day, .date/.value on each),
-# (date, value) pairs for the line, and config as an ordered list of fields.
-# steps: the latest day as a number over a week's sparkline.
-STEPS_MANIFEST = """
-id: steps
-name: Steps
-default_size: {w: 2, h: 2}
-reads: [steps]
-config:
-  - {key: days, label: Days shown, type: int, default: 7}
-"""
+# The two real apps Home was built for, steps and steps-metres, committed
+# verbatim in tests/fixtures/apps/ exactly as they're deployed in /data/apps,
+# so every run checks the host against the genuine apps. They are correct
+# per the contract: when one fails here, fix the host, never these files.
+REAL_APPS = Path(__file__).parent / "fixtures" / "apps"
 
-STEPS_APP = """
-def render(ctx, cfg):
-    data = ctx.metric("steps", cfg.get("days", 7))
-    if not data:
-        return ctx.empty("No steps yet")
-    latest = data[-1]
-    caption = "so far today" if latest.date == ctx.today() else latest.date
-    return ctx.panel([
-        ctx.number(latest.value, label="steps", caption=caption),
-        ctx.line([(p.date, p.value) for p in data]),
-    ])
-"""
 
-# steps-metres: today's steps as metres walked, one number.
-METRES_MANIFEST = """
-id: steps-metres
-name: Distance
-default_size: {w: 2, h: 2}
-reads: [steps]
-config:
-  - {key: stride_m, label: Stride length (m), type: float, default: 0.75}
-  - {key: label, label: Label, type: text, default: metres today}
-"""
+def real(folder, name):
+    return (REAL_APPS / folder / name).read_text(encoding="utf-8")
 
-METRES_APP = """
-def render(ctx, cfg):
-    data = ctx.metric("steps", 1)
-    if not data:
-        return ctx.empty("No steps today")
-    metres = round(data[-1].value * cfg.get("stride_m", 0.75))
-    return ctx.number(metres, label=cfg.get("label", "metres today"), unit="m")
-"""
+
+STEPS_APP = real("steps", apps.MODULE)
+METRES_APP = real("steps-metres", apps.MODULE)
+
+
+def install_real_apps(apps_dir):
+    """Copy both real app folders into `apps_dir`, byte for byte."""
+    for folder in ("steps", "steps-metres"):
+        shutil.copytree(
+            REAL_APPS / folder, apps_dir / folder,
+            ignore=shutil.ignore_patterns("__pycache__"),
+        )
 
 
 def make_app(root, folder, manifest="", code=None):
@@ -274,32 +253,53 @@ def test_api_apps_with_none_installed(client, apps_dir):
 # ---------- GET /api/app/<id>/render ----------
 
 
-def test_the_first_two_apps_are_listed_and_both_render_specs(client, conn, apps_dir):
-    # Home's acceptance: steps and steps-metres both listed, and both
-    # rendering their specs over live data - neither an error tile.
-    make_app(apps_dir, "steps", STEPS_MANIFEST, STEPS_APP)
-    make_app(apps_dir, "steps-metres", METRES_MANIFEST, METRES_APP)
+def test_the_real_apps_are_listed_and_both_render_specs(client, conn, apps_dir):
+    # Home's acceptance, on the two real apps verbatim: both listed, and both
+    # rendering their specs over live data - neither an error tile. steps is
+    # a number over a titled line.
+    install_real_apps(apps_dir)
     insert(conn, today_minus(1), "garmin", steps=8000)
     insert(conn, today_minus(0), "garmin", steps=4000)
     recompute_derived(conn)
+    today = today_minus(0)
 
     assert client.get("/api/apps").get_json() == [
         {"id": "steps", "name": "Steps", "default_size": {"w": 2, "h": 2}},
-        {"id": "steps-metres", "name": "Distance", "default_size": {"w": 2, "h": 2}},
+        {"id": "steps-metres", "name": "Distance (from steps)", "default_size": {"w": 2, "h": 2}},
     ]
-    steps = client.get("/api/app/steps/render").get_json()
-    assert [child["type"] for child in steps["children"]] == ["number", "line"]
+    assert client.get("/api/app/steps/render").get_json() == {
+        "type": "panel",
+        "children": [
+            {"type": "number", "value": 4000, "label": "steps",
+             "caption": f"{today} · so far today · via garmin", "unit": None},
+            {"type": "line", "title": "last 7 days",
+             "points": [[today_minus(1), 8000], [today, 4000]]},
+        ],
+    }
     assert client.get("/api/app/steps-metres/render").get_json() == {
-        "type": "number", "value": 3000, "label": "metres today", "caption": None, "unit": "m",
+        "type": "number", "value": 3000, "label": "metres",
+        "caption": "4000 steps × 0.75 m · so far today", "unit": None,
     }
 
 
+def test_the_real_apps_manifests_load_as_written(apps_dir):
+    install_real_apps(apps_dir)
+
+    steps, metres = apps.scan_apps(str(apps_dir))
+    assert (steps.reads, steps.config) == (["steps"], [])
+    assert metres.config == [
+        {"key": "stride_m", "label": "Stride length (m)", "type": "number", "default": 0.75},
+    ]
+
+
 def test_render_returns_the_apps_spec_over_live_data(client, conn, apps_dir):
+    # The week's derived points: the pick (garmin over google_health), and
+    # nothing from before the trailing seven days.
     make_app(apps_dir, "steps", "name: Steps\n", STEPS_APP)
     insert(conn, today_minus(8), "garmin", steps=1000)   # outside the week
     insert(conn, today_minus(2), "garmin", steps=8000)
-    insert(conn, today_minus(0), "garmin", steps=4500)
-    insert(conn, today_minus(0), "google_health", steps=4400)
+    insert(conn, today_minus(1), "google_health", steps=4500.4)
+    insert(conn, today_minus(1), "garmin", steps=4499.6)
     recompute_derived(conn)
 
     resp = client.get("/api/app/steps/render")
@@ -307,22 +307,24 @@ def test_render_returns_the_apps_spec_over_live_data(client, conn, apps_dir):
     assert resp.get_json() == {
         "type": "panel",
         "children": [
+            # The latest day isn't today, so no "so far today".
             {"type": "number", "value": 4500, "label": "steps",
-             "caption": "so far today", "unit": None},
-            {"type": "line", "points": [
-                {"date": today_minus(2), "value": 8000},
-                {"date": today_minus(0), "value": 4500},
+             "caption": f"{today_minus(1)} · via garmin", "unit": None},
+            {"type": "line", "title": "last 7 days", "points": [
+                [today_minus(2), 8000],
+                [today_minus(1), 4499.6],
             ]},
         ],
     }
 
 
 def test_render_with_no_data_is_the_apps_empty_spec(client, apps_dir):
-    make_app(apps_dir, "steps", "", STEPS_APP)
+    install_real_apps(apps_dir)
 
-    assert client.get("/api/app/steps/render").get_json() == {
-        "type": "empty", "message": "No steps yet",
-    }
+    for app_id in ("steps", "steps-metres"):
+        assert client.get(f"/api/app/{app_id}/render").get_json() == {
+            "type": "empty", "message": "No step data yet",
+        }
 
 
 def test_render_of_an_unknown_app_is_404(client, apps_dir):
@@ -458,31 +460,41 @@ def test_number_spec():
     assert host.number(math.inf)["value"] is None
 
 
-def test_line_spec_takes_date_value_pairs_and_keeps_gaps():
+def test_line_spec_takes_date_value_pairs_and_a_title():
     assert host.line([
         ("2026-10-14", 9000.0),
         ("2026-10-15", None),
         (date(2026, 10, 16), math.nan),
         ["2026-10-17", 7000],
-    ]) == {"type": "line", "points": [
-        {"date": "2026-10-14", "value": 9000.0},
-        {"date": "2026-10-15", "value": None},
-        {"date": "2026-10-16", "value": None},
-        {"date": "2026-10-17", "value": 7000},
+    ], title="last 7 days") == {"type": "line", "title": "last 7 days", "points": [
+        ["2026-10-14", 9000.0],
+        ["2026-10-15", None],
+        ["2026-10-16", None],
+        ["2026-10-17", 7000],
     ]}
-    assert host.line([]) == {"type": "line", "points": []}
+    # The title is optional: no title is null.
+    assert host.line([]) == {"type": "line", "points": [], "title": None}
 
 
 def test_line_spec_takes_points_dicts_or_bare_numbers():
     # ctx.metric()'s points go straight in; their source is dropped.
-    assert host.line([host.Point("2026-10-14", 9000.0, "garmin")]) == {
-        "type": "line", "points": [{"date": "2026-10-14", "value": 9000.0}],
-    }
+    assert host.line([host.Point("2026-10-14", 9000.0, "garmin")])["points"] == [
+        ["2026-10-14", 9000.0],
+    ]
     assert host.line([
         {"date": "2026-10-14", "value": 9000, "source": "garmin"},
         {"value": None},
-    ]) == {"type": "line", "points": [{"date": "2026-10-14", "value": 9000}, {"value": None}]}
-    assert host.line([1, None, 2.5, math.nan]) == {"type": "line", "points": [1, None, 2.5, None]}
+    ])["points"] == [["2026-10-14", 9000], [None, None]]
+    # An undated value is a pair with a null date.
+    assert host.line([1, None, 2.5, math.nan])["points"] == [
+        [None, 1], [None, None], [None, 2.5], [None, None],
+    ]
+
+
+@pytest.mark.parametrize("title", [5, ["last 7 days"], True])
+def test_line_spec_title_is_text(title):
+    with pytest.raises(TypeError, match="title"):
+        host.line([], title=title)
 
 
 @pytest.mark.parametrize(
