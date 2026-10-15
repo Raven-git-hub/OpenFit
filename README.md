@@ -292,6 +292,18 @@ not serve — the page fails to load, that's expected), and paste the address (o
 the code) back. The refresh token is stored encrypted and the sync uses it from
 then on.
 
+**The weekly re-auth.** Google's Health API scopes are restricted, so while the
+OAuth app is unverified (Testing mode) its refresh token expires after about 7
+days, and syncs fail until you re-authorise. Verification needs a paid security
+assessment, so for a self-hosted install this is routine: open the Google
+source's **Settings** → **Re-authenticate**, approve on Google, and paste the
+address (or code) back, as when adding it. Your stored client ID and secret are
+reused (the secret never leaves the server), and the account, its data, sync
+cadence and source roles all stay put — only the refresh token is replaced. No
+removing the source, no re-entering the secret, and no revoking access at
+myaccount.google.com first: OpenFit asks Google with `prompt=consent`, so every
+authorization returns a fresh refresh token.
+
 ## Architecture
 
 ```
