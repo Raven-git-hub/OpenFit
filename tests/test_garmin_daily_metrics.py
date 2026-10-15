@@ -22,6 +22,13 @@ Garmin never writes active_minutes: it reports the moderate/vigorous
 split, and a single-number "active minutes" is another vendor's
 measurement (schema v2, law 3).
 
+On a day the watch wasn't worn, get_stats still reports the day's activity
+totals - 0 active calories, a full day sedentary - as defaults, not
+measurements. Those are written only on a day Garmin recorded heart rate
+(a resting or a max HR); basal calories, a profile constant, are written
+every day. The last block of tests pins that, and that the derived pick
+then falls to another source's real reading on a no-wear day.
+
 No network: the Garmin client is a fake handed to sync(), as in
 test_heart_rate_samples.py.
 """
@@ -40,9 +47,11 @@ from metrics import (
     FLOORS,
     INTENSITY_MODERATE_MIN,
     INTENSITY_VIGOROUS_MIN,
+    RESTING_HR_BPM,
     SEDENTARY_MIN,
     TOTAL_KCAL,
 )
+from plugins.base import write_metric
 
 
 class FrozenDate(date):
@@ -265,8 +274,15 @@ def test_a_null_field_is_a_day_without_it_not_a_log_line(conn, garmin, capsys):
 
 @pytest.mark.parametrize("field", sorted(NEW_FIELDS))
 def test_a_day_with_only_a_new_metric_still_lands(conn, garmin, field):
-    """Not dropped by the no-steps/resting-HR/sleep early skip."""
-    stats = {"totalSteps": None, "restingHeartRate": None, field: GARMIN_STATS[field]}
+    """Not dropped by the no-steps/resting-HR/sleep early skip. The max HR
+    marks the day as one the device recorded, without a resting HR or
+    steps to file - the no-wear case is below."""
+    stats = {
+        "totalSteps": None,
+        "restingHeartRate": None,
+        "maxHeartRate": 129,
+        field: GARMIN_STATS[field],
+    }
 
     assert garmin(conn, {"2026-01-02": stats}) == 1
 
@@ -308,3 +324,186 @@ def test_the_new_metrics_flow_through_derive_and_the_access_contract(client, con
         "unit": "m",
         "points": [{"date": "2026-01-02", "value": 7013.0, "source": "garmin"}],
     }
+
+
+# get_stats() for a day the watch wasn't worn, trimmed from a real one: no
+# heart rate at all, and the activity totals Garmin fills in for the whole
+# calendar day regardless. bmrKilocalories is the profile's BMR, the same
+# on a worn day. includesWellnessData/includesActivityData read True/False
+# here exactly as on a worn day - they are not a wear signal.
+NO_WEAR_STATS = {
+    "calendarDate": "2026-01-02",
+    "totalSteps": None,
+    "totalDistanceMeters": None,
+    "restingHeartRate": None,
+    "maxHeartRate": None,
+    "minHeartRate": None,
+    "activeKilocalories": 0.0,
+    "totalKilocalories": 2343.0,
+    "bmrKilocalories": 2343.0,
+    "floorsAscended": 0.0,
+    "floorsAscendedInMeters": 0.0,
+    "moderateIntensityMinutes": 0,
+    "vigorousIntensityMinutes": 0,
+    "sedentarySeconds": 86400,
+    "includesWellnessData": True,
+    "includesActivityData": False,
+}
+
+# A worn day on the same account: heart rate recorded, real totals, and
+# the same two flags.
+WORN_STATS = {
+    "calendarDate": "2026-01-02",
+    "totalSteps": 8412,
+    "totalDistanceMeters": 6530.4,
+    "restingHeartRate": 79,
+    "maxHeartRate": 129,
+    "minHeartRate": 61,
+    "activeKilocalories": 517.0,
+    "totalKilocalories": 2860.0,
+    "bmrKilocalories": 2343.0,
+    "floorsAscended": 7.62,
+    "floorsAscendedInMeters": 23.2,
+    "moderateIntensityMinutes": 18,
+    "vigorousIntensityMinutes": 4,
+    "sedentarySeconds": 51060,
+    "includesWellnessData": True,
+    "includesActivityData": False,
+}
+
+# What WORN_STATS files: (metric, value, unit), by metric.
+WORN_READINGS = [
+    ("active_kcal", 517, "kcal"),
+    ("basal_kcal", 2343, "kcal"),
+    ("distance_m", 6530, "m"),
+    ("elevation_gain_m", 23, "m"),
+    ("floors", 8, "count"),
+    ("intensity_moderate_min", 18, "min"),
+    ("intensity_vigorous_min", 4, "min"),
+    ("resting_hr_bpm", 79, "bpm"),
+    ("sedentary_min", 851, "min"),
+    ("steps", 8412, "count"),
+    ("total_kcal", 2860, "kcal"),
+]
+
+NO_WEAR_LOG = (
+    "[garmin] 2026-01-02: no device data (no HR) - "
+    "skipping daily activity accumulators, keeping basal"
+)
+
+
+def test_a_no_wear_day_files_basal_and_none_of_the_defaults(conn, garmin):
+    """0 active calories, 2343 total, a full day sedentary, no floors or
+    intensity minutes: Garmin's defaults for a day it has no data, so none
+    is written. Basal is a profile constant, so it is."""
+    garmin(conn, {"2026-01-02": NO_WEAR_STATS})
+
+    assert readings(conn) == [("basal_kcal", 2343, "kcal")]
+
+
+def test_a_no_wear_day_still_lands(conn, garmin):
+    """Not an error and not dropped wholesale: it wrote basal_kcal, so it
+    counts as a day written - beside a worn day in the same sync."""
+    stats = {
+        "2026-01-01": {**NO_WEAR_STATS, "calendarDate": "2026-01-01"},
+        "2026-01-02": WORN_STATS,
+    }
+
+    assert garmin(conn, stats, days=2) == 2
+
+    by_day = {}
+    for day, metric in conn.execute(
+        "SELECT date, metric FROM metrics WHERE source = 'garmin' ORDER BY metric"
+    ):
+        by_day.setdefault(day, []).append(metric)
+    assert by_day == {
+        "2026-01-01": ["basal_kcal"],
+        "2026-01-02": [metric for metric, _, _ in WORN_READINGS],
+    }
+
+
+def test_a_no_wear_day_says_so_in_the_log(conn, garmin, capsys):
+    garmin(conn, {"2026-01-02": NO_WEAR_STATS})
+
+    assert NO_WEAR_LOG in capsys.readouterr().out
+
+
+def test_a_day_with_no_stats_at_all_logs_nothing_new(conn, garmin, capsys):
+    """Nothing to skip, so no no-device-data line: such a day stays quiet."""
+    garmin(conn, {"2026-01-02": {"restingHeartRate": None, "maxHeartRate": None}})
+
+    assert "no device data" not in capsys.readouterr().out
+
+
+def test_a_worn_day_files_every_accumulator_and_basal(conn, garmin, capsys):
+    """Unchanged from before the gate."""
+    assert garmin(conn, {"2026-01-02": WORN_STATS}) == 1
+
+    assert readings(conn) == WORN_READINGS
+    assert "no device data" not in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    "hr",
+    [
+        {"restingHeartRate": None, "maxHeartRate": 129},
+        {"restingHeartRate": 79, "maxHeartRate": None},
+    ],
+    ids=["max-only", "resting-only"],
+)
+def test_either_heart_rate_marks_the_day_as_recorded(conn, garmin, hr):
+    """A day worn only by day can have a max but no resting HR computed,
+    and an overnight one the reverse: either means the device recorded."""
+    garmin(conn, {"2026-01-02": {**WORN_STATS, **hr}})
+
+    expected = WORN_READINGS
+    if hr["restingHeartRate"] is None:
+        expected = without(WORN_READINGS, RESTING_HR_BPM)
+    assert readings(conn) == expected
+
+
+@pytest.mark.parametrize("wellness", [True, False])
+@pytest.mark.parametrize("activity", [True, False])
+def test_the_includes_flags_are_not_the_wear_signal(conn, garmin, wellness, activity):
+    """includesWellnessData/includesActivityData read the same on a worn
+    and a no-wear day, so whatever they say, heart rate alone decides."""
+    flags = {"includesWellnessData": wellness, "includesActivityData": activity}
+
+    garmin(conn, {"2026-01-02": {**NO_WEAR_STATS, **flags}})
+    assert readings(conn) == [("basal_kcal", 2343, "kcal")]
+
+    garmin(conn, {"2026-01-02": {**WORN_STATS, **flags}})
+    assert readings(conn) == WORN_READINGS
+
+
+def test_a_no_wear_day_falls_to_another_sources_real_reading(conn, garmin):
+    """The point of the gate: Garmin outranks Google Health by default, so
+    a written default would bury the phone's real reading for the day."""
+    write_metric(conn, "2026-01-02", "google_health", ACTIVE_KCAL, 389)
+    write_metric(conn, "2026-01-02", "google_health", SEDENTARY_MIN, 702)
+    garmin(conn, {"2026-01-02": NO_WEAR_STATS})
+
+    recompute_derived(conn)
+
+    derived = {
+        metric: (value, source)
+        for metric, value, source in conn.execute(
+            "SELECT metric, value, source FROM derived_metrics WHERE date = '2026-01-02'"
+        )
+    }
+    assert derived == {
+        "active_kcal": (389, "google_health"),
+        "basal_kcal": (2343, "garmin"),
+        "sedentary_min": (702, "google_health"),
+    }
+
+
+def test_a_no_wear_resync_leaves_earlier_rows_alone(conn, garmin):
+    """A forward fix: the gate writes nothing for the day, it deletes
+    nothing - a default filed before it stays until the source is wiped
+    and re-synced (DELETE /api/connectors/garmin?wipe=1)."""
+    write_metric(conn, "2026-01-02", "garmin", ACTIVE_KCAL, 0)
+
+    garmin(conn, {"2026-01-02": NO_WEAR_STATS})
+
+    assert readings(conn) == [("active_kcal", 0, "kcal"), ("basal_kcal", 2343, "kcal")]

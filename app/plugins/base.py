@@ -44,6 +44,10 @@ def write_metric(conn, date, source, metric, value):
     all and writes nothing, so a plugin can hand over whatever it fetched
     without checking each field first.
 
+    Pass a value only when the device measured it: a source's no-data
+    default for a whole day (a 0 it fills in for a day it had no data) is
+    not a reading and must be skipped - see SyncPlugin.sync().
+
     Each (date, source, metric) is its own row, so writing the readings
     you have never touches the ones you don't: a later partial sync
     can't blank out a metric an earlier one filled in. A re-sync of the
@@ -325,6 +329,24 @@ class SyncPlugin(ABC):
         as a session only - neither has a daily metric. Commit
         before returning. See plugins/garmin/plugin.py for the reference
         implementation.
+
+        Write only what the device measured (schema v2, law 2). Some
+        sources fill in a day they have no data for with defaults - a
+        watch left in a drawer still gets 0 active calories and a full
+        day sedentary - and those are not readings. Skip them and write
+        nothing for that day, so `metrics` holds real readings only and
+        the derived pick never prefers a placeholder over another
+        source's real value.
+
+        Most data meets this by its nature, and needs no check of its own:
+        a series sample, a session and an instant reading (a weigh-in, a
+        blood pressure) each exist only where something was measured, and
+        a daily vital (resting HR, HRV, SpO2, respiration) comes back null
+        on a day without data. The one place a default can creep in is a
+        daily activity total (calories, sedentary time, floors and the
+        like) that the source works out for the whole calendar day whether
+        or not the device was worn. Check those, and only those - Garmin's
+        sync() shows how.
 
         Returns the number of days written (for logging/UI feedback).
         Should raise on hard failure (bad credentials, network error) -

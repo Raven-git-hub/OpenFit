@@ -322,7 +322,12 @@ each with its unit, category, grain and plausible range — see
 needs no migration. Weight is one of those
 metrics: hand-entered weigh-ins are `weight_kg` readings (in kg) under the source
 `manual` (Garmin files its own from a compatible scale, under `garmin`), and
-there is no separate weights table any more. Beside `metrics`, a `sessions`
+there is no separate weights table any more. A source files only what it
+measured: on a day a Garmin watch wasn't worn (no heart rate recorded), the 0
+active calories and full day sedentary Garmin still reports are defaults, not
+readings, so they aren't stored and another source's real reading for that day
+wins (or the day is an honest gap); basal calories, a profile constant, are
+kept. Beside `metrics`, a `sessions`
 table holds interval records, each with a start/end and a summary, filed under
 a session kind from the same vocabulary. A `sleep` session is one
 night (or nap) from each device, with its stage breakdown in minutes
