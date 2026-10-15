@@ -143,13 +143,19 @@ own calls to its device API. Full direction:
   radius in its `CUSTOMISE OPENFIT HERE` token block). Under the top bar
   (date, a `settings` button, the theme toggle) sits the original angled tab
   strip, restored verbatim: **Home** (far left, the installed apps' tiles —
-  below) and **Data** (far right, the console), then the dashed **＋ Add**. `settings`
+  below) and **Data** (far right, the console), then the dashed **＋ Add**.
+  The Data tab is two even, fluid columns (`.console`, a grid of two
+  `.console-col`s, capped at 1600px): Connected sources over Your data on
+  the left, **Applications** on the right (below); at 1240px and under it
+  drops to one column, at the old 940px cap, Applications under the data —
+  narrower than that, a Your data row would squeeze the metric's name. `settings`
   opens the Settings popup (the `.modal` chrome): one control, **Opening
   page**, a dropdown built from the tab strip (`.tab[data-tab]`, so a new tab
   appears in it), saved per browser in `localStorage` `of-opening-tab`; boot
   opens that tab via `showTab()` (Data if unset or no longer a tab) in place
-  of a hardcoded default. ＋ Add, and Add source once every connector is
-  connected, each open one shared coming-soon placeholder modal
+  of a hardcoded default. ＋ Add, Add source once every connector is
+  connected, and Applications' four buttons each open one shared
+  coming-soon placeholder modal
   (`comingSoon(title)`); while a connector is still unconnected, Add source
   opens its real add flow, from a `.pop` menu of the unconnected ones —
   alphabetical (the API's order), and scrolling (`max-height`/`overflow-y`)
@@ -199,9 +205,20 @@ own calls to its device API. Full direction:
   catalog's `metrics` list (`row.cov === 'metrics'`) — `daily` or `instant`
   grain — renders as a picked metric (latest value, draggable source
   priority); a session kind's latest session is the one with the latest
-  `start`, since `/api/sessions` lists by source priority. A round voice button
-  after the "Connected sources" and "Your data" titles plays that card's clip
-  (`/audio/connected-sources.mp3`, `/audio/your-data.mp3`) through one shared
+  `start`, since `/api/sessions` lists by source priority. **Applications**
+  (`#appsCard`) mirrors Connected sources, built from its `.src` rows and
+  `.src-add` foot: one row per app `GET /api/apps` lists, its name only
+  (`esc()`d; `/api/apps` lists only apps that load and carries no status),
+  "No applications installed" when there are none, a Retry when the read
+  fails; then **＋ Add Application** and a group of **Browse** / **Build** /
+  **Create** — placeholders, each opening `comingSoon()`. Read once at
+  boot (`loadApps()`), separately from Home; view only — it writes nothing,
+  and its rows don't expand yet (the Add popup, expandable rows and alerts
+  are later Library branches). A round voice button
+  after the "Connected sources", "Your data" and "Applications" titles plays
+  that card's clip (`/audio/connected-sources.mp3`, `/audio/your-data.mp3`,
+  `/audio/applications.mp3` — the last not recorded yet, so it 404s and
+  the button resets: a TODO in `VOICE_CLIPS`) through one shared
   `<audio>`: one clip at a time, a second click stops it, and a missing file
   (404) just resets the button, which stays. `GET /audio/<name>`
   (`app/main.py`) serves them via `send_from_directory` from `AUDIO_DIR`
@@ -718,7 +735,9 @@ same PR:
   default size (no migration). Apps run as trusted code in the server's
   process. Still to come: the grid pass (Configure, a visible grid,
   drag/resize, collision, positions saved in `settings` — it swaps
-  `layoutTiles` only), the Library (reusing the scanner and `/api/apps`),
+  `layoutTiles` only), the rest of the Library (its shell landed: the Data
+  tab's Applications column, listing `/api/apps`, its buttons placeholders;
+  next the Add Application popup, then expandable rows, then alerts),
   per-instance `cfg` and its UI, metric write-back, a custom `app.js`,
   enforcing `reads`, and the sandbox (Phase 4).
 - **The access contract:** landed (see Data model): discovery, range queries

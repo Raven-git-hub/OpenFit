@@ -1,6 +1,7 @@
 """API route tests - the shape the frontend depends on."""
 
 import os
+import re
 import sqlite3
 from datetime import date
 
@@ -239,6 +240,89 @@ def test_index_draws_home_from_the_app_host(client):
         assert spec in page
     # No Configure, grid lines or drag in this slice: tiles only flow.
     assert "const layoutTiles = autoLayout;" in page
+
+
+def test_index_lays_the_data_tab_out_in_two_columns(client):
+    resp = client.get("/")
+    page = resp.get_data(as_text=True)
+    resp.close()
+    # Connected sources over Your data on the left, Applications on the right.
+    cols = re.search(
+        r'<div class="console">\s*<div class="console-col">(.*?)</div>\s*'
+        r'<div class="console-col">(.*?)</div>\s*</div>',
+        page,
+        re.S,
+    )
+    assert cols, "the console's two columns"
+    left, right = cols.groups()
+    assert left.index('id="sourcesCard"') < left.index('id="dataCard"')
+    assert 'id="appsCard"' in right and "sourcesCard" not in right
+
+    # Two even columns that grow with the window, under a cap wider than
+    # the old fixed 940px.
+    console = re.search(r"^\.console\{([^}]*)\}", page, re.M).group(1)
+    assert "display:grid" in console
+    assert "grid-template-columns:minmax(0,1fr) minmax(0,1fr)" in console
+    assert int(re.search(r"max-width:(\d+)px", console).group(1)) > 940
+
+    # The collapse floor: a narrow window drops to one column, as .dpanel
+    # does on a phone - above the phone breakpoint, so a narrow desktop
+    # window stacks too.
+    floor = re.search(
+        r"@media \(max-width:(\d+)px\)\{\s*\.console\{grid-template-columns:minmax\(0,1fr\);", page
+    )
+    assert floor, "the one-column collapse rule"
+    assert int(floor.group(1)) > 860
+
+
+def test_index_has_the_applications_card(client, monkeypatch):
+    import main
+
+    # What the card lists: the installed apps, as /api/apps returns them -
+    # the two real apps.
+    fixtures = os.path.join(os.path.dirname(__file__), "fixtures", "apps")
+    monkeypatch.setitem(main.app.config, "APPS_DIR", fixtures)
+    apps = client.get("/api/apps").get_json()
+    assert [(a["id"], a["name"]) for a in apps] == [("steps", "Steps"), ("steps-metres", "Distance (from steps)")]
+
+    resp = client.get("/")
+    page = resp.get_data(as_text=True)
+    resp.close()
+    assert '<section class="card" id="appsCard" aria-label="Applications"></section>' in page
+    # Read from the same route as Home, painted at boot and once loaded.
+    assert "'/api/apps'" in page
+    assert "paintApps();" in page and "loadApps();" in page
+    # The same title and voice button as Connected sources, on its own clip
+    # (a placeholder until it's recorded: a 404 just resets the button).
+    assert "cardTitle('Connected sources', 'sources')" in page
+    assert "cardTitle('Applications', 'apps')" in page
+    assert "apps:'/audio/applications.mp3'" in page
+    # One row per app, its name escaped - it's data - and an empty state.
+    assert "esc(a.name || a.id)" in page
+    assert "'No applications installed'" in page
+
+    # Add Application in Add source's style, then Browse / Build / Create:
+    # buttons that open the coming-soon placeholder.
+    assert "const btn = el('button','btn sm','＋ Add source');" in page
+    assert "button('add-app', '＋ Add Application', 'Add an application')" in page
+    for act, label in (("browse", "Browse"), ("build", "Build"), ("create", "Create")):
+        assert re.search(rf"\['{act}',\s*'{label}',", page), label
+    assert "const b = el('button','btn sm', esc(label));" in page
+    assert "b.onclick = () => comingSoon(title);" in page
+
+
+def test_the_applications_card_only_reads(client):
+    resp = client.get("/")
+    page = resp.get_data(as_text=True)
+    resp.close()
+    # This slice is view-only: the card's code reads /api/apps and nothing
+    # else - no POST, PUT or DELETE, nothing written.
+    start = page.index("APPLICATIONS - the right-hand column")
+    section = page[start : page.index("HOME - the installed apps' tiles", start)]
+    assert "api.apps()" in section
+    assert re.findall(r"api\.\w+", section) == ["api.apps"]
+    for write in ("send(", "fetch(", "'POST'", "'PUT'", "'DELETE'", "localStorage"):
+        assert write not in section, write
 
 
 def test_index_wires_the_voice_buttons_to_the_audio_route(client):

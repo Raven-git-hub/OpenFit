@@ -224,7 +224,12 @@ saved layout. `paintTiles`, `renderSpec` and the scanner don't change.
 - **Configure mode**, the visible grid, drag/resize, collision and a saved
   layout: the grid pass above.
 - **The Library:** browsing and installing apps. It reuses `scan_apps()` and
-  `/api/apps`.
+  `/api/apps`. Its shell has landed: the Data tab's right-hand **Applications**
+  column lists `/api/apps` by name, with Add Application, Browse, Build and
+  Create as placeholders (see
+  [frontend-redesign-and-widget-model.md](frontend-redesign-and-widget-model.md)).
+  Still to come: the Add Application popup, expandable rows (what an app
+  reads, its files, its writes) and alerts.
 - **Per-instance config** and the UI to edit it (`cfg` is `{}`), **metric
   write-back**, and a custom `app.js` for an app that draws its own face.
 - **Enforcing `reads`:** it's recorded, but `ctx.metric()` serves any key in

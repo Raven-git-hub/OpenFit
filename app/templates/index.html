@@ -234,8 +234,15 @@ a.btn{display:inline-block;text-decoration:none;}
   padding:8px 9px;border-radius:7px;font-size:13.5px;text-align:left;}
 .pop-item:hover{background:var(--surface-2);}
 
+/* ---------- the Data tab: two columns ----------
+   Connected sources and Your data stacked on the left, Applications on
+   the right, splitting the window's width evenly. Capped so it doesn't
+   sprawl across a very wide monitor; at 1240px and under it drops to
+   one column (responsive, below). */
+.console{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:18px;align-items:start;max-width:1600px;}
+.console-col{display:flex;flex-direction:column;gap:18px;min-width:0;}
+
 /* ---------- cards ---------- */
-.console{display:flex;flex-direction:column;gap:18px;max-width:940px;}
 .card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow);padding:20px;}
 .card h3{font-family:var(--font-display);font-weight:700;font-size:17px;margin:0 0 3px;}
 .card .hint{color:var(--muted);font-size:13px;margin:0 0 16px;}
@@ -262,6 +269,12 @@ a.btn{display:inline-block;text-decoration:none;}
 /* the Add source button at the foot of Connected sources */
 .src-add{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding-top:14px;margin-top:2px;border-top:1px solid var(--border);}
 .src + .src-add{border-top:none;margin-top:0;}
+
+/* ---------- applications ----------
+   Built from Connected sources' own rows and foot (.src, .src-add), so
+   the two read as one kind of card: one row per installed app, then
+   Add Application, with Browse / Build / Create grouped at the far end. */
+.app-tools{display:flex;flex-wrap:wrap;gap:6px;margin-left:auto;}
 
 /* ---------- floating modal: add-device flows, Settings, the coming-soon stub ---------- */
 .modal-bg{position:fixed;inset:0;z-index:80;background:color-mix(in srgb,var(--ink) 45%,transparent);display:grid;place-items:center;padding:20px;}
@@ -443,6 +456,14 @@ h5 + .dnote{margin-top:0;}
 .home-state{padding:40px 10px;text-align:center;color:var(--muted);font-size:13.5px;}
 .home-state .btn{margin-top:12px;}
 
+/* ---------- responsive: the Data tab's columns ----------
+   Any narrower and a column would be under ~580px, and a Your data row
+   (chevron · name · reading · grain · continuity) would squeeze the
+   metric's name to an ellipsis: one column instead, Applications below
+   the data, at the width the console had before it split. */
+@media (max-width:1240px){
+  .console{grid-template-columns:minmax(0,1fr);max-width:940px;}
+}
 /* ---------- responsive: phone ---------- */
 @media (max-width:860px){
   .topbar{padding:14px 15px 0;}
@@ -494,8 +515,13 @@ h5 + .dnote{margin-top:0;}
     <!-- DATA: the console -->
     <section data-panel="data" aria-label="Data">
       <div class="console">
-        <section class="card" id="sourcesCard" aria-label="Connected sources"></section>
-        <section class="card data" id="dataCard" aria-label="Your data"></section>
+        <div class="console-col">
+          <section class="card" id="sourcesCard" aria-label="Connected sources"></section>
+          <section class="card data" id="dataCard" aria-label="Your data"></section>
+        </div>
+        <div class="console-col">
+          <section class="card" id="appsCard" aria-label="Applications"></section>
+        </div>
       </div>
     </section>
   </main>
@@ -1151,6 +1177,9 @@ h5 + .dnote{margin-top:0;}
   const VOICE_CLIPS = {
     sources:'/audio/connected-sources.mp3',
     data:'/audio/your-data.mp3',
+    // TODO(feat/bundle-voice-clips): not recorded yet - until
+    // applications.mp3 lands in app/audio/ it 404s and the button resets.
+    apps:'/audio/applications.mp3',
   };
   const VOICE_ICON = {
     play:'<svg viewBox="0 0 10 10" aria-hidden="true"><path d="M3 1.8 8.4 5 3 8.2z"/></svg>',
@@ -1500,7 +1529,8 @@ h5 + .dnote{margin-top:0;}
   }
 
   /* A stand-in for popups that aren't built yet: Add source (when nothing
-     is left to add) and Add tab. */
+     is left to add), Add tab, and Applications' Add / Browse / Build /
+     Create. */
   function comingSoon(title){
     const {box, close} = openModal(`
       <h4>${esc(title)}</h4>
@@ -1675,6 +1705,81 @@ h5 + .dnote{margin-top:0;}
   async function refreshConnectors(){
     state.connectors = await api.listConnectors();
     paintSources();
+  }
+
+  /* =========================================================
+     APPLICATIONS - the right-hand column of the Data tab
+     The mirror of Connected sources: one row per installed app, from
+     /api/apps (the list Home draws its tiles from), then Add
+     Application and Browse / Build / Create. For now those four are
+     placeholders - each opens the coming-soon modal - and the rows
+     don't expand. Nothing here writes anything.
+     ========================================================= */
+  const appsList = {status:'loading', apps:null};   // status: loading | ready | error
+
+  async function loadApps(){
+    try{
+      const apps = await api.apps();
+      appsList.apps = Array.isArray(apps) ? apps : [];
+      appsList.status = 'ready';
+    }catch(e){
+      // A failed refresh leaves the list already shown.
+      if(!appsList.apps) appsList.status = 'error';
+    }
+    paintApps();
+  }
+
+  function paintApps(){
+    const card = $('#appsCard');
+    card.innerHTML = '';
+    card.appendChild(cardTitle('Applications', 'apps'));
+
+    if(appsList.status==='loading'){
+      card.appendChild(el('p','hint','Loading…'));
+    }else if(appsList.status==='error'){
+      const p = el('p','hint',`Couldn't load your applications. <button class="btn sm" type="button">Retry</button>`);
+      p.querySelector('button').onclick = () => { appsList.status = 'loading'; paintApps(); loadApps(); };
+      card.appendChild(p);
+    }else if(!appsList.apps.length){
+      card.appendChild(el('p','hint','No applications installed'));
+    }else{
+      appsList.apps.forEach(a => card.appendChild(appRow(a)));
+    }
+    card.appendChild(appActionsRow());
+  }
+
+  /* An installed app: its name. /api/apps lists only the apps that
+     load, with no status of their own, so there's none to show yet. */
+  function appRow(a){
+    const row = el('div','src', `<div class="src-name">${esc(a.name || a.id)}</div>`);
+    row.dataset.app = a.id;
+    return row;
+  }
+
+  /* The foot of the card, as Add source is Connected sources': Add
+     Application, then the other ways to get one, grouped. */
+  const APP_ACTIONS = [
+    ['browse', 'Browse', 'Browse applications'],
+    ['build',  'Build',  'Build an application'],
+    ['create', 'Create', 'Create an application'],
+  ];
+  function appActionsRow(){
+    const button = (act, label, title) => {
+      const b = el('button','btn sm', esc(label));
+      b.type = 'button';
+      b.dataset.act = act;
+      b.setAttribute('aria-haspopup','dialog');
+      b.onclick = () => comingSoon(title);
+      return b;
+    };
+    const wrap = el('div','src-add');
+    wrap.appendChild(button('add-app', '＋ Add Application', 'Add an application'));
+    const group = el('div','app-tools');
+    group.setAttribute('role','group');
+    group.setAttribute('aria-label','Other ways to get an application');
+    APP_ACTIONS.forEach(([act, label, title]) => group.appendChild(button(act, label, title)));
+    wrap.appendChild(group);
+    return wrap;
   }
 
   /* =========================================================
@@ -1942,10 +2047,12 @@ h5 + .dnote{margin-top:0;}
   paintDate();
   paintSources();
   paintData();
+  paintApps();
   paintHome();
   // In parallel: each part paints as soon as its own reads land.
   refreshConnectors();
   loadData();
+  loadApps();
   loadHome();
 })();
 </script>

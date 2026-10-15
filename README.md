@@ -71,7 +71,9 @@ continuous it is, and which source wins each metric — not the product.
   grouped by category with its latest reading and grain (what isn't
   reporting yet folded away under its category), how continuously each is
   covered (day / week / month, and the last five weeks), and drag-to-reorder
-  source priority per metric.
+  source priority per metric. Beside them, in a second column on a wide
+  window, an **Applications** panel lists the apps you've installed (adding,
+  browsing and building apps from it are still to come).
 - A first **app host**: the Home tab shows the apps you install (none ship with
   OpenFit) as live tiles — see [Apps on the Home tab](#apps-on-the-home-tab).
 
@@ -284,7 +286,8 @@ returns a display spec built from `number`, `line` (a sparkline, with an
 optional title), `panel` and `empty`. Tiles flow left to right at their default size; an app that fails to
 load is logged and left out, and one whose `render()` fails shows as an error
 tile, never a broken page. `GET /api/apps` lists what's installed and
-`GET /api/app/<id>/render` returns one app's spec. Apps run as trusted code
+`GET /api/app/<id>/render` returns one app's spec; the Data tab's
+Applications panel lists the same apps. Apps run as trusted code
 for now (a sandbox is Phase 4). The full contract is in
 [docs/architecture/app-host.md](docs/architecture/app-host.md).
 
