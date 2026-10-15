@@ -38,7 +38,14 @@ underneath. The tab last viewed isn't remembered: a reload opens the opening
 page again. **＋ Add** opens the coming-soon placeholder until an add-a-tab
 popup lands.
 
-**The Data tab** is one column:
+**The Data tab** is two even columns that grow with the window: a CSS grid
+(`.console`, `minmax(0,1fr) minmax(0,1fr)`), capped at 1600px so it doesn't
+sprawl across a very wide monitor. The left column holds Connected sources over
+Your data, as before; the right holds **Applications** (below). At 1240px and
+under it drops to one column, at the 940px cap the console always had, with
+Applications under the data: narrower than that, a column is under ~580px and a
+Your data row (chevron, name, reading, grain, continuity) would squeeze the
+metric's name. Left column:
 
 1. **Connected sources.** One compact row per connected device: name, status
    pill, **Sync now**, and a gear **Settings** button that opens the source's
@@ -50,6 +57,21 @@ popup lands.
    wired to the add-source popup that replaces it.
 2. **Your data.** The heading, then the list straight away: one row per catalog
    entry (below), grouped by category. Click a row to expand it.
+
+Right column:
+
+3. **Applications.** The structural mirror of Connected sources, built from the
+   same rows and foot (`.src`, `.src-add`) so the two read as one kind of card.
+   One row per installed app, from `GET /api/apps` (the list Home draws its
+   tiles from), showing its name. There's no status beside it: `/api/apps`
+   lists only the apps that load and carries no status of its own. With none
+   installed it reads "No applications installed"; if the read fails, a line
+   says so with a **Retry**. At the foot, **＋ Add Application** in Add source's
+   style, then **Browse**, **Build** and **Create** grouped at the far end. All
+   four are placeholders for now, each opening the coming-soon modal. The list
+   is read once at boot, and the card writes nothing. Its rows don't expand.
+   Still to come, each its own branch: the Add Application popup, then the
+   expandable rows (what an app reads, its files, its writes), then alerts.
 
 Each card's title has a voice button just after it (below).
 
@@ -117,19 +139,22 @@ the button comes back.
 **The coming-soon placeholder.** One reusable modal (`comingSoon(title)`),
 built on the same `.modal` chrome: a title, "Coming soon." and a Close button
 (Escape and a backdrop click close it too). Add source (with nothing left to
-add) and ＋ Add open it, each with its own title.
+add), ＋ Add, and Applications' ＋ Add Application, Browse, Build and Create
+open it, each with its own title.
 
 ## Voice explanations: `GET /audio/<name>`
 
-A small round button sits just after the **Connected sources** and **Your
-data** card titles. Each plays a spoken explanation of its card:
-`/audio/connected-sources.mp3` and `/audio/your-data.mp3`.
+A small round button sits just after the **Connected sources**, **Your data**
+and **Applications** card titles. Each plays a spoken explanation of its card:
+`/audio/connected-sources.mp3`, `/audio/your-data.mp3` and
+`/audio/applications.mp3`. The Applications clip isn't recorded yet (a TODO in
+`VOICE_CLIPS`): until it lands in `app/audio/`, it 404s and the button resets.
 
 - Clicking a button plays its clip from the start. Clicking it again stops and
-  resets it. Clicking the other button stops the first clip and plays the
-  other, so only one clip plays at a time. Idle shows a play glyph, playing a
+  resets it. Clicking another button stops the first clip and plays its
+  own, so only one clip plays at a time. Idle shows a play glyph, playing a
   stop glyph. There is no caption and no toast.
-- Both buttons share one `<audio>` element. Playing sets its `src` to the
+- The buttons share one `<audio>` element. Playing sets its `src` to the
   card's clip, sets `currentTime = 0` and calls `play()`. The button resets on
   `ended` and on `error` (and if `play()` is refused). The cards repaint (after
   a sync, say), and a repainted button picks up whatever is playing.
