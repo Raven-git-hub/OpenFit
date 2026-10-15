@@ -1128,7 +1128,15 @@ def _authorization_code(raw):
 
 @app.route("/api/connectors/<plugin_id>/oauth/start", methods=["POST"])
 def start_oauth(plugin_id):
-    """Step one: take the client details, hand back a consent URL."""
+    """Step one: take the client details, hand back a consent URL.
+
+    A manifest field the body leaves out is filled from the plugin's
+    stored credentials (get_credentials(): the account, else the env), so
+    a connected source re-authorises with an empty body - its client
+    details aren't typed in again, and its secret couldn't be: it never
+    comes back over the API. The body wins where it has a value, so a
+    rotated secret can still be entered.
+    """
     plugin, error = _oauth_plugin(plugin_id)
     if error:
         return error
@@ -1137,7 +1145,17 @@ def start_oauth(plugin_id):
     if not isinstance(body, dict):
         return jsonify({"ok": False, "error": "expected a JSON object"}), 400
 
-    values = _manifest_values(plugin, body)
+    conn = get_conn()
+    try:
+        stored = plugin.get_credentials(conn)
+    finally:
+        conn.close()
+    # Manifest fields only, from either side: the old refresh token stays
+    # behind - the exchange gets a fresh one for the new code. The secret
+    # stays server-side all the same: oauth_auth_url() puts only the
+    # client id in the URL the browser sees, and the secret is used only
+    # in finish's server-side token exchange.
+    values = {**_manifest_values(plugin, stored), **_manifest_values(plugin, body)}
     missing = plugin.missing_fields(values)
     if missing:
         names = ", ".join(f.get("label") or f["key"] for f in missing)

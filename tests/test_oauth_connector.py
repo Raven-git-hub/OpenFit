@@ -82,7 +82,8 @@ def token_endpoint(monkeypatch):
 
 
 def start(client, values=None):
-    return client.post("/api/connectors/google_health/oauth/start", json=values or CLIENT)
+    return client.post("/api/connectors/google_health/oauth/start",
+                       json=CLIENT if values is None else values)
 
 
 def finish(client, code):
@@ -304,6 +305,159 @@ def test_the_pending_state_is_consumed_by_a_successful_finish(client, token_endp
     finish(client, "4/code-from-google")
 
     assert main._oauth_pending == {}
+
+
+def test_start_with_nothing_stored_and_no_body_credentials_is_a_400(client, db_path):
+    """A fresh add still needs the client details - there's nothing to reuse."""
+    import main
+
+    resp = start(client, {})
+
+    assert resp.status_code == 400
+    error = resp.get_json()["error"]
+    assert "OAuth client ID" in error and "OAuth client secret" in error
+    assert main._oauth_pending == {}
+    assert stored_row(db_path) is None
+
+
+def test_the_auth_url_asks_google_for_a_fresh_refresh_token_every_time():
+    """offline + prompt=consent: a repeat authorization still gets one."""
+    from plugins import PLUGINS
+
+    url = PLUGINS["google_health"].oauth_auth_url(CLIENT, REDIRECT_URI, "challenge")
+
+    params = query_of(url)
+    assert params["access_type"] == ["offline"]
+    assert params["prompt"] == ["consent"]
+    # The URL goes to the browser: the client id rides in it, the secret never.
+    assert params["client_id"] == [CLIENT["client_id"]]
+    assert CLIENT["client_secret"] not in url
+
+
+# ---------- re-authorising a connected source ----------
+#
+# Google's refresh token lapses after about a week for a Testing-mode
+# client, so a connected source re-runs the consent round trip from its
+# Settings popup: /oauth/start with an empty body - the client details
+# come from the stored account - then /oauth/finish as usual.
+
+def connect(client):
+    assert start(client).status_code == 200
+    assert finish(client, "4/first-code").status_code == 200
+
+
+def test_a_connected_source_reauthorises_with_an_empty_body(client, token_endpoint):
+    connect(client)
+
+    resp = start(client, {})
+
+    assert resp.status_code == 200
+    body = resp.get_json()
+    # The consent URL and nothing else - above all, not the stored secret.
+    assert set(body) == {"ok", "auth_url"}
+    assert "shh-secret" not in resp.get_data(as_text=True)
+    params = query_of(body["auth_url"])
+    assert params["client_id"] == [CLIENT["client_id"]]
+    assert params["prompt"] == ["consent"]
+
+
+def test_reauthorising_does_not_carry_the_old_refresh_token(client, token_endpoint):
+    import main
+
+    connect(client)
+    start(client, {})
+
+    # Only the manifest fields come out of the stored blob: the exchange
+    # gets a fresh refresh token for the new code.
+    assert main._oauth_pending["google_health"]["credentials"] == CLIENT
+
+
+def test_body_credentials_win_over_the_stored_ones(client, token_endpoint):
+    import main
+
+    connect(client)
+
+    # A rotated secret alone: the stored client id fills the gap.
+    start(client, {"client_secret": "rotated-secret"})
+    assert main._oauth_pending["google_health"]["credentials"] == {
+        "client_id": CLIENT["client_id"],
+        "client_secret": "rotated-secret",
+    }
+
+    # Both given: neither stored value is used.
+    other = {"client_id": "cid-456.apps.googleusercontent.com", "client_secret": "other"}
+    params = query_of(start(client, other).get_json()["auth_url"])
+    assert params["client_id"] == [other["client_id"]]
+    assert main._oauth_pending["google_health"]["credentials"] == other
+
+
+def test_reauthorising_replaces_only_the_refresh_token(client, db_path, conn, token_endpoint):
+    """Re-auth, not re-add: the account, its data and its settings stay put."""
+    import main
+    from derived import load_source_roles, set_source_role
+
+    connect(client)
+    # An account added long ago, with data, a cadence and a source role.
+    conn.execute("UPDATE accounts SET created_at = '2026-01-01T09:00:00+00:00'")
+    conn.execute(
+        "INSERT INTO metrics (date, source, metric, value, unit, synced_at) "
+        "VALUES ('2026-10-01', 'google_health', 'steps', 9000, 'count', '2026-10-01 08:00:00')"
+    )
+    conn.commit()
+    main.set_sync_cadence(conn, "google_health", 12)
+    set_source_role(conn, "steps", "google_health")
+
+    assert start(client, {}).status_code == 200
+    token_endpoint.queue({"refresh_token": "refresh-new", "access_token": "access-new"})
+    resp = finish(client, "4/reauth-code")
+
+    assert resp.status_code == 200
+    assert resp.get_json() == {"ok": True}
+    # Exchanged with the stored client details...
+    sent = token_endpoint.calls[-1]["data"]
+    assert sent["code"] == "4/reauth-code"
+    assert sent["client_id"] == CLIENT["client_id"]
+    assert sent["client_secret"] == CLIENT["client_secret"]
+    # ...and stored with the fresh token in place of the old one.
+    assert json.loads(decrypt(stored_row(db_path)[0])) == {**CLIENT, "refresh_token": "refresh-new"}
+
+    rows = conn.execute("SELECT plugin_id, created_at FROM accounts").fetchall()
+    assert [tuple(r) for r in rows] == [("google_health", "2026-01-01T09:00:00+00:00")]
+    assert conn.execute(
+        "SELECT value FROM metrics WHERE source = 'google_health'"
+    ).fetchall()[0][0] == 9000
+    assert main.effective_cadence(conn, "google_health") == 12
+    assert load_source_roles(conn) == {"steps": "google_health"}
+
+    detail = client.get("/api/connectors/google_health/detail").get_json()
+    assert detail["added"] == "2026-01-01T09:00:00+00:00"
+    assert detail["sync_hours"] == 12 and detail["sync_is_default"] is False
+
+
+def test_a_failed_reauthorisation_leaves_the_stored_account_alone(client, db_path, token_endpoint):
+    connect(client)
+    before = json.loads(decrypt(stored_row(db_path)[0]))
+
+    start(client, {})
+    token_endpoint.queue({"error": "invalid_grant"}, ok=False, text='{"error": "invalid_grant"}')
+    assert finish(client, "4/stale-code").status_code == 400
+
+    assert json.loads(decrypt(stored_row(db_path)[0])) == before
+
+
+def test_an_env_configured_install_authorises_from_its_env(client, monkeypatch, token_endpoint):
+    """No account yet, client details in .env: the env fills the body's gaps.
+
+    The same source the sync reads (get_credentials()), so a pre-UI
+    install can authorise in the console without typing them in again.
+    """
+    import main
+
+    monkeypatch.setenv("GOOGLE_HEALTH_CLIENT_ID", CLIENT["client_id"])
+    monkeypatch.setenv("GOOGLE_HEALTH_CLIENT_SECRET", CLIENT["client_secret"])
+
+    assert start(client, {}).status_code == 200
+    assert main._oauth_pending["google_health"]["credentials"] == CLIENT
 
 
 # ---------- the flow only applies to oauth connectors ----------

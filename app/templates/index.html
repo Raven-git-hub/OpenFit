@@ -270,7 +270,7 @@ a.btn{display:inline-block;text-decoration:none;}
 .info{display:grid;grid-template-columns:auto minmax(0,1fr);margin:14px 0 0;}
 .info dt, .info dd{display:flex;align-items:center;padding:10px 0;border-bottom:1px solid var(--border);}
 .info dt{font-size:11.5px;text-transform:uppercase;letter-spacing:.8px;color:var(--muted);font-weight:600;padding-right:18px;}
-.info dd{justify-content:flex-end;margin:0;text-align:right;font-size:13.5px;overflow-wrap:anywhere;}
+.info dd{justify-content:flex-end;gap:10px;margin:0;text-align:right;font-size:13.5px;overflow-wrap:anywhere;}
 .info dt:last-of-type, .info dd:last-of-type{border-bottom:none;}
 /* a row of preset buttons as one choice - Sync every; the chosen one is
    .primary, and the row is inert while it loads or saves */
@@ -494,7 +494,8 @@ h5 + .dnote{margin-top:0;}
     removeConnector: (id, wipe)    => send('/api/connectors/'+enc(id)+(wipe ? '?wipe=1' : ''), 'DELETE'),
     /* OAuth connectors are added in two calls: start hands back a consent
        URL (and keeps the PKCE verifier server-side), finish takes the code
-       the provider put in the address bar. */
+       the provider put in the address bar. Re-authenticating a connected
+       one starts with {}: the server fills in its stored client details. */
     oauthStart:      (id, values)  => send('/api/connectors/'+enc(id)+'/oauth/start', 'POST', values),
     oauthFinish:     (id, code)    => send('/api/connectors/'+enc(id)+'/oauth/finish', 'POST', {code}),
     syncPlugin:   id             => send('/api/sync/'+enc(id)+'?days=7', 'POST'),
@@ -1185,6 +1186,7 @@ h5 + .dnote{margin-top:0;}
     };
 
     row.querySelector('[data-act="settings"]').onclick = () => openSourceSettings(c);
+    row.dataset.id = c.id;   // so a flow that repaints the card can find it again
     return row;
   }
 
@@ -1209,12 +1211,19 @@ h5 + .dnote{margin-top:0;}
 
   function openSourceSettings(c){
     const name = esc(c.name);
+    /* An oauth source's authorization can lapse - Google's every ~7 days
+       for a Testing-mode client - so it can be renewed in place, beside
+       how it's connected: the same consent round trip as adding it, with
+       the stored client details. Not a danger action: nothing goes. */
+    const reauth = c.add_flow === 'oauth'
+      ? '<button class="btn sm" data-act="reauth" type="button" aria-haspopup="dialog">Re-authenticate</button>'
+      : '';
     const {box, close} = openModal(`
       <h4>${name}</h4>
       <div data-step="info">
         <dl class="info">
           <dt>Login</dt><dd data-f="login">…</dd>
-          <dt>Connected via</dt><dd data-f="via">…</dd>
+          <dt>Connected via</dt><dd><span data-f="via">…</span>${reauth}</dd>
           <dt>Last sync</dt><dd data-f="sync" class="tnum">…</dd>
           <dt>Added</dt><dd data-f="added" class="tnum">…</dd>
           <dt>Sync every</dt>
@@ -1306,6 +1315,8 @@ h5 + .dnote{margin-top:0;}
     }
 
     box.querySelector('[data-act="close"]').onclick = close;
+    // One modal at a time: Settings gives way to the consent flow.
+    if(reauth) box.querySelector('[data-act="reauth"]').onclick = () => { close(); openOAuthDevice(c, true); };
     box.querySelector('[data-act="remove"]').onclick = () => step('keep');
     box.querySelectorAll('[data-act="back"]').forEach(b => { b.onclick = () => step('info'); });
     box.querySelector('[data-act="keep"]').onclick = () => choose(false);
@@ -1492,14 +1503,22 @@ h5 + .dnote{margin-top:0;}
      step 2 takes back whatever the provider left in the address bar. The
      redirect lands on a loopback port OpenFit doesn't serve, so that page
      always fails to load - the code is still there to copy, which is the
-     whole trick and worth saying out loud on screen. */
-  function openOAuthDevice(c){
+     whole trick and worth saying out loud on screen.
+     `reauth` renews a connected source from its Settings popup: no fields
+     and no setup note - the start call sends {} and the API fills in the
+     stored client details (the secret never comes back to the browser) -
+     and step 1 runs at once, straight to the approval link. Finishing
+     replaces the stored refresh token and nothing else: the account keeps
+     its Added date, its data, cadence and source roles. */
+  function openOAuthDevice(c, reauth){
+    const verb = reauth ? 'Re-authenticate' : 'Connect';
     const {box, close} = openModal(`
-      <h4>Add ${esc(c.name)}</h4>
-      <div data-step="1">
-        <p class="hint">Stored encrypted on this container and never sent anywhere except ${esc(c.name)}.</p>
+      <h4>${reauth ? 'Re-authenticate' : 'Add'} ${esc(c.name)}</h4>
+      <div data-step="1">${reauth
+        ? `<p class="hint">Approve access again to renew the connection. Its client details, data and settings stay as they are.</p>`
+        : `<p class="hint">Stored encrypted on this container and never sent anywhere except ${esc(c.name)}.</p>
         ${c.add_note ? `<p class="hint">${esc(c.add_note)}</p>` : ''}
-        ${manifestFields(c)}
+        ${manifestFields(c)}`}
       </div>
       <div data-step="2" hidden>
         <p class="hint">Approve access. The page will fail to load - that's expected.
@@ -1517,7 +1536,7 @@ h5 + .dnote{margin-top:0;}
       <div class="modal-actions">
         <button class="btn sm" data-act="cancel" type="button">Cancel</button>
         <button class="btn sm primary" data-act="link" type="button">Get authorization link</button>
-        <button class="btn sm primary" data-act="connect" type="button" hidden>Connect</button>
+        <button class="btn sm primary" data-act="connect" type="button" hidden>${verb}</button>
       </div>`);
 
     const msg      = box.querySelector('#addMsg');
@@ -1535,7 +1554,7 @@ h5 + .dnote{margin-top:0;}
     linkBtn.onclick = async ()=>{
       msg.textContent = '';
       linkBtn.disabled = true; linkBtn.textContent = 'Working…';
-      const res = await api.oauthStart(c.id, fieldValues(box));
+      const res = await api.oauthStart(c.id, reauth ? {} : fieldValues(box));
       if(res.ok && res.auth_url){
         authLink.href = res.auth_url;
         stepOne.hidden = true;
@@ -1551,19 +1570,32 @@ h5 + .dnote{margin-top:0;}
 
     connBtn.onclick = async ()=>{
       msg.textContent = '';
-      connBtn.disabled = true; connBtn.textContent = 'Connecting…';
+      connBtn.disabled = true; connBtn.textContent = reauth ? 'Working…' : 'Connecting…';
       const res = await api.oauthFinish(c.id, codeIn.value);
       if(res.ok){
         close();
         await refreshConnectors();
+        if(reauth) flashSource(c.id, '✓ re-authenticated');
       }else{
-        msg.textContent = res.error || 'Could not connect this device';
-        connBtn.disabled = false; connBtn.textContent = 'Connect';
+        // finish's own errors - a stale code, no refresh token - as-is.
+        msg.textContent = res.error || (reauth ? 'Could not re-authenticate this source' : 'Could not connect this device');
+        connBtn.disabled = false; connBtn.textContent = verb;
       }
     };
 
+    if(reauth){ linkBtn.onclick(); return; }
     const first = box.querySelector('input');
     if(first) first.focus();
+  }
+
+  /* A brief word on a source's row, in its status pill - as Sync now
+     says "Synced ✓" - then back to connected. */
+  function flashSource(id, text){
+    const row = Array.from(document.querySelectorAll('#sourcesCard .src')).find(r => r.dataset.id===id);
+    if(!row) return;
+    const pill = row.querySelector('.pill');
+    pill.textContent = text;
+    setTimeout(()=>{ pill.textContent = '● connected'; }, 2600);
   }
 
   async function refreshConnectors(){

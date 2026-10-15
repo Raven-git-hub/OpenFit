@@ -7,9 +7,12 @@ September 2026.
 Auth is standard Google OAuth 2.0 (not a password): you register an OAuth
 client in Google Cloud Console, then add the device in the UI - client id
 and secret, then approve on Google's consent screen and paste back the
-code. That one-time consent yields a refresh token, stored encrypted in
-the accounts table alongside the client details, which this plugin trades
-for a short-lived access token on each sync.
+code. That consent yields a refresh token, stored encrypted in the
+accounts table alongside the client details, which this plugin trades
+for a short-lived access token on each sync. An unverified (Testing-mode)
+client's refresh token expires after about 7 days; the source's Settings
+popup re-authorises it in place (Re-authenticate), reusing the stored
+client details.
 
 authorize.py does the same thing from a terminal and stays for installs
 that were set up that way; its on-disk token file is still read as a
@@ -233,9 +236,10 @@ class GoogleHealthPlugin(SyncPlugin):
         "Scopes: activity_and_fitness.readonly, sleep.readonly, "
         "health_metrics_and_measurements.readonly"
     )
-    # Google only issues a refresh token on first consent; a repeat
-    # authorization of an app you already approved comes back without
-    # one until you revoke it.
+    # Without prompt=consent Google issues a refresh token on first
+    # consent only, and a repeat authorization comes back without one
+    # until you revoke access. oauth_auth_url() always sends it, so this
+    # is the fallback for the rare exchange that still returns none.
     oauth_refresh_help = (
         "Google didn't return a refresh token - revoke access at "
         "myaccount.google.com/permissions and try again"
@@ -323,7 +327,12 @@ class GoogleHealthPlugin(SyncPlugin):
             "response_type": "code",
             "scope": " ".join(SCOPES),
             # offline + a forced consent screen is what makes Google hand
-            # back a refresh token rather than an access token alone.
+            # back a refresh token rather than an access token alone - on
+            # every authorization, a repeat of an app already approved
+            # included. An unverified (Testing-mode) client's refresh
+            # token expires after about 7 days, so re-authorising is
+            # routine; this is what keeps it to approve-and-paste, with
+            # no revoke at myaccount.google.com first.
             "access_type": "offline",
             "prompt": "consent",
             "code_challenge": code_challenge,

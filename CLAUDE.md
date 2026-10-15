@@ -116,7 +116,19 @@ own calls to its device API. Full direction:
   active one `.primary` (`sync_is_default` → Default, else the `sync_hours`
   one); clicking another `PUT`s `/api/connectors/<id>/cadence` (`{hours: N}`,
   Default `{hours: null}`) and moves the highlight, or shows the error in the
-  popup's `.src-msg` and leaves it — with **Remove source** at its foot. No
+  popup's `.src-msg` and leaves it — with **Remove source** at its foot. An
+  OAuth source (`add_flow` `oauth`; not Garmin) also has a plain, non-danger
+  **Re-authenticate** button beside its Connected via value: it closes
+  Settings and opens `openOAuthDevice(c, true)` — the add flow's consent
+  modal minus the client fields and the `add_note`, which `POST`s
+  `oauth/start` with `{}` at once (the server fills in the stored client
+  details) and goes straight to the approval link; the pasted address/code
+  `POST`s `oauth/finish`, and on success the modal closes, the sources card
+  refreshes and the row's pill reads "✓ re-authenticated" for a moment
+  (`flashSource()`); an error (`finish`'s own, the no-refresh-token help
+  included) shows in the modal. Only the refresh token is replaced:
+  `_store_account()`'s upsert keeps the account's Added date, and its data,
+  cadence and source roles are untouched. No
   global cadence control: the universal Settings popup keeps Opening page
   only. Remove is a two-step gate in
   the same modal, no `confirm()`: "Disconnecting stops future syncs." over a
@@ -281,6 +293,12 @@ own calls to its device API. Full direction:
   field writes nothing, and a day holding only one of these still lands.
   Google returns a point only for a day it has data (no 0 for a missing
   day), so it writes only measured values by construction — no wear gate.
+  Its auth URL (`oauth_auth_url()`) asks for `access_type=offline` and
+  `prompt=consent`, so every authorization, a repeat included, returns a
+  fresh refresh token with no revoke step: an unverified (Testing-mode)
+  client's token lapses after ~7 days, and this is what makes the weekly
+  re-auth a one-click-and-paste (Re-authenticate, in the source's Settings
+  popup) rather than remove, re-add and revoke.
   Every type logs one line a sync: the days filed with the latest raw
   fields beside the converted value, or "no data", or — points but none
   with the field — a sample point and its keys; values not filed and
@@ -492,7 +510,20 @@ own calls to its device API. Full direction:
   These shapes are the stable contract: change them additively only.
 - Connectors (no migration): `accounts(plugin_id, credentials, created_at)`,
   one row per connected plugin, `credentials` a Fernet-encrypted JSON blob
-  (the manifest fields, plus an oauth connector's refresh token). `GET
+  (the manifest fields, plus an oauth connector's refresh token). An oauth
+  connector is added in two calls: `POST /api/connectors/<plugin>/oauth/start`
+  (the manifest fields → `{ok, auth_url}`; the PKCE verifier and the
+  credentials wait server-side in `_oauth_pending`, 10 minutes), then
+  `.../oauth/finish` `{code}` (the plugin's `oauth_exchange()`, stored via
+  `_store_account()`; no refresh token back → 400 with its
+  `oauth_refresh_help`). `start_oauth` fills any manifest field the body
+  leaves out from `plugin.get_credentials(conn)` (the stored account, else
+  the env) — the body wins where it has a value, only manifest fields are
+  taken (never the old refresh token), and the missing-fields 400 runs on
+  the merge — so a connected source re-authorises with `{}`, nothing
+  re-entered, while a fresh add with nothing stored still 400s. The secret
+  stays server-side: the auth URL carries only the client id, and the
+  response only `auth_url`. `GET
   /api/connectors` lists every plugin with its manifest and `connected`/
   `configured`, ordered by display `name` (case-insensitive; display only —
   `PLUGINS` and the scheduler keep registration order). `GET
