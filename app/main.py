@@ -20,7 +20,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from migrations import connect, run_migrations
 from plugins import PLUGINS
 from plugins.base import OAUTH_REDIRECT_URI, write_metric
-from apps import find_app, scan_apps
+from apps import InstallError, find_app, install_app, scan_apps
 from crypto import encrypt
 from derived import (
     backfill_derived,
@@ -672,7 +672,8 @@ def get_samples(metric):
 # (apps.py) whose render(ctx, cfg) returns a display spec (host.py); the
 # page lists the apps, renders each and draws the specs. The folder is
 # scanned on every request, so an app added, edited or removed shows on
-# the next load, with no restart.
+# the next load, with no restart. An app is added by hand, or installed
+# from the page through POST /api/apps.
 
 
 @app.route("/api/apps", methods=["GET"])
@@ -682,6 +683,28 @@ def list_apps():
     Only apps that load: a malformed one is logged and left out.
     """
     return jsonify([a.summary() for a in scan_apps(app.config["APPS_DIR"])])
+
+
+@app.route("/api/apps", methods=["POST"])
+def add_app():
+    """Install an app from its files: {"files": {name: text}} -> APPS_DIR/<id>/.
+
+    The one route that writes to the apps folder, and the Applications
+    panel's Add Application popup is its caller. The id comes from the
+    app.yaml among the files. Every check is install_app()'s - the
+    page's own are a convenience - and a refusal writes nothing: 400
+    for a request, app.yaml, id or file name that won't do, 409 for an
+    id that's taken (an install only ever creates: remove the app to
+    reinstall it). 201 {"ok": true, "id", "has_app_py"} once it's there;
+    nothing in it has been run - the next scan loads it.
+    """
+    body = request.get_json(force=True, silent=True)
+    files = body.get("files") if isinstance(body, dict) else None
+    try:
+        installed = install_app(app.config["APPS_DIR"], files)
+    except InstallError as e:
+        return jsonify({"ok": False, "error": str(e)}), e.status
+    return jsonify({"ok": True, **installed}), 201
 
 
 @app.route("/api/app/<app_id>/render", methods=["GET"])

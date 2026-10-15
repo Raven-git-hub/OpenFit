@@ -87,11 +87,18 @@ a new metric (dated, history kept). Same app, values in three different homes.
   the volume copy is what runs.)
 - **Files in an app folder:** `app.yaml` always (the manifest — the one file the
   host must parse to see the app); `app.py` whenever the app computes anything
-  (optional in principle for a purely declarative app, but required until the host
-  ships built-in displays); plus, for richer apps, helper modules, reference-data
-  files (domain knowledge as *data* — a thresholds YAML, a lookup table — so it's
-  swappable without touching logic), and the optional `app.js` escape hatch when
-  the render-spec primitives can't express a visual.
+  (optional: a manifest-only app loads and lists, but until the host ships
+  built-in displays its tile only says it has nothing to draw); plus, for richer
+  apps, helper modules, reference-data files (domain knowledge as *data* — a
+  thresholds YAML, a lookup table — so it's swappable without touching logic),
+  and the optional `app.js` escape hatch when the render-spec primitives can't
+  express a visual.
+- **Getting it there:** copy the folder onto the volume, or paste/upload the
+  files in **＋ Add Application** (Data tab → Applications), which installs
+  them as `/data/apps/<id>/`. The id comes from `app.yaml` and must be
+  lowercase letters, digits and dashes; an install never overwrites — remove
+  an app, then add it again, to update it. See `app-host.md`, "Installing an
+  app".
 - **First app is expensive, the rest are cheap.** The first app drags the whole
   host into existence. After that, a new app is a folder with two small files.
 

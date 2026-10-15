@@ -10,13 +10,24 @@ changing the renderer or the scanner (**Layout**, below).
 ## An app
 
 An app is a folder in the apps directory: `APPS_DIR`, `/data/apps` by
-default, which is on the data volume beside the database. It holds two files:
+default, which is on the data volume beside the database. It holds its
+manifest and, usually, its engine:
 
 ```
 /data/apps/steps/
-  app.yaml     the manifest
-  app.py       render(ctx, cfg) -> a display spec
+  app.yaml     the manifest (required)
+  app.py       render(ctx, cfg) -> a display spec (optional)
 ```
+
+`app.py` is optional. An app with a manifest alone loads and is listed like
+any other, and its tile says it has nothing to draw: its render is
+`{"type": "empty", "message": "Nothing to draw yet: this app has no app.py"}`.
+Any other files in the folder, such as reference data or helper modules, are
+the app's own; the host doesn't read them.
+
+An app gets into the folder by hand (copy it onto the volume) or from the
+browser, with **＋ Add Application** ([Installing an app](#installing-an-app),
+below).
 
 **`app.yaml`**
 
@@ -41,8 +52,8 @@ host keeps them as written and in order, and doesn't check them yet. A
 mapping, or a field without a key, is malformed, so the app is skipped. The
 fields aren't passed to `render()` yet: `cfg` is `{}` (below).
 
-**`app.py`** defines `render(ctx, cfg)`, which returns a display spec. This
-is the real `steps` app:
+**`app.py`**, when there is one, defines `render(ctx, cfg)`, which returns a
+display spec. This is the real `steps` app:
 
 ```python
 def render(ctx, cfg):
@@ -82,9 +93,10 @@ reuse it.
   log line. So are dot-folders and loose files.
 - A folder with an `app.yaml` that doesn't load is **logged and skipped**:
   `[apps] skipping <folder>: <why>`. That covers bad YAML, a field of the wrong
-  type, no `app.py`, an `app.py` that fails to import (its traceback is
-  printed too), and a missing or non-callable `render`. One broken app never
-  stops the others, and never takes the server down.
+  type, an `app.py` that fails to import (its traceback is printed too), and a
+  missing or non-callable `render`. One broken app never stops the others, and
+  never takes the server down. A folder with no `app.py` isn't broken: it
+  loads, with nothing to draw (above).
 - Two folders with the same id: the first by folder name wins, and the other
   is logged and skipped.
 - `app.py` is imported from its absolute path with `importlib`. Nothing is
@@ -172,10 +184,101 @@ isn't plain JSON, such as NaN or a set. Any of these come back as an error
 spec with a 200, so the page shows one error tile. A spec type the page
 doesn't know is drawn as an error tile too.
 
+## Installing an app
+
+`POST /api/apps` installs an app from its files, and the Applications panel's
+**＋ Add Application** popup is how a person calls it. It's the first part of
+OpenFit that writes executable code to the volume from the browser.
+
+The trust model doesn't change: an app is the owner's own trusted code, at
+the same level as a sync plugin, and runs unsandboxed. So the install doesn't
+defend against the app. It guards two real things: a malformed app breaking
+the install or the host, and the install mechanics (a bad id or file name)
+escaping the apps folder. It's **strict on containment and loose on
+correctness**. All of it is `install_app()` in `app/apps.py`, and the server
+re-checks everything, whatever the popup checked.
+
+**The request** is JSON: `{"files": {"<name>": "<text>", ...}}`. Files are
+text. The app's id isn't sent separately: it comes from the `app.yaml` among
+the files.
+
+**The steps, in order.** A refusal at any step writes nothing.
+
+1. **An `app.yaml`** must be among the files, and must parse
+   (`yaml.safe_load`) to a mapping. If it doesn't, the error says why, with
+   the parser's message.
+2. **Containment**, checked before anything touches the disk:
+   - The manifest's `id` must match `^[a-z0-9][a-z0-9-]*$` (`INSTALL_ID`):
+     lowercase letters, digits and dashes, starting with a letter or digit.
+     It's required here, since there's no folder name to default to, and
+     it's stricter than the scanner's rule, so an installed app always loads
+     under its id. The match is anchored with `\Z`, so a trailing newline
+     doesn't slip through.
+   - Every file name must be a plain name (`filename_problem()`): not empty,
+     not `.`, and with no `/`, `\`, `..` or control character in it, so none
+     can be absolute or name anywhere outside the new folder. Every file's
+     content must be text.
+3. **A taken id is refused** with a 409: `'<id>' already exists — remove it
+   first to reinstall.` That's when `<apps dir>/<id>` exists as anything (a
+   folder, a file, a broken link), or an app in another folder already loads
+   under that id. An install only ever creates. It never updates an app in
+   place: removing the app, then adding it again, is the update path.
+4. **Correctness** is `check_app(manifest, files)`, and it's deliberately
+   minimal: past the parsable `app.yaml` with a valid id, nothing is checked.
+   Not the other manifest fields (`name`, `default_size` ...), not `app.py`'s
+   syntax, and nothing is ever imported or run. **This is the layer that
+   grows**: as real apps' quirks are learned, a check that catches a broken
+   app before it lands goes there. Containment is never moved into it.
+5. **The files are written** to a hidden staging folder in the apps
+   directory (`.install-<hex>`, which the scanner skips), and it's renamed to
+   `<id>` once they're all there, so the app appears whole or not at all. The
+   apps directory is made if it doesn't exist yet. Installs are serialised by
+   a process lock.
+6. **The response** is `201 {"ok": true, "id": "<id>", "has_app_py": true|false}`.
+
+A refusal is `{"ok": false, "error": "<message>"}`: 400 for the request, the
+`app.yaml`, the id or a file name, 409 for a taken id, and 500 if the files
+can't be written (the staging folder is removed).
+
+A malformed but contained app installs. The scanner then handles it as it
+would a hand-placed one: an app that doesn't load (a bad manifest field, an
+`app.py` that won't import) is logged and left out of the list, and one whose
+`render()` fails shows an error tile.
+
+### The Add Application popup
+
+**＋ Add Application** opens a popup that builds the app's folder as **file
+slots**: `app.yaml` (required) and `app.py` (optional), each a paste box with
+an **Upload** button beside it, which reads the chosen file into the same box.
+**＋ Add file** adds a named slot (a name field, Upload and Remove) for
+reference data or a helper. **Review** moves to the confirm step, which reads
+the id from the `app.yaml` (there's no id field of its own) and shows
+"Install application: `<id>`", the files, and, when any file is a `.py`, the
+notice "This app includes custom code and runs with full access to your
+OpenFit data." If the `app.yaml` is empty, has no `id:` line, or its id is
+invalid, the confirm step says so instead and Install is disabled.
+
+The popup's checks mirror the server's (the id charset and the file-name
+rules), for quick feedback only. It reads the id from the top-level `id:`
+line without a YAML parser, so it's a preview: the server's parse is the one
+that counts. **Install** posts the files. On success the popup closes and the
+Applications list and Home are re-read at once, so the app appears without a
+reload, and the controls card notes "✓ Installed <name>", or, if the new app
+didn't load, that the server's log says why. On a refusal the popup stays
+open and shows the server's message as it's given, such as the taken-id
+message or a YAML parse error.
+
+Not in this slice: updating an app in place (refused by design), a zip or
+folder upload (it would need its own path checks), and deeper correctness
+checks.
+
 ## Routes
 
 - `GET /api/apps` → `[{id, name, default_size: {w, h}}]`, the apps that load,
   in folder order.
+- `POST /api/apps` → installs an app from `{"files": {name: text}}`; `201
+  {"ok": true, "id", "has_app_py"}`, or a refusal that writes nothing. See
+  [Installing an app](#installing-an-app).
 - `GET /api/app/<id>/render` → the app's spec, rendered now with `cfg` `{}`.
   It's always a 200 for an installed app, with an error spec if the render
   fails. An id with no app that loads gets `404 {"ok": false, "error": "unknown
@@ -223,13 +326,13 @@ saved layout. `paintTiles`, `renderSpec` and the scanner don't change.
 
 - **Configure mode**, the visible grid, drag/resize, collision and a saved
   layout: the grid pass above.
-- **The Library:** browsing and installing apps. It reuses `scan_apps()` and
-  `/api/apps`. Its shell has landed: the Data tab's right-hand **Applications**
-  column lists `/api/apps` by name, with Add Application, Browse, Build and
-  Create as placeholders (see
-  [frontend-redesign-and-widget-model.md](frontend-redesign-and-widget-model.md)).
-  Still to come: the Add Application popup, expandable rows (what an app
-  reads, its files, its writes) and alerts.
+- **The rest of the Library.** It reuses `scan_apps()` and `/api/apps`. Its
+  shell has landed: the Data tab's right-hand **Applications** column lists
+  `/api/apps` by name (see
+  [frontend-redesign-and-widget-model.md](frontend-redesign-and-widget-model.md)),
+  and Add Application installs one ([above](#installing-an-app)). Browse,
+  Build and Create are still placeholders. Still to come: expandable rows
+  (what an app reads, its files, its writes, and removing it) and alerts.
 - **Per-instance config** and the UI to edit it (`cfg` is `{}`), **metric
   write-back**, and a custom `app.js` for an app that draws its own face.
 - **Enforcing `reads`:** it's recorded, but `ctx.metric()` serves any key in

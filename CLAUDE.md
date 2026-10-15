@@ -102,15 +102,38 @@ own calls to its device API. Full direction:
   `reads` (a list of keys — recorded, not enforced), `config` (an ordered
   list of field mappings `{key, label, type, default}` — order drives the
   config form; `key` a non-empty string, unique; the rest kept as written,
-  unchecked; a mapping is malformed), all optional but type-checked) and an `app.py` whose `render(ctx, cfg)` is
+  unchecked; a mapping is malformed), all optional but type-checked) and,
+  optionally, an `app.py` whose `render(ctx, cfg)` is
   imported by `importlib` from its absolute path (nothing added to
-  `sys.path`/`sys.modules`). A folder with no `app.yaml` isn't an app (no
-  log); one that doesn't load — bad YAML or field, no `app.py`, an import
+  `sys.path`/`sys.modules`). With no `app.py` the app still loads and lists,
+  its render the empty spec "Nothing to draw yet: this app has no app.py"
+  (`NOTHING_TO_DRAW`); any other files in the folder are the app's own. A
+  folder with no `app.yaml` isn't an app (no
+  log); one that doesn't load — bad YAML or field, an import
   error, no callable `render` — logs `[apps] skipping <folder>: <why>` and is
   left out, never raising; a duplicate id keeps the first folder. Scanned
   on every request (no restart for a new app); a loaded app is cached until
   its `app.yaml`/`app.py` mtime or size changes, so a broken one logs once per
-  change. `find_app(apps_dir, id)` picks one.
+  change. `find_app(apps_dir, id)` picks one. `install_app(apps_dir, files)`
+  is the one way an app is added from the browser (`POST /api/apps`, the
+  host's one write route): `files` `{name: text}`, in order — `app.yaml`
+  among them and parsing (`yaml.safe_load`) to a mapping; its `id`
+  (required here: no folder name to default to) matching `INSTALL_ID`,
+  `[a-z0-9][a-z0-9-]*` with `\Z` (stricter than the scanner's, so an install
+  always loads under its id); every file name plain (`filename_problem()`:
+  non-empty, not `.`, no `/`, `\`, `..` or control character, writable as
+  UTF-8) and every content a string; the id free (`_taken()`: no
+  `<apps dir>/<id>` as anything, a broken link included, and no app in
+  another folder loading under it) else 409 `"'<id>' already exists — remove
+  it first to reinstall."` (install only creates, never updates); then
+  `check_app(manifest, files)` — **the correctness layer that grows**, a
+  no-op today: no manifest fields beyond the id are checked, `app.py` isn't
+  parsed, nothing is run. Only then is anything written: into a hidden
+  `.install-<hex>` folder (the scanner skips dot-folders), renamed to `<id>`
+  once whole, under a process lock, `APPS_DIR` made if missing; a failed
+  write removes it (500). Every refusal raises `InstallError(message,
+  status)` having written nothing; containment checks run before anything
+  touches the disk and never move into `check_app()`.
 - `app/host.py` — the app host: `Ctx(conn, today=None)`, built per render
   call, is all an app's `render()` gets. `ctx.metric(key, days=None)` → a
   list of `Point(date, value, source)` (a `NamedTuple`: `.date` a
@@ -154,7 +177,7 @@ own calls to its device API. Full direction:
   appears in it), saved per browser in `localStorage` `of-opening-tab`; boot
   opens that tab via `showTab()` (Data if unset or no longer a tab) in place
   of a hardcoded default. ＋ Add, Add source once every connector is
-  connected, and Applications' four buttons each open one shared
+  connected, and Applications' Browse / Build / Create each open one shared
   coming-soon placeholder modal
   (`comingSoon(title)`); while a connector is still unconnected, Add source
   opens its real add flow, from a `.pop` menu of the unconnected ones —
@@ -209,17 +232,45 @@ own calls to its device API. Full direction:
   is two stacked blocks in the right column, never one card. On top, the
   controls card (`#appsCard`, painted once at boot by `paintAppControls()`):
   the title and its voice button, then **＋ Add Application** (Add source's
-  style) with **Browse** / **Build** / **Create** grouped at the far end —
-  placeholders, each opening `comingSoon()` — and no app rows. Below it,
+  style; it opens the install popup, below) with **Browse** / **Build** /
+  **Create** grouped at the far end — placeholders, each opening
+  `comingSoon()` — then a status line (`#appsMsg`, empty until an install
+  reports, `appsNote()`), and no app rows. Below it,
   the list panel (`#appListCard`, `paintApps()`), the right column's
   equivalent of Your data's list: a `.alist` container of `.aitem` rows
   (each an `.arow`), one per app `GET /api/apps` lists, its name only
   (`esc()`d; `/api/apps` lists only apps that load and carries no status),
   and the list's states — "No applications installed" when there are none,
-  a Retry when the read fails. Read once at boot (`loadApps()`), separately
-  from Home; view only — it writes nothing, and its rows don't expand yet
-  (Library branch 3 makes them expandable — reads / files / ticker; the Add
-  popup and alerts are their own branches). A round voice button
+  a Retry when the read fails. Read at boot (`loadApps()`, which returns
+  what it read, or null), separately from Home, and again after an
+  install; the list writes nothing, and its rows don't expand yet
+  (Library branch 3 makes them expandable — reads / files / ticker; alerts
+  are their own branch). **The Add Application popup** (`openAddApp()`,
+  the `.modal` chrome widened by `.wide`) builds the app folder as file
+  slots (`fileSlot()`): `app.yaml` (Required) and `app.py` (Optional), each
+  a monospace paste `<textarea>` with an **Upload** button beside it
+  (a hidden file input; the file's text fills the same box), and **＋ Add
+  file** for named slots (a name field, Upload — which also fills an
+  empty name — and Remove). **Review** gathers them (`slotFiles()`: an
+  empty `app.py` or a blank added slot is left out; a bad or duplicate
+  name stops on the files step, the server's rules mirrored by
+  `fileNameProblem()`), then the confirm step reads the id from the
+  `app.yaml` — there's no id field — with `manifestId()`, a parser-free
+  preview (the last top-level `id:` line, quotes and a trailing comment
+  stripped, checked against the server's `INSTALL_ID`): "Install
+  application: `<id>`", or why it can't (empty, no id, an unclosed quote,
+  a bad id) with Install disabled; the file names as chips; and, when any
+  file ends `.py`, "This app includes custom code and runs with full
+  access to your OpenFit data." (`CUSTOM_CODE`). **Install** `POST`s
+  `/api/apps` `{files}`: on success the popup closes and
+  `appInstalled()` re-reads Home and the list at once, then notes "✓
+  Installed <name>" — or, if the new id isn't listed (installed but the
+  scanner skipped it), that it doesn't load and the server's log says
+  why; an error (the server's message, as given — taken id, parse error)
+  stays in the popup. Every name and id reaching `innerHTML` is `esc()`d.
+  The page's checks are UX only; the server re-checks everything. A
+  test runs `fileNameProblem()`/`manifestId()` under node (skipped
+  without it) against the server's own checks. A round voice button
   after the "Connected sources", "Your data" and "Applications" titles plays
   that card's clip (`/audio/connected-sources.mp3`, `/audio/your-data.mp3`,
   `/audio/applications.mp3` — the last not recorded yet, so it 404s and
@@ -241,7 +292,8 @@ own calls to its device API. Full direction:
   is gone). See `docs/architecture/frontend-redesign-and-widget-model.md`.
   **Home** reads `GET /api/apps`, then every `GET /api/app/<id>/render` in
   parallel (a failed fetch is that app's error tile), and is re-read after
-  a Sync now or a source removal, as the data card is. Three parts, kept
+  a Sync now or a source removal, as the data card is, and after an app
+  install. Three parts, kept
   apart so the grid pass (Configure, drag/resize, saved layout) swaps only
   the middle one: `loadHome()` → `[{app_id, name, spec, w, h}]`;
   `layoutTiles` (= `autoLayout`, every `x`/`y` null) gives each tile a cell
@@ -263,7 +315,8 @@ own calls to its device API. Full direction:
   none "No data"),
   `panel` (children stacked; the line takes the rest), `empty`/`error` (muted,
   centred; error under "Couldn't render <name>"), any other type an error
-  tile. No apps → a note saying where they go; `/api/apps` failing → a Retry.
+  tile. No apps → a note pointing to ＋ Add Application (or the apps
+  folder); `/api/apps` failing → a Retry.
 - `tests/` — pytest, temp DB, no network.
 - `docs/architecture/` — design direction (read first). `docs/design/` — frontend references.
 
@@ -741,8 +794,11 @@ same PR:
   process. Still to come: the grid pass (Configure, a visible grid,
   drag/resize, collision, positions saved in `settings` — it swaps
   `layoutTiles` only), the rest of the Library (its shell landed: the Data
-  tab's Applications column, listing `/api/apps`, its buttons placeholders;
-  next the Add Application popup, then expandable rows, then alerts),
+  tab's Applications column, listing `/api/apps`; then the Add Application
+  popup and `POST /api/apps`, installing an app from pasted or uploaded
+  files — `app.py` became optional; Browse / Build / Create are still
+  placeholders; next expandable rows, then alerts; updating in place and
+  zip upload are out — remove, then add, is the update path),
   per-instance `cfg` and its UI, metric write-back, a custom `app.js`,
   enforcing `reads`, and the sandbox (Phase 4).
 - **The access contract:** landed (see Data model): discovery, range queries

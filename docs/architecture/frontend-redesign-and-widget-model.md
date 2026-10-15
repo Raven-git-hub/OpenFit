@@ -64,8 +64,10 @@ Right column:
    - **The controls card** (`#appsCard`): the "Applications" title and its
      voice button, then **＋ Add Application** in Add source's style on the
      left, with **Browse**, **Build** and **Create** grouped at the far end.
-     All four are placeholders for now, each opening the coming-soon modal.
-     It holds no app rows.
+     Add Application opens the install popup (below); the other three are
+     placeholders for now, each opening the coming-soon modal. Under the
+     buttons, a status line that stays empty until an install has something
+     to say. It holds no app rows.
    - **The app list** (`#appListCard`), directly below it: the right column's
      equivalent of Your data's list, a container of rows (`.alist`, `.aitem`,
      `.arow`), one per installed app from `GET /api/apps` (the list Home draws
@@ -74,10 +76,19 @@ Right column:
      own. The list's states live here too: with none installed it reads "No
      applications installed"; if the read fails, it says so with a **Retry**.
 
-   The list is read once at boot, and neither block writes anything. The rows
-   don't expand yet. Still to come, each its own branch: the Add Application
-   popup, then the expandable rows (what an app reads, its files, its writes),
+   The list is read at boot and again after an install; the list itself
+   writes nothing. The rows don't expand yet. Still to come, each its own
+   branch: the expandable rows (what an app reads, its files, its writes),
    then alerts.
+
+   **The Add Application popup** installs an app from the browser: a slot per
+   file (`app.yaml` required, `app.py` optional, **＋ Add file** for more),
+   each pasted or uploaded; **Review** shows the id read from the `app.yaml`,
+   the files, and a custom-code notice when any is Python; **Install** posts
+   them to `POST /api/apps`. On success it closes and the list and Home are
+   re-read, so the app shows at once; on a refusal it stays open with the
+   server's message. The full flow and the server's checks are in
+   [app-host.md](app-host.md#installing-an-app).
 
 Each card's title has a voice button just after it (below).
 
@@ -145,8 +156,8 @@ the button comes back.
 **The coming-soon placeholder.** One reusable modal (`comingSoon(title)`),
 built on the same `.modal` chrome: a title, "Coming soon." and a Close button
 (Escape and a backdrop click close it too). Add source (with nothing left to
-add), ＋ Add, and Applications' ＋ Add Application, Browse, Build and Create
-open it, each with its own title.
+add), ＋ Add, and Applications' Browse, Build and Create open it, each with
+its own title.
 
 ## Voice explanations: `GET /audio/<name>`
 

@@ -73,8 +73,9 @@ continuous it is, and which source wins each metric — not the product.
   covered (day / week / month, and the last five weeks), and drag-to-reorder
   source priority per metric. Beside them, in a second column on a wide
   window, an **Applications** panel — its controls on top, the apps you've
-  installed listed below them (adding, browsing and building apps from it
-  are still to come).
+  installed listed below them. **＋ Add Application** installs an app from
+  files you paste or upload (browsing and building apps from it are still to
+  come).
 - A first **app host**: the Home tab shows the apps you install (none ship with
   OpenFit) as live tiles — see [Apps on the Home tab](#apps-on-the-home-tab).
 
@@ -255,8 +256,8 @@ that isn't a whole number from 1 up, is a 400.
 
 OpenFit ships no apps, but it hosts the ones you install: each is drawn as a
 tile on the Home tab, from your live data. An app is a folder in `/data/apps`
-(on the data volume; `$APPS_DIR` moves it) holding an `app.yaml` manifest and
-an `app.py`:
+(on the data volume; `$APPS_DIR` moves it) holding an `app.yaml` manifest and,
+usually, an `app.py`:
 
 ```yaml
 # /data/apps/steps/app.yaml
@@ -288,7 +289,17 @@ optional title), `panel` and `empty`. Tiles flow left to right at their default 
 load is logged and left out, and one whose `render()` fails shows as an error
 tile, never a broken page. `GET /api/apps` lists what's installed and
 `GET /api/app/<id>/render` returns one app's spec; the Data tab's
-Applications panel lists the same apps. Apps run as trusted code
+Applications panel lists the same apps.
+
+To install one, copy its folder onto the volume, or use **＋ Add
+Application** on the Data tab: paste or upload its `app.yaml`, its `app.py`
+and any files it reads, review, and install. That's `POST /api/apps`
+(`{"files": {name: text}}`), which writes them to `/data/apps/<id>/`, the
+id read from the `app.yaml` (lowercase letters, digits and dashes). The
+server checks every id and file name stays inside the apps folder, refuses
+an id that's already taken (remove the app first to reinstall it), and
+otherwise doesn't check or run the app: a broken one installs, then is
+logged and left out, as a hand-placed one would be. Apps run as trusted code
 for now (a sandbox is Phase 4). The full contract is in
 [docs/architecture/app-host.md](docs/architecture/app-host.md).
 
@@ -358,7 +369,7 @@ authorization returns a fresh refresh token.
 ```
 app/
   main.py                     Flask API + scheduler, loads plugins from plugins/
-  apps.py                     Finds and loads the installed apps (/data/apps)
+  apps.py                     Finds, loads and installs the apps (/data/apps)
   host.py                     The app host: an app's ctx, its spec builders, render
   templates/index.html        The data console + Home's app tiles (vanilla JS, no build step)
   audio/                      The console's voice clips, baked into the image

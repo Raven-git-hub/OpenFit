@@ -73,9 +73,11 @@ installed as folders in `/data/apps` (an `app.yaml` manifest + a
 `render(ctx, cfg)` returning a display spec), drawn as tiles that flow down the
 Home tab at their default size — `docs/architecture/app-host.md`. The
 Library's shell followed: an Applications column on the Data tab listing the
-installed apps, its Add / Browse / Build / Create buttons placeholders. Next:
-the Add Application popup and the rest of the Library, and the grid pass
-(Configure, drag/resize, saved layout).
+installed apps. Then the Add Application popup: an app installed from pasted
+or uploaded files through `POST /api/apps` (the host's first write route,
+strict on containment, loose on correctness). Next: the rest of the Library
+(expandable rows, alerts; Browse / Build / Create are still placeholders), and
+the grid pass (Configure, drag/resize, saved layout).
 
 ## Phase 5 — OpenFit Host (per-user provisioning)
 
