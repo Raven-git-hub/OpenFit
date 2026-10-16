@@ -74,8 +74,9 @@ continuous it is, and which source wins each metric — not the product.
   source priority per metric. Beside them, in a second column on a wide
   window, an **Applications** panel — its controls on top, the apps you've
   installed listed below them. **＋ Add Application** installs an app from
-  files you paste or upload (browsing and building apps from it are still to
-  come).
+  files you paste or upload, and each app's row opens onto what it reads, its
+  files (viewable, read-only), **Refresh** and **Uninstall** (browsing and
+  building apps from it are still to come).
 - A first **app host**: the Home tab shows the apps you install (none ship with
   OpenFit) as live tiles — see [Apps on the Home tab](#apps-on-the-home-tab).
 
@@ -287,9 +288,13 @@ of points with `.date`, `.value` and `.source` — and it
 returns a display spec built from `number`, `line` (a sparkline, with an
 optional title), `panel` and `empty`. Tiles flow left to right at their default size; an app that fails to
 load is logged and left out, and one whose `render()` fails shows as an error
-tile, never a broken page. `GET /api/apps` lists what's installed and
-`GET /api/app/<id>/render` returns one app's spec; the Data tab's
-Applications panel lists the same apps.
+tile, never a broken page. `GET /api/apps` lists what's installed (with each
+app's declared reads and its files) and `GET /api/app/<id>/render` returns
+one app's spec; the Data tab's Applications panel lists the same apps. Open
+an app's row there to see what it reads, view any of its files read-only
+(`GET /api/app/<id>/file?name=`), re-run its render (**Refresh**), or
+**Uninstall** it (`DELETE /api/apps/<id>`, after a confirm), which deletes
+its folder from `/data/apps/`.
 
 To install one, copy its folder onto the volume, or use **＋ Add
 Application** on the Data tab: paste or upload its `app.yaml`, its `app.py`
@@ -297,7 +302,7 @@ and any files it reads, review, and install. That's `POST /api/apps`
 (`{"files": {name: text}}`), which writes them to `/data/apps/<id>/`, the
 id read from the `app.yaml` (lowercase letters, digits and dashes). The
 server checks every id and file name stays inside the apps folder, refuses
-an id that's already taken (remove the app first to reinstall it), and
+an id that's already taken (uninstall the app first to reinstall it), and
 otherwise doesn't check or run the app: a broken one installs, then is
 logged and left out, as a hand-placed one would be. Apps run as trusted code
 for now (a sandbox is Phase 4). The full contract is in

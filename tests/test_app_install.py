@@ -104,7 +104,8 @@ def test_a_yaml_only_app_is_listed_with_nothing_to_draw(client, apps_dir):
     install(client, {"app.yaml": "id: notes\nname: Notes\n"})
 
     assert client.get("/api/apps").get_json() == [
-        {"id": "notes", "name": "Notes", "default_size": {"w": 2, "h": 2}}
+        {"id": "notes", "name": "Notes", "default_size": {"w": 2, "h": 2},
+         "reads": [], "files": ["app.yaml"]}
     ]
     assert client.get("/api/app/notes/render").get_json() == {
         "type": "empty",

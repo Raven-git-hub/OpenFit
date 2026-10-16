@@ -28,7 +28,10 @@ is logged once per change rather than on every page load.
 
 This is the one way the host finds an app: the Home tab's routes use it
 now, and the Library reuses it. install_app() is the one way one is
-added from the browser (POST /api/apps): see its section, below.
+added from the browser (POST /api/apps), uninstall_app() the one way one
+is removed (DELETE /api/apps/<id>), and read_app_file() the one way a
+file in one is read back (GET /api/app/<id>/file): see their sections,
+below.
 """
 
 import importlib.util
@@ -69,8 +72,15 @@ class InstalledApp:
     render: object = field(repr=False)
 
     def summary(self):
-        """What GET /api/apps lists for it."""
-        return {"id": self.id, "name": self.name, "default_size": dict(self.default_size)}
+        """What GET /api/apps lists for it: the manifest's id, name,
+        default_size and reads, and the names of the files in its folder."""
+        return {
+            "id": self.id,
+            "name": self.name,
+            "default_size": dict(self.default_size),
+            "reads": list(self.reads),
+            "files": app_files(self.path),
+        }
 
 
 def _log(message):
@@ -279,16 +289,21 @@ INSTALL_ID = re.compile(r"[a-z0-9][a-z0-9-]*\Z")
 # The control characters, NUL among them: never in a file name.
 _CONTROL = re.compile(r"[\x00-\x1f\x7f]")
 
-# Installs one at a time, so two can't both find an id free.
-_install_lock = threading.Lock()
+# Installs and uninstalls one at a time, so two installs can't both find
+# an id free, and an uninstall can't move a folder an install is checking.
+_write_lock = threading.Lock()
 
 
-class InstallError(Exception):
-    """An install refused, and why, with the HTTP status to send. Nothing was written."""
+class LibraryError(Exception):
+    """A Library request refused, and why, with the HTTP status to send."""
 
     def __init__(self, message, status=400):
         super().__init__(message)
         self.status = status
+
+
+class InstallError(LibraryError):
+    """An install refused. Nothing was written."""
 
 
 def taken_message(app_id):
@@ -418,7 +433,7 @@ def install_app(apps_dir, files):
             raise InstallError(f"{name!r} must be text")
 
     apps_dir = os.path.abspath(apps_dir)
-    with _install_lock:
+    with _write_lock:
         if _taken(apps_dir, app_id):
             raise InstallError(taken_message(app_id), 409)
         check_app(manifest, dict(files))
@@ -450,3 +465,138 @@ def _write_app(apps_dir, app_id, files):
     except BaseException:
         shutil.rmtree(staging, ignore_errors=True)
         raise
+
+
+# ---------- an app's files: GET /api/apps, GET /api/app/<id>/file ----------
+
+# The Library lists an app's files and shows one on request. The name to
+# show comes from the request, so it gets the installer's discipline:
+# whatever it says, nothing outside the app's own folder is ever read.
+
+# The most of one file the viewer shows: past this it's data, not
+# something to read in a popup.
+MAX_VIEW_BYTES = 1024 * 1024
+
+
+class AppFileError(LibraryError):
+    """A file read refused. Nothing was read."""
+
+
+def app_files(folder):
+    """The names of the files in an app's folder, sorted.
+
+    Plain files directly in the folder only: not a sub-folder (such as
+    the __pycache__ that loading app.py leaves), not a link - which could
+    point anywhere - and not a name filename_problem() refuses. So every
+    name listed is one read_app_file() serves.
+    """
+    try:
+        with os.scandir(folder) as entries:
+            return sorted(
+                e.name
+                for e in entries
+                if e.is_file(follow_symlinks=False) and not filename_problem(e.name)
+            )
+    except OSError:
+        return []
+
+
+def read_app_file(app, name):
+    """The text of the file `name` in an installed app's folder.
+
+    `name` is held to the installer's rule first (filename_problem(): a
+    plain name - no '/', '\\' or '..', never absolute) and must then be
+    one app_files() lists: a plain file directly in the folder, not a
+    link. The path it names is resolved and must still sit in the folder,
+    and it's opened without following a link, in case one was swapped in
+    since. Read as UTF-8, as given (line endings and all).
+
+    Raises AppFileError: 400 for a name that isn't plain, 404 for one the
+    folder doesn't hold, 413 for a file over MAX_VIEW_BYTES, 415 for one
+    that isn't UTF-8 text.
+    """
+    problem = filename_problem(name)
+    if problem:
+        raise AppFileError(problem)
+    if name not in app_files(app.path):
+        raise AppFileError(f"{app.id} has no file {name!r}", 404)
+    folder = os.path.realpath(app.path)
+    path = os.path.join(folder, name)
+    # The last word, as _write_app() has: in the folder, whatever the
+    # checks above let through.
+    if os.path.dirname(os.path.realpath(path)) != folder:
+        raise AppFileError(f"{app.id} has no file {name!r}", 404)
+    try:
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        with open(fd, "rb") as f:
+            data = f.read(MAX_VIEW_BYTES + 1)
+    except OSError:
+        raise AppFileError(f"{app.id} has no file {name!r}", 404) from None
+    if len(data) > MAX_VIEW_BYTES:
+        raise AppFileError(f"{name!r} is too large to show (over {MAX_VIEW_BYTES / 2**20:g} MB)", 413)
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        raise AppFileError(f"{name!r} isn't text, so it can't be shown", 415) from None
+
+
+# ---------- uninstalling an app: DELETE /api/apps/<id> ----------
+
+# The first destructive action on an app. As with installing, the
+# request names the app, never a path: the id is checked, then looked up
+# by scanning, and what's removed is the folder the scanner loaded that
+# app from - always a direct child of the apps folder.
+
+
+class UninstallError(LibraryError):
+    """An uninstall refused. Nothing was removed."""
+
+
+def uninstall_app(apps_dir, app_id):
+    """Remove the installed app with this id: its whole folder.
+
+    The id must match APP_ID - the scanner's rule, which every listed
+    app's id meets, so it can never be '..', hold a '/', or name a
+    dot-folder - and an app must load under it. The folder is renamed to
+    a hidden .uninstall-<hex> one beside it (one atomic step; the scanner
+    skips dot-folders, so the app is gone whole), and only then deleted.
+    A delete that fails part way leaves only that hidden folder, logged,
+    never a half-app the scanner would try to load. A folder that's a
+    link is unlinked: what it points to is never touched.
+
+    Returns {"id"}. Raises UninstallError, having removed nothing: 400 for
+    an id no app could have, 404 for one no app loads under, 500 if the
+    folder can't be moved.
+    """
+    if not isinstance(app_id, str) or not APP_ID.match(app_id):
+        raise UninstallError(
+            f"not an app id: letters, digits, '-' and '_', starting with a letter or digit: {app_id!r}"
+        )
+    apps_dir = os.path.abspath(apps_dir)
+    with _write_lock:
+        installed = find_app(apps_dir, app_id)
+        folder = installed.path if installed else None
+        # The scanner only loads a direct child of the apps folder; this
+        # is the last word, in case that ever changes.
+        if folder is None or os.path.dirname(folder) != apps_dir:
+            raise UninstallError(f"'{app_id}' isn't installed", 404)
+        trash = os.path.join(apps_dir, f".uninstall-{secrets.token_hex(8)}")
+        try:
+            os.rename(folder, trash)
+        except OSError as e:
+            raise UninstallError(f"couldn't remove the app's folder: {e.strerror or e}", 500) from None
+        # A new app in the same folder is loaded afresh, never from cache.
+        with _loaded_lock:
+            _loaded.pop(folder, None)
+
+    try:
+        if os.path.islink(trash):
+            os.unlink(trash)
+        else:
+            shutil.rmtree(trash)
+    except OSError as e:
+        # Uninstalled all the same: what's left is hidden from the scanner.
+        _log(f"uninstalled {app_id}, but couldn't delete {trash}: {e.strerror or e}")
+    else:
+        _log(f"uninstalled {app_id}: removed {folder}")
+    return {"id": app_id}

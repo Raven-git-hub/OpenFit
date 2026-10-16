@@ -114,9 +114,14 @@ own calls to its device API. Full direction:
   left out, never raising; a duplicate id keeps the first folder. Scanned
   on every request (no restart for a new app); a loaded app is cached until
   its `app.yaml`/`app.py` mtime or size changes, so a broken one logs once per
-  change. `find_app(apps_dir, id)` picks one. `install_app(apps_dir, files)`
+  change. `find_app(apps_dir, id)` picks one. `InstalledApp.summary()` is
+  what `GET /api/apps` lists: `{id, name, default_size, reads, files}` —
+  `files` from `app_files(folder)`, the sorted names of the plain files
+  directly in the folder (no sub-folder such as `__pycache__`, no link, no
+  name `filename_problem()` refuses), so every name listed is one the file
+  route serves. `install_app(apps_dir, files)`
   is the one way an app is added from the browser (`POST /api/apps`, the
-  host's one write route): `files` `{name: text}`, in order — `app.yaml`
+  host's first write route): `files` `{name: text}`, in order — `app.yaml`
   among them and parsing (`yaml.safe_load`) to a mapping; its `id`
   (required here: no folder name to default to) matching `INSTALL_ID`,
   `[a-z0-9][a-z0-9-]*` with `\Z` (stricter than the scanner's, so an install
@@ -130,10 +135,30 @@ own calls to its device API. Full direction:
   no-op today: no manifest fields beyond the id are checked, `app.py` isn't
   parsed, nothing is run. Only then is anything written: into a hidden
   `.install-<hex>` folder (the scanner skips dot-folders), renamed to `<id>`
-  once whole, under a process lock, `APPS_DIR` made if missing; a failed
+  once whole, under a process lock (`_write_lock`, shared with uninstall),
+  `APPS_DIR` made if missing; a failed
   write removes it (500). Every refusal raises `InstallError(message,
   status)` having written nothing; containment checks run before anything
   touches the disk and never move into `check_app()`.
+  `uninstall_app(apps_dir, app_id)` is the one way an app is removed
+  (`DELETE /api/apps/<id>`): the id, from the URL, must match the scanner's
+  `APP_ID` (every listed id does, so a hand-placed `My_App` can go too;
+  `..`, a `/`, a dot-folder never) else 400; the folder removed is the one
+  `find_app()` loaded the app from — found by scanning, never built from
+  the id, always a direct child of `APPS_DIR` — else 404 (an app that
+  doesn't load isn't installed as far as the Library knows). Under the
+  lock it's renamed to a hidden `.uninstall-<hex>` (one atomic step; a
+  failed rename → 500, nothing moved) and its `_loaded` cache entry
+  dropped (a reinstall into the same folder always loads afresh); then
+  deleted — a link unlinked, never its target — and a delete that fails
+  part way leaves only that hidden folder, logged, never a half-app.
+  `read_app_file(app, name)` is the one way a file in one is read back
+  (`GET /api/app/<id>/file?name=`): `name` must pass `filename_problem()`
+  (400) and be in `app_files()` (404); its resolved path must still sit in
+  the folder, and it's opened `O_NOFOLLOW` (404); over `MAX_VIEW_BYTES`
+  (1 MiB) → 413, not UTF-8 → 415; else its text, as given. Nothing outside
+  the app's folder is ever read. `UninstallError`/`AppFileError` are
+  `InstallError`'s siblings, all `LibraryError(message, status)`.
 - `app/host.py` — the app host: `Ctx(conn, today=None)`, built per render
   call, is all an app's `render()` gets. `ctx.metric(key, days=None)` → a
   list of `Point(date, value, source)` (a `NamedTuple`: `.date` a
@@ -237,15 +262,36 @@ own calls to its device API. Full direction:
   `comingSoon()` — then a status line (`#appsMsg`, empty until an install
   reports, `appsNote()`), and no app rows. Below it,
   the list panel (`#appListCard`, `paintApps()`), the right column's
-  equivalent of Your data's list: a `.alist` container of `.aitem` rows
-  (each an `.arow`), one per app `GET /api/apps` lists, its name only
-  (`esc()`d; `/api/apps` lists only apps that load and carries no status),
-  and the list's states — "No applications installed" when there are none,
-  a Retry when the read fails. Read at boot (`loadApps()`, which returns
-  what it read, or null), separately from Home, and again after an
-  install; the list writes nothing, and its rows don't expand yet
-  (Library branch 3 makes them expandable — reads / files / ticker; alerts
-  are their own branch). **The Add Application popup** (`openAddApp()`,
+  equivalent of Your data's list: a `.alist` container of rows, one per
+  app `GET /api/apps` lists, its name (`esc()`d; `/api/apps` lists only
+  apps that load and carries no status), and the list's states — "No
+  applications installed" when there are none, a Retry when the read
+  fails. Read at boot (`loadApps()`, which returns what it read, or null),
+  separately from Home, and again after an install or uninstall. A row
+  expands as a Your data row does — one mechanism, `expandable(item, head,
+  o)`, which both `rowItem()` and `appRow()` hand their item and head to:
+  the head a button, its click showing/hiding the panel, the chevron
+  turning (`.open`), `aria-expanded`/`aria-controls` kept; the open ids in
+  a Set (`state.open`, `appsList.open`) so a row stays open across a
+  refresh. An app row is a `.ditem.aitem`, its head a `.drow.arow`
+  (chevron · name); open, `appPanel()` is a `.dpanel.apanel` of three
+  columns (one on a phone): **Reads** (the manifest's keys, `esc()`d, the
+  metric's name on hover; none → a muted "No declared reads"), **Files**
+  (each a button opening `openAppFile()`: a `.wide` modal reading
+  `GET /api/app/<id>/file` into a read-only monospace `<pre>` as
+  `textContent`, never markup; an empty file or the server's refusal shown
+  as a message), and **Writes** — `writesTicker()`, a reserved slot
+  (Day / Wk / Mth, each `—`; nothing counted or read), marked `//
+  writes-ticker: filled in when app-tier write-back exists`. Under them
+  **Refresh** (`btn sm`: re-fetches `GET /api/app/<id>/render` — the
+  existing route, no rescan, no reload — and `repaintTile()` redraws that
+  app's Home tile in place from the fresh spec; a render that failed says
+  so) and **Uninstall** (`btn sm danger`), which only opens an inline
+  `danger-panel` ("Uninstall <name>?" / "This deletes its files from
+  `/data/apps/`." — [Cancel] / [Uninstall]; no `confirm()`); its confirm
+  `DELETE`s `/api/apps/<id>`, then `loadApps()` + `loadHome()` (the row and
+  the tile go) and notes "✓ Uninstalled <name>"; an error stays in the
+  row. Alerts are their own branch. **The Add Application popup** (`openAddApp()`,
   the `.modal` chrome widened by `.wide`) builds the app folder as file
   slots (`fileSlot()`): `app.yaml` (Required) and `app.py` (Optional), each
   a monospace paste `<textarea>` with an **Upload** button beside it
@@ -288,12 +334,15 @@ own calls to its device API. Full direction:
   the connector endpoints (`/api/connectors`, the OAuth add flow,
   `/api/connectors/<id>/detail`, `PUT /api/connectors/<id>/cadence`,
   `DELETE /api/connectors/<id>`,
-  `/api/sync/<plugin>`); not `/api/activity` (the last-sync stamp that read it
+  `/api/sync/<plugin>`), and the app routes (`/api/apps`, `POST /api/apps`,
+  `DELETE /api/apps/<id>`, `/api/app/<id>/render`, `/api/app/<id>/file`);
+  not `/api/activity` (the last-sync stamp that read it
   is gone). See `docs/architecture/frontend-redesign-and-widget-model.md`.
   **Home** reads `GET /api/apps`, then every `GET /api/app/<id>/render` in
   parallel (a failed fetch is that app's error tile), and is re-read after
   a Sync now or a source removal, as the data card is, and after an app
-  install. Three parts, kept
+  install or uninstall; an app row's Refresh redraws just its own tile.
+  Three parts, kept
   apart so the grid pass (Configure, drag/resize, saved layout) swaps only
   the middle one: `loadHome()` → `[{app_id, name, spec, w, h}]`;
   `layoutTiles` (= `autoLayout`, every `x`/`y` null) gives each tile a cell
@@ -796,9 +845,13 @@ same PR:
   `layoutTiles` only), the rest of the Library (its shell landed: the Data
   tab's Applications column, listing `/api/apps`; then the Add Application
   popup and `POST /api/apps`, installing an app from pasted or uploaded
-  files — `app.py` became optional; Browse / Build / Create are still
-  placeholders; next expandable rows, then alerts; updating in place and
-  zip upload are out — remove, then add, is the update path),
+  files — `app.py` became optional; then expandable app rows — reads, files
+  in a read-only viewer (`GET /api/app/<id>/file`), a reserved writes-ticker
+  slot, Refresh, and Uninstall (`DELETE /api/apps/<id>`, the first
+  destructive app action); Browse / Build / Create are still placeholders;
+  next the writes ticker (once app-tier write-back exists), then alerts;
+  updating in place, editing files, disabling an app and zip upload are
+  out — Uninstall, then add, is the update path),
   per-instance `cfg` and its UI, metric write-back, a custom `app.js`,
   enforcing `reads`, and the sandbox (Phase 4).
 - **The access contract:** landed (see Data model): discovery, range queries

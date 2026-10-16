@@ -20,7 +20,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from migrations import connect, run_migrations
 from plugins import PLUGINS
 from plugins.base import OAUTH_REDIRECT_URI, write_metric
-from apps import InstallError, find_app, install_app, scan_apps
+from apps import LibraryError, find_app, install_app, read_app_file, scan_apps, uninstall_app
 from crypto import encrypt
 from derived import (
     backfill_derived,
@@ -673,14 +673,18 @@ def get_samples(metric):
 # page lists the apps, renders each and draws the specs. The folder is
 # scanned on every request, so an app added, edited or removed shows on
 # the next load, with no restart. An app is added by hand, or installed
-# from the page through POST /api/apps.
+# from the page through POST /api/apps, and removed through DELETE
+# /api/apps/<id>.
 
 
 @app.route("/api/apps", methods=["GET"])
 def list_apps():
-    """The installed apps: [{id, name, default_size: {w, h}}], in folder order.
+    """The installed apps, in folder order:
+    [{id, name, default_size: {w, h}, reads: [key], files: [name]}].
 
-    Only apps that load: a malformed one is logged and left out.
+    Only apps that load: a malformed one is logged and left out. reads is
+    the manifest's (declared, not enforced); files names the plain files
+    in the app's folder, each one GET /api/app/<id>/file serves.
     """
     return jsonify([a.summary() for a in scan_apps(app.config["APPS_DIR"])])
 
@@ -702,9 +706,48 @@ def add_app():
     files = body.get("files") if isinstance(body, dict) else None
     try:
         installed = install_app(app.config["APPS_DIR"], files)
-    except InstallError as e:
+    except LibraryError as e:
         return jsonify({"ok": False, "error": str(e)}), e.status
     return jsonify({"ok": True, **installed}), 201
+
+
+@app.route("/api/apps/<app_id>", methods=["DELETE"])
+def remove_app(app_id):
+    """Uninstall an app: its folder in APPS_DIR goes, files and all.
+
+    The Applications list's Uninstall is its caller. The id is never
+    used as a path: uninstall_app() checks it, finds the app by scanning
+    and removes the folder it loaded from. 200 {"ok": true, "id"}; 400
+    for an id no app could have, 404 for one no app loads under - either
+    way nothing is removed. Its data stays: an app writes none yet.
+    """
+    try:
+        removed = uninstall_app(app.config["APPS_DIR"], app_id)
+    except LibraryError as e:
+        return jsonify({"ok": False, "error": str(e)}), e.status
+    return jsonify({"ok": True, **removed})
+
+
+@app.route("/api/app/<app_id>/file", methods=["GET"])
+def app_file(app_id):
+    """One file in an app's folder, as text: ?name=<file name>.
+
+    For the Applications list's read-only viewer. -> {id, name, text}.
+    The name must be a plain file name the folder holds - one /api/apps
+    lists - and nothing outside the app's folder is ever read (see
+    read_app_file()): 400 for a name that isn't plain, 404 for an
+    unknown app or file, 413 for a file too big to show, 415 for one
+    that isn't text.
+    """
+    installed = find_app(app.config["APPS_DIR"], app_id)
+    if installed is None:
+        return jsonify({"ok": False, "error": f"unknown app: {app_id}"}), 404
+    name = request.args.get("name", "")
+    try:
+        text = read_app_file(installed, name)
+    except LibraryError as e:
+        return jsonify({"ok": False, "error": str(e)}), e.status
+    return jsonify({"id": installed.id, "name": name, "text": text})
 
 
 @app.route("/api/app/<app_id>/render", methods=["GET"])

@@ -347,7 +347,7 @@ def test_index_splits_applications_into_controls_and_a_list(client, monkeypatch)
     for control in ("cardTitle(", "appActionsRow", "comingSoon", "#appsCard"):
         assert control not in listing, control
     row = _js_function(page, "appRow")
-    assert "el('div','aitem'" in row and '<div class="arow">' in row
+    assert "el('div','ditem aitem')" in row and "el('button','drow arow'," in row
     assert "esc(a.name || a.id)" in row
 
     # The controls' buttons: Add Application in Add source's style, then
@@ -365,7 +365,7 @@ def test_index_splits_applications_into_controls_and_a_list(client, monkeypatch)
     assert "note.id = 'appsMsg';" in controls
 
 
-def test_the_applications_list_only_reads_and_the_popup_installs(client):
+def test_the_applications_list_writes_only_uninstall_and_the_popup_installs(client):
     resp = client.get("/")
     page = resp.get_data(as_text=True)
     resp.close()
@@ -373,16 +373,20 @@ def test_the_applications_list_only_reads_and_the_popup_installs(client):
     popup = page.index("ADD APPLICATION - the popup that installs one", start)
     home = page.index("HOME - the installed apps' tiles", popup)
 
-    # The controls and the list read /api/apps and nothing else - no
-    # POST, PUT or DELETE, nothing written.
+    # The controls and the list read /api/apps, an app's files and its
+    # render; their one write is Uninstall. All of it through the API
+    # block - the only place that knows a URL - so no raw request here.
     section = page[start:popup]
     assert "api.apps()" in section
-    assert re.findall(r"api\.\w+", section) == ["api.apps"]
-    for write in ("send(", "fetch(", "'POST'", "'PUT'", "'DELETE'", "localStorage"):
-        assert write not in section, write
+    assert sorted(set(re.findall(r"api\.\w+", section))) == [
+        "api.appFile", "api.apps", "api.renderApp", "api.uninstallApp",
+    ]
+    for other in ("send(", "fetch(", "'POST'", "'PUT'", "'DELETE'", "localStorage", "'/api/"):
+        assert other not in section, other
+    assert "appFile:      (id, name)     => send('/api/app/'+enc(id)+'/file?name='+enc(name), 'GET')," in page
+    assert "uninstallApp: id             => send('/api/apps/'+enc(id), 'DELETE')," in page
 
-    # The popup's one write is the install, through the API block - the
-    # only place that knows a URL.
+    # The popup's one write is the install, through the API block.
     section = page[popup:home]
     assert re.findall(r"api\.\w+", section) == ["api.installApp"]
     for other in ("send(", "fetch(", "'POST'", "'PUT'", "'DELETE'", "localStorage", "'/api/"):
@@ -507,6 +511,169 @@ def test_the_popups_checks_mirror_the_servers(client):
     for text, read in zip(MIRRORED_YAMLS, result["yamls"]):
         assert read.get("id") == _server_id(text), repr(text)
         assert bool(read.get("problem")) == (_server_id(text) is None), repr(text)
+
+
+def test_an_app_row_expands_as_a_data_row_does(client):
+    resp = client.get("/")
+    page = resp.get_data(as_text=True)
+    resp.close()
+    # One mechanism for both lists: Your data's rows and the app rows are
+    # each an item and a head handed to expandable(), which owns the
+    # click, the chevron (.open) and aria-expanded.
+    data_row = _js_function(page, "rowItem")
+    app_row = _js_function(page, "appRow")
+    assert "return expandable(item, head, {" in data_row
+    assert "open:state.open, id:row.id, panelId:panelId(row)," in data_row
+    assert "return expandable(item, head, {" in app_row
+    assert "open:appsList.open, id:a.id, panelId:appPanelId(a), panel:() => appPanel(a)," in app_row
+    for row in (data_row, app_row):
+        assert ".onclick" not in row and "aria-expanded" not in row
+    # An open app row stays open across a refresh, as a data row does.
+    assert "open:new Set(),     // ids of expanded rows" in page
+    # The same look: a .ditem holding a .drow head with a chevron, its
+    # first column the data grid's, and the detail a .dpanel.
+    assert "el('div','ditem aitem')" in app_row
+    assert '<span class="chev" aria-hidden="true">›</span><span class="a-name">' in app_row
+    assert ".arow{display:grid;grid-template-columns:16px minmax(0,1fr);" in page
+    assert "el('div','dpanel apanel'," in _js_function(page, "appPanel")
+    # One column on a phone, as the data rows' panels are.
+    assert ".dpanel, .dpanel.apanel{grid-template-columns:1fr;" in page
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
+def test_expandable_opens_closes_and_restores_a_row(client):
+    resp = client.get("/")
+    page = resp.get_data(as_text=True)
+    resp.close()
+    # expandable() run as written, on stand-in elements.
+    script = _js_source(page, "expandable") + """
+        const mk = () => {
+          const n = {children:[], attrs:{}, cls:new Set(), id:''};
+          n.classList = {toggle:(c, on) => { if(on) n.cls.add(c); else n.cls.delete(c); }};
+          n.setAttribute = (k, v) => { n.attrs[k] = String(v); };
+          n.appendChild = c => { n.children.push(c); c.parent = n; return c; };
+          n.remove = () => { const s = n.parent.children; s.splice(s.indexOf(n), 1); };
+          return n;
+        };
+        const seen = [];
+        const look = (item, head) => seen.push(
+          [item.cls.has('open'), head.attrs['aria-expanded'], item.children.length]);
+        const open = new Set();
+        let built = 0, closed = 0;
+        const opts = id => ({open, id, panelId:'p-'+id,
+          panel:() => { built++; const p = mk(); p.id = 'p-'+id; return p; },
+          onClose:() => { closed++; }});
+        const item = mk(), head = mk();
+        expandable(item, head, opts('a'));
+        look(item, head);
+        head.onclick(); look(item, head);
+        head.onclick(); look(item, head);
+        head.onclick();
+        // Repainted while open (a refresh): it comes back open.
+        const again = mk(), head2 = mk();
+        expandable(again, head2, opts('a'));
+        look(again, head2);
+        console.log(JSON.stringify({seen, built, closed, open:[...open],
+          type:head.type, controls:head.attrs['aria-controls']}));
+    """
+    out = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=60)
+    assert out.returncode == 0, out.stderr
+    assert json.loads(out.stdout) == {
+        "seen": [[False, "false", 1], [True, "true", 2], [False, "false", 1], [True, "true", 2]],
+        "built": 3,
+        "closed": 1,
+        "open": ["a"],
+        "type": "button",
+        "controls": "p-a",
+    }
+
+
+def test_an_open_app_row_shows_reads_files_and_a_writes_slot(client):
+    resp = client.get("/")
+    page = resp.get_data(as_text=True)
+    resp.close()
+    panel = _js_function(page, "appPanel")
+    # Reads: the manifest's keys, escaped - or a muted note.
+    assert "<h5>Reads</h5>" in panel
+    assert '`<li class="akey" data-tip="${esc(metricName(k))}">${esc(k)}</li>`' in panel
+    assert "'<p class=\"dnote\">No declared reads</p>'" in panel
+    # Files: each a button opening the viewer on that file.
+    assert "<h5>Files</h5>" in panel
+    assert 'data-file="${i}" aria-haspopup="dialog">${esc(f)}</button>' in panel
+    assert "b.onclick = () => openAppFile(a, files[+b.dataset.file]);" in panel
+    # Writes: a reserved slot, marked for the write-back follow-up - and
+    # nothing counted, so nothing read.
+    assert "<div>${writesTicker()}</div>" in panel
+    assert "// writes-ticker: filled in when app-tier write-back exists\n  function writesTicker(){" in page
+    ticker = _js_function(page, "writesTicker")
+    assert "<h5>Writes</h5>" in ticker and "—" in ticker
+    for read in ("api.", "await", "fetch("):
+        assert read not in ticker, read
+    # The actions: Refresh, and Uninstall in the danger style.
+    assert '<button class="btn sm" data-act="refresh" type="button">Refresh</button>' in panel
+    assert '<button class="btn sm danger" data-act="uninstall" type="button">Uninstall</button>' in panel
+
+
+def test_a_file_opens_read_only_in_the_viewer(client):
+    resp = client.get("/")
+    page = resp.get_data(as_text=True)
+    resp.close()
+    viewer = _js_function(page, "openAppFile")
+    # A popup, reading the file from the file route ...
+    assert "openModal(`" in viewer
+    assert "api.appFile(a.id, name).then(res => {" in viewer
+    # ... into a monospace block, as text - never markup, nothing to edit.
+    assert '<pre class="file-view" tabindex="0" aria-label="${esc(name)}">' in viewer
+    assert "view.textContent = res.text;" in viewer
+    assert "innerHTML" not in viewer
+    for editable in ("<textarea", "<input", "contenteditable"):
+        assert editable not in viewer, editable
+    assert "${esc(name)}" in viewer and "${esc(a.name || a.id)}" in viewer
+    # The server's refusal shown as given.
+    assert "(res.error || \"Couldn't read this file.\")" in viewer
+    assert re.search(r"^\.file-view\{[^}]*font-family:var\(--font-mono\)", page, re.M)
+
+
+def test_uninstall_confirms_then_deletes_and_rereads_the_list_and_home(client):
+    resp = client.get("/")
+    page = resp.get_data(as_text=True)
+    resp.close()
+    panel = _js_function(page, "appPanel")
+    # Uninstall only opens the confirm - a danger panel naming the app.
+    assert "act('uninstall').onclick = () => gateOpen(true);" in panel
+    assert '<div class="danger-panel a-confirm" hidden>' in panel
+    assert "<h5>Uninstall ${esc(name)}?</h5>" in panel
+    assert "<p>This deletes its files from <code>/data/apps/</code>.</p>" in panel
+    assert "act('cancel').onclick = () => gateOpen(false);" in panel
+    # The confirm's button is the one that DELETEs ...
+    confirm = panel[panel.index("confirmBtn.onclick = async () => {") :]
+    assert panel.count("api.uninstallApp(") == 1
+    assert "const res = await api.uninstallApp(a.id);" in confirm
+    # ... and then the app leaves both the list and Home; an error stays.
+    done = confirm[confirm.index("if(res.ok){") : confirm.index("}else{")]
+    assert "loadApps();" in done and "loadHome();" in done
+    assert "appsList.open.delete(a.id);" in done
+    assert "say('bad', res.error || 'Could not uninstall this application');" in confirm
+    # No confirm(): the panel is the gate, as Remove source's is.
+    assert "confirm(" not in panel
+
+
+def test_refresh_reruns_the_render_and_redraws_the_tile(client):
+    resp = client.get("/")
+    page = resp.get_data(as_text=True)
+    resp.close()
+    panel = _js_function(page, "appPanel")
+    refresh = panel[panel.index("refresh.onclick = async () => {") : panel.index("const gateOpen")]
+    # The existing render route, re-run - no new endpoint, no rescan, no
+    # page reload - and its Home tile redrawn from the fresh spec.
+    assert "spec = await api.renderApp(a.id);" in refresh
+    assert "repaintTile(a.id, spec);" in refresh
+    for other in ("loadApps", "loadHome", "location.reload"):
+        assert other not in refresh, other
+    tile = _js_function(page, "repaintTile")
+    assert "home.tiles.find(x => x.app_id===appId)" in tile
+    assert "t.spec = spec;" in tile
+    assert "tile.replaceChildren(renderSpec(spec, t.name));" in tile
 
 
 def test_index_wires_the_voice_buttons_to_the_audio_route(client):

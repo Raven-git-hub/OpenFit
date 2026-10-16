@@ -69,17 +69,34 @@ Right column:
      buttons, a status line that stays empty until an install has something
      to say. It holds no app rows.
    - **The app list** (`#appListCard`), directly below it: the right column's
-     equivalent of Your data's list, a container of rows (`.alist`, `.aitem`,
-     `.arow`), one per installed app from `GET /api/apps` (the list Home draws
-     its tiles from), showing its name. There's no status beside it:
-     `/api/apps` lists only the apps that load and carries no status of its
-     own. The list's states live here too: with none installed it reads "No
-     applications installed"; if the read fails, it says so with a **Retry**.
+     equivalent of Your data's list, a container of rows (`.alist`), one per
+     installed app from `GET /api/apps` (the list Home draws its tiles from),
+     showing its name. There's no status beside it: `/api/apps` lists only the
+     apps that load and carries no status of its own. The list's states live
+     here too: with none installed it reads "No applications installed"; if
+     the read fails, it says so with a **Retry**.
 
-   The list is read at boot and again after an install; the list itself
-   writes nothing. The rows don't expand yet. Still to come, each its own
-   branch: the expandable rows (what an app reads, its files, its writes),
-   then alerts.
+   The list is read at boot and again after an install or uninstall. **Each
+   row expands** exactly as a Your data row does: the same mechanism
+   (`expandable()`, which both lists' rows use) and the same look (a
+   `.ditem` whose head is a `.drow`: chevron · name, the detail a `.dpanel`),
+   and an open row stays open across a refresh. Open, it shows three columns
+   (one on a phone):
+   - **Reads**: the metric keys the app's manifest declares, or "No declared
+     reads".
+   - **Files**: the files in its folder; clicking one opens it in a read-only
+     popup, its text in a monospace block (`GET /api/app/<id>/file`).
+   - **Writes**: a reserved slot for the writes ticker (Day / Wk / Mth, each
+     `—`), filled in once an app can write back.
+
+   Under them, **Refresh** re-runs the app's render (`GET
+   /api/app/<id>/render`) and redraws its Home tile in place, without a
+   reload; **Uninstall** (in the danger style) opens a confirm in the row,
+   "Uninstall <name>? This deletes its files from `/data/apps/`.", and
+   confirming it (`DELETE /api/apps/<id>`) takes the app off the list and
+   Home at once. Still to come, each its own branch: the writes ticker, then
+   alerts. The server side of both actions is in
+   [app-host.md](app-host.md#an-apps-row-reads-files-refresh-uninstall).
 
    **The Add Application popup** installs an app from the browser: a slot per
    file (`app.yaml` required, `app.py` optional, **＋ Add file** for more),
