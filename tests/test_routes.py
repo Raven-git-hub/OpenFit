@@ -245,13 +245,18 @@ def test_index_draws_home_from_the_app_host(client):
     # The display vocabulary the renderer draws (host.py's builders).
     for spec in ("number:", "line:", "panel:", "empty:", "error:"):
         assert spec in page
-    # The layout is flow - an order and a size per tile - read with the
-    # apps, and squared with them.
+    # The layout is tabs, each a flow - an order and a size per tile -
+    # read with the apps; Home shows the default tab, squared with them.
     assert "const layoutTiles = flowLayout;" in page
     assert "autoLayout" not in page
     load = _js_function(page, "loadHome")
     assert "await Promise.all([api.apps(), api.homeLayout()]);" in load
-    assert "home.tiles = layoutTiles(items, apps).map(it => {" in load
+    assert "const tab = saved.tabs.find(t => t.id===saved.default_tab) || saved.tabs[0];" in load
+    assert "home.tiles = layoutTiles(items, apps, elsewhere).map(it => {" in load
+    # Each tile carries its instance's id and config, for the save.
+    assert "return {instance_id:it.instance_id, app_id:a.id, name:a.name, spec," in load
+    assert "w:it.size.w, h:it.size.h, sizes:appSizes(a), config:it.config};" in load
+    assert "home.layout = saved;" in load and "home.activeTab = tab.id;" in load
 
 
 def test_index_lays_the_data_tab_out_in_two_columns(client):
@@ -799,14 +804,22 @@ def test_home_reads_its_layout_and_writes_it_only_through_configure(client):
         assert other not in home, other
     assert "homeLayout:   ()             => fetchJSON('/api/home-layout')," in page
     assert "saveLayout:   layout         => send('/api/home-layout', 'PUT', layout)," in page
-    # Saved once, as Configure is switched off: the mode, the subtitle and
-    # the order and sizes.
+    # Saved once, as Configure is switched off: every tab, the one on
+    # screen with its subtitle and its instances' order, sizes, ids and
+    # configs.
     toggle = _js_function(page, "toggleConfigure")
     assert home.count("api.saveLayout(") == 1
-    assert "const res = await api.saveLayout({mode:'flow', subtitle:home.subtitle, items:layoutItems()});" in toggle
+    assert "const res = await api.saveLayout(layoutToSave());" in toggle
     assert _const(page, "layoutItems") == (
-        "const layoutItems = () => home.tiles.map(t => ({app_id:t.app_id, size:{w:t.w, h:t.h}}));"
+        "const layoutItems = () => home.tiles.map(t => ({instance_id:t.instance_id, app_id:t.app_id, "
+        "size:{w:t.w, h:t.h}, config:t.config || {}}));"
     )
+    save = _js_function(page, "layoutToSave")
+    assert (
+        "tabs:home.layout.tabs.map(t => t.id===home.activeTab ? "
+        "{...t, subtitle:home.subtitle, items:layoutItems()} : t)," in save
+    )
+    assert "default_tab:home.layout.default_tab," in save
 
 
 def _node(script):
@@ -899,10 +912,20 @@ def test_configure_saves_the_layout_as_its_switched_off(client):
     page = _page(client)
     script = "\n".join([
         _const(page, "layoutItems"),
+        _js_source(page, "layoutToSave"),
         _js_source(page, "toggleConfigure"),
     ]) + """
-        const home = {status:'ready', subtitle:'Mine', configuring:false, saving:false,
-          tiles:[{app_id:'a', w:2, h:1, spec:{}}, {app_id:'b', w:1, h:1, spec:{}}]};
+        // The tab on screen and one more: its tiles are what's saved of it
+        // (its items as read are stale), the other goes back as read. b's
+        // tile was placed by the page, so it has no instance id yet.
+        const home = {status:'ready', subtitle:'Mine', configuring:false, saving:false, activeTab:'home',
+          layout:{default_tab:'home', tabs:[
+            {id:'home', name:'Home', mode:'flow', subtitle:'Mine', items:[]},
+            {id:'two', name:'Two', mode:'flow', subtitle:'Other',
+             items:[{instance_id:'t1', app_id:'a', size:{w:1, h:1}, config:{k:1}}]},
+          ]},
+          tiles:[{instance_id:'i1', app_id:'a', w:2, h:1, spec:{}, config:{x:1}},
+                 {app_id:'b', w:1, h:1, spec:{}, config:{}}]};
         const saved = [];
         let reply = {ok:true};
         const api = {saveLayout: async layout => { saved.push(JSON.parse(JSON.stringify(layout))); return reply; }};
@@ -927,13 +950,22 @@ def test_configure_saves_the_layout_as_its_switched_off(client):
     assert result["seen"] == [True, False, True, True]
     assert result["saving"] is False
     assert result["notes"] == ["info", "info", "ok", "info", "info", "bad"]
-    # Nothing is saved going in; going out, the layout as it stands.
-    layout = {"mode": "flow", "subtitle": "Edited", "items": [
-        {"app_id": "b", "size": {"w": 1, "h": 1}}, {"app_id": "a", "size": {"w": 3, "h": 1}},
+    # Nothing is saved going in; going out, the layout as it stands - the
+    # tab on screen as edited, b's instance with no id, the other tab as read.
+    layout = {"default_tab": "home", "tabs": [
+        {"id": "home", "name": "Home", "mode": "flow", "subtitle": "Edited", "items": [
+            {"app_id": "b", "size": {"w": 1, "h": 1}, "config": {}},
+            {"instance_id": "i1", "app_id": "a", "size": {"w": 3, "h": 1}, "config": {"x": 1}},
+        ]},
+        {"id": "two", "name": "Two", "mode": "flow", "subtitle": "Other", "items": [
+            {"instance_id": "t1", "app_id": "a", "size": {"w": 1, "h": 1}, "config": {"k": 1}},
+        ]},
     ]}
     assert result["saved"] == [layout, layout]
-    # ... which is what the server takes.
-    assert home_layout.parse_layout(layout) == layout
+    # ... which is what the server takes, minting b's instance an id.
+    parsed = home_layout.parse_layout(layout)
+    assert home_layout.INSTANCE_ID.match(parsed["tabs"][0]["items"][0].pop("instance_id"))
+    assert parsed == layout
 
 
 # Installed apps (as /api/apps lists them) and stored items, for the
@@ -980,7 +1012,66 @@ def test_the_pages_flow_squares_a_layout_as_the_server_does(client):
         for a in FLOW_APPS
     ]
     for items, flowed in zip(FLOW_ITEMS, result):
-        assert flowed == home_layout.reconcile({"items": items}, installed)["items"], items
+        # Items from before tabs: the server mints their ids for the read,
+        # and the page, with none to carry, leaves them for the save.
+        squared = home_layout.reconcile({"items": items}, installed)["tabs"][0]["items"]
+        assert flowed == [{"app_id": i["app_id"], "size": i["size"], "config": {}} for i in squared], items
+
+
+def _instance(instance_id, app_id, w=1, h=1, config=None):
+    return {"instance_id": instance_id, "app_id": app_id, "size": {"w": w, "h": h}, "config": config or {}}
+
+
+# The tab on screen and the other tab's instances, as the server hands
+# them out, for the page and the server to square the same way. (Not a
+# tab placing one app twice: the server keeps both, the page - its tiles
+# still one an app - the first.)
+FLOW_TABS = [
+    ([], []),
+    ([_instance("c1", "c", 6, 6, {"goal": 5}), _instance("a1", "a", 2, 2)], []),
+    # a is on the other tab: placed, so not added to this one.
+    ([_instance("g1", "gone"), _instance("b1", "b", 3, 1)], [_instance("a2", "a")]),
+    ([_instance("a1", "a", 3, 3)], [_instance("d2", "d", 1, 2), _instance("c2", "c")]),
+    ([], [_instance("g2", "gone")]),
+    ([_instance("b1", "b", 3, 1, {"x": [1]})], [_instance("b2", "b", 3, 1)]),
+]
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
+def test_the_pages_flow_squares_a_tab_as_the_server_does(client):
+    page = _page(client)
+    listed = [{**a, "name": a["id"], "default_size": a["sizes"][0]} for a in FLOW_APPS]
+    script = "\n".join([
+        _const(page, "GRID_COLS"),
+        _const(page, "cells"),
+        _const(page, "sizeOf"),
+        _const(page, "appSizes"),
+        _js_source(page, "flowLayout"),
+    ]) + f"""
+        const apps = {json.dumps(listed)}, cases = {json.dumps(FLOW_TABS)};
+        console.log(JSON.stringify(cases.map(([shown, other]) =>
+          flowLayout(shown, apps, other.map(it => it.app_id)))));
+    """
+    result = _node(script)
+
+    installed = [
+        apps.InstalledApp(id=a["id"], name=a["id"], sizes=a["sizes"], default_size=a["sizes"][0],
+                          reads=[], config=[], path="/nowhere", render=None)
+        for a in FLOW_APPS
+    ]
+    for (shown, other), flowed in zip(FLOW_TABS, result):
+        stored = {"tabs": [
+            {"id": "home", "name": "Home", "mode": "flow", "subtitle": "", "items": shown},
+            {"id": "two", "name": "Two", "mode": "flow", "subtitle": "", "items": other},
+        ], "default_tab": "home"}
+        squared = home_layout.reconcile(stored, installed)["tabs"][0]["items"]
+        # Same instances, ids and configs; an app placed nowhere goes on the
+        # end with an id the server mints, and none yet on the page.
+        given = {i["instance_id"] for i in shown + other}
+        assert flowed == [
+            i if i["instance_id"] in given else {k: v for k, v in i.items() if k != "instance_id"}
+            for i in squared
+        ], (shown, other)
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")

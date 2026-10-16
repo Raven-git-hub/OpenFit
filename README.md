@@ -297,8 +297,12 @@ won't install. Tiles go in order, left to right, each at its size, a tile too
 wide for what's left of a row starting the next. **Configure**, top right of
 Home, lets you drag tiles into a new order, pick each one's size from those
 its app offers, and edit the subtitle over them; switching it off saves the
-layout (`GET`/`PUT /api/home-layout`, one settings row). An app installed
-later joins the end at its default size, and one uninstalled drops out. `GET /api/apps` lists what's installed (with each
+layout (`GET`/`PUT /api/home-layout`, one settings row). The layout is stored
+as tabs, each holding instances (an app placed, with its own size and config,
+so one app can be placed more than once). Home shows one tab for now, and a
+layout saved before tabs reads as that tab, unchanged. An app installed later
+gets an instance at the end at its default size, and one uninstalled drops
+out: every installed app always has at least one. `GET /api/apps` lists what's installed (with each
 app's declared reads and its files) and `GET /api/app/<id>/render` returns
 one app's spec; the Data tab's Applications panel lists the same apps. Open
 an app's row there to see what it reads, view any of its files read-only

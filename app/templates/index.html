@@ -2346,23 +2346,29 @@ h5 + .dnote{margin-top:0;}
      specs. Three parts, kept apart so the layout can change
      without touching the others:
        loadHome()   the apps, their specs and the saved layout
-                    -> home.tiles: [{app_id, name, spec, w, h, sizes}]
-       layoutTiles  the saved layout over the apps installed now:
-                    the tiles' order, and each one's size
+                    -> home.tiles: [{instance_id, app_id, name, spec,
+                                     w, h, sizes, config}]
+       layoutTiles  the tab's saved instances over the apps installed
+                    now: the tiles' order, and each one's size
        paintTiles() any such list -> the tiles on the six-cell grid,
                     each spec drawn by renderSpec()
-     The layout is flow: an order and a size per tile, no cells. The
-     grid (CSS) lays them out, row by row. Configure, in the sub-header
-     under the tab strip, rearranges home.tiles in place - drag a tile
-     to move it, pick its size from its app's - makes the subtitle
-     editable, and saves it all as it's switched off.
+     The saved layout is a set of tabs, each a flow of instances (an
+     app placed, with its own size and config); Home shows one, the
+     default - there's no tab strip yet. The layout is flow: an order
+     and a size per tile, no cells. The grid (CSS) lays them out, row
+     by row. Configure, in the sub-header under the tab strip,
+     rearranges home.tiles in place - drag a tile to move it, pick its
+     size from its app's - makes the subtitle editable, and saves it
+     all, every tab, as it's switched off.
      ========================================================= */
   const GRID_COLS = 6;          // the grid's width in cells, and the most a tile spans either way
   const SUBTITLE_MAX = 120;     // the server's MAX_SUBTITLE (home_layout.py)
   const home = {
     status:'loading',   // loading | ready | error
-    tiles:null,         // [{app_id, name, spec, w, h, sizes}], in layout order; w/h in cells
-    subtitle:'',        // the line in the sub-header
+    layout:null,        // the saved layout as read: {tabs, default_tab}
+    activeTab:null,     // the id of the tab on screen: the default (no strip to pick another yet)
+    tiles:null,         // its [{instance_id, app_id, name, spec, w, h, sizes, config}], in layout order; w/h in cells
+    subtitle:'',        // its line in the sub-header
     configuring:false,  // Configure is on: tiles move and resize, the subtitle edits
     saving:false,       // Configure's save is on its way
   };
@@ -2379,14 +2385,20 @@ h5 + .dnote{margin-top:0;}
       const specs = await Promise.all(apps.map(a => api.renderApp(a.id)
         .catch(() => ({type:'error', message:"Couldn't load this app."}))));
       const byId = new Map(apps.map((a, i) => [a.id, {a, spec:specs[i]}]));
+      const tab = saved.tabs.find(t => t.id===saved.default_tab) || saved.tabs[0];
+      // The apps the other tabs place: placed already, not this tab's to add.
+      const elsewhere = saved.tabs.filter(t => t!==tab).flatMap(t => t.items.map(it => it.app_id));
       // Mid-Configure the arrangement on screen isn't saved yet: it's
       // kept, and squared with the apps as they are now, not replaced.
-      const items = home.configuring && home.tiles ? layoutItems() : saved.items;
-      if(!home.configuring) home.subtitle = typeof saved.subtitle==='string' ? saved.subtitle : '';
-      home.tiles = layoutTiles(items, apps).map(it => {
+      const items = home.configuring && home.tiles ? layoutItems() : tab.items;
+      if(!home.configuring) home.subtitle = typeof tab.subtitle==='string' ? tab.subtitle : '';
+      home.tiles = layoutTiles(items, apps, elsewhere).map(it => {
         const {a, spec} = byId.get(it.app_id);
-        return {app_id:a.id, name:a.name, spec, w:it.size.w, h:it.size.h, sizes:appSizes(a)};
+        return {instance_id:it.instance_id, app_id:a.id, name:a.name, spec,
+          w:it.size.w, h:it.size.h, sizes:appSizes(a), config:it.config};
       });
+      home.layout = saved;
+      home.activeTab = tab.id;
       home.status = 'ready';
     }catch(e){
       // A failed refresh leaves the tiles already drawn.
@@ -2397,30 +2409,51 @@ h5 + .dnote{margin-top:0;}
     paintHome();
   }
 
-  /* Flow: the saved items in their order, each at its saved size if its
-     app still offers that size, else at the app's default; an item
-     whose app is gone is dropped, and an app no item places goes on the
-     end at its default. The server hands the layout out squared this
-     way (home_layout.py); this squares it again with the apps read
-     beside it, and an unsaved Configure with an install or uninstall
-     made meanwhile. -> [{app_id, size:{w, h}}] */
-  function flowLayout(items, apps){
+  /* Flow, for the tab on screen: its saved instances in their order,
+     each with its id and config, at its saved size if its app still
+     offers that size, else at the app's default; one whose app is gone
+     is dropped. An app placed nowhere - not here, and not among
+     `elsewhere`, the apps the other tabs place - goes on the end at its
+     default, with no instance id yet (the save mints one). The server
+     hands the layout out squared this way (home_layout.py); this
+     squares it again with the apps read beside it, and an unsaved
+     Configure with an install or uninstall made meanwhile. A tab's
+     tiles are still one an app here (a repeat is dropped): nothing on
+     the page places an app twice yet.
+     -> [{instance_id, app_id, size:{w, h}, config}] */
+  function flowLayout(items, apps, elsewhere){
     const byId = new Map(apps.map(a => [a.id, a]));
+    const others = new Set(elsewhere || []);
+    const isConfig = c => !!c && typeof c==='object' && !Array.isArray(c);
     const placed = new Set(), out = [];
     (Array.isArray(items) ? items : []).forEach(it => {
       const a = it && typeof it.app_id==='string' ? byId.get(it.app_id) : null;
       if(!a || placed.has(a.id)) return;
       placed.add(a.id);
       const sizes = appSizes(a), want = it.size || {};
-      out.push({app_id:a.id, size:sizes.find(s => s.w===want.w && s.h===want.h) || sizes[0]});
+      out.push({instance_id:typeof it.instance_id==='string' ? it.instance_id : undefined, app_id:a.id,
+        size:sizes.find(s => s.w===want.w && s.h===want.h) || sizes[0], config:isConfig(it.config) ? it.config : {}});
     });
-    apps.forEach(a => { if(!placed.has(a.id)) out.push({app_id:a.id, size:appSizes(a)[0]}); });
+    apps.forEach(a => {
+      if(!placed.has(a.id) && !others.has(a.id)) out.push({instance_id:undefined, app_id:a.id, size:appSizes(a)[0], config:{}});
+    });
     return out;
   }
   const layoutTiles = flowLayout;
 
-  /* The layout as it stands, as the server stores it. */
-  const layoutItems = () => home.tiles.map(t => ({app_id:t.app_id, size:{w:t.w, h:t.h}}));
+  /* The tab on screen as the server stores it: its instances, in order.
+     One with no id yet sends none (JSON leaves an undefined out), and
+     the server mints it one. */
+  const layoutItems = () => home.tiles.map(t => ({instance_id:t.instance_id, app_id:t.app_id, size:{w:t.w, h:t.h}, config:t.config || {}}));
+
+  /* The whole layout to save: every tab as it was read, the one on
+     screen with its subtitle and tiles as they stand now. */
+  function layoutToSave(){
+    return {
+      tabs:home.layout.tabs.map(t => t.id===home.activeTab ? {...t, subtitle:home.subtitle, items:layoutItems()} : t),
+      default_tab:home.layout.default_tab,
+    };
+  }
 
   function paintHome(){
     const box = $('#home');
@@ -2517,8 +2550,8 @@ h5 + .dnote{margin-top:0;}
   }
 
   /* Configure on: the tiles get their controls and the subtitle its
-     input. Off: the layout - its mode (flow, the one there is), the
-     subtitle and the tiles' order and sizes - is saved, and the tiles
+     input. Off: the layout - every tab, the one on screen with its
+     subtitle and its tiles' order and sizes - is saved, and the tiles
      go back to chromeless. A save that fails stays in Configure, the
      arrangement as it was, to try again. */
   async function toggleConfigure(){
@@ -2532,7 +2565,7 @@ h5 + .dnote{margin-top:0;}
       paintHomeHead();
       const grid = $('#home .tiles');
       if(grid) grid.setAttribute('aria-busy','true');
-      const res = await api.saveLayout({mode:'flow', subtitle:home.subtitle, items:layoutItems()});
+      const res = await api.saveLayout(layoutToSave());
       home.saving = false;
       if(res.ok){
         home.configuring = false;
