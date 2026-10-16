@@ -1,6 +1,6 @@
 id: steps-metres
 name: Distance (from steps)
-default_size: { w: 2, h: 2 }
+sizes: [{ w: 1, h: 1 }]
 reads: [steps]
 config:
   - { key: stride_m, label: Stride length (m), type: number, default: 0.75 }

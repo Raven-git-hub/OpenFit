@@ -11,6 +11,7 @@ from datetime import date
 import pytest
 
 import apps
+import home_layout
 from derived import recompute_derived
 from migrations import run_migrations
 
@@ -244,8 +245,13 @@ def test_index_draws_home_from_the_app_host(client):
     # The display vocabulary the renderer draws (host.py's builders).
     for spec in ("number:", "line:", "panel:", "empty:", "error:"):
         assert spec in page
-    # No Configure, grid lines or drag in this slice: tiles only flow.
-    assert "const layoutTiles = autoLayout;" in page
+    # The layout is flow - an order and a size per tile - read with the
+    # apps, and squared with them.
+    assert "const layoutTiles = flowLayout;" in page
+    assert "autoLayout" not in page
+    load = _js_function(page, "loadHome")
+    assert "await Promise.all([api.apps(), api.homeLayout()]);" in load
+    assert "home.tiles = layoutTiles(items, apps).map(it => {" in load
 
 
 def test_index_lays_the_data_tab_out_in_two_columns(client):
@@ -674,6 +680,348 @@ def test_refresh_reruns_the_render_and_redraws_the_tile(client):
     assert "home.tiles.find(x => x.app_id===appId)" in tile
     assert "t.spec = spec;" in tile
     assert "tile.replaceChildren(renderSpec(spec, t.name));" in tile
+    # Mid-Configure, the tile keeps its handle and picker.
+    assert "if(controls) tile.appendChild(controls);" in tile
+
+
+def _page(client):
+    resp = client.get("/")
+    page = resp.get_data(as_text=True)
+    resp.close()
+    return page
+
+
+def _home(page):
+    """The page's Home section: its script, from its banner to the spec renderer."""
+    start = page.index("HOME - the installed apps' tiles")
+    return page[start : page.index("---- spec -> DOM: the display vocabulary ----", start)]
+
+
+def _const(page, name):
+    """A top-level const in the page's script, without its trailing comment."""
+    m = re.search(rf"\n  (const {name} = .*?;)(?: +//[^\n]*)?\n", page)
+    assert m, name
+    return m.group(1)
+
+
+def test_home_lays_its_tiles_on_a_six_cell_grid_of_squares(client):
+    page = _page(client)
+    # Six columns of square cells - each row as tall as a column is wide -
+    # the cell Home's width over six, held between a floor and a ceiling
+    # (both in the token block); past the ceiling the grid centres.
+    tiles = re.search(r"^\.tiles\{([^}]*)\}", page, re.M).group(1)
+    assert "--tile-cell:clamp(var(--tile-cell-min), (100cqi - 5 * var(--tile-gap)) / 6, var(--tile-cell-max));" in tiles
+    assert "grid-template-columns:repeat(6, var(--tile-cell));" in tiles
+    assert "grid-auto-rows:var(--tile-cell);" in tiles
+    assert "width:max-content;margin:0 auto;" in tiles
+    # Row flow, never dense: a gap at a row's end is never backfilled.
+    assert "grid-auto-flow:row;" in tiles
+    assert not re.search(r"grid-auto-flow:[^;]*dense", page)
+    tokens = page[page.index("CUSTOMISE OPENFIT HERE") : page.index("@media (prefers-color-scheme:dark)")]
+    for token in ("--tile-cell-min:", "--tile-cell-max:", "--tile-gap:", "--tile-guide:"):
+        assert token in tokens, token
+    # Home's width is what the cell is measured against; under the floor
+    # it scrolls sideways rather than squeeze the cells (no phone pass yet).
+    assert re.search(r"^\.home\{container-type:inline-size;overflow-x:auto;", page, re.M)
+    # The page's grid is the server's: six cells, the most a tile spans.
+    assert _const(page, "GRID_COLS") == "const GRID_COLS = 6;"
+    assert apps.MAX_CELLS == 6
+
+    # Each tile spans its size, from wherever the flow puts it: no start cell.
+    span = _js_function(page, "spanTile")
+    assert "tile.style.gridColumn = 'span '+t.w;" in span
+    assert "tile.style.gridRow    = 'span '+t.h;" in span
+    assert "/ '" not in span and "t.x" not in span and "t.y" not in span
+
+
+def test_home_has_a_sub_header_with_the_subtitle_and_configure(client):
+    page = _page(client)
+    # Under the tab strip: the sub-header, its message line, then the tiles.
+    assert re.search(
+        r'<section data-panel="home" aria-label="Home" hidden>\s*'
+        r'<div class="home-head" id="homeHead"></div>\s*'
+        r'<p class="form-msg home-msg" id="homeMsg" role="status"></p>\s*'
+        r'<div class="home" id="home"></div>\s*</section>',
+        page,
+    )
+    boot = page[page.index("BOOT - paint the shell") :]
+    assert "paintHomeHead();" in boot and "loadHome();" in boot
+
+    head = _js_function(page, "paintHomeHead")
+    # The subtitle: text in view, an input while configuring - set as
+    # text either way, never markup.
+    assert "if(home.configuring){" in head
+    assert "input.value = home.subtitle;" in head
+    assert "sub.textContent = home.subtitle;" in head
+    assert "input.maxLength = SUBTITLE_MAX;" in head
+    assert "input.oninput = () => { home.subtitle = input.value; };" in head
+    assert "${" not in head and "innerHTML" not in head
+    assert _const(page, "SUBTITLE_MAX") == f"const SUBTITLE_MAX = {home_layout.MAX_SUBTITLE};"
+    # Configure: a tab like ＋ Add, on the right, a toggle - pressed and
+    # filled while on; never a tab of the strip (no data-tab), so it isn't
+    # an Opening page.
+    assert "el('button','tab tab-add home-cfg' + (home.configuring ? ' active' : ''), '<span>Configure</span>');" in head
+    assert "cfg.setAttribute('aria-pressed', home.configuring ? 'true' : 'false');" in head
+    assert "cfg.onclick = toggleConfigure;" in head
+    assert "data-tab" not in head
+    assert ".tab.home-cfg.active, .tab.home-cfg.active:hover{background:var(--accent);" in page
+
+
+def test_configure_shows_controls_only_while_on_and_a_picker_only_for_a_choice(client):
+    page = _page(client)
+    paint = _js_function(page, "paintTiles")
+    assert "el('div','tiles' + (configuring ? ' configuring' : ''));" in paint
+    assert "if(configuring) tile.appendChild(tileControls(t, tile));" in paint
+    assert "if(configuring) sortableTiles(grid);" in paint
+    assert "paintTiles(box, home.tiles, home.configuring);" in _js_function(page, "paintHome")
+    controls = _js_function(page, "tileControls")
+    assert "if(t.sizes.length > 1){" in controls
+    # The app's own sizes, as given - the page never makes one up - and
+    # its name only ever as text.
+    assert "t.sizes.forEach((s, i) => {" in controls
+    assert "o.textContent = s.w+' × '+s.h;" in controls
+    assert "${" not in controls and "innerHTML" not in controls
+    # Dragging moves only the order: home.tiles follows the DOM.
+    sortable = _js_function(page, "sortableTiles")
+    assert "home.tiles.sort((a, b) => order.indexOf(a.app_id) - order.indexOf(b.app_id));" in sortable
+    assert "grid.insertBefore(drag.tile, spot.before);" in sortable
+    assert "e.key==='ArrowLeft' || e.key==='ArrowUp'" in sortable
+
+
+def test_home_reads_its_layout_and_writes_it_only_through_configure(client):
+    page = _page(client)
+    home = _home(page)
+    # Through the API block, the only place that knows a URL.
+    assert sorted(set(re.findall(r"api\.\w+", home))) == [
+        "api.apps", "api.homeLayout", "api.renderApp", "api.saveLayout",
+    ]
+    for other in ("send(", "fetch(", "'POST'", "'PUT'", "'DELETE'", "localStorage", "'/api/"):
+        assert other not in home, other
+    assert "homeLayout:   ()             => fetchJSON('/api/home-layout')," in page
+    assert "saveLayout:   layout         => send('/api/home-layout', 'PUT', layout)," in page
+    # Saved once, as Configure is switched off: the mode, the subtitle and
+    # the order and sizes.
+    toggle = _js_function(page, "toggleConfigure")
+    assert home.count("api.saveLayout(") == 1
+    assert "const res = await api.saveLayout({mode:'flow', subtitle:home.subtitle, items:layoutItems()});" in toggle
+    assert _const(page, "layoutItems") == (
+        "const layoutItems = () => home.tiles.map(t => ({app_id:t.app_id, size:{w:t.w, h:t.h}}));"
+    )
+
+
+def _node(script):
+    out = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=60)
+    assert out.returncode == 0, out.stderr
+    return json.loads(out.stdout)
+
+
+# Stand-in elements for running the page's own functions under node.
+FAKE_DOM = """
+    const mk = tag => {
+      const n = {tag, children:[], style:{}, dataset:{}, attrs:{}, className:''};
+      n.setAttribute = (k, v) => { n.attrs[k] = String(v); };
+      n.appendChild = c => { n.children.push(c); return c; };
+      n.replaceChildren = (...cs) => { n.children = cs; };
+      return n;
+    };
+    const el = (t, c, h) => { const n = mk(t); if(c) n.className = c; if(h!=null) n.innerHTML = h; return n; };
+"""
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
+def test_paint_tiles_spans_each_tile_and_configure_adds_its_controls(client):
+    page = _page(client)
+    script = FAKE_DOM + "\n".join([
+        _const(page, "GRIP"),
+        _js_source(page, "spanTile"),
+        _js_source(page, "tileControls"),
+        _js_source(page, "paintTiles"),
+    ]) + """
+        const renderSpec = (spec, name) => ({tag:'face', spec, name, className:'face'});
+        let sortable = 0;
+        const sortableTiles = grid => { sortable++; };
+        const tiles = [
+          {app_id:'week', name:'Week <b>', spec:{type:'empty'}, w:2, h:1,
+           sizes:[{w:2, h:1}, {w:1, h:1}, {w:3, h:2}]},
+          {app_id:'steps', name:'Steps', spec:{type:'empty'}, w:1, h:1, sizes:[{w:1, h:1}]},
+        ];
+        const look = grid => ({cls:grid.className, tiles:grid.children.map(t => ({
+          app:t.dataset.app, cls:t.className, label:t.attrs['aria-label'],
+          col:t.style.gridColumn, row:t.style.gridRow,
+          parts:t.children.map(c => c.className),
+          controls:(t.children.find(c => c.className==='tile-cfg') || {children:[]}).children.map(c => ({
+            cls:c.className, label:c.attrs['aria-label'],
+            options:c.children.map(o => [o.value, o.textContent, o.selected])})),
+        }))});
+        const box = mk('div');
+        paintTiles(box, tiles, false);
+        const view = look(box.children[0]);
+        const sortableInView = sortable;
+        paintTiles(box, tiles, true);
+        const grid = box.children[0];
+        const configuring = look(grid);
+        // Pick week's 3 x 2: the tile and its entry both change.
+        const pick = grid.children[0].children[1].children[1];
+        pick.value = '2';
+        pick.onchange();
+        console.log(JSON.stringify({view, sortableInView, configuring, sortable,
+          picked:[grid.children[0].style.gridColumn, grid.children[0].style.gridRow, tiles[0].w, tiles[0].h]}));
+    """
+    result = _node(script)
+
+    # View: a plain grid of chromeless tiles, each spanning its size.
+    assert result["view"] == {"cls": "tiles", "tiles": [
+        {"app": "week", "cls": "tile", "label": "Week <b>", "col": "span 2", "row": "span 1",
+         "parts": ["face"], "controls": []},
+        {"app": "steps", "cls": "tile", "label": "Steps", "col": "span 1", "row": "span 1",
+         "parts": ["face"], "controls": []},
+    ]}
+    assert result["sortableInView"] == 0
+    # Configure: every tile its handle; only the app with a choice of sizes
+    # a picker, its sizes in the app's order, the current one selected.
+    week, steps = result["configuring"]["tiles"]
+    assert result["configuring"]["cls"] == "tiles configuring"
+    assert week["parts"] == ["face", "tile-cfg"] and steps["parts"] == ["face", "tile-cfg"]
+    assert week["controls"] == [
+        {"cls": "tile-grip", "label": "Move Week <b>: drag it, or use the arrow keys", "options": []},
+        {"cls": "tile-size", "label": "Size of Week <b>",
+         "options": [["0", "2 × 1", True], ["1", "1 × 1", False], ["2", "3 × 2", False]]},
+    ]
+    assert steps["controls"] == [
+        {"cls": "tile-grip", "label": "Move Steps: drag it, or use the arrow keys", "options": []},
+    ]
+    assert result["sortable"] == 1
+    assert result["picked"] == ["span 3", "span 2", 3, 2]
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
+def test_configure_saves_the_layout_as_its_switched_off(client):
+    page = _page(client)
+    script = "\n".join([
+        _const(page, "layoutItems"),
+        _js_source(page, "toggleConfigure"),
+    ]) + """
+        const home = {status:'ready', subtitle:'Mine', configuring:false, saving:false,
+          tiles:[{app_id:'a', w:2, h:1, spec:{}}, {app_id:'b', w:1, h:1, spec:{}}]};
+        const saved = [];
+        let reply = {ok:true};
+        const api = {saveLayout: async layout => { saved.push(JSON.parse(JSON.stringify(layout))); return reply; }};
+        const notes = [];
+        const homeMsg = (cls, text) => notes.push(cls);
+        const paintHomeHead = () => {}, paintHome = () => {};
+        const $ = () => ({setAttribute(){}});
+        (async () => {
+          const seen = [];
+          await toggleConfigure(); seen.push(home.configuring);
+          home.tiles.reverse(); home.tiles[1].w = 3; home.subtitle = 'Edited';
+          await toggleConfigure(); seen.push(home.configuring);
+          await toggleConfigure(); seen.push(home.configuring);
+          reply = {ok:false, error:'disk full'};
+          await toggleConfigure(); seen.push(home.configuring);
+          console.log(JSON.stringify({seen, saved, notes, saving:home.saving}));
+        })();
+    """
+    result = _node(script)
+
+    # On, then off (saved), on, then a failed save: still configuring.
+    assert result["seen"] == [True, False, True, True]
+    assert result["saving"] is False
+    assert result["notes"] == ["info", "info", "ok", "info", "info", "bad"]
+    # Nothing is saved going in; going out, the layout as it stands.
+    layout = {"mode": "flow", "subtitle": "Edited", "items": [
+        {"app_id": "b", "size": {"w": 1, "h": 1}}, {"app_id": "a", "size": {"w": 3, "h": 1}},
+    ]}
+    assert result["saved"] == [layout, layout]
+    # ... which is what the server takes.
+    assert home_layout.parse_layout(layout) == layout
+
+
+# Installed apps (as /api/apps lists them) and stored items, for the
+# page's flow and the server's reconcile to square the same way.
+FLOW_APPS = [
+    {"id": "a", "sizes": [{"w": 1, "h": 1}, {"w": 2, "h": 2}]},
+    {"id": "b", "sizes": [{"w": 3, "h": 1}]},
+    {"id": "c", "sizes": [{"w": 2, "h": 1}, {"w": 1, "h": 1}, {"w": 6, "h": 6}]},
+    {"id": "d", "sizes": [{"w": 1, "h": 2}]},
+]
+FLOW_ITEMS = [
+    [],
+    None,
+    [{"app_id": "c", "size": {"w": 6, "h": 6}}, {"app_id": "a", "size": {"w": 2, "h": 2}}],
+    [{"app_id": "gone", "size": {"w": 1, "h": 1}}, {"app_id": "b", "size": {"w": 3, "h": 1}}],
+    [{"app_id": "a", "size": {"w": 3, "h": 3}}, {"app_id": "b", "size": {"w": 1, "h": 1}}],
+    [{"app_id": "d"}, {"app_id": "a", "size": None}, {"app_id": "c", "size": [1, 1]}],
+    [{"app_id": "a", "size": {"w": 2, "h": 2}}, {"app_id": "a", "size": {"w": 1, "h": 1}}],
+    ["a", 5, None, {"app_id": 5}, {"app_id": ["a"]}, {"size": {"w": 1, "h": 1}}],
+    [{"app_id": "c", "size": {"w": True, "h": 1}}, {"app_id": "c", "size": {"w": "1", "h": "1"}}],
+    [{"app_id": "d", "size": {"w": 1, "h": 2, "x": 4}}, {"app_id": "b", "size": {"w": 3, "h": 1}}],
+]
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
+def test_the_pages_flow_squares_a_layout_as_the_server_does(client):
+    page = _page(client)
+    listed = [{**a, "name": a["id"], "default_size": a["sizes"][0]} for a in FLOW_APPS]
+    script = "\n".join([
+        _const(page, "GRID_COLS"),
+        _const(page, "cells"),
+        _const(page, "sizeOf"),
+        _const(page, "appSizes"),
+        _js_source(page, "flowLayout"),
+    ]) + f"""
+        const apps = {json.dumps(listed)}, cases = {json.dumps(FLOW_ITEMS)};
+        console.log(JSON.stringify(cases.map(items => flowLayout(items, apps))));
+    """
+    result = _node(script)
+
+    installed = [
+        apps.InstalledApp(id=a["id"], name=a["id"], sizes=a["sizes"], default_size=a["sizes"][0],
+                          reads=[], config=[], path="/nowhere", render=None)
+        for a in FLOW_APPS
+    ]
+    for items, flowed in zip(FLOW_ITEMS, result):
+        assert flowed == home_layout.reconcile({"items": items}, installed)["items"], items
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
+def test_a_dragged_tile_takes_the_place_of_the_one_its_dropped_on(client):
+    page = _page(client)
+    # Four tiles on 100px cells: a (2x1) and b (1x1) in row one, three
+    # cells left empty at its end; c (3x1) and d (1x1) in row two.
+    script = _js_source(page, "dropSpot") + """
+        const rect = (l, t, r, b) => ({left:l, top:t, right:r, bottom:b, width:r-l, height:b-t});
+        const tiles = [['a', 0, 0, 200, 100], ['b', 200, 0, 300, 100], ['c', 0, 100, 300, 200], ['d', 300, 100, 400, 200]]
+          .map(([id, ...r]) => ({dataset:{app:id}, getBoundingClientRect:() => rect(...r)}));
+        tiles.forEach((t, i) => Object.defineProperty(t, 'nextElementSibling', {get:() => tiles[i+1] || null}));
+        const grid = {children:tiles};
+        const by = id => tiles.find(t => t.dataset.app===id);
+        const at = (id, x, y) => {
+          const spot = dropSpot(grid, by(id), x, y);
+          return spot && [spot.before ? spot.before.dataset.app : null, spot.key];
+        };
+        console.log(JSON.stringify({
+          backOntoA: at('d', 50, 50),        // from later: in front of a
+          forwardOntoC: at('a', 250, 150),   // from earlier: after c
+          forwardOntoB: at('a', 210, 10),    // after b, whichever half
+          backOntoC: at('d', 10, 190),
+          rowEndGap: at('a', 550, 50),       // the gap at row one's end: after b
+          gapOfItsOwnRow: at('c', 550, 50),  // c is after b already
+          rowTwoGap: at('a', 450, 150),      // after d, the last
+          dropRow: at('b', 50, 250),         // under every tile: last
+          overItself: at('b', 250, 50),
+        }));
+    """
+    assert _node(script) == {
+        "backOntoA": ["a", "a"],
+        "forwardOntoC": ["d", "c"],
+        "forwardOntoB": ["c", "b"],
+        "backOntoC": ["c", "c"],
+        "rowEndGap": ["c", ":gap:b"],
+        "gapOfItsOwnRow": ["d", ":gap:b"],
+        "rowTwoGap": [None, ":gap:d"],
+        "dropRow": [None, ":end"],
+        "overItself": None,
+    }
 
 
 def test_index_wires_the_voice_buttons_to_the_audio_route(client):

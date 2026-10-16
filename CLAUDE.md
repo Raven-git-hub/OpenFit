@@ -98,11 +98,20 @@ own calls to its device API. Full direction:
   load, in folder-name order. An app is a folder in `APPS_DIR` (`$APPS_DIR`,
   default `/data/apps`, on the data volume; `app.config["APPS_DIR"]` in tests)
   with an `app.yaml` (`id` (default: the folder's name, `[A-Za-z0-9][A-Za-z0-9_-]*`),
-  `name` (default: the id), `default_size` `{w, h}` (1–12 each, default 2×2),
-  `reads` (a list of keys — recorded, not enforced), `config` (an ordered
-  list of field mappings `{key, label, type, default}` — order drives the
-  config form; `key` a non-empty string, unique; the rest kept as written,
-  unchecked; a mapping is malformed), all optional but type-checked) and,
+  `name` (default: the id), `reads` (a list of keys — recorded, not
+  enforced), `config` (an ordered list of field mappings `{key, label,
+  type, default}` — order drives the config form; `key` a non-empty
+  string, unique; the rest kept as written, unchecked; a mapping is
+  malformed), all optional but type-checked, and its **size, required**:
+  `sizes`, a non-empty list of the tile sizes it's drawn at, each `{w, h}`
+  in cells, whole numbers 1–`MAX_CELLS` (6, Home's width), none twice,
+  the first the default (a fixed-size app lists one) — or the older
+  `default_size: {w, h}` alone, a list of one; both only when
+  `default_size` is the first of `sizes`. `manifest_sizes(raw)` reads them
+  and, like every rule here, raises `AppError` with the reason; no size at
+  all → `NO_SIZE` ("no tile size: ..."), and YAML's `{w:1,h:1}` (no space
+  after a colon, so keys `'w:1'`) is named as such. The host never makes a
+  size up. `tile_size(raw)` → a `{w, h}` or None, for the layout) and,
   optionally, an `app.py` whose `render(ctx, cfg)` is
   imported by `importlib` from its absolute path (nothing added to
   `sys.path`/`sys.modules`). With no `app.py` the app still loads and lists,
@@ -115,7 +124,8 @@ own calls to its device API. Full direction:
   on every request (no restart for a new app); a loaded app is cached until
   its `app.yaml`/`app.py` mtime or size changes, so a broken one logs once per
   change. `find_app(apps_dir, id)` picks one. `InstalledApp.summary()` is
-  what `GET /api/apps` lists: `{id, name, default_size, reads, files}` —
+  what `GET /api/apps` lists: `{id, name, default_size, sizes, reads,
+  files}` — `default_size` the first of `sizes`;
   `files` from `app_files(folder)`, the sorted names of the plain files
   directly in the folder (no sub-folder such as `__pycache__`, no link, no
   name `filename_problem()` refuses), so every name listed is one the file
@@ -131,9 +141,11 @@ own calls to its device API. Full direction:
   `<apps dir>/<id>` as anything, a broken link included, and no app in
   another folder loading under it) else 409 `"'<id>' already exists — remove
   it first to reinstall."` (install only creates, never updates); then
-  `check_app(manifest, files)` — **the correctness layer that grows**, a
-  no-op today: no manifest fields beyond the id are checked, `app.py` isn't
-  parsed, nothing is run. Only then is anything written: into a hidden
+  `check_app(manifest, files)` — **the correctness layer that grows**; its
+  one rule so far is a size (`manifest_sizes()`: "won't deploy without a
+  size", refused 400 with the scanner's own reason); no other manifest
+  field is checked, `app.py` isn't parsed, nothing is run. Only then is
+  anything written: into a hidden
   `.install-<hex>` folder (the scanner skips dot-folders), renamed to `<id>`
   once whole, under a process lock (`_write_lock`, shared with uninstall),
   `APPS_DIR` made if missing; a failed
@@ -182,10 +194,33 @@ own calls to its device API. Full direction:
   non-spec (not a dict with a string `type`) or a spec that isn't plain JSON
   (NaN, a set) is logged (`[apps] <id>: ...`, with the traceback) and comes
   back as an error spec. Full contract: `docs/architecture/app-host.md`.
-  The two real apps, `steps` and `steps-metres`, are committed verbatim in
+  The two real apps, `steps` and `steps-metres`, are committed in
   `tests/fixtures/apps/` (as deployed in `/data/apps`) and run against the
   host by `tests/test_app_host.py`: they're correct per the contract, so a
-  failure there is fixed in the host, never by editing them.
+  failure there is fixed in the host, never by editing them. Their `app.py`
+  is verbatim; their `app.yaml` declares `sizes: [{ w: 1, h: 1 }]`, the
+  canonical form, where the deployed copies still say `default_size: { w:
+  2, h: 2 }` — which keeps loading (tested from the fixtures, swapped back).
+- `app/home_layout.py` — the Home tab's layout, one `settings` row
+  (`LAYOUT_KEY` `home_layout`, no migration): `{"mode": "flow", "subtitle",
+  "items": [{app_id, size: {w, h}}]}`. Flow is the one mode: the items'
+  order is the layout, each size one its app declares; no coordinates
+  (`mode` holds the seat for a later grid mode, so that's a second mode,
+  not a migration). `load_layout(conn, apps)` → `reconcile(stored, apps)`
+  against the apps installed now (`scan_apps()`): stored items in order,
+  less any whose app isn't installed (or a repeat, or junk); each at its
+  stored size if its app still offers it, else the app's default; then
+  every app no item places, at its default, in folder order. A stored row
+  that isn't a layout (it can be written through `/api/settings`) reads as
+  none saved. A read never rewrites the row, so an app uninstalled and
+  reinstalled before the next save (the update path) comes back where it
+  was. `parse_layout(body)` checks a save's shape only — `mode` `"flow"`,
+  `subtitle` text ≤ `MAX_SUBTITLE` (120), `items` a list of `{app_id`
+  (the scanner's `APP_ID`), `size` (`tile_size()`)}`, each id once —
+  dropping anything else, else `LayoutError`; it never checks which apps
+  are installed or what sizes they offer. `save_layout()` stores it.
+  Routes: `GET /api/home-layout` (reconciled) and `PUT /api/home-layout`
+  (`{ok: true}`, or 400 storing nothing).
 - `app/templates/index.html` — the data console, one self-contained page
   (vanilla JS, no build step, no external calls or web fonts; every colour/font/
   radius in its `CUSTOMISE OPENFIT HERE` token block). Under the top bar
@@ -335,23 +370,52 @@ own calls to its device API. Full direction:
   `/api/connectors/<id>/detail`, `PUT /api/connectors/<id>/cadence`,
   `DELETE /api/connectors/<id>`,
   `/api/sync/<plugin>`), and the app routes (`/api/apps`, `POST /api/apps`,
-  `DELETE /api/apps/<id>`, `/api/app/<id>/render`, `/api/app/<id>/file`);
+  `DELETE /api/apps/<id>`, `/api/app/<id>/render`, `/api/app/<id>/file`)
+  and Home's layout (`GET`/`PUT /api/home-layout`);
   not `/api/activity` (the last-sync stamp that read it
   is gone). See `docs/architecture/frontend-redesign-and-widget-model.md`.
-  **Home** reads `GET /api/apps`, then every `GET /api/app/<id>/render` in
-  parallel (a failed fetch is that app's error tile), and is re-read after
-  a Sync now or a source removal, as the data card is, and after an app
-  install or uninstall; an app row's Refresh redraws just its own tile.
-  Three parts, kept
-  apart so the grid pass (Configure, drag/resize, saved layout) swaps only
-  the middle one: `loadHome()` → `[{app_id, name, spec, w, h}]`;
-  `layoutTiles` (= `autoLayout`, every `x`/`y` null) gives each tile a cell
-  or flows it; `paintTiles(box, tiles)` draws any such list on an invisible
-  CSS grid of `--tile-cell` squares (110px, `--tile-gap` 12px, in the token
-  block; on a phone a quarter of the width, so two 2×2 tiles sit side by
-  side), a tile spanning `w`×`h` from `x`/`y` or flowed into the next free
-  cell. No grid lines, no Configure, no drag. Tiles are chromeless (the card
-  surface, no title bar). `renderSpec()` draws the vocabulary, all as text,
+  **Home** reads `GET /api/apps` and `GET /api/home-layout` together, then
+  every `GET /api/app/<id>/render` in parallel (a failed fetch is that
+  app's error tile), and is re-read after a Sync now or a source removal,
+  as the data card is, and after an app install or uninstall; an app row's
+  Refresh redraws just its own tile (keeping its Configure controls).
+  Three parts, kept apart: `loadHome()` → `home.tiles`, `[{app_id, name,
+  spec, w, h, sizes}]` in layout order; `layoutTiles` (= `flowLayout(items,
+  apps)`, the server's reconcile mirrored — it squares the read layout with
+  the apps read beside it, and an unsaved Configure with an install or
+  uninstall made meanwhile; a node test holds it to `reconcile()`) gives
+  the order and each size; `paintTiles(box, tiles, configuring)` draws them
+  on a CSS grid six cells across (`GRID_COLS`, = `MAX_CELLS`):
+  `grid-template-columns: repeat(6, var(--tile-cell))`, `grid-auto-rows`
+  the same (square cells), `grid-auto-flow: row` (never `dense`: a row-end
+  gap stays empty, order-faithful), each tile `span w` × `span h` (no start
+  cell). `--tile-cell` is `clamp(--tile-cell-min 90px, (100cqi − 5 gaps) /
+  6, --tile-cell-max 180px)` against `.home`'s width (a container), so a
+  resize changes only a cell's pixels — the layout never moves; past the
+  max the grid centres (`width: max-content; margin: 0 auto`), under the
+  min `.home` scrolls sideways (no phone pass yet). Tiles are chromeless
+  (the card surface, no title bar) in view. Over the grid, the sub-header
+  (`#homeHead`, `paintHomeHead()`): the subtitle (`.home-sub`, text) on the
+  left and the **Configure** toggle on the right (`.tab.tab-add.home-cfg`,
+  no `data-tab` so it's no Opening page; `aria-pressed`, `.active` (the
+  accent) while on; disabled until Home has loaded), then `#homeMsg`.
+  `toggleConfigure()`: on, every tile gets `tileControls()` — a handle
+  (`.tile-grip`) and, only if its app offers more than one size, a
+  `<select>` of those sizes (`w × h`; choosing one sets the tile's span,
+  the grid reflowing live) — the empty cells are marked (`--tile-guide`),
+  a drop row sits under the tiles, and the subtitle is an input (≤
+  `SUBTITLE_MAX`, the server's 120). `sortableTiles(grid)`: drag a tile
+  (anywhere but its picker) onto another and it takes that one's place
+  (`dropSpot()`: from earlier in the order, after it; from later, before
+  it; into a row-end gap, after that row's last tile; into the drop row,
+  last), the rest reflowing live, once per spot and only after the pointer
+  moves `SETTLE` px from the last reorder (mixed sizes would chase it
+  otherwise); a handle's arrows step it (←/↑ back, →/↓ on); `home.tiles`
+  follows the DOM. Off: `PUT /api/home-layout` `{mode: 'flow', subtitle,
+  items: layoutItems()}`; on success back to view and "✓ Layout saved",
+  on failure it stays in Configure with the error. The subtitle and every
+  app name are set as text (`textContent`, `.value`, attributes), never
+  markup. `renderSpec()` draws the vocabulary, all as text,
   never markup: `number` (big tabular value, `unit` beside, `label` beneath,
   muted `caption`, clamped to 2 lines — 1 in a tile under 190px tall, an
   `@container` query, so a panel's line keeps its room on a phone — full text
@@ -634,6 +698,13 @@ own calls to its device API. Full direction:
   `app/main.py`, beside the scheduler. Set per source through `PUT
   /api/connectors/<id>/cadence` (see Connectors); the baseline itself isn't
   user-configurable.
+- Home layout: the `settings` row `home_layout` (no migration) holds JSON
+  `{"mode": "flow", "subtitle", "items": [{"app_id", "size": {"w", "h"}}]}`
+  — the tiles' order and sizes and the line over them, written by
+  Configure through `PUT /api/home-layout` and read, reconciled with the
+  installed apps, through `GET /api/home-layout` (`app/home_layout.py`;
+  see Layout). It's config, not data: an app's tile placement, never a
+  metric.
 - Webhook (push input, no migration): `POST /api/webhook/<token>` with
   `{"metric", "value", "date"?, "source"?}` writes one reading via
   `write_metric()` then `recompute_derived(since=date, until=date)`, in one
@@ -840,9 +911,17 @@ same PR:
   `GET /api/apps`, `GET /api/app/<id>/render` (an error spec, never a 500),
   `?days=` on the contract reads, and Home drawing the tiles flowed at their
   default size (no migration). Apps run as trusted code in the server's
-  process. Still to come: the grid pass (Configure, a visible grid,
-  drag/resize, collision, positions saved in `settings` — it swaps
-  `layoutTiles` only), the rest of the Library (its shell landed: the Data
+  process. Configure mode landed in flow form: the manifest's `sizes`
+  (required, 1–6 cells either way, the older `default_size` a list of
+  one; `check_app()`'s first rule), a six-column grid of square cells,
+  drag-to-reorder and a size picker, an editable subtitle, saved as the
+  `home_layout` settings row through `GET`/`PUT /api/home-layout` and
+  reconciled with the installed apps on every read (no migration).
+  Still to come: the grid pass (free cell placement as a second layout
+  `mode` on the same sizes and CSS grid — coordinates, drop-anywhere,
+  deliberate gaps, collision; it swaps `layoutTiles` and adds start cells
+  to `spanTile`; resize stays the picker), a phone layout, the rest of the
+  Library (its shell landed: the Data
   tab's Applications column, listing `/api/apps`; then the Add Application
   popup and `POST /api/apps`, installing an app from pasted or uploaded
   files — `app.py` became optional; then expandable app rows — reads, files

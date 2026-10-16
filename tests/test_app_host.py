@@ -27,9 +27,13 @@ from metrics import DISTANCE_M, METRICS, STEPS
 
 
 # The two real apps Home was built for, steps and steps-metres, committed
-# verbatim in tests/fixtures/apps/ exactly as they're deployed in /data/apps,
-# so every run checks the host against the genuine apps. They are correct
-# per the contract: when one fails here, fix the host, never these files.
+# in tests/fixtures/apps/ as they're deployed in /data/apps, so every run
+# checks the host against the genuine apps. They are correct per the
+# contract: when one fails here, fix the host, never these files. Their
+# app.py is verbatim; their app.yaml declares sizes: [{ w: 1, h: 1 }], the
+# canonical form, where the deployed copies still have the older
+# default_size: { w: 2, h: 2 } - which the host keeps loading
+# (test_the_deployed_manifests_still_load).
 REAL_APPS = Path(__file__).parent / "fixtures" / "apps"
 
 
@@ -50,7 +54,12 @@ def install_real_apps(apps_dir):
         )
 
 
-def make_app(root, folder, manifest="", code=None):
+# Every app declares a size - one with none doesn't load - so the tests
+# that aren't about size give their apps this one.
+SIZE = "sizes: [{w: 1, h: 1}]\n"
+
+
+def make_app(root, folder, manifest=SIZE, code=None):
     """An app folder under `root`: app.yaml from `manifest`, app.py from `code`."""
     path = root / folder
     path.mkdir(parents=True)
@@ -94,8 +103,8 @@ def ids(found):
 
 
 def test_scan_loads_a_valid_app_and_skips_a_malformed_one(apps_dir, capsys):
-    make_app(apps_dir, "steps", "id: steps\nname: Steps\n", STEPS_APP)
-    make_app(apps_dir, "broken", "id: broken\nname: [unclosed\n", STEPS_APP)
+    make_app(apps_dir, "steps", "id: steps\nname: Steps\n" + SIZE, STEPS_APP)
+    make_app(apps_dir, "broken", SIZE + "id: broken\nname: [unclosed\n", STEPS_APP)
 
     assert ids(apps.scan_apps(str(apps_dir))) == ["steps"]
     log = capsys.readouterr().out
@@ -120,6 +129,8 @@ def test_a_loaded_app_carries_its_manifest_and_render(apps_dir):
 
     [app] = apps.scan_apps(str(apps_dir))
     assert (app.id, app.name, app.default_size) == ("steps", "Steps", {"w": 3, "h": 2})
+    # default_size alone is the older form of sizes: a list of one.
+    assert app.sizes == [{"w": 3, "h": 2}]
     assert app.reads == ["steps"]
     # In the manifest's order: it's the order the config form will use.
     assert app.config == [
@@ -130,65 +141,142 @@ def test_a_loaded_app_carries_its_manifest_and_render(apps_dir):
     assert callable(app.render)
 
 
-def test_a_manifest_can_leave_everything_but_render_to_the_defaults(apps_dir):
-    # The id defaults to the folder's name, the name to the id.
-    make_app(apps_dir, "steps", "", STEPS_APP)
+def test_a_manifest_can_leave_everything_but_its_size_to_the_defaults(apps_dir):
+    # The id defaults to the folder's name, the name to the id. The size
+    # has no default: the host never makes one up.
+    make_app(apps_dir, "steps", SIZE, STEPS_APP)
 
     [app] = apps.scan_apps(str(apps_dir))
-    assert (app.id, app.name, app.default_size) == ("steps", "steps", {"w": 2, "h": 2})
+    assert (app.id, app.name, app.default_size) == ("steps", "steps", {"w": 1, "h": 1})
+    assert app.sizes == [{"w": 1, "h": 1}]
     assert (app.reads, app.config) == ([], [])
 
 
 MALFORMED = {
-    "unparseable yaml": ("name: [unclosed\n", STEPS_APP),
+    "unparseable yaml": (SIZE + "name: [unclosed\n", STEPS_APP),
     "manifest not a mapping": ("- a\n- list\n", STEPS_APP),
-    "app.py syntax error": ("name: Steps\n", "def render(ctx, cfg)\n    return 1\n"),
-    "app.py raises on import": ("name: Steps\n", "raise RuntimeError('no')\n"),
-    "no render": ("name: Steps\n", "def draw(ctx, cfg):\n    return None\n"),
-    "render not callable": ("name: Steps\n", "render = 'a tile'\n"),
-    "id with a slash": ("id: a/b\n", STEPS_APP),
-    "id with a space": ("id: my app\n", STEPS_APP),
-    "id not a string": ("id: 5\n", STEPS_APP),
-    "empty name": ("name: ''\n", STEPS_APP),
-    "name not a string": ("name: [a]\n", STEPS_APP),
-    "default_size not a mapping": ("default_size: 2\n", STEPS_APP),
-    "default_size missing h": ("default_size: {w: 2}\n", STEPS_APP),
-    "default_size zero": ("default_size: {w: 0, h: 2}\n", STEPS_APP),
-    "default_size too big": ("default_size: {w: 2, h: 13}\n", STEPS_APP),
-    "default_size a string": ("default_size: {w: '2', h: 2}\n", STEPS_APP),
-    "default_size a bool": ("default_size: {w: true, h: 2}\n", STEPS_APP),
-    "default_size a float": ("default_size: {w: 2.5, h: 2}\n", STEPS_APP),
-    "reads not a list": ("reads: steps\n", STEPS_APP),
-    "reads not strings": ("reads: [1, 2]\n", STEPS_APP),
-    "config a mapping": ("config: {days: 7}\n", STEPS_APP),
-    "config a string": ("config: days\n", STEPS_APP),
-    "config field not a mapping": ("config: [days]\n", STEPS_APP),
-    "config field with no key": ("config: [{label: Days}]\n", STEPS_APP),
-    "config field key not a string": ("config: [{key: 7}]\n", STEPS_APP),
-    "config field listed twice": ("config: [{key: days}, {key: days}]\n", STEPS_APP),
+    "app.py syntax error": (SIZE + "name: Steps\n", "def render(ctx, cfg)\n    return 1\n"),
+    "app.py raises on import": (SIZE + "name: Steps\n", "raise RuntimeError('no')\n"),
+    "no render": (SIZE + "name: Steps\n", "def draw(ctx, cfg):\n    return None\n"),
+    "render not callable": (SIZE + "name: Steps\n", "render = 'a tile'\n"),
+    "id with a slash": (SIZE + "id: a/b\n", STEPS_APP),
+    "id with a space": (SIZE + "id: my app\n", STEPS_APP),
+    "id not a string": (SIZE + "id: 5\n", STEPS_APP),
+    "empty name": (SIZE + "name: ''\n", STEPS_APP),
+    "name not a string": (SIZE + "name: [a]\n", STEPS_APP),
+    "reads not a list": (SIZE + "reads: steps\n", STEPS_APP),
+    "reads not strings": (SIZE + "reads: [1, 2]\n", STEPS_APP),
+    "config a mapping": (SIZE + "config: {days: 7}\n", STEPS_APP),
+    "config a string": (SIZE + "config: days\n", STEPS_APP),
+    "config field not a mapping": (SIZE + "config: [days]\n", STEPS_APP),
+    "config field with no key": (SIZE + "config: [{label: Days}]\n", STEPS_APP),
+    "config field key not a string": (SIZE + "config: [{key: 7}]\n", STEPS_APP),
+    "config field listed twice": (SIZE + "config: [{key: days}, {key: days}]\n", STEPS_APP),
+}
+
+# Manifests whose size won't do, and why: each app is skipped with the reason.
+BAD_SIZES = {
+    "no size at all": ("name: Steps\n", "no tile size: an app declares the sizes it's drawn at"),
+    "an empty manifest": ("", "no tile size"),
+    "sizes empty": ("sizes: []\n", "sizes must be a list of one or more {w, h}"),
+    "sizes a mapping": ("sizes: {w: 1, h: 1}\n", "sizes must be a list of one or more {w, h}"),
+    "sizes a number": ("sizes: 2\n", "sizes must be a list of one or more {w, h}"),
+    "a size not a mapping": ("sizes: [{w: 1, h: 1}, 2]\n", "sizes[1] must be a mapping of w and h"),
+    "a size missing h": ("sizes: [{w: 2}]\n", "sizes[0].h must be a whole number from 1 to 6"),
+    "a size zero": ("sizes: [{w: 0, h: 1}]\n", "sizes[0].w must be a whole number from 1 to 6"),
+    "a size wider than the grid": ("sizes: [{w: 7, h: 1}]\n", "sizes[0].w must be a whole number from 1 to 6"),
+    "a size taller than six": ("sizes: [{w: 1, h: 1}, {w: 1, h: 7}]\n", "sizes[1].h must be a whole number from 1 to 6"),
+    "a size a string": ("sizes: [{w: '2', h: 2}]\n", "sizes[0].w must be a whole number"),
+    "a size a bool": ("sizes: [{w: true, h: 2}]\n", "sizes[0].w must be a whole number"),
+    "a size a float": ("sizes: [{w: 2.5, h: 2}]\n", "sizes[0].w must be a whole number"),
+    "a size listed twice": ("sizes: [{w: 1, h: 1}, {w: 2, h: 1}, {w: 1, h: 1}]\n", "sizes lists 1×1 twice"),
+    "YAML with no space after a colon": ("sizes: [{w:1,h:1}]\n", "sizes[0] needs a space after each colon"),
+    "default_size not a mapping": ("default_size: 2\n", "default_size must be a mapping of w and h"),
+    "default_size missing h": ("default_size: {w: 2}\n", "default_size.h must be a whole number from 1 to 6"),
+    "default_size zero": ("default_size: {w: 0, h: 2}\n", "default_size.w must be a whole number"),
+    "default_size too big": ("default_size: {w: 2, h: 7}\n", "default_size.h must be a whole number from 1 to 6"),
+    "default_size twelve wide": ("default_size: {w: 12, h: 1}\n", "default_size.w must be a whole number from 1 to 6"),
+    "default_size a bool": ("default_size: {w: true, h: 2}\n", "default_size.w must be a whole number"),
+    "default_size not the first of sizes": (
+        "sizes: [{w: 1, h: 1}, {w: 2, h: 2}]\ndefault_size: {w: 2, h: 2}\n",
+        "default_size must be the first of sizes",
+    ),
 }
 
 
 @pytest.mark.parametrize("manifest, code", MALFORMED.values(), ids=MALFORMED.keys())
 def test_a_malformed_app_is_logged_and_skipped(apps_dir, capsys, manifest, code):
     make_app(apps_dir, "bad", manifest, code)
-    make_app(apps_dir, "good", "name: Good\n", STEPS_APP)
+    make_app(apps_dir, "good", "name: Good\n" + SIZE, STEPS_APP)
 
     assert ids(apps.scan_apps(str(apps_dir))) == ["good"]
     assert f"[apps] skipping {apps_dir / 'bad'}" in capsys.readouterr().out
 
 
+@pytest.mark.parametrize("manifest, says", BAD_SIZES.values(), ids=BAD_SIZES.keys())
+def test_an_app_without_a_size_it_can_have_is_skipped(apps_dir, capsys, manifest, says):
+    # Won't deploy without a size: the scanner leaves it out, saying why.
+    make_app(apps_dir, "bad", manifest, STEPS_APP)
+    make_app(apps_dir, "good", "name: Good\n" + SIZE, STEPS_APP)
+
+    assert ids(apps.scan_apps(str(apps_dir))) == ["good"]
+    log = capsys.readouterr().out
+    assert f"[apps] skipping {apps_dir / 'bad'}: {says}" in log, log
+
+
+@pytest.mark.parametrize(
+    "manifest, sizes",
+    [
+        # sizes, the canonical form: one, or several, the first the default.
+        ("sizes: [{w: 1, h: 1}]\n", [{"w": 1, "h": 1}]),
+        ("sizes: [{w: 1, h: 1}, {w: 2, h: 2}]\n", [{"w": 1, "h": 1}, {"w": 2, "h": 2}]),
+        ("sizes: [{w: 6, h: 1}, {w: 3, h: 6}, {w: 1, h: 1}]\n",
+         [{"w": 6, "h": 1}, {"w": 3, "h": 6}, {"w": 1, "h": 1}]),
+        ("sizes:\n  - {w: 2, h: 1}\n  - w: 4\n    h: 2\n", [{"w": 2, "h": 1}, {"w": 4, "h": 2}]),
+        ('sizes: [{"w": 1, "h": 1}]\n', [{"w": 1, "h": 1}]),
+        # default_size, the older form: a list of one.
+        ("default_size: {w: 2, h: 2}\n", [{"w": 2, "h": 2}]),
+        # Both, for hosts either side of sizes: default_size is the first.
+        ("default_size: {w: 2, h: 2}\nsizes: [{w: 2, h: 2}, {w: 1, h: 1}]\n",
+         [{"w": 2, "h": 2}, {"w": 1, "h": 1}]),
+        # A size's other keys aren't read.
+        ("sizes: [{w: 1, h: 1, label: small}]\n", [{"w": 1, "h": 1}]),
+    ],
+)
+def test_a_manifest_declares_its_sizes(apps_dir, manifest, sizes):
+    make_app(apps_dir, "steps", manifest, STEPS_APP)
+
+    [app] = apps.scan_apps(str(apps_dir))
+    assert app.sizes == sizes
+    assert app.default_size == sizes[0]
+
+
+def test_the_deployed_manifests_still_load(apps_dir):
+    # The real apps as deployed declare default_size: { w: 2, h: 2 }, the
+    # form before sizes; they keep loading, at that one size.
+    for folder in ("steps", "steps-metres"):
+        manifest = real(folder, apps.MANIFEST)
+        assert "sizes: [{ w: 1, h: 1 }]" in manifest
+        deployed = manifest.replace("sizes: [{ w: 1, h: 1 }]", "default_size: { w: 2, h: 2 }")
+        make_app(apps_dir, folder, deployed, real(folder, apps.MODULE))
+
+    steps, metres = apps.scan_apps(str(apps_dir))
+    for app in (steps, metres):
+        assert (app.sizes, app.default_size) == ([{"w": 2, "h": 2}], {"w": 2, "h": 2})
+    assert steps.summary()["sizes"] == [{"w": 2, "h": 2}]
+
+
 def test_an_app_with_no_app_py_loads_with_nothing_to_draw(client, apps_dir, capsys):
     # app.py is optional: a manifest alone is an app, listed like any
     # other, whose tile says it has nothing to draw - not an error.
-    make_app(apps_dir, "notes", "name: Notes\n", None)
+    make_app(apps_dir, "notes", "name: Notes\n" + SIZE, None)
 
     [app] = apps.scan_apps(str(apps_dir))
     assert (app.id, app.name) == ("notes", "Notes")
     assert "[apps]" not in capsys.readouterr().out
     assert client.get("/api/apps").get_json() == [
-        {"id": "notes", "name": "Notes", "default_size": {"w": 2, "h": 2},
-         "reads": [], "files": ["app.yaml"]}
+        {"id": "notes", "name": "Notes", "default_size": {"w": 1, "h": 1},
+         "sizes": [{"w": 1, "h": 1}], "reads": [], "files": ["app.yaml"]}
     ]
     assert client.get("/api/app/notes/render").get_json() == {
         "type": "empty",
@@ -197,7 +285,7 @@ def test_an_app_with_no_app_py_loads_with_nothing_to_draw(client, apps_dir, caps
 
 
 def test_an_app_py_added_later_is_picked_up(apps_dir):
-    folder = make_app(apps_dir, "steps", "name: Steps\n", None)
+    folder = make_app(apps_dir, "steps", "name: Steps\n" + SIZE, None)
     [app] = apps.scan_apps(str(apps_dir))
     assert app.render(None, {})["type"] == "empty"
 
@@ -208,7 +296,7 @@ def test_an_app_py_added_later_is_picked_up(apps_dir):
 
 def test_a_folder_without_a_manifest_is_not_an_app(apps_dir, capsys):
     make_app(apps_dir, "notes", None, STEPS_APP)
-    make_app(apps_dir, ".hidden", "name: Hidden\n", STEPS_APP)
+    make_app(apps_dir, ".hidden", "name: Hidden\n" + SIZE, STEPS_APP)
     (apps_dir / "README.txt").write_text("not an app")
 
     assert apps.scan_apps(str(apps_dir)) == []
@@ -222,14 +310,14 @@ def test_a_missing_apps_folder_has_no_apps(tmp_path):
 
 def test_apps_are_listed_in_folder_order(apps_dir):
     for folder in ("zeta", "alpha", "mid"):
-        make_app(apps_dir, folder, "", STEPS_APP)
+        make_app(apps_dir, folder, SIZE, STEPS_APP)
 
     assert ids(apps.scan_apps(str(apps_dir))) == ["alpha", "mid", "zeta"]
 
 
 def test_two_apps_claiming_one_id_keep_the_first_folder(apps_dir, capsys):
-    make_app(apps_dir, "a-steps", "id: steps\nname: First\n", STEPS_APP)
-    make_app(apps_dir, "b-steps", "id: steps\nname: Second\n", STEPS_APP)
+    make_app(apps_dir, "a-steps", "id: steps\nname: First\n" + SIZE, STEPS_APP)
+    make_app(apps_dir, "b-steps", "id: steps\nname: Second\n" + SIZE, STEPS_APP)
 
     [app] = apps.scan_apps(str(apps_dir))
     assert app.name == "First"
@@ -237,7 +325,7 @@ def test_two_apps_claiming_one_id_keep_the_first_folder(apps_dir, capsys):
 
 
 def test_an_edited_app_is_reloaded_and_a_broken_one_logged_once(apps_dir, capsys):
-    folder = make_app(apps_dir, "steps", "name: Steps\n", "def render(ctx, cfg)\n")
+    folder = make_app(apps_dir, "steps", "name: Steps\n" + SIZE, "def render(ctx, cfg)\n")
     assert apps.scan_apps(str(apps_dir)) == []
     assert apps.scan_apps(str(apps_dir)) == []
     # Logged when it was loaded - not again on the second scan.
@@ -246,12 +334,12 @@ def test_an_edited_app_is_reloaded_and_a_broken_one_logged_once(apps_dir, capsys
     (folder / apps.MODULE).write_text(STEPS_APP)
     assert ids(apps.scan_apps(str(apps_dir))) == ["steps"]
 
-    (folder / apps.MANIFEST).write_text("name: Steps, renamed\n")
+    (folder / apps.MANIFEST).write_text("name: Steps, renamed\n" + SIZE)
     assert apps.scan_apps(str(apps_dir))[0].name == "Steps, renamed"
 
 
 def test_find_app_by_id(apps_dir):
-    make_app(apps_dir, "steps", "", STEPS_APP)
+    make_app(apps_dir, "steps", SIZE, STEPS_APP)
 
     assert apps.find_app(str(apps_dir), "steps").id == "steps"
     assert apps.find_app(str(apps_dir), "nope") is None
@@ -261,17 +349,21 @@ def test_find_app_by_id(apps_dir):
 
 
 def test_api_apps_lists_the_installed_apps(client, apps_dir):
-    make_app(apps_dir, "steps", "id: steps\nname: Steps\ndefault_size: {w: 2, h: 2}\n", STEPS_APP)
+    make_app(apps_dir, "steps", "id: steps\nname: Steps\nsizes: [{w: 1, h: 1}, {w: 2, h: 2}]\n", STEPS_APP)
     make_app(apps_dir, "steps-metres", "name: Distance\ndefault_size: {w: 2, h: 1}\n", METRES_APP)
-    make_app(apps_dir, "broken", "name: Broken\n", "def render(ctx, cfg)\n")
+    make_app(apps_dir, "broken", "name: Broken\n" + SIZE, "def render(ctx, cfg)\n")
+    make_app(apps_dir, "sizeless", "name: Sizeless\n", METRES_APP)
 
     resp = client.get("/api/apps")
     assert resp.status_code == 200
+    # Each app's sizes, the default first, and default_size that first one
+    # - one size for a manifest with the older default_size alone.
     assert resp.get_json() == [
-        {"id": "steps", "name": "Steps", "default_size": {"w": 2, "h": 2},
+        {"id": "steps", "name": "Steps", "default_size": {"w": 1, "h": 1},
+         "sizes": [{"w": 1, "h": 1}, {"w": 2, "h": 2}],
          "reads": [], "files": ["app.py", "app.yaml"]},
         {"id": "steps-metres", "name": "Distance", "default_size": {"w": 2, "h": 1},
-         "reads": [], "files": ["app.py", "app.yaml"]},
+         "sizes": [{"w": 2, "h": 1}], "reads": [], "files": ["app.py", "app.yaml"]},
     ]
 
 
@@ -293,10 +385,10 @@ def test_the_real_apps_are_listed_and_both_render_specs(client, conn, apps_dir):
     today = today_minus(0)
 
     assert client.get("/api/apps").get_json() == [
-        {"id": "steps", "name": "Steps", "default_size": {"w": 2, "h": 2},
-         "reads": ["steps"], "files": ["app.py", "app.yaml"]},
-        {"id": "steps-metres", "name": "Distance (from steps)", "default_size": {"w": 2, "h": 2},
-         "reads": ["steps"], "files": ["app.py", "app.yaml"]},
+        {"id": "steps", "name": "Steps", "default_size": {"w": 1, "h": 1},
+         "sizes": [{"w": 1, "h": 1}], "reads": ["steps"], "files": ["app.py", "app.yaml"]},
+        {"id": "steps-metres", "name": "Distance (from steps)", "default_size": {"w": 1, "h": 1},
+         "sizes": [{"w": 1, "h": 1}], "reads": ["steps"], "files": ["app.py", "app.yaml"]},
     ]
     assert client.get("/api/app/steps/render").get_json() == {
         "type": "panel",
@@ -318,6 +410,8 @@ def test_the_real_apps_manifests_load_as_written(apps_dir):
 
     steps, metres = apps.scan_apps(str(apps_dir))
     assert (steps.reads, steps.config) == (["steps"], [])
+    # The canonical form: one size, a single cell.
+    assert steps.sizes == metres.sizes == [{"w": 1, "h": 1}]
     assert metres.config == [
         {"key": "stride_m", "label": "Stride length (m)", "type": "number", "default": 0.75},
     ]
@@ -326,7 +420,7 @@ def test_the_real_apps_manifests_load_as_written(apps_dir):
 def test_render_returns_the_apps_spec_over_live_data(client, conn, apps_dir):
     # The week's derived points: the pick (garmin over google_health), and
     # nothing from before the trailing seven days.
-    make_app(apps_dir, "steps", "name: Steps\n", STEPS_APP)
+    make_app(apps_dir, "steps", "name: Steps\n" + SIZE, STEPS_APP)
     insert(conn, today_minus(8), "garmin", steps=1000)   # outside the week
     insert(conn, today_minus(2), "garmin", steps=8000)
     insert(conn, today_minus(1), "google_health", steps=4500.4)
@@ -365,13 +459,13 @@ def test_render_of_an_unknown_app_is_404(client, apps_dir):
 
 
 def test_render_of_a_malformed_app_is_404(client, apps_dir):
-    make_app(apps_dir, "broken", "", "def render(ctx, cfg)\n")
+    make_app(apps_dir, "broken", SIZE, "def render(ctx, cfg)\n")
 
     assert client.get("/api/app/broken/render").status_code == 404
 
 
 def test_a_render_that_raises_is_an_error_spec_not_a_500(client, apps_dir, capsys):
-    make_app(apps_dir, "raises", "", "def render(ctx, cfg):\n    raise KeyError('series')\n")
+    make_app(apps_dir, "raises", SIZE, "def render(ctx, cfg):\n    raise KeyError('series')\n")
 
     resp = client.get("/api/app/raises/render")
     assert resp.status_code == 200
@@ -383,7 +477,7 @@ def test_a_render_that_raises_is_an_error_spec_not_a_500(client, apps_dir, capsy
 
 
 def test_an_app_asking_for_an_unknown_metric_is_an_error_spec(client, apps_dir):
-    make_app(apps_dir, "typo", "", "def render(ctx, cfg):\n    return ctx.metric('stepz')\n")
+    make_app(apps_dir, "typo", SIZE, "def render(ctx, cfg):\n    return ctx.metric('stepz')\n")
 
     assert client.get("/api/app/typo/render").get_json() == {
         "type": "error", "message": "ValueError: unknown metric: 'stepz'",
@@ -402,7 +496,7 @@ def test_an_app_asking_for_an_unknown_metric_is_an_error_spec(client, apps_dir):
     ],
 )
 def test_a_render_that_returns_no_spec_is_an_error_spec(client, apps_dir, returned, message):
-    make_app(apps_dir, "odd", "", f"def render(ctx, cfg):\n    return {returned}\n")
+    make_app(apps_dir, "odd", SIZE, f"def render(ctx, cfg):\n    return {returned}\n")
 
     resp = client.get("/api/app/odd/render")
     assert resp.status_code == 200
@@ -412,7 +506,7 @@ def test_a_render_that_returns_no_spec_is_an_error_spec(client, apps_dir, return
 
 
 def test_render_is_given_an_empty_cfg(client, apps_dir):
-    make_app(apps_dir, "cfg", "config: [{key: days, default: 7}]\n",
+    make_app(apps_dir, "cfg", "config: [{key: days, default: 7}]\n" + SIZE,
              "def render(ctx, cfg):\n    return ctx.number(len(cfg), label=repr(cfg))\n")
 
     assert client.get("/api/app/cfg/render").get_json()["label"] == "{}"
@@ -565,7 +659,7 @@ def test_the_ctx_carries_the_builders(conn):
 
 
 def test_render_app_passes_today_and_a_copy_of_cfg(conn, apps_dir):
-    make_app(apps_dir, "echo", "", """
+    make_app(apps_dir, "echo", SIZE, """
         def render(ctx, cfg):
             cfg["seen"] = True
             return ctx.number(None, label=ctx.today(), caption=str(sorted(cfg)))

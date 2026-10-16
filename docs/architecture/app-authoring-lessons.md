@@ -86,7 +86,8 @@ a new metric (dated, history kept). Same app, values in three different homes.
   are *also* mirrored into `tests/fixtures/apps/` for CI; that copy is for tests,
   the volume copy is what runs.)
 - **Files in an app folder:** `app.yaml` always (the manifest — the one file the
-  host must parse to see the app); `app.py` whenever the app computes anything
+  host must parse to see the app, and which must declare the app's tile
+  `sizes`); `app.py` whenever the app computes anything
   (optional: a manifest-only app loads and lists, but until the host ships
   built-in displays its tile only says it has nothing to draw); plus, for richer
   apps, helper modules, reference-data files (domain knowledge as *data* — a
@@ -157,6 +158,22 @@ app sharing, if it's ever built, is a separate sandboxed mechanism — not this.
 
 ---
 
+## Sizes: the app declares them, the host never guesses
+
+Home is a grid six square cells across. An app's manifest lists the tile
+sizes it can be drawn at, in cells — `sizes: [{w: 1, h: 1}, {w: 2, h: 2}]`,
+each `w`/`h` 1–6, the first the default — and the owner picks among them in
+Configure. It's required: an app with no size won't install and the scanner
+skips it, because only the author knows the shapes their spec reads well
+at. (`default_size: {w, h}`, the older form, still counts as a list of one.)
+
+- **Design for each size you declare.** A number reads at 1×1; a number over
+  a line wants room (2×2, or a 1×1 if the caption is short). Don't offer a
+  size the spec looks broken at — leave it out.
+- **YAML needs a space after each colon.** `{w:1,h:1}` parses as the keys
+  `'w:1'` and `'h:1'`, both null; write `{w: 1, h: 1}`. The install says so.
+- **A fixed-size app lists one size**, and gets no picker.
+
 ## Known limitations (as of PR #43)
 
 - Mobile caption truncation hides the `via <source>` provenance on phone-width
@@ -164,5 +181,6 @@ app sharing, if it's ever built, is a separate sandboxed mechanism — not this.
   phone-layout pass. Provenance may eventually want to be its own element (a source
   badge) rather than caption text.
 - `reads:` scopes are declared, not enforced.
-- No Configure mode / grid / saved layout yet — Home auto-flows tiles at their
-  default size (view mode only).
+- Home's layout is flow only (an order and a size per tile): no free cell
+  placement yet, and no phone layout — under the minimum cell the grid scrolls
+  sideways.

@@ -78,9 +78,14 @@ or uploaded files through `POST /api/apps` (the host's first write route,
 strict on containment, loose on correctness). Then expandable app rows: what
 an app reads, its files in a read-only viewer, Refresh (its render re-run), and
 Uninstall (`DELETE /api/apps/<id>`, the first destructive app action), with a
-slot reserved for the writes ticker. Next: the rest of the Library (the writes
-ticker once apps can write back, alerts; Browse / Build / Create are still
-placeholders), and the grid pass (Configure, drag/resize, saved layout).
+slot reserved for the writes ticker. Then Configure mode, in flow form: every
+app declares its tile sizes (`sizes`, 1–6 cells either way — an app without one
+won't install), Home lays the tiles on a six-column grid of square cells in the
+saved order, and Configure reorders them by drag, resizes them from each app's
+sizes, edits the subtitle over them, and saves it all (`/api/home-layout`, one
+settings row). Next: the rest of the Library (the writes ticker once apps can
+write back, alerts; Browse / Build / Create are still placeholders), and the
+grid pass (free cell placement, a second layout mode on the same sizes).
 
 ## Phase 5 — OpenFit Host (per-user provisioning)
 

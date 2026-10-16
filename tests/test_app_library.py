@@ -20,6 +20,8 @@ import apps
 
 REAL_APPS = Path(__file__).parent / "fixtures" / "apps"
 SECRET = "TOP SECRET - never served"
+# Every app declares a size; these give their apps this one.
+SIZE = "sizes: [{w: 1, h: 1}]\n"
 
 
 @pytest.fixture
@@ -64,16 +66,16 @@ STEPS = {"app.yaml": real("steps", "app.yaml"), "app.py": real("steps", "app.py"
 
 def test_api_apps_lists_each_apps_reads_and_files(client, apps_dir):
     install(client, {
-        "app.yaml": "id: walk\nname: Walk\nreads: [steps, distance_m]\n",
+        "app.yaml": "id: walk\nname: Walk\nreads: [steps, distance_m]\n" + SIZE,
         "app.py": "def render(ctx, cfg):\n    return ctx.empty()\n",
         "thresholds.yaml": "goal: 10000\n",
     })
-    install(client, {"app.yaml": "id: notes\n"})
+    install(client, {"app.yaml": "id: notes\n" + SIZE})
 
     assert client.get("/api/apps").get_json() == [
-        {"id": "notes", "name": "notes", "default_size": {"w": 2, "h": 2},
+        {"id": "notes", "name": "notes", "default_size": {"w": 1, "h": 1}, "sizes": [{"w": 1, "h": 1}],
          "reads": [], "files": ["app.yaml"]},
-        {"id": "walk", "name": "Walk", "default_size": {"w": 2, "h": 2},
+        {"id": "walk", "name": "Walk", "default_size": {"w": 1, "h": 1}, "sizes": [{"w": 1, "h": 1}],
          "reads": ["steps", "distance_m"], "files": ["app.py", "app.yaml", "thresholds.yaml"]},
     ]
 
@@ -100,7 +102,7 @@ def test_the_files_listed_are_the_plain_ones_in_the_folder(client, apps_dir, tmp
 
 def test_a_listed_file_is_served_as_text_exactly(client, apps_dir):
     files = {
-        "app.yaml": "id: exact\r\nname: Exact\r\n",
+        "app.yaml": "id: exact\r\nname: Exact\r\nsizes: [{w: 1, h: 1}]\r\n",
         "app.py": "# café ☕\ndef render(ctx, cfg):\n    return ctx.empty()\n",
         "empty.txt": "",
     }
@@ -245,7 +247,7 @@ def test_a_file_too_big_to_show_is_413(client, apps_dir):
 
 def test_uninstall_removes_the_app_its_folder_and_its_tile(client, apps_dir, tmp_path):
     install(client, {**STEPS, "thresholds.yaml": "goal: 10000\n"})
-    install(client, {"app.yaml": "id: notes\n"})
+    install(client, {"app.yaml": "id: notes\n" + SIZE})
     client.get("/api/app/steps/render")
     before = tree(tmp_path)
 
@@ -303,7 +305,7 @@ def test_uninstall_of_an_app_that_doesnt_load_is_404(client, apps_dir, tmp_path)
 def test_a_traversal_or_non_id_segment_removes_nothing(client, apps_dir, tmp_path, segment):
     install(client, STEPS)
     (apps_dir / ".hidden").mkdir()
-    (apps_dir / ".hidden" / "app.yaml").write_text("id: hidden\n")
+    (apps_dir / ".hidden" / "app.yaml").write_text("id: hidden\n" + SIZE)
     client.get("/api/apps")   # loads app.py, which leaves its __pycache__
     before = tree(tmp_path)
 
@@ -332,7 +334,7 @@ def test_uninstall_takes_any_id_the_scanner_lists(client, apps_dir):
     # A hand-placed id the installer wouldn't take (capitals, '_') is
     # still listed, so it can still be uninstalled.
     (apps_dir / "My_App").mkdir()
-    (apps_dir / "My_App" / "app.yaml").write_text("name: Mine\n")
+    (apps_dir / "My_App" / "app.yaml").write_text("name: Mine\n" + SIZE)
     assert [a["id"] for a in client.get("/api/apps").get_json()] == ["My_App"]
 
     assert client.delete("/api/apps/My_App").status_code == 200
@@ -354,8 +356,8 @@ def test_uninstall_of_a_linked_folder_never_touches_its_target(client, apps_dir,
 
 
 def test_remove_then_add_is_the_update_path(client, apps_dir):
-    v1 = {"app.yaml": "id: echo\n", "app.py": "def render(ctx, cfg):\n    return ctx.empty('one')\n"}
-    v2 = {"app.yaml": "id: echo\n", "app.py": "def render(ctx, cfg):\n    return ctx.empty('two')\n"}
+    v1 = {"app.yaml": "id: echo\n" + SIZE, "app.py": "def render(ctx, cfg):\n    return ctx.empty('one')\n"}
+    v2 = {"app.yaml": "id: echo\n" + SIZE, "app.py": "def render(ctx, cfg):\n    return ctx.empty('two')\n"}
     install(client, v1)
     assert client.get("/api/app/echo/render").get_json()["message"] == "one"
     stamps = {n: os.stat(apps_dir / "echo" / n).st_mtime_ns for n in v1}
@@ -376,7 +378,7 @@ def test_remove_then_add_is_the_update_path(client, apps_dir):
 
 def test_uninstall_app_removes_cleanly(apps_dir, capsys):
     (apps_dir / "notes").mkdir()
-    (apps_dir / "notes" / "app.yaml").write_text("id: notes\n")
+    (apps_dir / "notes" / "app.yaml").write_text("id: notes\n" + SIZE)
 
     assert apps.uninstall_app(str(apps_dir), "notes") == {"id": "notes"}
     assert os.listdir(apps_dir) == []
@@ -387,7 +389,7 @@ def test_uninstall_app_removes_cleanly(apps_dir, capsys):
 @pytest.mark.parametrize("app_id", [None, 5, True, "", "..", ".", "a/b", "../x", ".x", "x\n", "a b"])
 def test_uninstall_app_refuses_an_id_no_app_could_have(apps_dir, tmp_path, app_id):
     (apps_dir / "notes").mkdir()
-    (apps_dir / "notes" / "app.yaml").write_text("id: notes\n")
+    (apps_dir / "notes" / "app.yaml").write_text("id: notes\n" + SIZE)
     before = tree(tmp_path)
 
     with pytest.raises(apps.UninstallError) as raised:

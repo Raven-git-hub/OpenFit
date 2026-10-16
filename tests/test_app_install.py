@@ -6,7 +6,8 @@ server reads the id from the app.yaml among them and writes the files
 to a new APPS_DIR/<id>/. It is strict about containment - the id and
 every file name are checked before anything touches the disk, and a
 refusal writes nothing - and loose about correctness: past a parsable
-app.yaml with a valid id, nothing is checked, and nothing is run.
+app.yaml with a valid id, only the app's tile size is checked (it won't
+deploy without one), and nothing is run.
 
 Every test gets its own temp apps folder; nothing reads /data/apps.
 """
@@ -20,6 +21,10 @@ import pytest
 import apps
 
 REAL_APPS = Path(__file__).parent / "fixtures" / "apps"
+
+# Every app declares a size - one without won't install - so the tests
+# that aren't about size give their apps this one.
+SIZE = "sizes: [{w: 1, h: 1}]\n"
 
 
 @pytest.fixture
@@ -50,7 +55,7 @@ def real(folder, name):
 
 
 def test_a_yaml_only_app_installs(client, apps_dir):
-    manifest = "id: notes\nname: Notes\n"
+    manifest = "id: notes\nname: Notes\n" + SIZE
     resp = install(client, {"app.yaml": manifest})
 
     assert resp.status_code == 201
@@ -79,7 +84,7 @@ def test_a_yaml_and_py_app_installs_with_its_extra_files(client, apps_dir):
 
 def test_files_are_written_exactly_as_given(client, apps_dir):
     files = {
-        "app.yaml": "id: exact\r\nname: Exact\r\n",
+        "app.yaml": "id: exact\r\nname: Exact\r\nsizes: [{w: 1, h: 1}]\r\n",
         "app.py": "# café ☕\r\ndef render(ctx, cfg):\r\n    return ctx.empty()",
         "empty.txt": "",
     }
@@ -101,11 +106,11 @@ def test_an_installed_app_is_listed_and_renders(client, apps_dir):
 
 def test_a_yaml_only_app_is_listed_with_nothing_to_draw(client, apps_dir):
     # app.py is optional: the app lists, and its tile says why it's blank.
-    install(client, {"app.yaml": "id: notes\nname: Notes\n"})
+    install(client, {"app.yaml": "id: notes\nname: Notes\n" + SIZE})
 
     assert client.get("/api/apps").get_json() == [
-        {"id": "notes", "name": "Notes", "default_size": {"w": 2, "h": 2},
-         "reads": [], "files": ["app.yaml"]}
+        {"id": "notes", "name": "Notes", "default_size": {"w": 1, "h": 1},
+         "sizes": [{"w": 1, "h": 1}], "reads": [], "files": ["app.yaml"]}
     ]
     assert client.get("/api/app/notes/render").get_json() == {
         "type": "empty",
@@ -120,37 +125,37 @@ def test_install_makes_the_apps_folder_if_there_is_none(client, tmp_path, monkey
     apps_dir = tmp_path / "data" / "apps"
     monkeypatch.setitem(main.app.config, "APPS_DIR", str(apps_dir))
 
-    assert install(client, {"app.yaml": "id: first\n"}).status_code == 201
+    assert install(client, {"app.yaml": "id: first\n" + SIZE}).status_code == 201
     assert tree(apps_dir) == ["first", "first/app.yaml"]
 
 
 def test_install_leaves_no_staging_folder_behind(client, apps_dir):
-    install(client, {"app.yaml": "id: one\n", "app.py": "x = 1\n"})
-    install(client, {"app.yaml": "id: two\n"})
+    install(client, {"app.yaml": "id: one\n" + SIZE, "app.py": "x = 1\n"})
+    install(client, {"app.yaml": "id: two\n" + SIZE})
 
     # Written to a hidden folder, then renamed into place.
     assert sorted(os.listdir(apps_dir)) == ["one", "two"]
 
 
-# ---------- correctness: minimal, and nothing runs ----------
+# ---------- correctness: a size, and nothing runs ----------
 
 
 def test_install_never_runs_the_apps_code(client, apps_dir, tmp_path):
     ran = tmp_path / "ran"
     code = f"open({str(ran)!r}, 'w').write('ran')\ndef render(ctx, cfg):\n    return ctx.empty()\n"
 
-    assert install(client, {"app.yaml": "id: quiet\n", "app.py": code}).status_code == 201
+    assert install(client, {"app.yaml": "id: quiet\n" + SIZE, "app.py": code}).status_code == 201
     assert not ran.exists()
 
 
 @pytest.mark.parametrize(
     "files",
     [
-        # Manifest fields beyond the id aren't checked...
-        {"app.yaml": "id: odd\ndefault_size: banana\nname: [1, 2]\n"},
+        # Manifest fields beyond the id and size aren't checked...
+        {"app.yaml": "id: odd\n" + SIZE + "name: [1, 2]\nreads: steps\nconfig: {days: 7}\n"},
         # ... nor is app.py's syntax or contents.
-        {"app.yaml": "id: odd\n", "app.py": "def render(ctx, cfg)\n    return (\n"},
-        {"app.yaml": "id: odd\n", "app.py": "raise SystemExit('not run at install')\n"},
+        {"app.yaml": "id: odd\n" + SIZE, "app.py": "def render(ctx, cfg)\n    return (\n"},
+        {"app.yaml": "id: odd\n" + SIZE, "app.py": "raise SystemExit('not run at install')\n"},
     ],
     ids=["bad manifest fields", "app.py syntax error", "app.py that would exit"],
 )
@@ -165,11 +170,71 @@ def test_a_contained_but_malformed_app_still_installs(client, apps_dir, files):
 def test_a_malformed_install_is_left_to_the_scanner(client, apps_dir, capsys):
     # Installed, then logged and skipped on the next scan - as a
     # hand-placed one would be - never breaking the list.
-    install(client, {"app.yaml": "id: good\n"})
-    install(client, {"app.yaml": "id: bad\n", "app.py": "def render(ctx, cfg)\n"})
+    install(client, {"app.yaml": "id: good\n" + SIZE})
+    install(client, {"app.yaml": "id: bad\n" + SIZE, "app.py": "def render(ctx, cfg)\n"})
 
     assert [a["id"] for a in client.get("/api/apps").get_json()] == ["good"]
     assert f"[apps] skipping {apps_dir / 'bad'}" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    "manifest, says",
+    [
+        ("id: plain\n", "no tile size: an app declares the sizes it's drawn at, such as "
+                        "sizes: [{w: 1, h: 1}] - w and h in cells, 1 to 6"),
+        ("id: plain\nname: Plain\nreads: [steps]\n", "no tile size:"),
+        ("id: plain\nsizes:\n", "no tile size:"),
+        ("id: plain\nsizes: []\n", "sizes must be a list of one or more {w, h}"),
+        ("id: plain\nsizes: [{w: 7, h: 1}]\n", "sizes[0].w must be a whole number from 1 to 6"),
+        ("id: plain\nsizes: [{w: 1, h: 0}]\n", "sizes[0].h must be a whole number from 1 to 6"),
+        ("id: plain\nsizes: [{w:1,h:1}]\n", "sizes[0] needs a space after each colon"),
+        ("id: plain\nsizes: [{w: 1, h: 1}, {w: 1, h: 1}]\n", "sizes lists 1×1 twice"),
+        ("id: plain\ndefault_size: banana\n", "default_size must be a mapping of w and h"),
+        ("id: plain\ndefault_size: {w: 12, h: 12}\n", "default_size.w must be a whole number from 1 to 6"),
+        ("id: plain\nsizes: [{w: 1, h: 1}]\ndefault_size: {w: 2, h: 2}\n",
+         "default_size must be the first of sizes"),
+    ],
+)
+def test_an_app_without_a_size_it_can_have_wont_install(client, apps_dir, manifest, says):
+    # check_app()'s first rule: won't deploy without a size. Refused with
+    # the reason the scanner would give, and nothing is written.
+    error = refused(client, apps_dir, {"app.yaml": manifest, "app.py": real("steps", "app.py")})
+    assert error.startswith(says), error
+
+
+@pytest.mark.parametrize(
+    "manifest",
+    [
+        "id: sized\nsizes: [{w: 1, h: 1}, {w: 2, h: 2}, {w: 6, h: 6}]\n",
+        "id: sized\ndefault_size: {w: 2, h: 2}\n",
+        "id: sized\ndefault_size: {w: 3, h: 1}\nsizes: [{w: 3, h: 1}, {w: 1, h: 1}]\n",
+    ],
+    ids=["sizes", "the older default_size", "both"],
+)
+def test_an_app_with_a_size_installs(client, apps_dir, manifest):
+    resp = install(client, {"app.yaml": manifest})
+
+    assert resp.status_code == 201
+    assert [a["id"] for a in client.get("/api/apps").get_json()] == ["sized"]
+
+
+def test_the_deployed_real_apps_install_as_they_are(client, apps_dir):
+    # As deployed, the real apps declare default_size: { w: 2, h: 2 }: the
+    # older form installs, and lists as one size.
+    manifest = real("steps", "app.yaml").replace("sizes: [{ w: 1, h: 1 }]", "default_size: { w: 2, h: 2 }")
+    assert install(client, {"app.yaml": manifest, "app.py": real("steps", "app.py")}).status_code == 201
+
+    [listed] = client.get("/api/apps").get_json()
+    assert (listed["default_size"], listed["sizes"]) == ({"w": 2, "h": 2}, [{"w": 2, "h": 2}])
+
+
+def test_containment_and_a_taken_id_are_refused_before_the_size(client, apps_dir):
+    # check_app() runs last: a bad id or a taken one says so, sized or not.
+    error = refused(client, apps_dir, {"app.yaml": "id: ../x\n"})
+    assert error.startswith("id must be lowercase letters, digits and '-'"), error
+    assert install(client, {"app.yaml": "id: steps\n" + SIZE}).status_code == 201
+    error = refused(client, apps_dir, {"app.yaml": "id: steps\n"}, status=409)
+    assert error == "'steps' already exists — remove it first to reinstall."
 
 
 def test_check_app_is_the_extension_point(client, apps_dir, monkeypatch):
@@ -180,7 +245,7 @@ def test_check_app_is_the_extension_point(client, apps_dir, monkeypatch):
             raise apps.InstallError("no tabs, please")
 
     monkeypatch.setattr(apps, "check_app", no_tabs)
-    resp = install(client, {"app.yaml": "id: tabs\n", "app.py": "\tx = 1\n"})
+    resp = install(client, {"app.yaml": "id: tabs\n" + SIZE, "app.py": "\tx = 1\n"})
 
     assert resp.status_code == 400
     assert resp.get_json() == {"ok": False, "error": "no tabs, please"}
@@ -282,7 +347,7 @@ def test_an_id_outside_the_charset_is_refused(client, apps_dir, tmp_path, app_id
     ],
 )
 def test_a_file_name_that_isnt_plain_is_refused(client, apps_dir, tmp_path, name):
-    error = refused(client, apps_dir, {"app.yaml": "id: ok\n", name: "x = 1\n"})
+    error = refused(client, apps_dir, {"app.yaml": "id: ok\n" + SIZE, name: "x = 1\n"})
     assert error, name
     # Not in the apps folder, nor where the name points.
     assert not (apps_dir / "ok").exists()
@@ -291,7 +356,7 @@ def test_a_file_name_that_isnt_plain_is_refused(client, apps_dir, tmp_path, name
 
 @pytest.mark.parametrize("content", [None, 7, ["x"], {"a": 1}, True, "lone \ud800 surrogate"])
 def test_a_file_that_isnt_text_is_refused(client, apps_dir, content):
-    error = refused(client, apps_dir, {"app.yaml": "id: ok\n", "data.txt": content})
+    error = refused(client, apps_dir, {"app.yaml": "id: ok\n" + SIZE, "data.txt": content})
     assert "'data.txt' must be text" == error
 
 
@@ -339,7 +404,7 @@ def test_a_taken_id_is_refused_and_the_installed_app_untouched(client, apps_dir)
     before = {p: p.read_bytes() for p in (apps_dir / "steps").iterdir()}
 
     replacement = {
-        "app.yaml": "id: steps\nname: Replaced\n",
+        "app.yaml": "id: steps\nname: Replaced\n" + SIZE,
         "app.py": "def render(ctx, cfg):\n    return ctx.empty('replaced')\n",
         "extra.txt": "new\n",
     }
@@ -363,7 +428,7 @@ def test_an_id_whose_folder_exists_as_anything_is_taken(client, apps_dir, kind):
     else:
         path.symlink_to(apps_dir / "nowhere")
 
-    error = refused(client, apps_dir, {"app.yaml": "id: steps\n"}, status=409)
+    error = refused(client, apps_dir, {"app.yaml": "id: steps\n" + SIZE}, status=409)
     assert error == "'steps' already exists — remove it first to reinstall."
 
 
@@ -371,12 +436,12 @@ def test_an_id_another_folders_app_loads_under_is_taken(client, apps_dir):
     # A hand-placed app whose folder isn't named for its id still holds
     # the id: a second app under it would be skipped by the scanner.
     (apps_dir / "my-steps").mkdir()
-    (apps_dir / "my-steps" / "app.yaml").write_text("id: steps\n")
+    (apps_dir / "my-steps" / "app.yaml").write_text("id: steps\n" + SIZE)
     (apps_dir / "my-steps" / "app.py").write_text(real("steps", "app.py"))
     # Listed already, as it would be (loading it leaves its __pycache__).
     assert [a["id"] for a in client.get("/api/apps").get_json()] == ["steps"]
 
-    error = refused(client, apps_dir, {"app.yaml": "id: steps\n"}, status=409)
+    error = refused(client, apps_dir, {"app.yaml": "id: steps\n" + SIZE}, status=409)
     assert error == "'steps' already exists — remove it first to reinstall."
 
 
@@ -393,7 +458,7 @@ def test_a_failed_write_leaves_nothing_behind(client, apps_dir, monkeypatch):
 
     # apps.py's open, shadowing the builtin there only.
     monkeypatch.setattr(apps, "open", failing_open, raising=False)
-    resp = install(client, {"app.yaml": "id: full\n", "app.py": "x = 1\n", "c.txt": "c"})
+    resp = install(client, {"app.yaml": "id: full\n" + SIZE, "app.py": "x = 1\n", "c.txt": "c"})
 
     assert len(written) == 2
     assert resp.status_code == 500
