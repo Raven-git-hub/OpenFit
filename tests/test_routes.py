@@ -1,10 +1,16 @@
 """API route tests - the shape the frontend depends on."""
 
+import json
 import os
 import re
+import shutil
 import sqlite3
+import subprocess
 from datetime import date
 
+import pytest
+
+import apps
 from derived import recompute_derived
 from migrations import run_migrations
 
@@ -278,9 +284,16 @@ def test_index_lays_the_data_tab_out_in_two_columns(client):
 
 def _js_function(page, name):
     """The body of a top-level function in the page's script."""
-    m = re.search(rf"\n  function {name}\(\w*\)\{{\n(.*?)\n  \}}\n", page, re.S)
+    return _js_source(page, name, body=True)
+
+
+def _js_source(page, name, body=False):
+    """A top-level function in the page's script: as written, or its body."""
+    m = re.search(
+        rf"\n  ((?:async )?function {name}\([\w, ]*\)\{{\n(.*?)\n  \}})\n", page, re.S
+    )
     assert m, name
-    return m.group(1)
+    return m.group(2 if body else 1)
 
 
 def test_index_splits_applications_into_controls_and_a_list(client, monkeypatch):
@@ -346,20 +359,154 @@ def test_index_splits_applications_into_controls_and_a_list(client, monkeypatch)
         assert re.search(rf"\['{act}',\s*'{label}',", page), label
     assert "const b = el('button','btn sm', esc(label));" in actions
     assert "b.onclick = () => comingSoon(title);" in actions
+    # ... except Add Application, which opens the install popup.
+    assert "add.onclick = openAddApp;" in actions
+    # The card's one line of news, for what an install did.
+    assert "note.id = 'appsMsg';" in controls
 
 
-def test_the_applications_card_only_reads(client):
+def test_the_applications_list_only_reads_and_the_popup_installs(client):
     resp = client.get("/")
     page = resp.get_data(as_text=True)
     resp.close()
-    # This slice is view-only: the card's code reads /api/apps and nothing
-    # else - no POST, PUT or DELETE, nothing written.
     start = page.index("APPLICATIONS - the right-hand column")
-    section = page[start : page.index("HOME - the installed apps' tiles", start)]
+    popup = page.index("ADD APPLICATION - the popup that installs one", start)
+    home = page.index("HOME - the installed apps' tiles", popup)
+
+    # The controls and the list read /api/apps and nothing else - no
+    # POST, PUT or DELETE, nothing written.
+    section = page[start:popup]
     assert "api.apps()" in section
     assert re.findall(r"api\.\w+", section) == ["api.apps"]
     for write in ("send(", "fetch(", "'POST'", "'PUT'", "'DELETE'", "localStorage"):
         assert write not in section, write
+
+    # The popup's one write is the install, through the API block - the
+    # only place that knows a URL.
+    section = page[popup:home]
+    assert re.findall(r"api\.\w+", section) == ["api.installApp"]
+    for other in ("send(", "fetch(", "'POST'", "'PUT'", "'DELETE'", "localStorage", "'/api/"):
+        assert other not in section, other
+    assert "installApp:   files          => send('/api/apps', 'POST', {files})," in page
+
+
+def test_add_application_builds_the_app_from_file_slots(client):
+    resp = client.get("/")
+    page = resp.get_data(as_text=True)
+    resp.close()
+    popup = _js_function(page, "openAddApp")
+
+    # The slots: app.yaml required, app.py optional, and Add file for the
+    # rest, each named.
+    assert "fileSlot('app.yaml', true, say)" in popup
+    assert "fileSlot('app.py', false, say)" in popup
+    assert "act('add-file').onclick" in popup and "fileSlot('', false, say)" in popup
+    assert '>＋ Add file</button>' in popup
+    # Each slot is a paste box with Upload beside it, filling the same box.
+    slot = _js_function(page, "fileSlot")
+    assert "<textarea" in slot and '<input type="file" hidden>' in slot
+    assert 'data-act="upload"' in slot and "picker.click()" in slot
+    assert "text.value = await file.text();" in slot
+    assert '<input class="input fname"' in slot and 'data-act="remove"' in slot
+    assert "${esc(fixed)}" in slot
+
+    # Review reads the id from the app.yaml - there's no id field - and
+    # names it, or says why it can't.
+    assert "manifestId(files.find(x => x.name === 'app.yaml').text)" in popup
+    assert "idLine.innerHTML = `Install application: <code>${esc(read.id)}</code>`;" in popup
+    assert "else idLine.textContent = read.problem;" in popup
+    assert "install.disabled = !read.id;" in popup
+    assert "data-key" not in popup and "id-field" not in popup
+    # The files to install, listed - every name escaped.
+    assert "`<li><code>${esc(x.name)}</code></li>`" in popup
+
+    # The custom-code notice: on Review, only when a file is Python.
+    assert (
+        "const CUSTOM_CODE = 'This app includes custom code and runs with full "
+        "access to your OpenFit data.';"
+    ) in page
+    assert '<p class="install-warn" data-f="notice" hidden>${esc(CUSTOM_CODE)}</p>' in popup
+    assert "f('notice').hidden = !files.some(x => /\\.py$/i.test(x.name));" in popup
+
+    # Install sends the files; success closes the popup and re-reads the
+    # list and Home at once - an error keeps it open, the server's message
+    # shown as given.
+    assert "const res = await api.installApp(body);" in popup
+    assert "close();\n        appInstalled(res);" in popup
+    assert "say(res.error || 'Could not install this application');" in popup
+    after = _js_function(page, "appInstalled")
+    assert "loadHome();" in after and "const listed = await loadApps();" in after
+    assert "appsNote('bad'," in after and "appsNote('ok'," in after
+    # loadApps hands back what it read, so the popup can tell whether the
+    # new app loaded.
+    assert "return read;" in _js_function(page, "loadApps")
+
+    # The page's id rule is the server's.
+    js_id = re.search(r"const INSTALL_ID = /\^(.*)\$/;", page).group(1)
+    assert js_id + r"\Z" == apps.INSTALL_ID.pattern
+
+
+# Names and app.yamls the popup checks before Install, as the server will.
+MIRRORED_NAMES = [
+    "app.yaml", "app.py", "thresholds.yaml", "a.b.c", ".env", "with space.txt", "ünï.txt",
+    "../evil", "a/b.py", "a\\b.py", "", ".", "..", "...", "a..b", "/etc/passwd", "sub/",
+    "nul\x00.py", "line\nbreak.py", "tab\t.py", "del\x7f.py",
+]
+MIRRORED_YAMLS = [
+    "id: steps\nname: Steps\n",
+    "name: Steps\nid: steps-2\n",
+    "id: 'quoted'\n",
+    'id: "double-quoted"\n',
+    "id: steps # a comment\n",
+    "---\nid: after-a-marker\n",
+    "id: steps\r\nname: CRLF\r\n",
+    "id: first\nid: last\n",
+    "id:\nname: Null\n",
+    "name: No id\n",
+    "settings:\n  id: nested\n",
+    "",
+    "   \n",
+    "id: My-App\n",
+    "id: a_b\n",
+    "id: -x\n",
+    "id: 'unclosed\n",
+    "id: ''\n",
+]
+
+
+def _server_id(text):
+    try:
+        return apps._install_id(apps._manifest_to_install({"app.yaml": text}))
+    except apps.InstallError:
+        return None
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
+def test_the_popups_checks_mirror_the_servers(client):
+    resp = client.get("/")
+    page = resp.get_data(as_text=True)
+    resp.close()
+    # The page's own checks, run as written: what they let through, the
+    # server takes, and what they refuse, it refuses.
+    source = "\n".join([
+        re.search(r"\n  (const INSTALL_ID = .*?;)\n", page).group(1),
+        re.search(r"\n  (const NO_ID = .*?;)\n", page).group(1),
+        _js_source(page, "fileNameProblem"),
+        _js_source(page, "manifestId"),
+    ])
+    script = source + f"""
+        const names = {json.dumps(MIRRORED_NAMES)}, yamls = {json.dumps(MIRRORED_YAMLS)};
+        console.log(JSON.stringify({{names: names.map(fileNameProblem), yamls: yamls.map(manifestId)}}));
+    """
+    out = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=60)
+    assert out.returncode == 0, out.stderr
+    result = json.loads(out.stdout)
+
+    for name, problem in zip(MIRRORED_NAMES, result["names"]):
+        assert bool(problem) == bool(apps.filename_problem(name)), repr(name)
+    for text, read in zip(MIRRORED_YAMLS, result["yamls"]):
+        assert read.get("id") == _server_id(text), repr(text)
+        assert bool(read.get("problem")) == (_server_id(text) is None), repr(text)
 
 
 def test_index_wires_the_voice_buttons_to_the_audio_route(client):

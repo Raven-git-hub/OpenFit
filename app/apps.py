@@ -2,19 +2,23 @@
 Installed apps: the scanner and loader the app host runs on.
 
 An app is a folder in the apps directory (APPS_DIR, /data/apps by
-default) holding two files:
+default) holding its manifest and, usually, its engine:
 
     <apps dir>/steps/
         app.yaml    the manifest: id, name, default_size, reads, config
                     (config an ordered list of fields: {key, label, type, default})
         app.py      def render(ctx, cfg): -> a display spec (see host.py)
 
+app.py is optional: an app with a manifest alone loads and lists, and
+its tile says it has nothing to draw. Any other files in the folder
+(reference data, helpers) are the app's own; the host doesn't read them.
+
 scan_apps() lists every app that loads. A folder without an app.yaml
 isn't an app and is passed over quietly; one with an app.yaml that
-doesn't load - bad YAML, a manifest field of the wrong type, no app.py,
-an app.py that fails to import or has no callable render - is logged
-and skipped, so one broken app never stops the rest from being listed,
-and never takes the server down.
+doesn't load - bad YAML, a manifest field of the wrong type, an app.py
+that fails to import or has no callable render - is logged and skipped,
+so one broken app never stops the rest from being listed, and never
+takes the server down.
 
 Loading imports app.py from its absolute path; nothing is added to
 sys.path or sys.modules. A loaded app is kept until either of its files
@@ -23,12 +27,15 @@ installed or edited app is picked up without a restart, and a broken one
 is logged once per change rather than on every page load.
 
 This is the one way the host finds an app: the Home tab's routes use it
-now, and the Library reuses it.
+now, and the Library reuses it. install_app() is the one way one is
+added from the browser (POST /api/apps): see its section, below.
 """
 
 import importlib.util
 import os
 import re
+import secrets
+import shutil
 import threading
 import traceback
 from dataclasses import dataclass, field
@@ -145,10 +152,22 @@ def _manifest(folder):
     }
 
 
+# What the tile of an app with no app.py says.
+NOTHING_TO_DRAW = f"Nothing to draw yet: this app has no {MODULE}"
+
+
+def _nothing_to_draw(ctx, cfg):
+    """The render() of an app with a manifest alone."""
+    return {"type": "empty", "message": NOTHING_TO_DRAW}
+
+
 def _render_function(folder, app_id):
     path = os.path.join(folder, MODULE)
     if not os.path.isfile(path):
-        raise AppError(f"no {MODULE}")
+        # app.py is optional: the app still loads and lists, and its
+        # tile says there's nothing to draw. Adding one later is picked
+        # up like any edit (_signature watches it).
+        return _nothing_to_draw
     spec = importlib.util.spec_from_file_location(f"openfit_app_{app_id}", path)
     module = importlib.util.module_from_spec(spec)
     try:
@@ -234,3 +253,200 @@ def scan_apps(apps_dir):
 def find_app(apps_dir, app_id):
     """The installed app with this id, or None."""
     return next((a for a in scan_apps(apps_dir) if a.id == app_id), None)
+
+
+# ---------- installing an app: POST /api/apps ----------
+
+# The one way an app reaches the volume from the browser, and the first
+# thing in OpenFit that writes executable code there. Apps are the
+# owner's own trusted code (as a sync plugin is), so this doesn't defend
+# against the app. It guards the install itself, and is strict about
+# containment: every file lands in a new <apps dir>/<id>/ folder and
+# nowhere else, whatever the request says. About correctness it is
+# loose (check_app(), below): an app that's contained but malformed
+# still installs, and the scanner handles it as it would a hand-placed
+# one - logged and skipped, or an error tile if its render() fails.
+#
+# The browser checks the same things first, for quick feedback, but
+# only these checks count.
+
+# An installed app's id: its folder's name, and part of its URL. Stricter
+# than the scanner's APP_ID - no capitals, no '_' - so every id this
+# installs, the scanner loads. \Z, not $: $ would let a trailing newline
+# through.
+INSTALL_ID = re.compile(r"[a-z0-9][a-z0-9-]*\Z")
+
+# The control characters, NUL among them: never in a file name.
+_CONTROL = re.compile(r"[\x00-\x1f\x7f]")
+
+# Installs one at a time, so two can't both find an id free.
+_install_lock = threading.Lock()
+
+
+class InstallError(Exception):
+    """An install refused, and why, with the HTTP status to send. Nothing was written."""
+
+    def __init__(self, message, status=400):
+        super().__init__(message)
+        self.status = status
+
+
+def taken_message(app_id):
+    return f"'{app_id}' already exists — remove it first to reinstall."
+
+
+def _manifest_to_install(files):
+    """The app.yaml among `files`, parsed: a mapping, or InstallError."""
+    if MANIFEST not in files:
+        raise InstallError(f"an app needs an {MANIFEST}")
+    text = files[MANIFEST]
+    if not isinstance(text, str):
+        raise InstallError(f"{MANIFEST} must be text")
+    try:
+        raw = yaml.safe_load(text)
+    except yaml.YAMLError as e:
+        # As the scanner logs it: YAML errors run over several lines.
+        reason = " ".join(str(e).split())
+        raise InstallError(f"{MANIFEST} doesn't parse: {reason}") from None
+    if raw is None:
+        raise InstallError(f"{MANIFEST} is empty: it needs at least an id")
+    if not isinstance(raw, dict):
+        raise InstallError(f"{MANIFEST} must be a mapping, such as id: my-app")
+    return raw
+
+
+def _install_id(manifest):
+    """The manifest's id, if it's one an install may use as a folder name."""
+    app_id = manifest.get("id")
+    if app_id is None:
+        raise InstallError(f"{MANIFEST} needs an id, such as id: my-app")
+    if not isinstance(app_id, str) or not INSTALL_ID.match(app_id):
+        raise InstallError(
+            "id must be lowercase letters, digits and '-', "
+            f"starting with a letter or digit: {app_id!r}"
+        )
+    return app_id
+
+
+def filename_problem(name):
+    """Why `name` can't be written into an app's folder, or None.
+
+    A plain file name only: never empty, '.', absolute, or holding a
+    '/', '\\' or '..' - anything that could name a place other than a
+    new file in the folder - nor a control character.
+    """
+    if not isinstance(name, str) or not name:
+        return "every file needs a name"
+    if (
+        "/" in name
+        or "\\" in name
+        or ".." in name
+        or name == "."
+        or os.path.isabs(name)
+    ):
+        return f"{name!r} isn't a plain file name: no '/', '\\' or '..'"
+    if _CONTROL.search(name):
+        return f"{name!r} has a control character in it"
+    if not _is_text(name):
+        return f"{name!r} isn't valid text"
+    return None
+
+
+def _is_text(s):
+    """Whether `s` can be written as UTF-8: JSON can carry a lone surrogate, which can't."""
+    try:
+        s.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
+def _taken(apps_dir, app_id):
+    """Whether `app_id` is in use: its folder exists - as anything, even
+    a broken link - or an app in another folder already loads under it."""
+    if os.path.lexists(os.path.join(apps_dir, app_id)):
+        return True
+    return find_app(apps_dir, app_id) is not None
+
+
+def check_app(manifest, files):
+    """The correctness checks an app must pass to be installed.
+
+    THE LAYER THAT GROWS. Deliberately minimal for now: the one
+    requirement past containment - that app.yaml parses to a mapping
+    with a valid id - is install_app()'s, and it has been met by the
+    time this runs. Nothing else is checked yet: not the manifest's
+    other fields (name, default_size ... - the scanner checks those when
+    it loads the app), not app.py's syntax, and nothing is ever run. As
+    real apps' quirks are learned, a check that catches a broken app
+    before it's on the volume goes here, raising InstallError with a
+    message the popup shows as-is.
+
+    Containment is not this function's job and never moves here: those
+    checks are install_app()'s, they run first, and they don't relax.
+
+    manifest: the parsed app.yaml, a dict with a valid id.
+    files: {name: text}, every name a plain file name.
+    """
+
+
+def install_app(apps_dir, files):
+    """Install an app from its files, {name: text}, as <apps_dir>/<id>/.
+
+    In order: app.yaml must be among the files and parse; its id and
+    every file name must pass the containment checks; the id must be
+    free - an install only ever creates, never updates in place; then
+    check_app(). Only then is anything written: the files go into a
+    hidden staging folder (the scanner skips dot-folders), which is
+    renamed to <id> once they're all there, so the app appears whole or
+    not at all. Nothing is imported or run.
+
+    Returns {"id", "has_app_py"}. Raises InstallError, having written
+    nothing: status 400 for a bad request, manifest, id or file name,
+    409 for a taken id, 500 if the files can't be written.
+    """
+    if not isinstance(files, dict) or not files:
+        raise InstallError('expected {"files": {name: content}}, with at least an app.yaml')
+
+    manifest = _manifest_to_install(files)
+    app_id = _install_id(manifest)
+    for name, content in files.items():
+        problem = filename_problem(name)
+        if problem:
+            raise InstallError(problem)
+        if not isinstance(content, str) or not _is_text(content):
+            raise InstallError(f"{name!r} must be text")
+
+    apps_dir = os.path.abspath(apps_dir)
+    with _install_lock:
+        if _taken(apps_dir, app_id):
+            raise InstallError(taken_message(app_id), 409)
+        check_app(manifest, dict(files))
+        try:
+            _write_app(apps_dir, app_id, files)
+        except OSError as e:
+            raise InstallError(f"couldn't write the app's files: {e.strerror or e}", 500) from None
+
+    _log(f"installed {app_id}: {', '.join(sorted(files))}")
+    return {"id": app_id, "has_app_py": MODULE in files}
+
+
+def _write_app(apps_dir, app_id, files):
+    """Write `files` into a new <apps_dir>/<app_id>/, whole or not at all."""
+    os.makedirs(apps_dir, exist_ok=True)
+    staging = os.path.join(apps_dir, f".install-{secrets.token_hex(8)}")
+    os.mkdir(staging)
+    try:
+        for name, content in files.items():
+            path = os.path.join(staging, name)
+            # The names were checked before anything was written; this
+            # is the last word, in case a check above is ever loosened.
+            if os.path.dirname(os.path.abspath(path)) != staging:
+                raise InstallError(f"{name!r} isn't a plain file name")
+            # "x": create, never overwrite; newline="": as given.
+            with open(path, "x", encoding="utf-8", newline="") as f:
+                f.write(content)
+        os.rename(staging, os.path.join(apps_dir, app_id))
+    except BaseException:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise

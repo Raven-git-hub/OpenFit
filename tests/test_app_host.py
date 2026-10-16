@@ -1,9 +1,9 @@
 """
 The app host: installed apps, their render() and the Home tab's routes.
 
-An app is a folder in APPS_DIR holding app.yaml (its manifest) and
-app.py (its render(ctx, cfg)). scan_apps() lists the ones that load and
-logs and skips the rest; GET /api/apps lists them, and GET
+An app is a folder in APPS_DIR holding app.yaml (its manifest) and,
+usually, app.py (its render(ctx, cfg)). scan_apps() lists the ones that
+load and logs and skips the rest; GET /api/apps lists them, and GET
 /api/app/<id>/render runs one's render() against a fresh ctx and returns
 its display spec - or an error spec, never a 500. ctx.metric() is an
 app's one data path: a metric's derived points as a list of Points,
@@ -142,7 +142,6 @@ def test_a_manifest_can_leave_everything_but_render_to_the_defaults(apps_dir):
 MALFORMED = {
     "unparseable yaml": ("name: [unclosed\n", STEPS_APP),
     "manifest not a mapping": ("- a\n- list\n", STEPS_APP),
-    "no app.py": ("name: Steps\n", None),
     "app.py syntax error": ("name: Steps\n", "def render(ctx, cfg)\n    return 1\n"),
     "app.py raises on import": ("name: Steps\n", "raise RuntimeError('no')\n"),
     "no render": ("name: Steps\n", "def draw(ctx, cfg):\n    return None\n"),
@@ -177,6 +176,33 @@ def test_a_malformed_app_is_logged_and_skipped(apps_dir, capsys, manifest, code)
 
     assert ids(apps.scan_apps(str(apps_dir))) == ["good"]
     assert f"[apps] skipping {apps_dir / 'bad'}" in capsys.readouterr().out
+
+
+def test_an_app_with_no_app_py_loads_with_nothing_to_draw(client, apps_dir, capsys):
+    # app.py is optional: a manifest alone is an app, listed like any
+    # other, whose tile says it has nothing to draw - not an error.
+    make_app(apps_dir, "notes", "name: Notes\n", None)
+
+    [app] = apps.scan_apps(str(apps_dir))
+    assert (app.id, app.name) == ("notes", "Notes")
+    assert "[apps]" not in capsys.readouterr().out
+    assert client.get("/api/apps").get_json() == [
+        {"id": "notes", "name": "Notes", "default_size": {"w": 2, "h": 2}}
+    ]
+    assert client.get("/api/app/notes/render").get_json() == {
+        "type": "empty",
+        "message": "Nothing to draw yet: this app has no app.py",
+    }
+
+
+def test_an_app_py_added_later_is_picked_up(apps_dir):
+    folder = make_app(apps_dir, "steps", "name: Steps\n", None)
+    [app] = apps.scan_apps(str(apps_dir))
+    assert app.render(None, {})["type"] == "empty"
+
+    (folder / apps.MODULE).write_text(STEPS_APP)
+    [app] = apps.scan_apps(str(apps_dir))
+    assert app.render.__module__ == "openfit_app_steps"
 
 
 def test_a_folder_without_a_manifest_is_not_an_app(apps_dir, capsys):
@@ -236,7 +262,7 @@ def test_find_app_by_id(apps_dir):
 def test_api_apps_lists_the_installed_apps(client, apps_dir):
     make_app(apps_dir, "steps", "id: steps\nname: Steps\ndefault_size: {w: 2, h: 2}\n", STEPS_APP)
     make_app(apps_dir, "steps-metres", "name: Distance\ndefault_size: {w: 2, h: 1}\n", METRES_APP)
-    make_app(apps_dir, "broken", "name: Broken\n", None)
+    make_app(apps_dir, "broken", "name: Broken\n", "def render(ctx, cfg)\n")
 
     resp = client.get("/api/apps")
     assert resp.status_code == 200

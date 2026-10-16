@@ -283,6 +283,32 @@ a.btn{display:inline-block;text-decoration:none;}
 .aitem:last-child{border-bottom:none;}
 .arow{padding:11px 10px;font-size:14px;}
 .a-name{display:block;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+/* the controls card's one line of news - what the last install did */
+.app-msg:empty{display:none;}
+
+/* the Add Application popup: wider than the other modals, to hold the
+   app's files - one slot each, a name over a paste box, with Upload */
+.modal.wide{width:min(640px,100%);}
+.fslot{border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--inset);padding:10px 12px 12px;margin-bottom:10px;}
+.fslot-h{display:flex;align-items:center;gap:8px;margin-bottom:8px;}
+.fslot-name{font-family:var(--font-mono);font-weight:600;font-size:13px;}
+.fslot-tag{font-size:10.5px;text-transform:uppercase;letter-spacing:.8px;color:var(--muted);font-weight:600;}
+.fslot-h .fslot-btns{display:flex;gap:6px;margin-left:auto;flex:none;}
+.fslot-h .input.fname{width:auto;flex:1;min-width:0;padding:6px 9px;font-size:13px;font-family:var(--font-mono);background:var(--surface);}
+.fslot textarea.input{
+  display:block;min-height:120px;resize:vertical;background:var(--surface);
+  font-family:var(--font-mono);font-size:12.5px;line-height:1.5;tab-size:4;white-space:pre;
+}
+/* the confirm step: what's installed, and where its code comes in */
+.install-id{font-size:14px;margin:4px 0 12px;}
+.install-id.bad{color:var(--crit);font-size:13px;}
+.install-id code, .install-files code{font-family:var(--font-mono);font-weight:600;}
+.install-files{list-style:none;margin:0 0 12px;padding:0;display:flex;flex-wrap:wrap;gap:6px;}
+.install-files li{border:1px solid var(--border);border-radius:20px;padding:3px 10px;font-size:12px;background:var(--inset);}
+.install-warn{
+  border:1px solid color-mix(in srgb,var(--warn) 45%,var(--border));border-radius:var(--radius-sm);
+  background:color-mix(in srgb,var(--warn) 9%,var(--surface));padding:10px 12px;font-size:13px;color:var(--ink-2);margin:0;
+}
 
 /* ---------- floating modal: add-device flows, Settings, the coming-soon stub ---------- */
 .modal-bg{position:fixed;inset:0;z-index:80;background:color-mix(in srgb,var(--ink) 45%,transparent);display:grid;place-items:center;padding:20px;}
@@ -606,6 +632,9 @@ h5 + .dnote{margin-top:0;}
     /* The app host: the installed apps, and one app's display spec. */
     apps:         ()             => fetchJSON('/api/apps'),
     renderApp:    id             => fetchJSON('/api/app/'+enc(id)+'/render'),
+    /* Install one from its files, {name: text}; the server reads the id
+       from the app.yaml among them and re-checks everything. */
+    installApp:   files          => send('/api/apps', 'POST', {files}),
   };
 
   /* =========================================================
@@ -1538,8 +1567,7 @@ h5 + .dnote{margin-top:0;}
   }
 
   /* A stand-in for popups that aren't built yet: Add source (when nothing
-     is left to add), Add tab, and Applications' Add / Browse / Build /
-     Create. */
+     is left to add), Add tab, and Applications' Browse / Build / Create. */
   function comingSoon(title){
     const {box, close} = openModal(`
       <h4>${esc(title)}</h4>
@@ -1719,33 +1747,52 @@ h5 + .dnote{margin-top:0;}
   /* =========================================================
      APPLICATIONS - the right-hand column of the Data tab
      Two blocks. On top, the controls card: the title, then Add
-     Application and Browse / Build / Create - for now placeholders,
-     each opening the coming-soon modal. Below it, the list: one row
-     per installed app, from /api/apps (the list Home draws its tiles
-     from), with its own loading, empty and error states. The rows
-     don't expand yet. Nothing here writes anything.
+     Application, which opens the install popup (below), and Browse /
+     Build / Create - placeholders, each opening the coming-soon
+     modal. Below it, the list: one row per installed app, from
+     /api/apps (the list Home draws its tiles from), with its own
+     loading, empty and error states. The rows don't expand yet.
+     Nothing here writes anything: the popup does, and re-reads this.
      ========================================================= */
   const appsList = {status:'loading', apps:null};   // status: loading | ready | error
 
+  /* Reads and paints the list; returns it, or null if the read failed. */
   async function loadApps(){
+    let read = null;
     try{
       const apps = await api.apps();
-      appsList.apps = Array.isArray(apps) ? apps : [];
+      read = appsList.apps = Array.isArray(apps) ? apps : [];
       appsList.status = 'ready';
     }catch(e){
       // A failed refresh leaves the list already shown.
       if(!appsList.apps) appsList.status = 'error';
     }
     paintApps();
+    return read;
   }
 
   /* The controls card. Nothing in it depends on the list, so it's
-     painted once, at boot. */
+     painted once, at boot. Its message line stays empty until an
+     install has something to say (appsNote). */
   function paintAppControls(){
     const card = $('#appsCard');
     card.innerHTML = '';
     card.appendChild(cardTitle('Applications', 'apps'));
     card.appendChild(appActionsRow());
+    const note = el('div','form-msg app-msg');
+    note.id = 'appsMsg';
+    note.setAttribute('role','status');
+    card.appendChild(note);
+  }
+
+  /* A line on the controls card: good news fades, a problem stays. */
+  let appsNoteTimer = null;
+  function appsNote(cls, text){
+    const note = $('#appsMsg');
+    clearTimeout(appsNoteTimer);
+    note.className = 'form-msg app-msg ' + cls;
+    note.textContent = text;
+    if(cls === 'ok') appsNoteTimer = setTimeout(() => { note.textContent = ''; }, 4000);
   }
 
   /* The list, under the controls card, in Your data's shape: a container
@@ -1780,7 +1827,8 @@ h5 + .dnote{margin-top:0;}
   }
 
   /* The controls card's buttons, Add Application in Add source's style,
-     then the other ways to get one, grouped at the far end. */
+     then the other ways to get one, grouped at the far end - those
+     three still placeholders. */
   const APP_ACTIONS = [
     ['browse', 'Browse', 'Browse applications'],
     ['build',  'Build',  'Build an application'],
@@ -1796,13 +1844,239 @@ h5 + .dnote{margin-top:0;}
       return b;
     };
     const wrap = el('div','app-actions');
-    wrap.appendChild(button('add-app', '＋ Add Application', 'Add an application'));
+    const add = button('add-app', '＋ Add Application', 'Add an application');
+    add.onclick = openAddApp;
+    wrap.appendChild(add);
     const group = el('div','app-tools');
     group.setAttribute('role','group');
     group.setAttribute('aria-label','Other ways to get an application');
     APP_ACTIONS.forEach(([act, label, title]) => group.appendChild(button(act, label, title)));
     wrap.appendChild(group);
     return wrap;
+  }
+
+  /* =========================================================
+     ADD APPLICATION - the popup that installs one
+     An app is a folder of files, so the popup builds one: a slot per
+     file, each a paste box with Upload beside it - two ways to fill
+     the same slot. app.yaml is required and app.py optional; ＋ Add
+     file adds a named slot for anything else the app reads. Review
+     shows what's about to be installed: the id, read from the
+     app.yaml (there's no id field of its own), the files, and - when
+     any is Python - that it's custom code. Install POSTs the files to
+     /api/apps, the one write here.
+     The checks below mirror the server's (app/apps.py) for quick
+     feedback, and that's all they are: the server re-checks
+     everything, and a refusal - a taken id, an app.yaml that doesn't
+     parse - shows in the popup as it's given.
+     ========================================================= */
+  /* An app id: lowercase letters, digits and '-', starting with a
+     letter or digit - the server's INSTALL_ID. */
+  const INSTALL_ID = /^[a-z0-9][a-z0-9-]*$/;
+  const CUSTOM_CODE = 'This app includes custom code and runs with full access to your OpenFit data.';
+
+  /* Why a name can't be a file in the app's folder, or '' - the
+     server's filename_problem(): a plain name, no '/', '\', '..' or
+     control character. */
+  function fileNameProblem(name){
+    if(!name) return 'Every file needs a name.';
+    if(/[\/\\]/.test(name) || name.includes('..') || name === '.')
+      return `"${name}" isn't a plain file name: no "/", "\\" or "..".`;
+    if(/[\x00-\x1f\x7f]/.test(name)) return `"${name}" has a control character in it.`;
+    return '';
+  }
+
+  /* The id in an app.yaml: {id}, or {problem} saying why there isn't
+     one. Read as the top-level `id:` line - the last, as YAML keeps -
+     without a YAML parser, so it's a preview: the server parses the
+     file properly, and its parse error is the one that counts. */
+  const NO_ID = 'No id in app.yaml: it needs a line like  id: my-app';
+  function manifestId(text){
+    if(!text.trim()) return {problem:'app.yaml is empty: paste or upload it first.'};
+    const lines = text.split(/\r?\n/).filter(l => /^id[ \t]*:([ \t]|$)/.test(l));
+    if(!lines.length) return {problem:NO_ID};
+    let v = lines[lines.length-1].replace(/^id[ \t]*:/, '').trim();
+    const q = v[0];
+    if(q === '"' || q === "'"){
+      const end = v.indexOf(q, 1);
+      if(end < 0) return {problem:"app.yaml doesn't parse: the id's quote isn't closed."};
+      v = v.slice(1, end);
+    }else{
+      v = v.replace(/(^|[ \t])#.*$/, '').trim();   // a comment after it
+    }
+    if(!v) return {problem:NO_ID};
+    if(!INSTALL_ID.test(v))
+      return {problem:`"${v}" isn't a valid id: lowercase letters, digits and "-", starting with a letter or digit.`};
+    return {id:v};
+  }
+
+  /* One file's slot. app.yaml and app.py have their names set; an added
+     slot (fixed '') has a name field and a Remove button. Upload reads
+     the chosen file into the paste box - and, in an added slot, its
+     name into an empty name field. Text files: what's installed is text. */
+  function fileSlot(fixed, required, say){
+    const PLACEHOLDER = {
+      'app.yaml': 'id: my-app&#10;name: My app&#10;default_size: {w: 2, h: 2}',
+      'app.py':   'def render(ctx, cfg):&#10;    return ctx.empty(&quot;Nothing yet&quot;)',
+    };
+    const slot = el('div','fslot', `
+      <div class="fslot-h">
+        ${fixed
+          ? `<span class="fslot-name">${esc(fixed)}</span>
+             <span class="fslot-tag">${required ? 'Required' : 'Optional'}</span>`
+          : `<input class="input fname" type="text" aria-label="File name"
+                    placeholder="file name"
+                    autocomplete="off" autocapitalize="off" spellcheck="false">`}
+        <span class="fslot-btns">
+          <button class="btn sm" data-act="upload" type="button">Upload</button>
+          ${fixed ? '' : '<button class="btn sm" data-act="remove" type="button">Remove</button>'}
+        </span>
+        <input type="file" hidden>
+      </div>
+      <textarea class="input" rows="6" wrap="off" spellcheck="false" autocomplete="off"
+                autocapitalize="off" aria-label="${fixed ? esc(fixed) : 'File'} contents"
+                placeholder="${fixed ? PLACEHOLDER[fixed] : 'Paste the file, or upload it'}"></textarea>`);
+    if(fixed) slot.dataset.file = fixed;
+
+    const picker = slot.querySelector('input[type="file"]');
+    const text = slot.querySelector('textarea');
+    const name = slot.querySelector('.fname');
+    slot.querySelector('[data-act="upload"]').onclick = () => picker.click();
+    picker.onchange = async () => {
+      const file = picker.files && picker.files[0];
+      picker.value = '';   // so the same file can be picked again
+      if(!file) return;
+      try{ text.value = await file.text(); }
+      catch(e){ say(`Couldn't read ${file.name}.`); return; }
+      if(name && !name.value.trim()) name.value = file.name;
+    };
+    const remove = slot.querySelector('[data-act="remove"]');
+    if(remove) remove.onclick = () => slot.remove();
+    return slot;
+  }
+
+  /* The slots as files to install, [{name, text}] - or the first
+     problem, and its slot. app.yaml always goes (empty, Review says
+     so); app.py and an added slot left blank don't. */
+  function slotFiles(box){
+    const files = [], seen = new Set();
+    for(const slot of box.querySelectorAll('.fslot')){
+      const fixed = slot.dataset.file || '';
+      const text = slot.querySelector('textarea').value;
+      const name = fixed || slot.querySelector('.fname').value.trim();
+      if(fixed === 'app.py' && !text.trim()) continue;
+      if(!fixed && !name && !text) continue;
+      const problem = fixed ? '' : fileNameProblem(name);
+      if(problem) return {problem, slot};
+      if(seen.has(name)) return {problem:`Two files are named "${name}".`, slot};
+      seen.add(name);
+      files.push({name, text});
+    }
+    return {files};
+  }
+
+  /* The popup, in two steps: the files, then Review - what's about to
+     be installed - and Install. */
+  function openAddApp(){
+    const {box, close} = openModal(`
+      <h4>Add an application</h4>
+      <div data-step="files">
+        <p class="hint">An application is a folder of files: its <code>app.yaml</code> manifest,
+          an <code>app.py</code> if it computes anything, and any files it reads. Paste each
+          one, or upload it.</p>
+        <div class="fslots"></div>
+        <button class="btn sm" data-act="add-file" type="button">＋ Add file</button>
+      </div>
+      <div data-step="confirm" hidden>
+        <p class="install-id" data-f="id"></p>
+        <ul class="install-files" data-f="files" aria-label="Files"></ul>
+        <p class="install-warn" data-f="notice" hidden>${esc(CUSTOM_CODE)}</p>
+      </div>
+      <div class="form-msg bad src-msg" data-f="msg" role="alert"></div>
+      <div class="modal-actions">
+        <button class="btn sm" data-act="cancel" type="button">Cancel</button>
+        <button class="btn sm" data-act="back" type="button" hidden>Back</button>
+        <button class="btn sm primary" data-act="review" type="button">Review</button>
+        <button class="btn sm primary" data-act="install" type="button" hidden>Install</button>
+      </div>`);
+    box.classList.add('wide');
+
+    const f = k => box.querySelector(`[data-f="${k}"]`);
+    const act = a => box.querySelector(`[data-act="${a}"]`);
+    const slots = box.querySelector('.fslots');
+    const install = act('install');
+    const say = text => { f('msg').textContent = text; };
+    let files = null;   // what Review settled on, and Install sends
+
+    slots.appendChild(fileSlot('app.yaml', true, say));
+    slots.appendChild(fileSlot('app.py', false, say));
+    act('add-file').onclick = () => {
+      const slot = fileSlot('', false, say);
+      slots.appendChild(slot);
+      slot.querySelector('.fname').focus();
+    };
+    act('cancel').onclick = close;
+
+    function show(step){
+      const review = step === 'confirm';
+      box.querySelector('[data-step="files"]').hidden = review;
+      box.querySelector('[data-step="confirm"]').hidden = !review;
+      act('review').hidden = review;
+      act('back').hidden = install.hidden = !review;
+      say('');
+    }
+
+    act('review').onclick = () => {
+      const got = slotFiles(box);
+      if(got.problem){
+        say(got.problem);
+        const name = got.slot.querySelector('.fname');
+        if(name) name.focus();
+        return;
+      }
+      files = got.files;
+      const read = manifestId(files.find(x => x.name === 'app.yaml').text);
+      const idLine = f('id');
+      idLine.classList.toggle('bad', !read.id);
+      if(read.id) idLine.innerHTML = `Install application: <code>${esc(read.id)}</code>`;
+      else idLine.textContent = read.problem;
+      f('files').innerHTML = files.map(x => `<li><code>${esc(x.name)}</code></li>`).join('');
+      f('notice').hidden = !files.some(x => /\.py$/i.test(x.name));
+      install.disabled = !read.id;
+      show('confirm');
+      (read.id ? install : act('back')).focus();
+    };
+    act('back').onclick = () => show('files');
+
+    install.onclick = async () => {
+      say('');
+      install.disabled = true; install.textContent = 'Installing…';
+      const body = {};
+      files.forEach(x => { body[x.name] = x.text; });
+      const res = await api.installApp(body);
+      if(res.ok){
+        close();
+        appInstalled(res);
+      }else{
+        // The server's own refusal - a taken id, a parse error - as-is.
+        say(res.error || 'Could not install this application');
+        install.disabled = false; install.textContent = 'Install';
+      }
+    };
+
+    box.querySelector('textarea').focus();
+  }
+
+  /* After an install, the list and Home are re-read at once, so the new
+     app shows without a reload. If the scanner didn't take it (a
+     malformed app installs, then is skipped and logged), the controls
+     card says so - the list alone wouldn't. */
+  async function appInstalled(res){
+    loadHome();
+    const listed = await loadApps();
+    const app = listed && listed.find(a => a.id === res.id);
+    if(listed && !app) appsNote('bad', `Installed "${res.id}", but it doesn't load: the server's log says why.`);
+    else appsNote('ok', `✓ Installed ${app ? (app.name || app.id) : res.id}`);
   }
 
   /* =========================================================
@@ -1851,8 +2125,9 @@ h5 + .dnote{margin-top:0;}
         <button class="btn sm" type="button">Retry</button></div>`;
       box.querySelector('button').onclick = () => { home.status = 'loading'; paintHome(); loadHome(); };
     }else if(!home.tiles.length){
-      box.innerHTML = `<p class="home-state">No apps installed yet. An app is a folder in the
-        server's apps directory (<code>/data/apps</code> by default): add one and reload.</p>`;
+      box.innerHTML = `<p class="home-state">No apps installed yet. Add one with ＋ Add Application
+        on the Data tab, or put its folder in the server's apps directory (<code>/data/apps</code>
+        by default) and reload.</p>`;
     }else{
       paintTiles(box, home.tiles);
     }
