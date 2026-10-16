@@ -187,7 +187,8 @@ def test_an_app_with_no_app_py_loads_with_nothing_to_draw(client, apps_dir, caps
     assert (app.id, app.name) == ("notes", "Notes")
     assert "[apps]" not in capsys.readouterr().out
     assert client.get("/api/apps").get_json() == [
-        {"id": "notes", "name": "Notes", "default_size": {"w": 2, "h": 2}}
+        {"id": "notes", "name": "Notes", "default_size": {"w": 2, "h": 2},
+         "reads": [], "files": ["app.yaml"]}
     ]
     assert client.get("/api/app/notes/render").get_json() == {
         "type": "empty",
@@ -267,8 +268,10 @@ def test_api_apps_lists_the_installed_apps(client, apps_dir):
     resp = client.get("/api/apps")
     assert resp.status_code == 200
     assert resp.get_json() == [
-        {"id": "steps", "name": "Steps", "default_size": {"w": 2, "h": 2}},
-        {"id": "steps-metres", "name": "Distance", "default_size": {"w": 2, "h": 1}},
+        {"id": "steps", "name": "Steps", "default_size": {"w": 2, "h": 2},
+         "reads": [], "files": ["app.py", "app.yaml"]},
+        {"id": "steps-metres", "name": "Distance", "default_size": {"w": 2, "h": 1},
+         "reads": [], "files": ["app.py", "app.yaml"]},
     ]
 
 
@@ -290,8 +293,10 @@ def test_the_real_apps_are_listed_and_both_render_specs(client, conn, apps_dir):
     today = today_minus(0)
 
     assert client.get("/api/apps").get_json() == [
-        {"id": "steps", "name": "Steps", "default_size": {"w": 2, "h": 2}},
-        {"id": "steps-metres", "name": "Distance (from steps)", "default_size": {"w": 2, "h": 2}},
+        {"id": "steps", "name": "Steps", "default_size": {"w": 2, "h": 2},
+         "reads": ["steps"], "files": ["app.py", "app.yaml"]},
+        {"id": "steps-metres", "name": "Distance (from steps)", "default_size": {"w": 2, "h": 2},
+         "reads": ["steps"], "files": ["app.py", "app.yaml"]},
     ]
     assert client.get("/api/app/steps/render").get_json() == {
         "type": "panel",

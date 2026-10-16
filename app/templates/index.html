@@ -274,15 +274,46 @@ a.btn{display:inline-block;text-decoration:none;}
    Two blocks, stacked in the Data tab's right column. On top, the
    controls card: its title, then Add Application, with Browse / Build /
    Create grouped at the far end. Under it, the list: one row per
-   installed app, in a container as Your data's rows are (.ditem, .drow) -
-   these are the rows that will expand. */
+   installed app. A row is a Your data row (.ditem, its head a .drow), so
+   it opens and closes the same way: chevron · name, and under it a
+   .dpanel of Reads · Files · Writes, then Refresh and Uninstall. */
 .app-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:14px;}
 .app-tools{display:flex;flex-wrap:wrap;gap:6px;margin-left:auto;}
 .card.applist{padding:10px;}
-.aitem{border-bottom:1px solid var(--border);}
-.aitem:last-child{border-bottom:none;}
-.arow{padding:11px 10px;font-size:14px;}
+.arow{display:grid;grid-template-columns:16px minmax(0,1fr);align-items:center;column-gap:12px;}
 .a-name{display:block;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.dpanel.apanel{grid-template-columns:repeat(3,minmax(0,1fr));}
+.akeys{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:4px;}
+.akey{font-family:var(--font-mono);font-size:12.5px;color:var(--ink-2);overflow-wrap:anywhere;}
+/* a file: opens the read-only viewer */
+.afile{
+  border:none;background:none;padding:1px 0;color:var(--accent);text-align:left;
+  font-family:var(--font-mono);font-size:12.5px;overflow-wrap:anywhere;
+}
+.afile:hover{text-decoration:underline;}
+/* the writes ticker's slot: Day / Wk / Mth, as Your data's continuity */
+.aticks .rh-cell{gap:2px;}
+.atick-l{font-size:10.5px;text-transform:uppercase;letter-spacing:.8px;color:var(--muted);font-weight:600;}
+.atick-v{font-family:var(--font-mono);font-size:12.5px;color:var(--muted);}
+/* Refresh on the left, Uninstall at the far end; its confirm under them */
+.a-acts, .a-confirm, .a-msg{grid-column:1 / -1;}
+.a-acts{display:flex;align-items:center;justify-content:space-between;gap:10px;}
+.a-acts[hidden]{display:none;}
+.a-msg{margin-top:0;}
+.a-msg:empty{display:none;}
+.danger-panel code{font-family:var(--font-mono);font-size:12.5px;}
+/* in a row's panel, the confirm keeps its own title, not the column headers' */
+.dpanel .danger-panel h5{
+  font-family:var(--font-display);font-weight:700;font-size:14px;color:var(--crit);
+  text-transform:none;letter-spacing:normal;margin:0 0 4px;
+}
+/* the file viewer: the file's text as-is, read-only */
+.modal h4 code{font-family:var(--font-mono);font-size:15px;}
+.file-view{
+  margin:0;max-height:60vh;overflow:auto;padding:12px;color:var(--ink);
+  background:var(--inset);border:1px solid var(--border);border-radius:var(--radius-sm);
+  font-family:var(--font-mono);font-size:12.5px;line-height:1.5;tab-size:4;white-space:pre;
+}
 /* the controls card's one line of news - what the last install did */
 .app-msg:empty{display:none;}
 
@@ -510,7 +541,7 @@ h5 + .dnote{margin-top:0;}
   .dgrid{grid-template-columns:12px minmax(0,1fr) auto auto;column-gap:10px;}
   .d-grain, .d-gap{display:none;}
   .rh-cell{width:28px;}
-  .dpanel{grid-template-columns:1fr;padding-left:10px;}
+  .dpanel, .dpanel.apanel{grid-template-columns:1fr;padding-left:10px;}
   .src{flex-wrap:wrap;}
   /* four cells across Home's width, so two 2-wide tiles sit side by side */
   .tiles{--tile-cell:calc((100cqi - 3 * var(--tile-gap)) / 4);}
@@ -635,6 +666,10 @@ h5 + .dnote{margin-top:0;}
     /* Install one from its files, {name: text}; the server reads the id
        from the app.yaml among them and re-checks everything. */
     installApp:   files          => send('/api/apps', 'POST', {files}),
+    /* One of an app's files, as text ({id, name, text}), for the viewer -
+       a name /api/apps listed; and uninstalling one, folder and all. */
+    appFile:      (id, name)     => send('/api/app/'+enc(id)+'/file?name='+enc(name), 'GET'),
+    uninstallApp: id             => send('/api/apps/'+enc(id), 'DELETE'),
   };
 
   /* =========================================================
@@ -928,9 +963,39 @@ h5 + .dnote{margin-top:0;}
 
   const panelId = row => 'panel-' + row.id.replace(/[^a-z0-9_-]/gi, '-');
 
+  /* A row that opens a detail panel under its head: Your data's rows, and
+     the Applications list's. Clicking the head (a button) shows or hides
+     the panel and turns the chevron (.open). o.open is the Set of the ids
+     open now, so a row repainted by a refresh comes back as it was;
+     o.panel() builds the detail, with the id o.panelId; o.onClose, if
+     given, runs as the row shuts. */
+  function expandable(item, head, o){
+    const isOpen = () => o.open.has(o.id);
+    const reflect = () => {
+      item.classList.toggle('open', isOpen());
+      head.setAttribute('aria-expanded', isOpen() ? 'true' : 'false');
+    };
+    head.type = 'button';
+    head.setAttribute('aria-controls', o.panelId);
+    head.onclick = () => {
+      if(isOpen()){
+        o.open.delete(o.id);
+        if(o.onClose) o.onClose();
+        const p = Array.from(item.children).find(c => c.id===o.panelId); if(p) p.remove();
+      }else{
+        o.open.add(o.id);
+        item.appendChild(o.panel());
+      }
+      reflect();
+    };
+    item.appendChild(head);
+    if(isOpen()) item.appendChild(o.panel());
+    reflect();
+    return item;
+  }
+
   function rowItem(row){
-    const open = state.open.has(row.id);
-    const item = el('div', 'ditem' + (row.count ? '' : ' dim') + (open ? ' open' : ''));
+    const item = el('div', 'ditem' + (row.count ? '' : ' dim'));
     item.dataset.id = row.id;
     const read = readingFor(row);
     const cont = continuity(datesOf(row), state.data.win);
@@ -941,25 +1006,11 @@ h5 + .dnote{margin-top:0;}
       <span class="d-grain">${esc(cap(row.grain))}</span>
       <span class="d-gap"></span>
       <span class="rhs" role="img" aria-label="${esc('Continuity: ' + cont.map(c => c.name.toLowerCase() + ' ' + pct(c.of ? c.have/c.of : 0)).join(', '))}">${cont.map(rhombus).join('')}</span>`);
-    head.type = 'button';
-    head.setAttribute('aria-expanded', open ? 'true' : 'false');
-    head.setAttribute('aria-controls', panelId(row));
-    head.onclick = () => {
-      if(state.open.has(row.id)){
-        state.open.delete(row.id);
-        delete state.note[row.id];
-        item.classList.remove('open');
-        const p = item.querySelector('.dpanel'); if(p) p.remove();
-      }else{
-        state.open.add(row.id);
-        item.classList.add('open');
-        item.appendChild(panelFor(row));
-      }
-      head.setAttribute('aria-expanded', state.open.has(row.id) ? 'true' : 'false');
-    };
-    item.appendChild(head);
-    if(open) item.appendChild(panelFor(row));
-    return item;
+    return expandable(item, head, {
+      open:state.open, id:row.id, panelId:panelId(row),
+      panel:() => panelFor(row),
+      onClose:() => { delete state.note[row.id]; },
+    });
   }
 
   function panelFor(row){
@@ -1751,10 +1802,17 @@ h5 + .dnote{margin-top:0;}
      Build / Create - placeholders, each opening the coming-soon
      modal. Below it, the list: one row per installed app, from
      /api/apps (the list Home draws its tiles from), with its own
-     loading, empty and error states. The rows don't expand yet.
-     Nothing here writes anything: the popup does, and re-reads this.
+     loading, empty and error states. A row expands as Your data's
+     do: what the app reads, its files (each opens read-only), a slot
+     for what it writes, then Refresh - its render, re-run - and
+     Uninstall, the one write here, behind a confirm. Installing is
+     the popup's (below), which re-reads this.
      ========================================================= */
-  const appsList = {status:'loading', apps:null};   // status: loading | ready | error
+  const appsList = {
+    status:'loading',   // loading | ready | error
+    apps:null,          // /api/apps: [{id, name, default_size, reads, files}]
+    open:new Set(),     // ids of expanded rows - they stay open across a refresh
+  };
 
   /* Reads and paints the list; returns it, or null if the read failed. */
   async function loadApps(){
@@ -1818,12 +1876,145 @@ h5 + .dnote{margin-top:0;}
     }
   }
 
-  /* An installed app: its name. /api/apps lists only the apps that
-     load, with no status of their own, so there's none to show yet. */
+  /* An installed app: its name, opening onto its detail. /api/apps lists
+     only the apps that load, with no status of their own, so there's
+     none to show yet. */
+  const appPanelId = a => 'app-panel-' + String(a.id).replace(/[^a-z0-9_-]/gi, '-');
   function appRow(a){
-    const item = el('div','aitem', `<div class="arow"><span class="a-name">${esc(a.name || a.id)}</span></div>`);
+    const item = el('div','ditem aitem');
     item.dataset.app = a.id;
-    return item;
+    const head = el('button','drow arow',
+      `<span class="chev" aria-hidden="true">›</span><span class="a-name">${esc(a.name || a.id)}</span>`);
+    return expandable(item, head, {
+      open:appsList.open, id:a.id, panelId:appPanelId(a), panel:() => appPanel(a),
+    });
+  }
+
+  /* An open row: Reads · Files · Writes, then the actions. */
+  function appPanel(a){
+    const name = a.name || a.id;
+    const reads = Array.isArray(a.reads) ? a.reads : [];
+    const files = Array.isArray(a.files) ? a.files : [];
+    const p = el('div','dpanel apanel', `
+      <div>
+        <h5>Reads</h5>
+        ${reads.length
+          ? `<ul class="akeys">${reads.map(k => `<li class="akey" data-tip="${esc(metricName(k))}">${esc(k)}</li>`).join('')}</ul>`
+          : '<p class="dnote">No declared reads</p>'}
+      </div>
+      <div>
+        <h5>Files</h5>
+        ${files.length
+          ? `<ul class="akeys">${files.map((f, i) =>
+              `<li><button class="afile" type="button" data-file="${i}" aria-haspopup="dialog">${esc(f)}</button></li>`).join('')}</ul>`
+          : '<p class="dnote">No files</p>'}
+      </div>
+      <div>${writesTicker()}</div>
+      <div class="a-acts">
+        <button class="btn sm" data-act="refresh" type="button">Refresh</button>
+        <button class="btn sm danger" data-act="uninstall" type="button">Uninstall</button>
+      </div>
+      <div class="danger-panel a-confirm" hidden>
+        <h5>Uninstall ${esc(name)}?</h5>
+        <p>This deletes its files from <code>/data/apps/</code>.</p>
+        <div class="modal-actions">
+          <button class="btn sm" data-act="cancel" type="button">Cancel</button>
+          <button class="btn sm danger solid" data-act="confirm" type="button">Uninstall</button>
+        </div>
+      </div>
+      <div class="form-msg a-msg" role="status"></div>`);
+    p.id = appPanelId(a);
+
+    const act = k => p.querySelector(`[data-act="${k}"]`);
+    const acts = p.querySelector('.a-acts'), gate = p.querySelector('.a-confirm');
+    const msg = p.querySelector('.a-msg');
+    let msgTimer = null;
+    // A line under the actions: good news fades, a problem stays.
+    const say = (cls, text) => {
+      clearTimeout(msgTimer);
+      msg.className = 'form-msg a-msg ' + cls;
+      msg.textContent = text;
+      if(cls === 'ok') msgTimer = setTimeout(() => { msg.textContent = ''; }, 4000);
+    };
+
+    p.querySelectorAll('.afile').forEach(b => { b.onclick = () => openAppFile(a, files[+b.dataset.file]); });
+
+    /* Refresh: the app's render, re-run against the data as it is now,
+       and its Home tile redrawn from the fresh spec - nothing else. */
+    const refresh = act('refresh');
+    refresh.onclick = async () => {
+      refresh.disabled = true;
+      say('', '');
+      let spec;
+      try{ spec = await api.renderApp(a.id); }
+      catch(e){ say('bad', `Couldn't refresh ${name}.`); refresh.disabled = false; return; }
+      repaintTile(a.id, spec);
+      refresh.disabled = false;
+      if(spec && spec.type === 'error') say('bad', 'Its render failed: ' + (spec.message || 'no message'));
+      else say('ok', '✓ Refreshed');
+    };
+
+    /* Uninstall: a confirm, then DELETE - and the app goes from this list
+       and from Home. */
+    const gateOpen = open => {
+      acts.hidden = open;
+      gate.hidden = !open;
+      say('', '');
+      (open ? act('cancel') : act('uninstall')).focus();
+    };
+    act('uninstall').onclick = () => gateOpen(true);
+    act('cancel').onclick = () => gateOpen(false);
+    const confirmBtn = act('confirm');
+    confirmBtn.onclick = async () => {
+      confirmBtn.disabled = true; confirmBtn.textContent = 'Uninstalling…';
+      const res = await api.uninstallApp(a.id);
+      if(res.ok){
+        appsList.open.delete(a.id);
+        appsNote('ok', `✓ Uninstalled ${name}`);
+        loadApps();
+        loadHome();
+      }else{
+        say('bad', res.error || 'Could not uninstall this application');
+        confirmBtn.disabled = false; confirmBtn.textContent = 'Uninstall';
+      }
+    };
+    return p;
+  }
+
+  /* Day / Wk / Mth - Your data's continuity columns - each "—" for now:
+     the slot is the layout, nothing is counted yet. */
+  // writes-ticker: filled in when app-tier write-back exists
+  function writesTicker(){
+    return `<h5>Writes</h5>
+      <div class="rhs aticks" role="img" aria-label="Writes: none yet" data-tip="writes: none yet">${
+        ['Day', 'Wk', 'Mth'].map(l =>
+          `<span class="rh-cell"><span class="atick-l">${l}</span><span class="atick-v">—</span></span>`).join('')
+      }</div>`;
+  }
+
+  /* One of an app's files, read-only: its text from the server, set as
+     text - never markup - in a monospace block. */
+  function openAppFile(a, name){
+    const {box, close} = openModal(`
+      <h4><code>${esc(name)}</code></h4>
+      <p class="hint">${esc(a.name || a.id)} · read-only</p>
+      <pre class="file-view" tabindex="0" aria-label="${esc(name)}">Loading…</pre>
+      <div class="form-msg src-msg" data-f="msg" role="alert"></div>
+      <div class="modal-actions">
+        <button class="btn sm" data-act="close" type="button">Close</button>
+      </div>`);
+    box.classList.add('wide');
+    const view = box.querySelector('.file-view');
+    const msg = box.querySelector('[data-f="msg"]');
+    const btn = box.querySelector('[data-act="close"]');
+    btn.onclick = close;
+    btn.focus();
+    api.appFile(a.id, name).then(res => {
+      if(res.ok && res.text){ view.textContent = res.text; return; }
+      view.hidden = true;
+      msg.className = 'form-msg src-msg ' + (res.ok ? 'info' : 'bad');
+      msg.textContent = res.ok ? 'This file is empty.' : (res.error || "Couldn't read this file.");
+    });
   }
 
   /* The controls card's buttons, Add Application in Add source's style,
@@ -2147,6 +2338,17 @@ h5 + .dnote{margin-top:0;}
       grid.appendChild(tile);
     });
     box.replaceChildren(grid);
+  }
+
+  /* One app's tile, redrawn from a fresh spec - the Applications list's
+     Refresh. Only that tile changes, in place; an app with no tile on
+     Home (none drawn yet) has nothing to redraw. */
+  function repaintTile(appId, spec){
+    const t = home.tiles && home.tiles.find(x => x.app_id===appId);
+    if(!t) return;
+    t.spec = spec;
+    const tile = Array.from(document.querySelectorAll('#home .tile')).find(x => x.dataset.app===appId);
+    if(tile) tile.replaceChildren(renderSpec(spec, t.name));
   }
 
   /* ---- spec -> DOM: the display vocabulary ----

@@ -96,9 +96,11 @@ a new metric (dated, history kept). Same app, values in three different homes.
 - **Getting it there:** copy the folder onto the volume, or paste/upload the
   files in **＋ Add Application** (Data tab → Applications), which installs
   them as `/data/apps/<id>/`. The id comes from `app.yaml` and must be
-  lowercase letters, digits and dashes; an install never overwrites — remove
-  an app, then add it again, to update it. See `app-host.md`, "Installing an
-  app".
+  lowercase letters, digits and dashes; an install never overwrites —
+  **Uninstall** the app (its row in the Applications list), then add it
+  again, to update it. The same row shows what it reads and its files, and
+  **Refresh** re-runs its render after a change. See `app-host.md`,
+  "Installing an app" and "An app's row".
 - **First app is expensive, the rest are cheap.** The first app drags the whole
   host into existence. After that, a new app is a folder with two small files.
 

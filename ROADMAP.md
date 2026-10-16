@@ -75,9 +75,12 @@ Home tab at their default size — `docs/architecture/app-host.md`. The
 Library's shell followed: an Applications column on the Data tab listing the
 installed apps. Then the Add Application popup: an app installed from pasted
 or uploaded files through `POST /api/apps` (the host's first write route,
-strict on containment, loose on correctness). Next: the rest of the Library
-(expandable rows, alerts; Browse / Build / Create are still placeholders), and
-the grid pass (Configure, drag/resize, saved layout).
+strict on containment, loose on correctness). Then expandable app rows: what
+an app reads, its files in a read-only viewer, Refresh (its render re-run), and
+Uninstall (`DELETE /api/apps/<id>`, the first destructive app action), with a
+slot reserved for the writes ticker. Next: the rest of the Library (the writes
+ticker once apps can write back, alerts; Browse / Build / Create are still
+placeholders), and the grid pass (Configure, drag/resize, saved layout).
 
 ## Phase 5 — OpenFit Host (per-user provisioning)
 

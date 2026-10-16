@@ -27,6 +27,8 @@ the app's own; the host doesn't read them.
 
 An app gets into the folder by hand (copy it onto the volume) or from the
 browser, with **＋ Add Application** ([Installing an app](#installing-an-app),
+below). It leaves the same two ways: delete its folder, or **Uninstall** in its
+row of the Applications list ([An app's row](#an-apps-row-reads-files-refresh-uninstall),
 below).
 
 **`app.yaml`**
@@ -222,7 +224,7 @@ the files.
    first to reinstall.` That's when `<apps dir>/<id>` exists as anything (a
    folder, a file, a broken link), or an app in another folder already loads
    under that id. An install only ever creates. It never updates an app in
-   place: removing the app, then adding it again, is the update path.
+   place: uninstalling the app, then adding it again, is the update path.
 4. **Correctness** is `check_app(manifest, files)`, and it's deliberately
    minimal: past the parsable `app.yaml` with a valid id, nothing is checked.
    Not the other manifest fields (`name`, `default_size` ...), not `app.py`'s
@@ -272,17 +274,108 @@ Not in this slice: updating an app in place (refused by design), a zip or
 folder upload (it would need its own path checks), and deeper correctness
 checks.
 
+## An app's row: reads, files, Refresh, Uninstall
+
+Each row of the Applications list expands, the same way a Your data row does
+(one mechanism, `expandable()` in the page, serves both lists): click the row
+and its detail opens under it, the chevron turning; click again and it shuts.
+An open row stays open when the list is re-read. The detail is three columns
+(one on a phone), then the actions:
+
+- **Reads**: the metric keys the manifest's `reads` declares (recorded, not
+  enforced), or "No declared reads".
+- **Files**: the files in the app's folder, by name. Clicking one opens it,
+  read-only, in a popup: its text in a monospace block, set as text, never as
+  markup. Nothing can be edited.
+- **Writes**: a reserved slot for the writes ticker (Day / Wk / Mth), each
+  `—` for now. It's filled in when an app can write back (`app:`-tier
+  metrics); until then nothing is counted.
+- **Refresh** re-runs the app's render (`GET /api/app/<id>/render`, the
+  existing route) against the data as it is now, and redraws that app's Home
+  tile in place from the fresh spec: no new route, no reload, nothing else
+  repainted. (Every request scans the apps folder, so an edited `app.py` is
+  picked up too, as it would be on any load.)
+- **Uninstall** opens a confirm in the row ("Uninstall <name>? This deletes its
+  files from `/data/apps/`.", with Cancel); confirming removes the app, and it
+  leaves both the list and Home at once.
+
+### Showing a file: `GET /api/app/<id>/file?name=<file>`
+
+The file name comes from the request, so this read gets the installer's
+containment discipline: nothing outside the app's own folder is ever read.
+It's `read_app_file()` in `app/apps.py`.
+
+1. **The app** is found by scanning, as the render route finds it. An id with
+   no app that loads is a 404.
+2. **The name** must be a plain file name (`filename_problem()`, the
+   installer's rule: no `/`, `\`, `..` or control character, not `.`, so
+   never absolute or pointing elsewhere), or it's a 400.
+3. **It must be one of the app's files**: those `GET /api/apps` lists, which
+   are the plain files directly in the folder (`app_files()`): not a
+   sub-folder such as `__pycache__`, and not a link, which could point
+   anywhere. Anything else is a 404.
+4. **The path is resolved** and must still sit in the folder, and the file is
+   opened without following a link, in case one was swapped in since the
+   listing. Either failing is a 404.
+5. **It must be text to show**: over 1 MiB (`MAX_VIEW_BYTES`) is a 413, and
+   anything that isn't UTF-8 is a 415.
+
+The response is `{"id", "name", "text"}`, the text exactly as it's stored, line
+endings and all. A refusal is `{"ok": false, "error": "<message>"}`.
+
+### Uninstalling an app: `DELETE /api/apps/<id>`
+
+The first destructive action on an app. As with installing, the request names
+the app, never a path. It's `uninstall_app()` in `app/apps.py`.
+
+1. **The id** must match the scanner's id rule, `APP_ID`
+   (`^[A-Za-z0-9][A-Za-z0-9_-]*$`, with `\Z`), or it's a 400. Every id the
+   list shows meets it, so a hand-placed app with capitals or `_` in its id
+   can be uninstalled too, and it can never be `..`, hold a `/`, or name a
+   dot-folder. (Flask's routing never hands the route a `/` at all.)
+2. **An app must load under it**, or it's a 404. The folder removed is the one
+   the scanner loaded that app from: found by scanning, never built from the
+   id, always a direct child of the apps folder. A hand-placed app whose
+   folder isn't named for its id loses that folder. An app that doesn't load
+   isn't listed, so it isn't installed as far as the Library knows; its folder
+   is left alone (the alerts slice will surface it).
+3. **The folder is moved aside first**: renamed to a hidden
+   `.uninstall-<hex>` folder in the apps directory, in one atomic step, under
+   the same process lock as installs. The scanner skips dot-folders, so the app
+   is gone whole. If the rename fails, nothing has changed (500). The app's
+   loader cache entry is dropped too, so a new app installed into the same
+   folder name is always loaded afresh.
+4. **Then it's deleted.** A folder that's a link is unlinked; what it points
+   to is never touched. If the delete fails part way, only the hidden folder
+   is left, and the log says so (`[apps] uninstalled <id>, but couldn't
+   delete ...`): never a half-app the scanner would try to load. The app is
+   uninstalled either way.
+5. **The response** is `200 {"ok": true, "id": "<id>"}`.
+
+An app writes no data yet, so uninstalling removes only its folder.
+
 ## Routes
 
-- `GET /api/apps` → `[{id, name, default_size: {w, h}}]`, the apps that load,
-  in folder order.
+- `GET /api/apps` → `[{id, name, default_size: {w, h}, reads: [key], files:
+  [name]}]`, the apps that load, in folder order. `reads` is the manifest's
+  (`[]` if none); `files` names the plain files in the app's folder, sorted,
+  each one the file route serves.
 - `POST /api/apps` → installs an app from `{"files": {name: text}}`; `201
   {"ok": true, "id", "has_app_py"}`, or a refusal that writes nothing. See
   [Installing an app](#installing-an-app).
+- `DELETE /api/apps/<id>` → uninstalls the app, its folder and all; `200
+  {"ok": true, "id"}`, or a 400 (an id no app could have) or 404 (no app
+  loads under it) that removes nothing. See
+  [Uninstalling an app](#uninstalling-an-app-delete-apiappsid).
 - `GET /api/app/<id>/render` → the app's spec, rendered now with `cfg` `{}`.
   It's always a 200 for an installed app, with an error spec if the render
   fails. An id with no app that loads gets `404 {"ok": false, "error": "unknown
   app: <id>"}`.
+- `GET /api/app/<id>/file?name=<file>` → `{id, name, text}`, one of the app's
+  files as text, for the read-only viewer. 400 for a name that isn't plain,
+  404 for an unknown app or file, 413 for a file too big to show, 415 for one
+  that isn't text. See
+  [Showing a file](#showing-a-file-get-apiappidfilenamefile).
 
 The access contract's reads also take **`?days=N`**: the trailing N days, as
 `ctx.metric()` counts them. It can't be combined with `from`/`to`, and a value
@@ -295,7 +388,8 @@ contract read (`/api/metric`, `/api/coverage`, `/api/sessions`,
 On load, the page calls `GET /api/apps`, then each app's render in parallel,
 and draws the tiles. A render that can't be fetched becomes one error tile. A
 **Sync now** or a source removal re-reads Home along with the data card, so
-the tiles follow the data. If `/api/apps` itself fails, the page says so and
+the tiles follow the data, and so does installing or uninstalling an app. An
+app row's **Refresh** redraws only that app's tile. If `/api/apps` itself fails, the page says so and
 offers a Retry. With nothing installed, the page says where apps go.
 
 Tiles are **chromeless**: the app's spec is the whole face, on the console's
@@ -330,9 +424,13 @@ saved layout. `paintTiles`, `renderSpec` and the scanner don't change.
   shell has landed: the Data tab's right-hand **Applications** column lists
   `/api/apps` by name (see
   [frontend-redesign-and-widget-model.md](frontend-redesign-and-widget-model.md)),
-  and Add Application installs one ([above](#installing-an-app)). Browse,
-  Build and Create are still placeholders. Still to come: expandable rows
-  (what an app reads, its files, its writes, and removing it) and alerts.
+  Add Application installs one ([above](#installing-an-app)), and each row
+  expands to what the app reads, its files, Refresh and Uninstall
+  ([above](#an-apps-row-reads-files-refresh-uninstall)). Browse, Build and
+  Create are still placeholders. Still to come: the writes ticker (once an
+  app can write back) and alerts (an app that doesn't load, or whose render
+  fails, flagged in its row). Editing an app's files, updating one in place
+  and disabling one are out: there's no mechanism for them.
 - **Per-instance config** and the UI to edit it (`cfg` is `{}`), **metric
   write-back**, and a custom `app.js` for an app that draws its own face.
 - **Enforcing `reads`:** it's recorded, but `ctx.metric()` serves any key in
