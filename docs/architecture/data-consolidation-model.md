@@ -27,14 +27,16 @@ fine-grained historical series (an intraday HR curve the device already
 recorded and synced). It is never a live/real-time monitor. "The present" is
 only ever as current as each source is, bounded by device→cloud sync lag.
 
-**Health data only (scope boundary).** OpenFit holds health data: device-sourced
-readings, manually-entered health data (weight, calories, fluid), and app-derived
-health data (a custom sleep detection, a computed metric). It does **not** hold
-operational context — rosters, shift calendars, rest-opportunity windows. An app
-brings that from its own storage and joins it against OpenFit's health data on
-its own side. Governance test for any future "should OpenFit store X?": is X a
-health fact from a source, or derived from one? Weight, sleep, HR pass. Rosters,
-calendars, shift patterns fail.
+**OpenFit does not judge what is "health" data (scope).** OpenFit holds what
+the user and their apps choose to keep: device-sourced readings and app-written
+data — whether a canonical health metric (weight, resting HR), an app's own
+`app:<id>:<key>` metric, or operational context an app needs (rosters, shift
+calendars, rest-opportunity windows). Whether a given datum counts as "health"
+is not OpenFit's call to make: a fatigue app treats duty periods as
+fatigue-relevant data, and the engine's job is to store and serve it, not to
+gatekeep by category. What stays unchanged is collation vs analysis: OpenFit
+still *selects and arranges* recorded facts and does not *derive new* ones —
+but which facts are worth keeping is the user's decision, not a gated category.
 
 ---
 
@@ -256,9 +258,10 @@ say so. Among the sources the default doesn't name (apps, webhook-pushed sources
 such as `eufy`), the tie-break is by name, so `source_roles` also settles an
 app against a pushed device (§10).
 
-What an app writes is *health* data, under canonical keys or its own
-`app:<id>:<key>` metrics. It is not a home for app context (rosters, calendars).
-See §1 scope.
+What an app writes is stored under canonical keys or its own `app:<id>:<key>`
+metrics — including app context such as rosters and calendars. OpenFit doesn't
+gatekeep by category (§1); it stores what the app writes under the app's own
+source and serves it like any other data.
 
 ---
 
