@@ -2411,11 +2411,11 @@ def test_the_add_popup_offers_a_tab_picker_wired_to_placement(client):
         popup,
     )
     assert ".install-tab" not in page
-    # Review fills it from Home's layout - only with more than one tab, the
-    # default selected - every id and name escaped.
+    # Review fills it from Home's layout - only with more than one tab and
+    # not mid-Configure, the default selected - every id and name escaped.
     review = popup[popup.index("act('review').onclick") : popup.index("act('back').onclick")]
     assert "const tabs = home.layout && Array.isArray(home.layout.tabs) ? home.layout.tabs : [];" in review
-    assert "if(tabs.length > 1){" in review
+    assert "if(tabs.length > 1 && !home.configuring){" in review
     assert (
         "`<option value=\"${esc(t.id)}\"${t.id===home.layout.default_tab ? ' selected' : ''}>"
         "${esc(t.name)}</option>`"
@@ -2538,6 +2538,32 @@ def test_the_add_popups_tab_picker_shows_only_with_two_tabs(client, tab_apps):
         assert out["id"] == "Install application: e"
         assert out["installs"] == 1 and out["closed"] is True
         assert out["installed"] == [{"res": {"ok": True, "id": "e"}, "saves": 0}]
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
+def test_the_tab_picker_is_hidden_while_configuring(client, tab_apps):
+    page = _page(client)
+    # The guard is on both counts: more than one tab, and not mid-Configure.
+    assert "if(tabs.length > 1 && !home.configuring){" in _js_function(page, "openAddApp")
+    _, two = _seeded(client)
+    r = _node(_add_script(page, two, f"""
+        // Two tabs, but Configure is on: no picker. Placing now would be a
+        // server save that the Configure-off save then overwrites from the
+        // working copy, losing the choice - so the app joins the tab on
+        // screen and is moved by hand, like any tile, in Configure.
+        home.configuring = true;
+        r.on = await add({json.dumps(two)}, {json.dumps(NEW_APP)});
+        // Configure off: the picker is back, the slice's normal behaviour.
+        home.configuring = false;
+        r.off = await add({json.dumps(two)}, {json.dumps(NEW_APP)});
+    """))
+    # Mid-Configure: no picker, nothing read or saved - install alone.
+    assert r["on"]["picker"] is None
+    assert (r["on"]["reads"], r["on"]["saves"]) == (0, [])
+    assert r["on"]["installs"] == 1 and r["on"]["closed"] is True
+    assert r["on"]["installed"] == [{"res": {"ok": True, "id": "e"}, "saves": 0}]
+    # Off again: the picker returns, the default selected.
+    assert r["off"]["picker"] == [["home", "Home", True], ["two", "Two <b>", False]]
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")

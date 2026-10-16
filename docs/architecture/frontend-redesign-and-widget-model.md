@@ -116,8 +116,9 @@ Right column:
    file (`app.yaml` required, `app.py` optional, **＋ Add file** for more),
    each pasted or uploaded; **Review** shows the id read from the `app.yaml`,
    the files, a custom-code notice when any is Python, and, when Home has
-   more than one tab, an **Add to tab** dropdown (the default tab
-   selected); **Install** posts them to `POST /api/apps`. On success it
+   more than one tab and Configure is off, an **Add to tab** dropdown (the
+   default tab selected; mid-Configure the new tile joins the tab on screen
+   and is moved like any tile); **Install** posts them to `POST /api/apps`. On success it
    closes, moves the new app's tile to the chosen tab if that isn't the
    default (the layout read and saved through `/api/home-layout`), and the
    list and Home are re-read, so the app shows at once; on a refusal it stays open with the

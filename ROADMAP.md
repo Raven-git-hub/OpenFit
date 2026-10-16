@@ -101,7 +101,8 @@ placed twice, so tiles stay keyed by app (client only, no route change). Then
 the fifth: deploy-to-tab. With more than one tab, the Add popup's Review asks
 which tab the app goes on (the default tab picked to start with), and a
 different choice moves the new app's instance there and saves the layout
-(client only, no route change). Next: the rest of the Library (the writes ticker once apps can
+(client only, no route change); while Configure is on it isn't asked, and
+the app is moved by hand like any tile. Next: the rest of the Library (the writes ticker once apps can
 write back, alerts; Browse / Build / Create are still placeholders), and the
 grid pass (free cell placement, a second layout mode on the same sizes).
 

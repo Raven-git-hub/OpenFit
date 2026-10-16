@@ -298,7 +298,10 @@ OpenFit data." If the `app.yaml` is empty, has no `id:` line, or its id is
 invalid, the confirm step says so instead and Install is disabled. When Home
 has more than one tab, the confirm step also has an **Add to tab** dropdown
 of them, the layout's default tab selected; with one tab (or before Home's
-layout is read) it isn't shown. Opened by
+layout is read) it isn't shown, nor while Configure is on: Configure-off
+saves the working copy, which doesn't hold the new app, so a pick would be
+lost; the new tile joins the tab on screen and is moved like any tile.
+Opened by
 an app row's **Duplicate**, the popup is titled "Duplicate application" and
 starts filled with the copy's files (`app.yaml` and `app.py` in their slots,
 an added slot for each other file), all editable before Review.
@@ -717,9 +720,9 @@ saved positions and gives `paintTiles` start cells. The sizes, the CSS grid,
   ([an app's row](#an-apps-row-reads-files-refresh-uninstall), the way the
   same app ends up on Home twice, each copy with its own settings) and
   deploy-to-tab in the Add Application popup
-  ([above](#the-add-application-popup)): an install placed on its tab
-  while Configure is on (the picker's choice is lost to the working copy's
-  save today). Tiles keyed by instance are
+  ([above](#the-add-application-popup); not offered while Configure is on,
+  where the new tile joins the tab on screen and is moved like any tile).
+  Tiles keyed by instance are
   dropped for good: with duplication at the app level, an app id never has
   two instances. (The stored layout keeps its tabs of instances, see
   [The layout](#the-layout-tabs-of-instances); the page just never places

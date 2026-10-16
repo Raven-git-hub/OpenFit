@@ -2444,9 +2444,12 @@ h5 + .dnote{margin-top:0;}
       f('files').innerHTML = files.map(x => `<li><code>${esc(x.name)}</code></li>`).join('');
       f('notice').hidden = !files.some(x => /\.py$/i.test(x.name));
       // Which of Home's tabs it goes on - asked only when there's a
-      // choice, the layout's default tab picked to start with.
+      // choice, the layout's default tab picked to start with. Not while
+      // Configure is on: its save, of a working copy without the app,
+      // would put it on the tab on screen whatever was picked - so it
+      // joins that tab, to be moved like any tile.
       const tabs = home.layout && Array.isArray(home.layout.tabs) ? home.layout.tabs : [];
-      if(tabs.length > 1){
+      if(tabs.length > 1 && !home.configuring){
         f('tab').innerHTML = tabs.map(t =>
           `<option value="${esc(t.id)}"${t.id===home.layout.default_tab ? ' selected' : ''}>${esc(t.name)}</option>`).join('');
         f('tabField').hidden = false;

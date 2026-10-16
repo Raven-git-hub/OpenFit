@@ -421,11 +421,14 @@ own calls to its device API. Full direction:
   stripped, checked against the server's `INSTALL_ID`): "Install
   application: `<id>`", or why it can't (empty, no id, an unclosed quote,
   a bad id) with Install disabled; under it, only when Home's layout
-  (`home.layout`, as last read — mid-Configure the working copy) has
-  more than one tab, an **Add to tab** `<select>` (`.field.install-tab`,
-  the modal's own field styling) of its tabs by name, in order, the
-  layout's `default_tab` selected — one tab, or none read yet, and it
-  stays hidden; the file names as chips; and, when any
+  (`home.layout`, as last read) has more than one tab and Configure is
+  off (`!home.configuring`), an **Add to tab** `<select>`
+  (`.field.install-tab`, the modal's own field styling) of its tabs by
+  name, in order, the layout's `default_tab` selected — one tab, none
+  read yet, or Configure on (its save writes the working copy, which
+  doesn't hold the new app, so a pick would be lost: the new tile joins
+  the tab on screen and is moved like any tile), and it stays hidden;
+  the file names as chips; and, when any
   file ends `.py`, "This app includes custom code and runs with full
   access to your OpenFit data." (`CUSTOM_CODE`). **Install** `POST`s
   `/api/apps` `{files}`: on success the popup closes, a tab picked
@@ -1106,10 +1109,12 @@ same PR:
   one tab, the default tab picked; a non-default choice has the new
   app's instance lifted onto that tab (appended — reordering stays
   Configure's) and the layout saved, by `placeNewAppOnTab()`. Duplicate
-  opens the same popup, so a copy gets the same picker. Mid-Configure
-  the placement doesn't hold: the server's layout is moved, but the
-  working copy kept on screen doesn't have the app, so it's drawn on the
-  tab on screen and Configure-off's save puts it there.
+  opens the same popup, so a copy gets the same picker. Its follow-up
+  hides the picker while Configure is on (a placement then was lost to
+  Configure-off's save of the working copy, which doesn't hold the app):
+  the new tile joins the tab on screen (`flowLayout()` squaring the
+  working copy with the apps) and is moved like any tile, the
+  Configure-off save the only writer.
   Still to come for multi-tab: richer settings field types
   (select/enum/boolean) and a live preview. Also still to come: the
   grid pass (free cell placement as a second layout
