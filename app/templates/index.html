@@ -314,10 +314,12 @@ a.btn{display:inline-block;text-decoration:none;}
 .aticks .rh-cell{gap:2px;}
 .atick-l{font-size:10.5px;text-transform:uppercase;letter-spacing:.8px;color:var(--muted);font-weight:600;}
 .atick-v{font-family:var(--font-mono);font-size:12.5px;color:var(--muted);}
-/* Refresh on the left, Uninstall at the far end; its confirm under them */
+/* Refresh on the left, Duplicate and Uninstall at the far end; the
+   confirm under them */
 .a-acts, .a-confirm, .a-msg{grid-column:1 / -1;}
 .a-acts{display:flex;align-items:center;justify-content:space-between;gap:10px;}
 .a-acts[hidden]{display:none;}
+.a-acts-end{display:flex;gap:10px;}
 .a-msg{margin-top:0;}
 .a-msg:empty{display:none;}
 .danger-panel code{font-family:var(--font-mono);font-size:12.5px;}
@@ -2023,7 +2025,10 @@ h5 + .dnote{margin-top:0;}
       <div>${writesTicker()}</div>
       <div class="a-acts">
         <button class="btn sm" data-act="refresh" type="button">Refresh</button>
-        <button class="btn sm danger" data-act="uninstall" type="button">Uninstall</button>
+        <span class="a-acts-end">
+          <button class="btn sm" data-act="duplicate" type="button" aria-haspopup="dialog">Duplicate</button>
+          <button class="btn sm danger" data-act="uninstall" type="button">Uninstall</button>
+        </span>
       </div>
       <div class="danger-panel a-confirm" hidden>
         <h5>Uninstall ${esc(name)}?</h5>
@@ -2064,6 +2069,29 @@ h5 + .dnote{margin-top:0;}
       refresh.disabled = false;
       if(spec && spec.type === 'error') say('bad', 'Its render failed: ' + (spec.message || 'no message'));
       else say('ok', '✓ Refreshed');
+    };
+
+    /* Duplicate: a new app from this one's files - every one read back,
+       its app.yaml given the next free id and name - opened in the Add
+       popup to review and install like any other. A file that can't be
+       read stops it; nothing is written until Install there. */
+    const dupe = act('duplicate');
+    dupe.onclick = async () => {
+      dupe.disabled = true;
+      say('', '');
+      const read = await Promise.all(files.map(f => api.appFile(a.id, f)));
+      dupe.disabled = false;
+      const unread = (file, why) =>
+        say('bad', `Couldn't read ${file}${why ? ` (${why})` : ''} — can't duplicate ${name}.`);
+      const bad = read.findIndex(res => !res.ok);
+      if(bad >= 0) return unread(files[bad], read[bad].error);
+      // An empty file is copied, empty.
+      const copy = files.map((f, i) => ({name:f, text:typeof read[i].text === 'string' ? read[i].text : ''}));
+      const manifest = copy.find(x => x.name === 'app.yaml');
+      if(!manifest) return unread('app.yaml', 'not a plain file in its folder');
+      const to = dupeTarget(a, appsList.apps || []);
+      manifest.text = bumpManifest(manifest.text, to.id, to.name);
+      openAddApp(copy, name);
     };
 
     /* Uninstall: a confirm, then DELETE - and the app goes from this list
@@ -2148,7 +2176,7 @@ h5 + .dnote{margin-top:0;}
     };
     const wrap = el('div','app-actions');
     const add = button('add-app', '＋ Add Application', 'Add an application');
-    add.onclick = openAddApp;
+    add.onclick = () => openAddApp();
     wrap.appendChild(add);
     const group = el('div','app-tools');
     group.setAttribute('role','group');
@@ -2213,11 +2241,61 @@ h5 + .dnote{margin-top:0;}
     return {id:v};
   }
 
+  /* A duplicate's id and name: {id, name}. Copies of an app stay in step,
+     numbered from 2 - the lowest n with neither <id>-n nor "<name> n"
+     installed - and a copy of a copy counts on from the same base, so
+     "Steps 2" bases to "Steps". The base id is put in INSTALL_ID's form
+     (a hand-placed app can have capitals or '_'), so the id is one an
+     install takes - and the server re-checks it anyway. */
+  function dupeTarget(app, installed){
+    const name = String(app.name || app.id);
+    const baseName = name.replace(/\s+\d+$/, '') || name;
+    const baseId = String(app.id).replace(/-\d+$/, '').toLowerCase().replace(/_/g, '-');
+    const ids = new Set(installed.map(a => a.id));
+    const names = new Set(installed.map(a => a.name));
+    let n = 2;
+    while(ids.has(`${baseId}-${n}`) || names.has(`${baseName} ${n}`)) n++;
+    return {id:`${baseId}-${n}`, name:`${baseName} ${n}`};
+  }
+
+  /* An app.yaml with its id and name replaced, the rest as written. Read
+     as manifestId reads it - the last top-level `id:` line, and `name:`
+     likewise - so it's a line edit, not a parse: the popup shows the
+     result to edit, and the server parses it on Install. The name is
+     double-quoted, escaped, so any name is one YAML string. With no
+     name line (it defaults to the id) one goes in under the id's; with
+     no id line (it defaulted to the folder's name), one goes in above
+     the first top-level key. Line endings kept. */
+  function bumpManifest(text, id, name){
+    const lines = text.split('\n');
+    const eol = l => l.endsWith('\r') ? '\r' : '';
+    const last = key => {
+      for(let i = lines.length-1; i >= 0; i--) if(key.test(lines[i])) return i;
+      return -1;
+    };
+    const quoted = '"' + name.replace(/[\\"]/g, c => '\\' + c)
+      .replace(/[\x00-\x1f\x7f-\x9f\u2028\u2029]/g, c => '\\u' + c.charCodeAt(0).toString(16).padStart(4, '0')) + '"';
+    let at = last(/^id[ \t]*:([ \t]|$)/);
+    if(at >= 0){
+      lines[at] = `id: ${id}` + eol(lines[at]);
+    }else{
+      at = Math.max(0, lines.findIndex(l => /^[A-Za-z_][\w-]*[ \t]*:([ \t]|$)/.test(l)));
+      lines.splice(at, 0, `id: ${id}` + eol(lines[at] || ''));
+    }
+    const named = last(/^name[ \t]*:([ \t]|$)/);
+    if(named >= 0) lines[named] = `name: ${quoted}` + eol(lines[named]);
+    else lines.splice(at+1, 0, `name: ${quoted}` + eol(lines[at]));
+    return lines.join('\n');
+  }
+
   /* One file's slot. app.yaml and app.py have their names set; an added
      slot (fixed '') has a name field and a Remove button. Upload reads
      the chosen file into the paste box - and, in an added slot, its
-     name into an empty name field. Text files: what's installed is text. */
-  function fileSlot(fixed, required, say){
+     name into an empty name field. Text files: what's installed is text.
+     prefill, {name, text} or null, fills it to start with (a duplicate's
+     files): the box with its text, an added slot's name field with its
+     name - as values, never markup. */
+  function fileSlot(fixed, required, say, prefill){
     const PLACEHOLDER = {
       'app.yaml': 'id: my-app&#10;name: My app&#10;sizes: [{w: 1, h: 1}]',
       'app.py':   'def render(ctx, cfg):&#10;    return ctx.empty(&quot;Nothing yet&quot;)',
@@ -2244,6 +2322,10 @@ h5 + .dnote{margin-top:0;}
     const picker = slot.querySelector('input[type="file"]');
     const text = slot.querySelector('textarea');
     const name = slot.querySelector('.fname');
+    if(prefill){
+      text.value = prefill.text;
+      if(name) name.value = prefill.name;
+    }
     slot.querySelector('[data-act="upload"]').onclick = () => picker.click();
     picker.onchange = async () => {
       const file = picker.files && picker.files[0];
@@ -2279,14 +2361,22 @@ h5 + .dnote{margin-top:0;}
   }
 
   /* The popup, in two steps: the files, then Review - what's about to
-     be installed - and Install. */
-  function openAddApp(){
+     be installed - and Install. prefill, [{name, text}], starts it on
+     those files rather than empty slots - a duplicate of the app named
+     copyOf: its app.yaml and app.py in their slots, an added slot for
+     each of the rest - all of it editable before Review. */
+  function openAddApp(prefill, copyOf){
+    const given = Array.isArray(prefill) ? prefill : null;
     const {box, close} = openModal(`
-      <h4>Add an application</h4>
+      <h4>${given ? 'Duplicate application' : 'Add an application'}</h4>
       <div data-step="files">
-        <p class="hint">An application is a folder of files: its <code>app.yaml</code> manifest,
-          an <code>app.py</code> if it computes anything, and any files it reads. Paste each
-          one, or upload it.</p>
+        ${given
+          ? `<p class="hint">A copy of <b>${esc(copyOf)}</b>: its files, with a new <code>id</code> and
+              <code>name</code> in its <code>app.yaml</code>. Change anything here, then review and
+              install it — a separate application, with its own settings.</p>`
+          : `<p class="hint">An application is a folder of files: its <code>app.yaml</code> manifest,
+              an <code>app.py</code> if it computes anything, and any files it reads. Paste each
+              one, or upload it.</p>`}
         <div class="fslots"></div>
         <button class="btn sm" data-act="add-file" type="button">＋ Add file</button>
       </div>
@@ -2311,8 +2401,11 @@ h5 + .dnote{margin-top:0;}
     const say = text => { f('msg').textContent = text; };
     let files = null;   // what Review settled on, and Install sends
 
-    slots.appendChild(fileSlot('app.yaml', true, say));
-    slots.appendChild(fileSlot('app.py', false, say));
+    const prefilled = n => given && given.find(x => x.name === n) || null;
+    slots.appendChild(fileSlot('app.yaml', true, say, prefilled('app.yaml')));
+    slots.appendChild(fileSlot('app.py', false, say, prefilled('app.py')));
+    if(given) given.filter(x => x.name !== 'app.yaml' && x.name !== 'app.py')
+      .forEach(x => slots.appendChild(fileSlot('', false, say, x)));
     act('add-file').onclick = () => {
       const slot = fileSlot('', false, say);
       slots.appendChild(slot);

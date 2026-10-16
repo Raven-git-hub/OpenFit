@@ -372,12 +372,41 @@ own calls to its device API. Full direction:
   tile's config, `tileCfg()` — the existing route, no rescan, no reload —
   and `repaintTile()` redraws that
   app's Home tile in place from the fresh spec; a render that failed says
-  so) and **Uninstall** (`btn sm danger`), which only opens an inline
+  so), then at the far end **Duplicate** (`btn sm`) and **Uninstall**
+  (`btn sm danger`). Duplicate forks the app, client-only: every file in
+  `a.files` read back (`api.appFile()`, the button off meanwhile, one
+  `Promise.all`; an empty file is copied empty) — any read that fails
+  (a non-text file's 415, a network error) stops it with "Couldn't read
+  <file> (<why>) — can't duplicate <name>." in the row and nothing
+  opened — then `dupeTarget(a, appsList.apps)` → `{id, name}`, the
+  lowest n ≥ 2 with neither `<baseId>-n` nor `"<baseName> n"` installed
+  (`baseId` the id less a trailing `-<digits>`, lowercased with `_` → `-`
+  so a hand-placed `My_App` gives a valid install id; `baseName` the name
+  less a trailing ` <digits>`; so `steps`/"Steps" → `steps-2`/"Steps 2",
+  and a copy's copy counts on from the same base), `bumpManifest(yaml,
+  id, name)` rewriting the `app.yaml` as a line edit, not a parse (the
+  last top-level `id:` line, as `manifestId()` reads it, → `id: <id>`;
+  the last `name:` → `name: "<name>"`, double-quoted with `\`, `"` and
+  control/line-separator characters escaped — or, with none, inserted
+  under the id; no `id:` line (it defaulted to the folder) → one inserted
+  above the first top-level key; line endings kept, every other line as
+  written), and `openAddApp(copy, name)` opens the Add popup on the copy.
+  Nothing is written until Install there: the copy installs through
+  `POST /api/apps` like any app (the server's 409 the backstop for a
+  clash), and reconcile gives it its own instance on the default tab — a
+  fork: later edits to one app's files don't reach the other.
+  Uninstall only opens an inline
   `danger-panel` ("Uninstall <name>?" / "This deletes its files from
   `/data/apps/`." — [Cancel] / [Uninstall]; no `confirm()`); its confirm
   `DELETE`s `/api/apps/<id>`, then `loadApps()` + `loadHome()` (the row and
   the tile go) and notes "✓ Uninstalled <name>"; an error stays in the
-  row. Alerts are their own branch. **The Add Application popup** (`openAddApp()`,
+  row. Alerts are their own branch. **The Add Application popup** (`openAddApp(prefill,
+  copyOf)` — ＋ Add Application calls it bare; Duplicate passes the copy's
+  `[{name, text}]` and the source's name, and the popup is titled
+  "Duplicate application", says it's a copy, and starts with `app.yaml`
+  and `app.py` in their slots and an added slot per other file, each
+  filled through `fileSlot()`'s `prefill` `{name, text}` as values, never
+  markup — all editable before Review;
   the `.modal` chrome widened by `.wide`) builds the app folder as file
   slots (`fileSlot()`): `app.yaml` (Required) and `app.py` (Optional), each
   a monospace paste `<textarea>` with an **Upload** button beside it
@@ -1049,9 +1078,15 @@ same PR:
   re-rendered on Save (no migration). Instance-keyed tiles are dropped
   for good: one app placed twice is done at the app level (Duplicate,
   below), so an app id never has two instances and tiles stay `app_id`-
-  keyed. Still to come for multi-tab: app-level **Duplicate** in a Data
-  app row — its files copied into a new app via the Add popup, the name
-  bumped with a sequential number (slice 4); deploy-to-tab in the Add
+  keyed. Slice 4 landed (client only — it reuses `GET /api/app/<id>/file`
+  and `POST /api/apps`, no route or layout change): app-level
+  **Duplicate** in a Data app row — its files copied into a new app via
+  the Add popup, the id and name bumped with the next free sequential
+  number (`steps-2`/"Steps 2"), reviewed and installed like any app; a
+  fork, so edits to the original's files don't reach the copy. Once
+  app-tier write-back lands, a copy writing an app-defined metric does so
+  under its own `app:<new-id>:…` stream — a decision to confirm then.
+  Still to come for multi-tab: deploy-to-tab in the Add
   popup; richer settings field types (select/enum/boolean) and a live
   preview. Also still to come: the
   grid pass (free cell placement as a second layout
@@ -1063,7 +1098,7 @@ same PR:
   popup and `POST /api/apps`, installing an app from pasted or uploaded
   files — `app.py` became optional; then expandable app rows — reads, files
   in a read-only viewer (`GET /api/app/<id>/file`), a reserved writes-ticker
-  slot, Refresh, and Uninstall (`DELETE /api/apps/<id>`, the first
+  slot, Refresh, Duplicate (slice 4, above) and Uninstall (`DELETE /api/apps/<id>`, the first
   destructive app action); Browse / Build / Create are still placeholders;
   next the writes ticker (once app-tier write-back exists), then alerts;
   updating in place, editing files, disabling an app and zip upload are

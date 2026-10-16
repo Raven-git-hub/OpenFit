@@ -100,7 +100,12 @@ Right column:
 
    Under them, **Refresh** re-runs the app's render (`POST
    /api/app/<id>/render`, with its tile's settings) and redraws its Home
-   tile in place, without a reload; **Uninstall** (in the danger style)
+   tile in place, without a reload; **Duplicate** reads every one of the
+   app's files back and opens the Add Application popup on a copy, its
+   `app.yaml` given the next free id and name (`steps-2`, "Steps 2"), to
+   review and install as a separate app (a file that can't be read, such as
+   one that isn't text, stops it with a message in the row, and nothing is
+   written until Install); **Uninstall** (in the danger style)
    opens a confirm in the row, "Uninstall <name>? This deletes its files
    from `/data/apps/`.", and confirming it (`DELETE /api/apps/<id>`) takes
    the app off the list and Home at once. Still to come, each its own branch: the writes ticker, then
