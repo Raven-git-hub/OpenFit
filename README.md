@@ -294,15 +294,22 @@ Home is a grid six square cells across that scales with the window. Every app
 declares the tile sizes it can be drawn at (`sizes`, each `w` and `h` 1–6
 cells; the older `default_size: {w, h}` counts as one), and one with no size
 won't install. Tiles go in order, left to right, each at its size, a tile too
-wide for what's left of a row starting the next. **Configure**, top right of
-Home, lets you drag tiles into a new order, pick each one's size from those
-its app offers, and edit the subtitle over them; switching it off saves the
-layout (`GET`/`PUT /api/home-layout`, one settings row). The layout is stored
-as tabs, each holding instances (an app placed, with its own size and config,
-so one app can be placed more than once). Home shows one tab for now, and a
-layout saved before tabs reads as that tab, unchanged. An app installed later
-gets an instance at the end at its default size, and one uninstalled drops
-out: every installed app always has at least one. `GET /api/apps` lists what's installed (with each
+wide for what's left of a row starting the next. Home can have several tabs,
+each with its own tiles and subtitle: they sit at the left of the tab strip,
+before Data, and clicking one shows it. **Configure**, top right of Home, lets
+you drag tiles into a new order, pick each one's size from those its app
+offers, move a tile to another tab, and edit the subtitle over them. While
+it's on, **＋ Add** on the strip makes a new tab and each tab's gear renames
+or deletes it (a deleted tab's tiles move to the default tab; nothing is
+uninstalled). Switching Configure off saves all of it at once
+(`GET`/`PUT /api/home-layout`, one settings row). The layout is stored as
+tabs, each holding instances (an app placed, with its own size and config,
+so one app can be placed more than once, though the page doesn't offer that
+yet: a tile moves between tabs, it's never copied). A layout saved before
+tabs reads as one tab, unchanged. An app installed later gets an instance at
+the end of the default tab at its default size, and one uninstalled drops
+out: every installed app always has at least one. Settings' **Opening page**
+lists Home's tabs beside Data. `GET /api/apps` lists what's installed (with each
 app's declared reads and its files) and `GET /api/app/<id>/render` returns
 one app's spec; the Data tab's Applications panel lists the same apps. Open
 an app's row there to see what it reads, view any of its files read-only

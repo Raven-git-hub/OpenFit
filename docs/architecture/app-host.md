@@ -471,7 +471,8 @@ One `settings` row, `home_layout` (no migration), `app/home_layout.py`:
 - **A tab is one flow layout**, plus an `id` (a short slug: up to 32
   lowercase letters, digits and dashes, not starting with a dash) and a
   `name` (its label on the tab strip, at most 40 characters). `default_tab`
-  is one tab's id. Home shows the default tab; there's no tab strip yet.
+  is one tab's id. The tab strip shows every tab, before Data, and Home
+  draws the one picked (see [Tabs](#tabs)).
 - **An item is an instance**: a placement of an app, not the app itself.
   It has its own `instance_id` (a token, unique across every tab), its own
   `size` (one of the app's declared `sizes`) and its own `config` (an
@@ -532,11 +533,27 @@ installed or what sizes they offer (the next read squares that, and gives any
 app left with no instance one), and it never works out a position: the page
 owns the flow. `200 {"ok": true}`, or a 400 that stores nothing.
 
+### Tabs
+
+Home's tabs sit at the left of the tab strip, one per tab of the layout, in its
+order, each labelled with its name (set as text, never markup). Data, at the
+right, isn't one of them: it has a panel of its own, and can't be renamed,
+deleted or moved. Every layout tab shares the one Home panel; clicking one
+draws that tab's tiles and subtitle. Switching fetches nothing: the page keeps
+the apps, their specs and the layout from its last read, and redraws from them.
+Each layout tab keeps the strip's own form (a `.tab` with `data-tab`, its name
+its text), so Settings' **Opening page** lists Home's tabs beside Data.
+
+Switching tabs is always on. Managing them is Configure's (below): outside it,
+the strip is just the tabs.
+
 ### Configure
 
 A sub-header under the tab strip holds the **subtitle** on the left and the
 **Configure** toggle on the right, a tab styled like ＋ Add: dashed while off,
-filled with the accent while on.
+filled with the accent while on. Configure edits a working copy of the whole
+layout: switch tabs while it's on and the tab you leave keeps your edits, and
+nothing is saved until it's switched off.
 
 - **On:** each tile gains a handle and, if its app offers more than one size,
   a size picker listing those sizes. The empty cells are marked faintly, a
@@ -551,31 +568,62 @@ filled with the accent while on.
 - **Resize = the picker.** Choose a size and the tile takes it, the grid
   reflowing around it. There's no drag-to-resize, and the page never offers a
   size the app didn't declare.
-- **Off:** the whole layout is saved (every tab, with the tab on screen's
-  subtitle and its tiles' order, sizes, instance ids and configs as they stand)
-  and the tiles go back to chromeless. If the save fails, Configure stays on with the error,
-  nothing lost, to try again.
+- **Move to another tab = its Move… picker**, listing the other tabs. The tile
+  leaves this tab's grid and goes on the end of that one, with its instance id,
+  size and config. It's a move, never a copy: every app stays on exactly one
+  tab. (A tab that already holds the app, which only a layout saved from
+  elsewhere can do, isn't offered.)
+- **Make a tab = ＋ Add**, on the strip while Configure is on: a name, then
+  Create. The new tab is empty, goes on the end, and is shown. The page mints
+  its id (eight lowercase letters and digits, the server's tab-id form), since
+  it needs one at once; the server takes it as given.
+- **Rename or delete a tab = its gear**, just after it on the strip. Its
+  settings hold its name and, unless it's the only tab, **Delete tab**, behind
+  a confirm that says where its tiles go. Deleting never uninstalls anything:
+  the tab's instances go on the end of the default tab (or, if the default
+  itself is deleted, the first tab left, which becomes the default). A name
+  must not be blank and is at most 40 characters, checked before anything
+  changes, and again by the server on the save.
+- **Off:** the whole working copy is saved at once (every tab, as made, renamed,
+  deleted and rearranged, with each tile's order, size, instance id and config)
+  and the tiles go back to chromeless. Home is then read again, so it shows
+  what the server stored and squared (an id it minted, any app left with no
+  tile). If the save fails, Configure stays on with the error, nothing lost,
+  to try again.
 
-The subtitle and every app name are set as text, never as markup.
+The subtitle, every tab name and every app name are set as text, never as
+markup.
 
 ### The seams
 
-The page keeps three parts apart:
+The page keeps these parts apart:
 
-1. `loadHome()` reads the apps, the layout and the specs. It keeps the whole
-   layout (`home.layout`), picks the default tab (`home.activeTab`), and reads
-   that tab's instances into `home.tiles`: `{instance_id, app_id, name, spec,
-   w, h, sizes, config}`, in layout order. Tiles are still keyed by `app_id`,
-   one an app, which is safe while nothing on the page can place an app twice.
-2. `layoutTiles(items, apps, elsewhere)` is `flowLayout`: the page's copy of
+1. `loadHome()` is the fetch: it reads the apps, the layout and a spec for
+   each app, and keeps them (`home.specs`, `home.layout`). Mid-Configure it
+   keeps the working copy instead of the layout it read. It runs at boot,
+   after a sync, an install or an uninstall, and after Configure saves, but
+   never on a tab switch.
+2. `renderActiveTab()` is the render, from what the fetch left: the tab on
+   screen (`home.activeTab`, or the default if that names no tab), its
+   instances read into `home.tiles` (`{instance_id, app_id, name, spec, w, h,
+   sizes, config}`, in layout order) and its subtitle, then the sub-header,
+   the tiles and the strip (`paintTabStrip()`). Tiles are still keyed by
+   `app_id`, one an app, which is safe because every app is on one tab: a tile
+   moves between tabs, it's never copied.
+3. `layoutTiles(items, apps, elsewhere)` is `flowLayout`: the page's copy of
    the server's reconcile for one tab. It squares the tab's instances with the
    apps read beside it, and an unsaved Configure with an app installed or
    removed meanwhile, carrying each instance's id and config. An app placed
    nowhere (not on this tab, nor among `elsewhere`, the apps the other tabs
    place) goes on the end with no instance id yet; the save mints one. Tests
    hold it to the server's.
-3. `paintTiles(box, tiles, configuring)` draws them on the grid, with
+4. `paintTiles(box, tiles, configuring)` draws them on the grid, with
    Configure's controls when it's on.
+
+In Configure, the tab on screen's edits (its tiles' order and sizes, its
+subtitle) live in `home.tiles` and `home.subtitle` until `flushTab()` writes
+them into the working copy: before every switch, a move, a delete, and the
+save.
 
 The grid pass adds a second mode: it swaps `layoutTiles` for one that reads
 saved positions and gives `paintTiles` start cells. The sizes, the CSS grid,
@@ -598,11 +646,13 @@ saved positions and gives `paintTiles` start cells. The sizes, the CSS grid,
   app can write back) and alerts (an app that doesn't load, or whose render
   fails, flagged in its row). Editing an app's files, updating one in place
   and disabling one are out: there's no mechanism for them.
-- **Multi-tab Home**, beyond the layout model: the tab strip (switch, create,
-  rename, delete); per-instance render (`/api/app/<id>/render` carrying each
-  instance's `config`); the UI to add a tile, move one between tabs or
-  duplicate one, with tiles keyed by instance; and deploy-to-tab in the Add
-  Application popup. The stored layout already holds tabs of instances (see
+- **Multi-tab Home**, beyond the tab strip ([above](#tabs)): placing an app
+  more than once (duplicating a tile), with tiles keyed by instance rather
+  than by app (until then `flowLayout` drops a same-app repeat within a tab,
+  so a Configure save would collapse one); the UI to add a tile;
+  per-instance render (`/api/app/<id>/render` carrying each instance's
+  `config`); and deploy-to-tab in the Add Application popup. The stored
+  layout already holds tabs of instances (see
   [The layout](#the-layout-tabs-of-instances)).
 - **Per-instance config** and the UI to edit it (`cfg` is `{}`; each
   instance's `config` is stored, but nothing reads it yet), **metric

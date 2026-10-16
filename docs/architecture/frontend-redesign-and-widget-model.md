@@ -13,7 +13,7 @@ uses them if installed locally, and otherwise falls back to system fonts. Every
 colour, radius and font comes from the `CUSTOMISE OPENFIT HERE` token block at
 the top of the file.
 
-## The page: top bar, tab strip, two tabs
+## The page: top bar, tab strip, Home's tabs and Data
 
 **Top bar.** The logo on the left. On the right, today's date in a pill, and
 under it two small pill buttons: **settings**, then the **theme** toggle, which
@@ -23,23 +23,29 @@ bar no longer shows a last-sync stamp. Settings opens the Settings popup
 
 **Tab strip.** The angled tab strip from before the console, restored with its
 original markup and CSS (`.tabstrip`, `.tab`, `.tab-add`), so it looks exactly as
-it did. It holds two tabs:
+it did. It holds:
 
-- **Home**, at the far left. The installed apps' tiles: each app's display
-  spec, rendered server-side, laid on a grid six square cells across in the
-  saved order, each at the size chosen for it from the app's own. A
-  sub-header under the strip holds the subtitle and the **Configure** toggle,
-  which reorders and resizes the tiles and saves the layout (see
-  [app-host.md](app-host.md)).
-- **Data**, at the far right, just left of the dashed **＋ Add**. It holds the
-  whole console, below.
+- **Home's tabs**, at the far left: one per tab of the saved layout, in its
+  order, each labelled with the tab's name (Home, on a fresh install). The
+  page draws them from the layout once it's read; until then a stand-in Home
+  tab holds the place. They all share one panel: the installed apps' tiles
+  for the tab picked, each app's display spec, rendered server-side, laid on
+  a grid six square cells across in the saved order, each at the size chosen
+  for it from the app's own. A sub-header under the strip holds that tab's
+  subtitle and the **Configure** toggle, which reorders and resizes the
+  tiles, moves them between tabs, makes, renames and deletes tabs, and saves
+  the layout (see [app-host.md](app-host.md)).
+- **Data**, at the far right. It holds the whole console, below. It isn't one
+  of the layout's tabs: it can't be renamed, deleted or moved.
+- **＋ Add**, the dashed tab just right of Data, shown only while Configure is
+  on: it makes a new Home tab.
 
 The page opens on the tab chosen as the **Opening page** in Settings (below),
-Data by default. Switching tabs shows one panel and hides the other. Nothing is
-re-fetched or repainted, so the console keeps its state (open rows, notes)
-underneath. The tab last viewed isn't remembered: a reload opens the opening
-page again. **＋ Add** opens the coming-soon placeholder until an add-a-tab
-popup lands.
+Data by default. Switching between Data and Home shows one panel and hides the
+other. Nothing is re-fetched or repainted, so the console keeps its state (open
+rows, notes) underneath. Switching between Home's tabs redraws the tiles from
+what was last read, with nothing fetched. The tab last viewed isn't remembered:
+a reload opens the opening page again.
 
 **The Data tab** is two even columns that grow with the window: a CSS grid
 (`.console`, `minmax(0,1fr) minmax(0,1fr)`), capped at 1600px so it doesn't
@@ -115,13 +121,15 @@ Each card's title has a voice button just after it (below).
 **The Settings popup.** Built on the same `.modal` chrome as the add-device
 flows, with one control: **Opening page**, a dropdown of the tabs. Its options
 are built from the tab strip itself (every `.tab[data-tab]`, labelled with the
-tab's own text: Home and Data today), so a new tab is offered without touching
-the popup. **Save** stores the choice per browser, in `localStorage` as
-`of-opening-tab`, and closes the popup; **Close** (or Escape, or a backdrop
-click) closes it without saving. On load the page opens that tab, in place of
-the old hardcoded Data default; if nothing is stored, or the stored tab no
-longer exists, it opens Data. The choice takes effect on the next load, not at
-once. There is no helper text in the popup.
+tab's own text: Home's tabs by name, then Data), so a new tab is offered
+without touching the popup. **Save** stores the choice per browser, in
+`localStorage` as `of-opening-tab`, and closes the popup; **Close** (or Escape,
+or a backdrop click) closes it without saving. On load the page opens that tab,
+in place of the old hardcoded Data default; if nothing is stored, it opens
+Data. Home's tabs aren't known until the layout is read, so a stored Home tab
+opens Home straight away and is drawn once the layout arrives; one that no
+longer exists (a tab since deleted) opens Home's default tab. The choice takes
+effect on the next load, not at once. There is no helper text in the popup.
 
 **A source's Settings popup.** The gear on a connected source's row opens it,
 on the same `.modal` chrome, titled with the source's name. It reads
@@ -176,8 +184,8 @@ the button comes back.
 **The coming-soon placeholder.** One reusable modal (`comingSoon(title)`),
 built on the same `.modal` chrome: a title, "Coming soon." and a Close button
 (Escape and a backdrop click close it too). Add source (with nothing left to
-add), ＋ Add, and Applications' Browse, Build and Create open it, each with
-its own title.
+add) and Applications' Browse, Build and Create open it, each with its own
+title.
 
 ## Voice explanations: `GET /audio/<name>`
 

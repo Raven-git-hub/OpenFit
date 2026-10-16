@@ -255,20 +255,31 @@ own calls to its device API. Full direction:
   (vanilla JS, no build step, no external calls or web fonts; every colour/font/
   radius in its `CUSTOMISE OPENFIT HERE` token block). Under the top bar
   (date, a `settings` button, the theme toggle) sits the original angled tab
-  strip, restored verbatim: **Home** (far left, the installed apps' tiles —
-  below) and **Data** (far right, the console), then the dashed **＋ Add**.
+  strip: Home's tabs (far left, one per tab of the layout, drawn by
+  `paintTabStrip()` into `#layoutTabs`, a `display: contents` region — until
+  the layout is read, a stand-in `home`/"Home"; each a `.tab` with
+  `data-tab` = its id and its name as text, the installed apps' tiles —
+  below) and **Data** (far right, the console), then the dashed **＋ Add**,
+  shown only while Configure is on (it makes a tab — below).
   The Data tab is two even, fluid columns (`.console`, a grid of two
   `.console-col`s, capped at 1600px): Connected sources over Your data on
   the left, **Applications** on the right (below); at 1240px and under it
   drops to one column, at the old 940px cap, Applications under the data —
   narrower than that, a Your data row would squeeze the metric's name. `settings`
   opens the Settings popup (the `.modal` chrome): one control, **Opening
-  page**, a dropdown built from the tab strip (`.tab[data-tab]`, so a new tab
-  appears in it), saved per browser in `localStorage` `of-opening-tab`; boot
-  opens that tab via `showTab()` (Data if unset or no longer a tab) in place
-  of a hardcoded default. ＋ Add, Add source once every connector is
-  connected, and Applications' Browse / Build / Create each open one shared
-  coming-soon placeholder modal
+  page**, a dropdown built from the tab strip (`.tab[data-tab]`, so Home's
+  tabs, by name, and Data are in it), saved per browser in `localStorage`
+  `of-opening-tab`; boot opens that tab via `showTab(openingTab())` in place
+  of a hardcoded default: Data if unset; before the layout is read the
+  stored choice stands (Home's panel, loading — drawn once read); once it's
+  read, one no longer on the strip (a tab since deleted) is Home's default
+  tab. `showTab(name)` is split: a `PANEL_TABS` name (`data`) shows its own
+  panel (`showPanel()`); anything else is a layout tab, `switchTab(id)` —
+  the one `data-panel="home"` panel, `home.activeTab = id`,
+  `renderActiveTab()` — and `markTabs()` sets `.active`/`aria-current` on the
+  panel's tab, or on Home the layout tab it draws. Add source once every
+  connector is connected, and Applications' Browse / Build / Create each
+  open one shared coming-soon placeholder modal
   (`comingSoon(title)`); while a connector is still unconnected, Add source
   opens its real add flow, from a `.pop` menu of the unconnected ones —
   alphabetical (the API's order), and scrolling (`max-height`/`overflow-y`)
@@ -409,15 +420,21 @@ own calls to its device API. Full direction:
   app's error tile), and is re-read after a Sync now or a source removal,
   as the data card is, and after an app install or uninstall; an app row's
   Refresh redraws just its own tile (keeping its Configure controls).
-  Home shows one tab of the layout, the default (`saved.tabs.find(id ===
-  default_tab)`, else the first; there's no tab strip yet): `home.layout`
-  keeps the whole `{tabs, default_tab}` as read and `home.activeTab` that
-  tab's id, and its `subtitle` and `items` are what's drawn. Three parts,
-  kept apart: `loadHome()` → `home.tiles`, `[{instance_id, app_id, name,
-  spec, w, h, sizes, config}]` in layout order — still keyed and deduped
-  by `app_id` (one tile an app; safe while nothing on the page can place
-  an app twice) and each rendered as `GET /api/app/<id>/render` with `cfg
-  {}`; `layoutTiles` (= `flowLayout(items, apps, elsewhere)`, the
+  Home draws one tab of the layout at a time, the one picked on the strip
+  (`home.activeTab`; none picked, or one that's no tab, → the default,
+  else the first). The parts, kept apart: `loadHome()`, the fetch — the
+  apps, the layout and a spec each, into `home.specs` (`Map(app_id → {a,
+  spec})`, folder order) and `home.layout` (`{tabs, default_tab}` as read;
+  mid-Configure the working copy is kept instead, the tab on screen
+  flushed into it) — then `renderActiveTab()`, the render from memory (a
+  tab switch fetches nothing): the tab's items → `home.tiles`,
+  `[{instance_id, app_id, name, spec, w, h, sizes, config}]` in layout
+  order — still keyed and deduped by `app_id` (one tile an app; safe
+  because every app is on one tab: a tile moves, never copies) and each
+  rendered as `GET /api/app/<id>/render` with `cfg {}` — and its subtitle
+  → `home.subtitle`, then the sub-header, the tiles and the strip; an
+  empty tab says so ("Nothing on this tab yet"), apart from no apps
+  installed; `layoutTiles` (= `flowLayout(items, apps, elsewhere)`, the
   server's reconcile mirrored — it squares the tab's read instances with
   the apps read beside it, and an unsaved Configure with an install or
   uninstall made meanwhile, carrying each instance's `instance_id` and
@@ -440,25 +457,46 @@ own calls to its device API. Full direction:
   no `data-tab` so it's no Opening page; `aria-pressed`, `.active` (the
   accent) while on; disabled until Home has loaded), then `#homeMsg`.
   `toggleConfigure()`: on, every tile gets `tileControls()` — a handle
-  (`.tile-grip`) and, only if its app offers more than one size, a
+  (`.tile-grip`), only if its app offers more than one size a
   `<select>` of those sizes (`w × h`; choosing one sets the tile's span,
-  the grid reflowing live) — the empty cells are marked (`--tile-guide`),
-  a drop row sits under the tiles, and the subtitle is an input (≤
-  `SUBTITLE_MAX`, the server's 120). `sortableTiles(grid)`: drag a tile
+  the grid reflowing live), and, when there's another tab without its app
+  (a layout from elsewhere can place one twice: a move, never a merge), a
+  "Move…" `<select>` of those tabs (`moveTile()`: its instance — id, size,
+  config — to the end of that tab, off this grid) — the empty cells are
+  marked (`--tile-guide`), a drop row sits under the tiles, the subtitle is
+  an input (≤ `SUBTITLE_MAX`, the server's 120), and on the strip each
+  layout tab gets a gear (`.tab-gear`) and ＋ Add shows. Configure edits
+  `home.layout` as a working copy: the tab on screen's edits live in
+  `home.tiles`/`home.subtitle` until `flushTab()` writes them back
+  (`items: layoutItems()`, `subtitle`) — before every switch, move, delete
+  and the save. ＋ Add (`openTabEditor(null)`, a `.modal`): a name, then
+  Create — `createTab()` appends `{id, name, mode: "flow", subtitle: "",
+  items: []}`, its id minted on the page (`newTabId()`, eight `[a-z0-9]`,
+  the server's `TAB_ID`, none taken), and switches to it. A tab's gear
+  (`openTabEditor(tab)`): its name (`renameTab()`) and, unless it's the
+  only tab, Delete tab behind an in-modal confirm saying where its tiles
+  go — `deleteTab()` appends its instances to `deleteTarget()` (the
+  default, or — the default deleted — the first tab left, made the
+  default), never uninstalling anything; Home shows that tab if it showed
+  the deleted one. A name is trimmed and checked by `tabNameProblem()` —
+  the server's rule: not blank, ≤ `TAB_NAME_MAX` (40) code points (a node
+  test holds it to `_name_problem()`) — before anything changes, and set
+  as text only. `sortableTiles(grid)`: drag a tile
   (anywhere but its picker) onto another and it takes that one's place
   (`dropSpot()`: from earlier in the order, after it; from later, before
   it; into a row-end gap, after that row's last tile; into the drop row,
   last), the rest reflowing live, once per spot and only after the pointer
   moves `SETTLE` px from the last reorder (mixed sizes would chase it
   otherwise); a handle's arrows step it (←/↑ back, →/↓ on); `home.tiles`
-  follows the DOM. Off: `PUT /api/home-layout` `layoutToSave()` — the
-  whole `{tabs, default_tab}` from `home.layout`, the tab on screen with
-  `subtitle: home.subtitle` and `items: layoutItems()` (each tile's
-  `{instance_id, app_id, size, config}`, an undefined id left out by
-  JSON), every other tab as read; on success back to view and "✓ Layout saved",
-  on failure it stays in Configure with the error. The subtitle and every
-  app name are set as text (`textContent`, `.value`, attributes), never
-  markup. `renderSpec()` draws the vocabulary, all as text,
+  follows the DOM. Off: `flushTab()`, then `PUT /api/home-layout` with
+  `home.layout`, the whole working copy (each tile's `{instance_id, app_id,
+  size, config}`, an undefined id left out by JSON); on success back to
+  view, "✓ Layout saved", and `loadHome()` again so the page shows what the
+  server's reconcile makes of it (minted ids, ≥1 instance); on failure it
+  stays in Configure with the error, the working copy intact. Outside
+  Configure the strip is only the tabs: switching is always on, managing
+  them is Configure's. The subtitle, every tab name and every app name are
+  set as text (`textContent`, `.value`, attributes), never markup. `renderSpec()` draws the vocabulary, all as text,
   never markup: `number` (big tabular value, `unit` beside, `label` beneath,
   muted `caption`, clamped to 2 lines — 1 in a tile under 190px tall, an
   `@container` query, so a panel's line keeps its room on a phone — full text
@@ -969,12 +1007,20 @@ same PR:
   `app_id` + `size` + `config`, one app placeable more than once), the
   old shape upgraded on read to one `home` tab and every installed app
   kept at ≥1 instance (no migration); Home still shows one tab, looks the
-  same and keys tiles by `app_id`. Still to come for multi-tab: the tab
-  strip — switch/create/rename/delete, the `showTab` split — and
+  same and keys tiles by `app_id`. Slice 2 landed (client only — no change
+  to `home_layout.py` or the routes): the tab strip of the layout's tabs,
+  switching between them (the `showTab` split, a fetch/render split of
+  `loadHome`), and in Configure creating (client-minted ids), renaming and
+  deleting tabs (tiles to the default) and moving a tile to another tab,
+  all in a working copy saved at once on Configure-off; every app stays on
+  exactly one tab, so tiles are still keyed by `app_id`. Still to come for
+  multi-tab: placing an app more than once (duplication), the
+  instance-keyed tiles it needs (`flowLayout` drops a same-app repeat
+  within a tab and tiles are keyed by `app_id`, so a Configure save would
+  collapse duplicates until then), the add-a-tile placement UI and
   per-instance render (`/api/app/<id>/render` carrying each instance's
-  `cfg`) (slice 2); the add-a-tile/move/duplicate placement UI and
-  instance-keyed tiles (slice 3); the per-instance config editor (slice
-  4); deploy-to-tab in the Add popup (slice 5). Also still to come: the
+  `cfg`) (slice 3); the per-instance config editor (slice 4);
+  deploy-to-tab in the Add popup (slice 5). Also still to come: the
   grid pass (free cell placement as a second layout
   `mode` on the same sizes and CSS grid — coordinates, drop-anywhere,
   deliberate gaps, collision; it swaps `layoutTiles` and adds start cells
