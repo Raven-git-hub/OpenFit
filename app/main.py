@@ -22,6 +22,7 @@ from plugins import PLUGINS
 from plugins.base import OAUTH_REDIRECT_URI, write_metric
 from apps import LibraryError, find_app, install_app, read_app_file, scan_apps, uninstall_app
 from crypto import encrypt
+from home_layout import LayoutError, load_layout, parse_layout, save_layout
 from derived import (
     backfill_derived,
     derived_points,
@@ -679,12 +680,15 @@ def get_samples(metric):
 
 @app.route("/api/apps", methods=["GET"])
 def list_apps():
-    """The installed apps, in folder order:
-    [{id, name, default_size: {w, h}, reads: [key], files: [name]}].
+    """The installed apps, in folder order: [{id, name, default_size:
+    {w, h}, sizes: [{w, h}], reads: [key], files: [name]}].
 
-    Only apps that load: a malformed one is logged and left out. reads is
-    the manifest's (declared, not enforced); files names the plain files
-    in the app's folder, each one GET /api/app/<id>/file serves.
+    Only apps that load: a malformed one - one with no size among them -
+    is logged and left out. sizes are the tile sizes the app declares,
+    in cells, and default_size the first of them, the size a tile is
+    first placed at; reads is the manifest's (declared, not enforced);
+    files names the plain files in the app's folder, each one GET
+    /api/app/<id>/file serves.
     """
     return jsonify([a.summary() for a in scan_apps(app.config["APPS_DIR"])])
 
@@ -768,6 +772,59 @@ def render_installed_app(app_id):
     finally:
         conn.close()
     return jsonify(spec)
+
+
+# ---------- the Home layout ----------
+
+# Which tiles Home shows in what order, at what size, and the line of
+# text over them: the home_layout settings row (home_layout.py). The page
+# owns the flow - it lays the items into its grid in order - so the
+# server only keeps the list, and squares it with the apps installed now
+# on every read.
+
+
+@app.route("/api/home-layout", methods=["GET"])
+def get_home_layout():
+    """The Home layout: {"mode": "flow", "subtitle", "items": [{app_id,
+    size: {w, h}}]}, reconciled with the installed apps.
+
+    Every installed app has exactly one item: the saved ones in their
+    order (an uninstalled app's dropped, a size its app no longer offers
+    back to its default), then any app the saved layout doesn't place,
+    at its default size, in folder order. Nothing saved yet: every app,
+    in folder order, at its default size, under an empty subtitle. A
+    read never rewrites the saved layout.
+    """
+    installed = scan_apps(app.config["APPS_DIR"])
+    conn = get_conn()
+    try:
+        layout = load_layout(conn, installed)
+    finally:
+        conn.close()
+    return jsonify(layout)
+
+
+@app.route("/api/home-layout", methods=["PUT"])
+def put_home_layout():
+    """Save the Home layout: {"mode": "flow", "subtitle", "items": [...]}.
+
+    Configure's save, as it's switched off. Stored as given once its
+    shape is checked (parse_layout()): the server doesn't look at which
+    apps are installed or what sizes they offer - the next read squares
+    that - and it never works out a position. 200 {"ok": true}; 400 for
+    a body that isn't a layout, with nothing stored.
+    """
+    body = request.get_json(force=True, silent=True)
+    try:
+        layout = parse_layout(body)
+    except LayoutError as e:
+        return jsonify({"ok": False, "error": str(e)}), 400
+    conn = get_conn()
+    try:
+        save_layout(conn, layout)
+    finally:
+        conn.close()
+    return jsonify({"ok": True})
 
 
 # ---------- settings ----------

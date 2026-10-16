@@ -264,7 +264,7 @@ usually, an `app.py`:
 # /data/apps/steps/app.yaml
 id: steps
 name: Steps
-default_size: {w: 2, h: 2}   # tile size, in grid cells
+sizes: [{w: 1, h: 1}, {w: 2, h: 2}]   # required: tile sizes in grid cells, the first the default
 reads: [steps]
 config:                      # the app's settings, in form order
   - {key: days, label: Days shown, type: int, default: 7}
@@ -286,9 +286,19 @@ def render(ctx, cfg):
 data path — a metric's derived points, as `/api/metric` serves them, as a list
 of points with `.date`, `.value` and `.source` — and it
 returns a display spec built from `number`, `line` (a sparkline, with an
-optional title), `panel` and `empty`. Tiles flow left to right at their default size; an app that fails to
-load is logged and left out, and one whose `render()` fails shows as an error
-tile, never a broken page. `GET /api/apps` lists what's installed (with each
+optional title), `panel` and `empty`. An app that fails to load is logged and
+left out, and one whose `render()` fails shows as an error tile, never a
+broken page.
+
+Home is a grid six square cells across that scales with the window. Every app
+declares the tile sizes it can be drawn at (`sizes`, each `w` and `h` 1–6
+cells; the older `default_size: {w, h}` counts as one), and one with no size
+won't install. Tiles go in order, left to right, each at its size, a tile too
+wide for what's left of a row starting the next. **Configure**, top right of
+Home, lets you drag tiles into a new order, pick each one's size from those
+its app offers, and edit the subtitle over them; switching it off saves the
+layout (`GET`/`PUT /api/home-layout`, one settings row). An app installed
+later joins the end at its default size, and one uninstalled drops out. `GET /api/apps` lists what's installed (with each
 app's declared reads and its files) and `GET /api/app/<id>/render` returns
 one app's spec; the Data tab's Applications panel lists the same apps. Open
 an app's row there to see what it reads, view any of its files read-only

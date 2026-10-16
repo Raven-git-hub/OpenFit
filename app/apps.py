@@ -5,8 +5,10 @@ An app is a folder in the apps directory (APPS_DIR, /data/apps by
 default) holding its manifest and, usually, its engine:
 
     <apps dir>/steps/
-        app.yaml    the manifest: id, name, default_size, reads, config
-                    (config an ordered list of fields: {key, label, type, default})
+        app.yaml    the manifest: id, name, sizes, reads, config
+                    (sizes the tile's allowed sizes in cells, the default
+                    first; config an ordered list of fields:
+                    {key, label, type, default})
         app.py      def render(ctx, cfg): -> a display spec (see host.py)
 
 app.py is optional: an app with a manifest alone loads and lists, and
@@ -48,10 +50,9 @@ import yaml
 MANIFEST = "app.yaml"
 MODULE = "app.py"
 
-# A tile's size in grid cells when the manifest names none.
-DEFAULT_SIZE = {"w": 2, "h": 2}
-# The largest default_size a manifest may ask for, either way.
-MAX_CELLS = 12
+# The most cells a tile may span, either way: Home's grid is this many
+# cells across, and a tile is held to the same height.
+MAX_CELLS = 6
 
 # An app id is part of its URL (/api/app/<id>/render).
 APP_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*\Z")
@@ -65,6 +66,7 @@ class AppError(Exception):
 class InstalledApp:
     id: str
     name: str
+    sizes: list
     default_size: dict
     reads: list
     config: list
@@ -72,12 +74,14 @@ class InstalledApp:
     render: object = field(repr=False)
 
     def summary(self):
-        """What GET /api/apps lists for it: the manifest's id, name,
-        default_size and reads, and the names of the files in its folder."""
+        """What GET /api/apps lists for it: the manifest's id, name, sizes
+        (default_size their first) and reads, and the names of the files
+        in its folder."""
         return {
             "id": self.id,
             "name": self.name,
             "default_size": dict(self.default_size),
+            "sizes": [dict(size) for size in self.sizes],
             "reads": list(self.reads),
             "files": app_files(self.path),
         }
@@ -87,19 +91,70 @@ def _log(message):
     print(f"[apps] {message}")
 
 
-def _size(raw):
-    if raw is None:
-        return dict(DEFAULT_SIZE)
+def _cells(value):
+    """Whether `value` is a whole number of cells, 1 to MAX_CELLS."""
+    # bool is an int to Python; a manifest's `w: true` is a mistake.
+    return isinstance(value, int) and not isinstance(value, bool) and 1 <= value <= MAX_CELLS
+
+
+def _size(raw, where):
+    """One tile size, {w, h}, from the manifest's `where`, or AppError."""
     if not isinstance(raw, dict):
-        raise AppError("default_size must be a mapping of w and h")
-    size = {}
+        raise AppError(f"{where} must be a mapping of w and h, such as {{w: 1, h: 1}}")
+    if any(isinstance(k, str) and re.match(r"[wh]:", k) for k in raw):
+        # YAML reads {w:1,h:1} as the keys 'w:1' and 'h:1', each null.
+        raise AppError(f"{where} needs a space after each colon: write {{w: 1, h: 1}}, not {{w:1,h:1}}")
     for axis in ("w", "h"):
-        cells = raw.get(axis)
-        # bool is an int to Python; a manifest's `w: true` is a mistake.
-        if isinstance(cells, bool) or not isinstance(cells, int) or not 1 <= cells <= MAX_CELLS:
-            raise AppError(f"default_size.{axis} must be a whole number from 1 to {MAX_CELLS}")
-        size[axis] = cells
-    return size
+        if not _cells(raw.get(axis)):
+            raise AppError(f"{where}.{axis} must be a whole number from 1 to {MAX_CELLS}")
+    return {"w": raw["w"], "h": raw["h"]}
+
+
+def tile_size(raw):
+    """`raw` as a tile size, {w, h}, if it is one - each a whole number
+    of cells, 1 to MAX_CELLS - else None."""
+    try:
+        return _size(raw, "size")
+    except AppError:
+        return None
+
+
+# Why an app with no size doesn't load, or install.
+NO_SIZE = (
+    "no tile size: an app declares the sizes it's drawn at, such as "
+    f"sizes: [{{w: 1, h: 1}}] - w and h in cells, 1 to {MAX_CELLS}"
+)
+
+
+def manifest_sizes(raw):
+    """The manifest's tile sizes, [{w, h}, ...], its default first.
+
+    `sizes` is the canonical field: a non-empty list of sizes, each
+    {w, h} in cells (1 to MAX_CELLS), none listed twice, the first the
+    default - a fixed-size app lists one. `default_size: {w, h}` alone,
+    the older form, is a list of one. Both may be given (an app written
+    for hosts either side of `sizes`) when default_size is the first of
+    sizes. Required: an app with neither has no size, so it doesn't
+    load and won't install. The host never makes one up.
+
+    raw: the parsed app.yaml, a dict. Raises AppError, saying why.
+    """
+    sizes, default = raw.get("sizes"), raw.get("default_size")
+    if sizes is None and default is None:
+        raise AppError(NO_SIZE)
+    if sizes is None:
+        return [_size(default, "default_size")]
+    if not isinstance(sizes, list) or not sizes:
+        raise AppError("sizes must be a list of one or more {w, h}, such as [{w: 1, h: 1}]")
+    listed = []
+    for i, size in enumerate(sizes):
+        size = _size(size, f"sizes[{i}]")
+        if size in listed:
+            raise AppError(f"sizes lists {size['w']}×{size['h']} twice")
+        listed.append(size)
+    if default is not None and _size(default, "default_size") != listed[0]:
+        raise AppError("default_size must be the first of sizes: the first size is the default")
+    return listed
 
 
 def _config(raw):
@@ -153,10 +208,12 @@ def _manifest(folder):
     reads = raw.get("reads") or []
     if not isinstance(reads, list) or not all(isinstance(key, str) for key in reads):
         raise AppError("reads must be a list of metric keys")
+    sizes = manifest_sizes(raw)
     return {
         "id": app_id,
         "name": name.strip(),
-        "default_size": _size(raw.get("default_size")),
+        "sizes": sizes,
+        "default_size": dict(sizes[0]),
         "reads": list(reads),
         "config": _config(raw.get("config")),
     }
@@ -387,15 +444,21 @@ def _taken(apps_dir, app_id):
 def check_app(manifest, files):
     """The correctness checks an app must pass to be installed.
 
-    THE LAYER THAT GROWS. Deliberately minimal for now: the one
-    requirement past containment - that app.yaml parses to a mapping
-    with a valid id - is install_app()'s, and it has been met by the
-    time this runs. Nothing else is checked yet: not the manifest's
-    other fields (name, default_size ... - the scanner checks those when
-    it loads the app), not app.py's syntax, and nothing is ever run. As
-    real apps' quirks are learned, a check that catches a broken app
-    before it's on the volume goes here, raising InstallError with a
-    message the popup shows as-is.
+    THE LAYER THAT GROWS. Past containment - app.yaml parsing to a
+    mapping with a valid id, install_app()'s, met by the time this
+    runs - one check so far:
+
+    - a size. The manifest must declare the tile size(s) the app is
+      drawn at (manifest_sizes(): `sizes`, or the older `default_size`),
+      each w and h a whole number of cells, 1 to MAX_CELLS. An app
+      without one won't deploy - the scanner would skip it anyway - so
+      it's refused here, with the scanner's own reason.
+
+    Nothing else is checked yet: not the manifest's other fields (name,
+    reads, config - the scanner checks those when it loads the app), not
+    app.py's syntax, and nothing is ever run. As real apps' quirks are
+    learned, a check that catches a broken app before it's on the volume
+    goes here, raising InstallError with a message the popup shows as-is.
 
     Containment is not this function's job and never moves here: those
     checks are install_app()'s, they run first, and they don't relax.
@@ -403,6 +466,10 @@ def check_app(manifest, files):
     manifest: the parsed app.yaml, a dict with a valid id.
     files: {name: text}, every name a plain file name.
     """
+    try:
+        manifest_sizes(manifest)
+    except AppError as e:
+        raise InstallError(str(e)) from None
 
 
 def install_app(apps_dir, files):

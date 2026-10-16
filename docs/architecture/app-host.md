@@ -1,11 +1,12 @@
 # The app host: installed apps and the Home tab
 
 OpenFit ships no apps. The app host runs the ones you install and draws them
-as tiles on the **Home** tab. This is its first slice: apps are found on disk,
-rendered server-side, and their tiles flow down the page at their default
-size. There's no Configure mode, visible grid, drag, resize or saved layout
-yet. Those come with the grid design pass, built on top of this without
-changing the renderer or the scanner (**Layout**, below).
+as tiles on the **Home** tab. Apps are found on disk and rendered
+server-side, and their tiles sit on a grid six square cells across, in the
+order and at the sizes the owner chose in **Configure**, each size one the
+app declares. That layout is flow: an order and a size per tile, no
+coordinates. Free cell placement (the grid) is a later, second layout mode
+on the same sizes ([The Home tab](#the-home-tab), below).
 
 ## An app
 
@@ -36,15 +37,33 @@ below).
 ```yaml
 id: steps                     # optional: defaults to the folder's name
 name: Steps                   # optional: defaults to the id
-default_size: {w: 2, h: 2}    # optional: tile size in grid cells, 1-12 each; default 2x2
+sizes: [{w: 1, h: 1}, {w: 2, h: 2}]   # REQUIRED: the tile sizes, in cells; the first is the default
 reads: [steps]                # optional: the metric keys it reads (declared, not enforced yet)
 config:                       # optional: the app's settings, an ordered list of fields
   - {key: stride_m, label: Stride length (m), type: number, default: 0.75}
 ```
 
 The id is part of the app's URL, so it's letters, digits, `-` and `_`,
-starting with a letter or digit. Each field is optional, but one that's
-present must have the right type.
+starting with a letter or digit. Every field but the size is optional, and
+one that's present must have the right type.
+
+**`sizes`** is required: the tile sizes the app can be drawn at, as cell
+rectangles on Home's grid, which is six cells across. It's a non-empty list
+of `{w, h}`, each a whole number from 1 to 6 (`MAX_CELLS`), none listed twice.
+The first is the default, the size a tile is first placed at; the owner picks
+among the rest in Configure. A fixed-size app lists one size, and gets no
+picker. The author declares the sizes because only the author knows the
+shapes the spec reads well at: the host never makes one up.
+
+- **`default_size: {w, h}`**, the older form, still counts: alone, it's a
+  list of one. An app may give both (one written for hosts either side of
+  `sizes`) when `default_size` is the first of `sizes`.
+- **No size, or one that won't do, and the app doesn't load**: the scanner
+  skips it, saying why (`[apps] skipping <folder>: no tile size: ...`), and
+  an install refuses it with the same message. That's `manifest_sizes()` in
+  `app/apps.py`.
+- **YAML needs a space after each colon**: `{w:1,h:1}` parses as the keys
+  `'w:1'` and `'h:1'`, so the error says to write `{w: 1, h: 1}`.
 
 **`config`** is an **ordered list** of fields, not a mapping, because the
 order is the order the app's config form will show them in. Each field is a
@@ -80,10 +99,14 @@ def render(ctx, cfg):
 an app reads a setting with a fallback, such as `cfg.get("stride_m", 0.75)`.
 
 **The reference apps.** The first two real apps, `steps` and `steps-metres`,
-are committed verbatim in `tests/fixtures/apps/`, exactly as they're deployed
-in `/data/apps`. The test suite runs them against the host on every change
+are committed in `tests/fixtures/apps/` as they're deployed in `/data/apps`.
+The test suite runs them against the host on every change
 (`test_app_host.py`). They're correct by definition: when one fails, the host
-is fixed to match it, never the app.
+is fixed to match it, never the app. Their `app.py` is verbatim. Their
+`app.yaml` declares `sizes: [{ w: 1, h: 1 }]`, the canonical form, where the
+deployed copies still have `default_size: { w: 2, h: 2 }`: the tests check
+that form keeps loading too, and moving a deployed app to one cell is a
+one-line manifest edit and a reinstall.
 
 ### Loading: `app/apps.py`
 
@@ -95,8 +118,8 @@ reuse it.
   log line. So are dot-folders and loose files.
 - A folder with an `app.yaml` that doesn't load is **logged and skipped**:
   `[apps] skipping <folder>: <why>`. That covers bad YAML, a field of the wrong
-  type, an `app.py` that fails to import (its traceback is printed too), and a
-  missing or non-callable `render`. One broken app never stops the others, and
+  type, no size (or one outside 1-6), an `app.py` that fails to import (its
+  traceback is printed too), and a missing or non-callable `render`. One broken app never stops the others, and
   never takes the server down. A folder with no `app.py` isn't broken: it
   loads, with nothing to draw (above).
 - Two folders with the same id: the first by folder name wins, and the other
@@ -226,11 +249,16 @@ the files.
    under that id. An install only ever creates. It never updates an app in
    place: uninstalling the app, then adding it again, is the update path.
 4. **Correctness** is `check_app(manifest, files)`, and it's deliberately
-   minimal: past the parsable `app.yaml` with a valid id, nothing is checked.
-   Not the other manifest fields (`name`, `default_size` ...), not `app.py`'s
-   syntax, and nothing is ever imported or run. **This is the layer that
-   grows**: as real apps' quirks are learned, a check that catches a broken
-   app before it lands goes there. Containment is never moved into it.
+   small. Past the parsable `app.yaml` with a valid id, its one rule so far
+   is **a size**: the manifest must declare `sizes` (or the older
+   `default_size`), each `w` and `h` a whole number from 1 to 6, or the
+   install is refused with the reason the scanner would give ("won't deploy
+   without a size"). Nothing else is checked: not the other manifest fields
+   (`name`, `reads`, `config`), not `app.py`'s syntax, and nothing is ever
+   imported or run. **This is the layer that grows**: as real apps' quirks
+   are learned, a check that catches a broken app before it lands goes
+   there. Containment is never moved into it, and it runs last, so a bad or
+   taken id is reported first.
 5. **The files are written** to a hidden staging folder in the apps
    directory (`.install-<hex>`, which the scanner skips), and it's renamed to
    `<id>` once they're all there, so the app appears whole or not at all. The
@@ -239,10 +267,10 @@ the files.
 6. **The response** is `201 {"ok": true, "id": "<id>", "has_app_py": true|false}`.
 
 A refusal is `{"ok": false, "error": "<message>"}`: 400 for the request, the
-`app.yaml`, the id or a file name, 409 for a taken id, and 500 if the files
-can't be written (the staging folder is removed).
+`app.yaml`, the id, a file name or the size, 409 for a taken id, and 500 if
+the files can't be written (the staging folder is removed).
 
-A malformed but contained app installs. The scanner then handles it as it
+Past its size, a malformed but contained app installs. The scanner then handles it as it
 would a hand-placed one: an app that doesn't load (a bad manifest field, an
 `app.py` that won't import) is logged and left out of the list, and one whose
 `render()` fails shows an error tile.
@@ -356,10 +384,13 @@ An app writes no data yet, so uninstalling removes only its folder.
 
 ## Routes
 
-- `GET /api/apps` → `[{id, name, default_size: {w, h}, reads: [key], files:
-  [name]}]`, the apps that load, in folder order. `reads` is the manifest's
-  (`[]` if none); `files` names the plain files in the app's folder, sorted,
-  each one the file route serves.
+- `GET /api/apps` → `[{id, name, default_size: {w, h}, sizes: [{w, h}],
+  reads: [key], files: [name]}]`, the apps that load, in folder order.
+  `sizes` are the tile sizes the manifest declares, in its order, and
+  `default_size` the first of them (for a manifest with the older
+  `default_size` alone, `sizes` is that one). `reads` is the manifest's (`[]`
+  if none); `files` names the plain files in the app's folder, sorted, each
+  one the file route serves.
 - `POST /api/apps` → installs an app from `{"files": {name: text}}`; `201
   {"ok": true, "id", "has_app_py"}`, or a refusal that writes nothing. See
   [Installing an app](#installing-an-app).
@@ -376,6 +407,9 @@ An app writes no data yet, so uninstalling removes only its folder.
   404 for an unknown app or file, 413 for a file too big to show, 415 for one
   that isn't text. See
   [Showing a file](#showing-a-file-get-apiappidfilenamefile).
+- `GET /api/home-layout` → `{"mode": "flow", "subtitle", "items": [{app_id,
+  size: {w, h}}]}`, Home's layout squared with the apps installed now; `PUT
+  /api/home-layout` saves one. See [The layout](#the-layout-flow-mode).
 
 The access contract's reads also take **`?days=N`**: the trailing N days, as
 `ctx.metric()` counts them. It can't be combined with `from`/`to`, and a value
@@ -385,41 +419,130 @@ contract read (`/api/metric`, `/api/coverage`, `/api/sessions`,
 
 ## The Home tab
 
-On load, the page calls `GET /api/apps`, then each app's render in parallel,
-and draws the tiles. A render that can't be fetched becomes one error tile. A
-**Sync now** or a source removal re-reads Home along with the data card, so
-the tiles follow the data, and so does installing or uninstalling an app. An
-app row's **Refresh** redraws only that app's tile. If `/api/apps` itself fails, the page says so and
-offers a Retry. With nothing installed, the page says where apps go.
+On load, the page calls `GET /api/apps` and `GET /api/home-layout` together,
+then each app's render in parallel, and draws the tiles. A render that can't
+be fetched becomes one error tile. A **Sync now** or a source removal re-reads
+Home along with the data card, so the tiles follow the data, and so does
+installing or uninstalling an app. An app row's **Refresh** redraws only that
+app's tile. If either read fails, the page says so and offers a Retry. With
+nothing installed, the page says where apps go.
 
 Tiles are **chromeless**: the app's spec is the whole face, on the console's
 card surface (`--surface`, `--border`, `--radius`, `--shadow`). A number sizes
 its type to the tile, so the same app reads well at 1×1 or 4×2.
 
-### Layout, and the seam for the grid pass
+### The grid
+
+Six columns of square cells. A cell is Home's width over six, less the gaps
+(`--tile-gap`, 12px), held between `--tile-cell-min` (90px) and
+`--tile-cell-max` (180px), all in the token block. Past the max, the grid
+centres with margins either side. Under the min, Home scrolls sideways rather
+than shrink the cells further: there's no phone layout yet.
+
+The tiles go into a CSS grid (`grid-template-columns: repeat(6, ...)`, rows
+as tall as the columns are wide) in the layout's order, each spanning its size
+(`grid-column: span w; grid-row: span h`), with `grid-auto-flow: row`. So
+they fill left to right; a tile too wide for the cells left in a row starts
+the next row, and the gap it leaves at the row's end stays empty. It's never
+`dense`: a later tile never backfills a gap, which would scramble the order.
+The page doesn't pack anything itself: CSS grid does the columns, spans,
+wrapping and scaling.
+
+The layout is stored in cells, so a window resize only changes how many
+pixels a cell is. Nothing reflows or moves.
+
+### The layout: flow mode
+
+One `settings` row, `home_layout` (no migration), `app/home_layout.py`:
+
+```json
+{ "mode": "flow",
+  "subtitle": "<the line over the tiles>",
+  "items": [ { "app_id": "steps", "size": { "w": 1, "h": 1 } }, ... ] }
+```
+
+- **`items` is ordered, and the order is the layout.** There are no
+  coordinates in flow mode. Each item pins an app and the size chosen for
+  its tile, one of the app's declared `sizes`.
+- **`mode` is always `"flow"` for now.** It holds the seat for the grid (free
+  cell placement), so that lands as a second mode, not a migration. There's
+  no mode switch.
+- **The subtitle** is text, at most 120 characters (`MAX_SUBTITLE`), empty
+  for none.
+
+**Reading it (`GET /api/home-layout`) reconciles it** with the apps installed
+now, because apps are installed and removed out of band (the Library, or by
+hand on the volume):
+
+1. The saved items, in order, less any whose app isn't installed (or doesn't
+   load), a repeat of one already placed, or anything that isn't an item.
+2. Each at its saved size if its app still offers that size, else at the
+   app's default.
+3. Then every installed app no item places, at its default size, in folder
+   order. With nothing saved, that's every app.
+
+A read never rewrites the saved row: the next save stores the reconciled
+layout. So an app uninstalled and installed again before then (the update
+path) comes back where it was. A saved row that isn't a layout (the row can
+also be written through `/api/settings`) reads as nothing saved.
+
+**Saving it (`PUT /api/home-layout`)** takes the layout as JSON and stores it
+once its shape is checked: `mode` `"flow"`, `subtitle` text up to the limit,
+and `items` a list of `{app_id, size: {w, h}}`, each `app_id` one an app could
+have and listed once, each size whole cells from 1 to 6. Anything else in the
+body or an item is dropped. The server doesn't check which apps are installed
+or what sizes they offer (the next read squares that), and it never works out
+a position: the page owns the flow. `200 {"ok": true}`, or a 400 that stores
+nothing.
+
+### Configure
+
+A sub-header under the tab strip holds the **subtitle** on the left and the
+**Configure** toggle on the right, a tab styled like ＋ Add: dashed while off,
+filled with the accent while on.
+
+- **On:** each tile gains a handle and, if its app offers more than one size,
+  a size picker listing those sizes. The empty cells are marked faintly, a
+  spare row sits under the tiles to drop one at the end, and the subtitle
+  becomes an input.
+- **Move = drag.** Drag a tile (anywhere but its picker) onto another and it
+  takes that tile's place in the order. The grid reflows live to show where
+  it will land, and the drop keeps it. Into the gap at a row's end, it goes
+  after that row's last tile; into the spare row, last. It's a sortable list,
+  so there are no coordinates and no collisions. From the keyboard, a
+  handle's arrow keys step its tile back (← or ↑) or on (→ or ↓).
+- **Resize = the picker.** Choose a size and the tile takes it, the grid
+  reflowing around it. There's no drag-to-resize, and the page never offers a
+  size the app didn't declare.
+- **Off:** the layout (`mode`, `subtitle`, `items`) is saved and the tiles go
+  back to chromeless. If the save fails, Configure stays on with the error,
+  nothing lost, to try again.
+
+The subtitle and every app name are set as text, never as markup.
+
+### The seams
 
 The page keeps three parts apart:
 
-1. `loadHome()` turns the apps and their specs into a list of
-   `{app_id, name, spec, w, h}`.
-2. `layoutTiles(tiles)` gives each tile its cell, as `x`/`y` (0-based, in
-   cells), or `null` to flow it. In this slice it's `autoLayout`, which leaves
-   every tile unplaced.
-3. `paintTiles(box, tiles)` draws any such list on an invisible CSS grid of
-   `--tile-cell` squares (110px, `--tile-gap` 12px between, both in the token
-   block). A tile spans `w` × `h` cells. With `x`/`y` it starts at that cell;
-   without, the grid flows it into the next free one, left to right, wrapping.
-   On a phone the cell shrinks to a quarter of the width, so two 2×2 tiles
-   still sit side by side.
+1. `loadHome()` reads the apps, the layout and the specs into `home.tiles`:
+   `{app_id, name, spec, w, h, sizes}`, in layout order.
+2. `layoutTiles(items, apps)` is `flowLayout`: the page's copy of the
+   server's reconcile. It squares the layout with the apps read beside it, and
+   an unsaved Configure with an app installed or removed meanwhile (a test
+   holds it to the server's).
+3. `paintTiles(box, tiles, configuring)` draws them on the grid, with
+   Configure's controls when it's on.
 
-The grid pass (Configure, a visible grid, drag/resize, collision, saved
-positions in `settings`) swaps `layoutTiles` for a function that reads the
-saved layout. `paintTiles`, `renderSpec` and the scanner don't change.
+The grid pass adds a second mode: it swaps `layoutTiles` for one that reads
+saved positions and gives `paintTiles` start cells. The sizes, the CSS grid,
+`renderSpec` and the scanner don't change.
 
 ## Not yet
 
-- **Configure mode**, the visible grid, drag/resize, collision and a saved
-  layout: the grid pass above.
+- **The grid**: free cell placement, a second layout `mode` on the same sizes
+  and CSS grid (coordinates, drop anywhere, deliberate gaps, collision).
+  Resize stays the picker.
+- **A phone layout**: under the minimum cell, Home scrolls sideways.
 - **The rest of the Library.** It reuses `scan_apps()` and `/api/apps`. Its
   shell has landed: the Data tab's right-hand **Applications** column lists
   `/api/apps` by name (see

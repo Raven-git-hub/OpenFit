@@ -26,7 +26,10 @@ original markup and CSS (`.tabstrip`, `.tab`, `.tab-add`), so it looks exactly a
 it did. It holds two tabs:
 
 - **Home**, at the far left. The installed apps' tiles: each app's display
-  spec, rendered server-side, flowed down the page at its default size (see
+  spec, rendered server-side, laid on a grid six square cells across in the
+  saved order, each at the size chosen for it from the app's own. A
+  sub-header under the strip holds the subtitle and the **Configure** toggle,
+  which reorders and resizes the tiles and saves the layout (see
   [app-host.md](app-host.md)).
 - **Data**, at the far right, just left of the dashed **＋ Add**. It holds the
   whole console, below.

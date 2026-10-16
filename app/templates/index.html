@@ -57,11 +57,16 @@
   --coverage-off:var(--surface-2);      /* a grid day with none */
   --coverage-edge:var(--border-strong); /* the outline of an empty rhombus */
 
-  /* home - the app tiles. A tile is its app's default_size in cells,
-     each --tile-cell square with --tile-gap between; --spark draws a
-     sparkline (follows the theme through the accent). */
-  --tile-cell:110px;
+  /* home - the app tiles, on a grid six cells across. A cell is
+     square: Home's width over six, held between --tile-cell-min and
+     --tile-cell-max (past the max the grid centres, with margins), with
+     --tile-gap between. A tile spans its size in cells. --tile-guide
+     marks the empty cells while Configure is on; --spark draws a
+     sparkline (both follow the theme through the tokens above). */
+  --tile-cell-min:90px;
+  --tile-cell-max:180px;
   --tile-gap:12px;
+  --tile-guide:color-mix(in srgb, var(--border) 35%, transparent);
   --spark:var(--accent);
 
   --radius:14px;
@@ -463,24 +468,83 @@ h5 + .dnote{margin-top:0;}
   padding:5px 9px;border-radius:7px;box-shadow:var(--shadow);
 }
 
+/* ---------- home: the sub-header ----------
+   Under the tab strip: the subtitle on the left (text you set, an input
+   while Configure is on) and the Configure toggle on the right, a tab
+   like ＋ Add - dashed while off, the accent while on. */
+.home-head{display:flex;align-items:center;gap:14px;min-height:40px;margin:0 0 14px;}
+.home-sub{
+  flex:1;min-width:0;margin:0;font-family:var(--font-display);font-weight:700;font-size:17px;
+  color:var(--ink-2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+}
+.input.home-sub-input{flex:1;min-width:0;max-width:520px;padding:8px 11px;font-family:var(--font-display);font-weight:700;font-size:15px;}
+.home-head .tab{top:0;flex:none;border-radius:7px;padding:9px 26px;}
+.tab.home-cfg.active, .tab.home-cfg.active:hover{background:var(--accent);border-color:var(--accent);color:var(--accent-ink);}
+.tab.home-cfg:disabled{opacity:.5;cursor:not-allowed;}
+.home-msg{margin:-6px 0 12px;}
+.home-msg:empty{display:none;}
+
 /* ---------- home: the installed apps' tiles ----------
-   Each tile is its app's default_size in cells and is placed on an
-   invisible grid of --tile-cell squares: in reading order, wrapping,
-   unless the layout gives it a cell (x, y). No grid lines, no handles.
-   A tile is chromeless - the app's spec is the whole face. */
-.home{container-type:inline-size;}
+   A grid six cells across. Each cell is square: Home's width over six,
+   held between --tile-cell-min and --tile-cell-max - past the max the
+   grid centres with margins; under the min it scrolls sideways (there's
+   no phone layout yet). The tiles go in the layout's order, left to
+   right, each spanning its size in cells; one too wide for what's left
+   of a row starts the next, and the gap it leaves stays empty - row
+   flow, never dense, so a later tile never backfills it. A resize only
+   changes a cell's pixels: the layout never moves. A tile is chromeless,
+   the app's spec its whole face, until Configure gives it a handle and a
+   size picker. */
+.home{container-type:inline-size;overflow-x:auto;padding:3px 3px 24px;}
 .tiles{
+  --tile-cell:clamp(var(--tile-cell-min), (100cqi - 5 * var(--tile-gap)) / 6, var(--tile-cell-max));
   display:grid;gap:var(--tile-gap);
-  grid-template-columns:repeat(auto-fill, var(--tile-cell));
+  grid-template-columns:repeat(6, var(--tile-cell));
   grid-auto-rows:var(--tile-cell);
+  grid-auto-flow:row;
+  width:max-content;margin:0 auto;
 }
 .tile{
+  position:relative;
   background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow);
   padding:16px 18px;min-width:0;min-height:0;overflow:hidden;
   display:flex;flex-direction:column;
   /* the spec sizes its type to the tile (cqi units) */
   container-type:size;
 }
+/* Configure: the empty cells marked, a row of them under the tiles to
+   drop one at the end, and every tile dashed, its face inert - the
+   whole tile drags, all but its size picker */
+.tiles.configuring{
+  padding-bottom:calc(var(--tile-cell) + var(--tile-gap));
+  background:conic-gradient(from 270deg at var(--tile-cell) var(--tile-cell), var(--tile-guide) 25%, transparent 0)
+    0 0 / calc(var(--tile-cell) + var(--tile-gap)) calc(var(--tile-cell) + var(--tile-gap));
+}
+.tiles.configuring .tile{
+  border-style:dashed;border-color:var(--border-strong);cursor:grab;padding-top:38px;
+  touch-action:none;user-select:none;-webkit-user-select:none;
+}
+.tiles.configuring .tile > :not(.tile-cfg){pointer-events:none;}
+.tiles.configuring .tile.dragging{
+  border-style:solid;border-color:var(--accent);cursor:grabbing;z-index:2;
+  box-shadow:0 0 0 2px var(--accent), var(--shadow);
+}
+.tiles[aria-busy="true"]{opacity:.6;pointer-events:none;}
+/* a tile's controls, over its top edge: the handle, then the size picker */
+.tile-cfg{position:absolute;top:6px;left:6px;right:6px;display:flex;align-items:center;gap:6px;z-index:1;pointer-events:none;}
+.tile-cfg > *{pointer-events:auto;}
+.tile-grip{
+  width:24px;height:24px;flex:none;padding:0;display:grid;place-items:center;cursor:grab;
+  border:1px solid var(--border-strong);border-radius:6px;background:var(--surface);color:var(--muted);
+}
+.tile-grip:hover, .tile-grip:focus-visible{border-color:var(--accent);color:var(--accent);}
+.tile-grip svg{width:8px;height:12px;fill:currentColor;}
+.tile-size{
+  margin-left:auto;min-width:0;padding:2px 4px;cursor:pointer;
+  border:1px solid var(--border-strong);border-radius:6px;background:var(--surface);color:var(--ink);
+  font-family:var(--font-mono);font-size:11.5px;
+}
+.tile-size:focus{border-color:var(--accent);outline:none;}
 .tile > *{flex:1;min-height:0;}
 /* number: a large value, its label beneath, a smaller muted caption */
 .spec-number{display:flex;flex-direction:column;justify-content:center;min-width:0;}
@@ -543,8 +607,6 @@ h5 + .dnote{margin-top:0;}
   .rh-cell{width:28px;}
   .dpanel, .dpanel.apanel{grid-template-columns:1fr;padding-left:10px;}
   .src{flex-wrap:wrap;}
-  /* four cells across Home's width, so two 2-wide tiles sit side by side */
-  .tiles{--tile-cell:calc((100cqi - 3 * var(--tile-gap)) / 4);}
 }
 @media (prefers-reduced-motion:reduce){*{transition:none!important;}}
 </style>
@@ -575,6 +637,8 @@ h5 + .dnote{margin-top:0;}
   <main class="main">
     <!-- HOME: the installed apps' tiles -->
     <section data-panel="home" aria-label="Home" hidden>
+      <div class="home-head" id="homeHead"></div>
+      <p class="form-msg home-msg" id="homeMsg" role="status"></p>
       <div class="home" id="home"></div>
     </section>
     <!-- DATA: the console -->
@@ -663,6 +727,11 @@ h5 + .dnote{margin-top:0;}
     /* The app host: the installed apps, and one app's display spec. */
     apps:         ()             => fetchJSON('/api/apps'),
     renderApp:    id             => fetchJSON('/api/app/'+enc(id)+'/render'),
+    /* Home's layout - the tiles' order and sizes, and the subtitle over
+       them - read reconciled with the apps installed now, and saved as
+       Configure is switched off. */
+    homeLayout:   ()             => fetchJSON('/api/home-layout'),
+    saveLayout:   layout         => send('/api/home-layout', 'PUT', layout),
     /* Install one from its files, {name: text}; the server reads the id
        from the app.yaml among them and re-checks everything. */
     installApp:   files          => send('/api/apps', 'POST', {files}),
@@ -1810,7 +1879,7 @@ h5 + .dnote{margin-top:0;}
      ========================================================= */
   const appsList = {
     status:'loading',   // loading | ready | error
-    apps:null,          // /api/apps: [{id, name, default_size, reads, files}]
+    apps:null,          // /api/apps: [{id, name, default_size, sizes, reads, files}]
     open:new Set(),     // ids of expanded rows - they stay open across a refresh
   };
 
@@ -2107,7 +2176,7 @@ h5 + .dnote{margin-top:0;}
      name into an empty name field. Text files: what's installed is text. */
   function fileSlot(fixed, required, say){
     const PLACEHOLDER = {
-      'app.yaml': 'id: my-app&#10;name: My app&#10;default_size: {w: 2, h: 2}',
+      'app.yaml': 'id: my-app&#10;name: My app&#10;sizes: [{w: 1, h: 1}]',
       'app.py':   'def render(ctx, cfg):&#10;    return ctx.empty(&quot;Nothing yet&quot;)',
     };
     const slot = el('div','fslot', `
@@ -2276,36 +2345,82 @@ h5 + .dnote{margin-top:0;}
      display spec server-side (app/host.py); this page only draws
      specs. Three parts, kept apart so the layout can change
      without touching the others:
-       loadHome()   the apps and their specs -> [{app_id, name, spec, w, h}]
-       layoutTiles  gives each a cell (x, y), or null to flow it
-       paintTiles() any such list -> the tiles, each spec drawn by renderSpec()
+       loadHome()   the apps, their specs and the saved layout
+                    -> home.tiles: [{app_id, name, spec, w, h, sizes}]
+       layoutTiles  the saved layout over the apps installed now:
+                    the tiles' order, and each one's size
+       paintTiles() any such list -> the tiles on the six-cell grid,
+                    each spec drawn by renderSpec()
+     The layout is flow: an order and a size per tile, no cells. The
+     grid (CSS) lays them out, row by row. Configure, in the sub-header
+     under the tab strip, rearranges home.tiles in place - drag a tile
+     to move it, pick its size from its app's - makes the subtitle
+     editable, and saves it all as it's switched off.
      ========================================================= */
-  const home = {status:'loading', tiles:null};   // status: loading | ready | error
-  const cells = n => Math.max(1, Math.round(+n) || 2);
+  const GRID_COLS = 6;          // the grid's width in cells, and the most a tile spans either way
+  const SUBTITLE_MAX = 120;     // the server's MAX_SUBTITLE (home_layout.py)
+  const home = {
+    status:'loading',   // loading | ready | error
+    tiles:null,         // [{app_id, name, spec, w, h, sizes}], in layout order; w/h in cells
+    subtitle:'',        // the line in the sub-header
+    configuring:false,  // Configure is on: tiles move and resize, the subtitle edits
+    saving:false,       // Configure's save is on its way
+  };
+  const cells = n => Math.min(GRID_COLS, Math.max(1, Math.round(+n) || 1));
+  const sizeOf = s => ({w:cells(s && s.w), h:cells(s && s.h)});
+  /* The sizes an app's tile can be drawn at - its manifest's, the
+     default first. The page never makes one up. */
+  const appSizes = a => (Array.isArray(a.sizes) && a.sizes.length ? a.sizes : [a.default_size]).map(sizeOf);
 
   async function loadHome(){
     try{
-      const apps = await api.apps();
+      const [apps, saved] = await Promise.all([api.apps(), api.homeLayout()]);
       // An app that can't be fetched is one error tile, not a failed Home.
       const specs = await Promise.all(apps.map(a => api.renderApp(a.id)
         .catch(() => ({type:'error', message:"Couldn't load this app."}))));
-      home.tiles = layoutTiles(apps.map((a, i) => {
-        const size = a.default_size || {};
-        return {app_id:a.id, name:a.name, spec:specs[i], w:cells(size.w), h:cells(size.h)};
-      }));
+      const byId = new Map(apps.map((a, i) => [a.id, {a, spec:specs[i]}]));
+      // Mid-Configure the arrangement on screen isn't saved yet: it's
+      // kept, and squared with the apps as they are now, not replaced.
+      const items = home.configuring && home.tiles ? layoutItems() : saved.items;
+      if(!home.configuring) home.subtitle = typeof saved.subtitle==='string' ? saved.subtitle : '';
+      home.tiles = layoutTiles(items, apps).map(it => {
+        const {a, spec} = byId.get(it.app_id);
+        return {app_id:a.id, name:a.name, spec, w:it.size.w, h:it.size.h, sizes:appSizes(a)};
+      });
       home.status = 'ready';
     }catch(e){
       // A failed refresh leaves the tiles already drawn.
       if(!home.tiles) home.status = 'error';
     }
+    // Mid-Configure the sub-header holds an edit in progress: left be.
+    if(!home.configuring) paintHomeHead();
     paintHome();
   }
 
-  /* Where each tile goes, in grid cells. For now none is placed: x and y
-     are null, so the grid flows the tiles in order, left to right,
-     wrapping. A saved layout swaps in here, giving each tile its cell. */
-  function autoLayout(tiles){ return tiles.map(t => Object.assign({}, t, {x:null, y:null})); }
-  const layoutTiles = autoLayout;
+  /* Flow: the saved items in their order, each at its saved size if its
+     app still offers that size, else at the app's default; an item
+     whose app is gone is dropped, and an app no item places goes on the
+     end at its default. The server hands the layout out squared this
+     way (home_layout.py); this squares it again with the apps read
+     beside it, and an unsaved Configure with an install or uninstall
+     made meanwhile. -> [{app_id, size:{w, h}}] */
+  function flowLayout(items, apps){
+    const byId = new Map(apps.map(a => [a.id, a]));
+    const placed = new Set(), out = [];
+    (Array.isArray(items) ? items : []).forEach(it => {
+      const a = it && typeof it.app_id==='string' ? byId.get(it.app_id) : null;
+      if(!a || placed.has(a.id)) return;
+      placed.add(a.id);
+      const sizes = appSizes(a), want = it.size || {};
+      out.push({app_id:a.id, size:sizes.find(s => s.w===want.w && s.h===want.h) || sizes[0]});
+    });
+    apps.forEach(a => { if(!placed.has(a.id)) out.push({app_id:a.id, size:appSizes(a)[0]}); });
+    return out;
+  }
+  const layoutTiles = flowLayout;
+
+  /* The layout as it stands, as the server stores it. */
+  const layoutItems = () => home.tiles.map(t => ({app_id:t.app_id, size:{w:t.w, h:t.h}}));
 
   function paintHome(){
     const box = $('#home');
@@ -2314,30 +2429,38 @@ h5 + .dnote{margin-top:0;}
     }else if(home.status==='error'){
       box.innerHTML = `<div class="home-state">Couldn't load your apps.<br>
         <button class="btn sm" type="button">Retry</button></div>`;
-      box.querySelector('button').onclick = () => { home.status = 'loading'; paintHome(); loadHome(); };
+      box.querySelector('button').onclick = () => { home.status = 'loading'; paintHomeHead(); paintHome(); loadHome(); };
     }else if(!home.tiles.length){
       box.innerHTML = `<p class="home-state">No apps installed yet. Add one with ＋ Add Application
         on the Data tab, or put its folder in the server's apps directory (<code>/data/apps</code>
         by default) and reload.</p>`;
     }else{
-      paintTiles(box, home.tiles);
+      paintTiles(box, home.tiles, home.configuring);
     }
   }
 
-  /* tiles: [{app_id, name, spec, w, h, x, y}], w/h/x/y in cells. */
-  function paintTiles(box, tiles){
-    const grid = el('div','tiles');
+  /* tiles: [{app_id, name, spec, w, h, sizes}], w/h in cells. Each spans
+     its size; the grid places them in order, row by row. configuring
+     gives each its handle and, if it has a choice, its size picker, and
+     lets them be dragged into a new order. */
+  function paintTiles(box, tiles, configuring){
+    const grid = el('div','tiles' + (configuring ? ' configuring' : ''));
     tiles.forEach(t => {
       const tile = el('section','tile');
       tile.dataset.app = t.app_id;
       tile.setAttribute('aria-label', t.name || t.app_id);
-      // With x/y, from that cell; without, from the next free one.
-      tile.style.gridColumn = (t.x!=null ? (t.x+1)+' / ' : '') + 'span '+t.w;
-      tile.style.gridRow    = (t.y!=null ? (t.y+1)+' / ' : '') + 'span '+t.h;
+      spanTile(tile, t);
       tile.appendChild(renderSpec(t.spec, t.name));
+      if(configuring) tile.appendChild(tileControls(t, tile));
       grid.appendChild(tile);
     });
+    if(configuring) sortableTiles(grid);
     box.replaceChildren(grid);
+  }
+  /* A tile's span, in cells. Never a start cell: flow has none. */
+  function spanTile(tile, t){
+    tile.style.gridColumn = 'span '+t.w;
+    tile.style.gridRow    = 'span '+t.h;
   }
 
   /* One app's tile, redrawn from a fresh spec - the Applications list's
@@ -2348,7 +2471,206 @@ h5 + .dnote{margin-top:0;}
     if(!t) return;
     t.spec = spec;
     const tile = Array.from(document.querySelectorAll('#home .tile')).find(x => x.dataset.app===appId);
-    if(tile) tile.replaceChildren(renderSpec(spec, t.name));
+    if(!tile) return;
+    // Mid-Configure its controls stay: only the face is new.
+    const controls = tile.querySelector(':scope > .tile-cfg');
+    tile.replaceChildren(renderSpec(spec, t.name));
+    if(controls) tile.appendChild(controls);
+  }
+
+  /* ---- the sub-header: the subtitle, and Configure ---- */
+  function paintHomeHead(){
+    const head = $('#homeHead');
+    head.replaceChildren();
+    if(home.configuring){
+      const input = el('input','input home-sub-input');
+      input.type = 'text';
+      input.value = home.subtitle;      // set as text, never markup
+      input.maxLength = SUBTITLE_MAX;
+      input.placeholder = 'Add a subtitle';
+      input.setAttribute('aria-label','Subtitle');
+      input.disabled = home.saving;
+      input.oninput = () => { home.subtitle = input.value; };
+      head.appendChild(input);
+    }else{
+      const sub = el('h2','home-sub');
+      sub.textContent = home.subtitle;  // set as text, never markup
+      head.appendChild(sub);
+    }
+    const cfg = el('button','tab tab-add home-cfg' + (home.configuring ? ' active' : ''), '<span>Configure</span>');
+    cfg.type = 'button';
+    cfg.id = 'configureBtn';
+    cfg.setAttribute('aria-pressed', home.configuring ? 'true' : 'false');
+    cfg.disabled = home.saving || home.status!=='ready';
+    cfg.onclick = toggleConfigure;
+    head.appendChild(cfg);
+  }
+
+  /* A line under the sub-header: good news fades, a problem stays. */
+  let homeMsgTimer = null;
+  function homeMsg(cls, text){
+    const note = $('#homeMsg');
+    clearTimeout(homeMsgTimer);
+    note.className = 'form-msg home-msg ' + cls;
+    note.textContent = text;
+    if(cls === 'ok') homeMsgTimer = setTimeout(() => { note.textContent = ''; }, 4000);
+  }
+
+  /* Configure on: the tiles get their controls and the subtitle its
+     input. Off: the layout - its mode (flow, the one there is), the
+     subtitle and the tiles' order and sizes - is saved, and the tiles
+     go back to chromeless. A save that fails stays in Configure, the
+     arrangement as it was, to try again. */
+  async function toggleConfigure(){
+    if(home.saving || home.status!=='ready') return;
+    if(!home.configuring){
+      home.configuring = true;
+      homeMsg('info', 'Drag a tile to move it, and pick a size where an app offers more than one. Configure again to save.');
+    }else{
+      home.saving = true;
+      homeMsg('info', 'Saving the layout…');
+      paintHomeHead();
+      const grid = $('#home .tiles');
+      if(grid) grid.setAttribute('aria-busy','true');
+      const res = await api.saveLayout({mode:'flow', subtitle:home.subtitle, items:layoutItems()});
+      home.saving = false;
+      if(res.ok){
+        home.configuring = false;
+        homeMsg('ok', '✓ Layout saved');
+      }else{
+        homeMsg('bad', (res.error || "Couldn't save the layout") + ' - nothing is lost: Configure again to retry.');
+      }
+    }
+    paintHomeHead();
+    paintHome();
+  }
+
+  /* ---- Configure: a tile's controls ---- */
+  const GRIP = '<svg viewBox="0 0 8 12" aria-hidden="true"><circle cx="2" cy="2" r="1.2"/><circle cx="6" cy="2" r="1.2"/><circle cx="2" cy="6" r="1.2"/><circle cx="6" cy="6" r="1.2"/><circle cx="2" cy="10" r="1.2"/><circle cx="6" cy="10" r="1.2"/></svg>';
+  /* Its handle - drag the tile, or step it with the arrow keys - and,
+     when its app offers more than one size, a picker of those sizes:
+     choosing one resizes the tile, and the grid reflows round it. */
+  function tileControls(t, tile){
+    const name = t.name || t.app_id;
+    const bar = el('div','tile-cfg');
+    const grip = el('button','tile-grip', GRIP);
+    grip.type = 'button';
+    grip.setAttribute('aria-label', 'Move '+name+': drag it, or use the arrow keys');
+    grip.title = 'Drag to move, or use the arrow keys';
+    bar.appendChild(grip);
+    if(t.sizes.length > 1){
+      const pick = el('select','tile-size');
+      pick.setAttribute('aria-label', 'Size of '+name);
+      t.sizes.forEach((s, i) => {
+        const o = el('option');
+        o.value = String(i);
+        o.textContent = s.w+' × '+s.h;
+        o.selected = s.w===t.w && s.h===t.h;
+        pick.appendChild(o);
+      });
+      pick.onchange = () => {
+        const s = t.sizes[+pick.value];
+        t.w = s.w; t.h = s.h;
+        spanTile(tile, t);
+      };
+      bar.appendChild(pick);
+    }
+    return bar;
+  }
+
+  /* ---- Configure: reorder ----
+     A sortable list, not a placement: drag a tile onto another and it
+     takes that one's place in the order, the rest reflowing live to show
+     where it will land; the drop keeps it there. Into the gap at a
+     row's end, it goes after that row's last tile; under them all, into
+     the drop row, last. A handle's arrow keys step its tile back (←, ↑)
+     or on (→, ↓). home.tiles follows the order on every drop or step. */
+  function sortableTiles(grid){
+    const syncOrder = () => {
+      const order = Array.from(grid.children).map(t => t.dataset.app);
+      home.tiles.sort((a, b) => order.indexOf(a.app_id) - order.indexOf(b.app_id));
+    };
+    let drag = null;
+    // How far the pointer goes after one reorder before another: tiles of
+    // different sizes reflow under it, and it mustn't chase them.
+    const SETTLE = 12;
+
+    grid.addEventListener('pointerdown', e => {
+      const tile = e.target.closest('.tile');
+      if(!tile || e.button!==0 || e.target.closest('select') || home.saving) return;
+      drag = {tile, id:e.pointerId, x:e.clientX, y:e.clientY, moving:false, last:null, at:null};
+      grid.setPointerCapture(e.pointerId);
+      e.preventDefault();
+    });
+    grid.addEventListener('pointermove', e => {
+      if(!drag || e.pointerId!==drag.id) return;
+      if(!drag.moving){
+        // A press that hasn't gone anywhere is a click, not a drag.
+        if(Math.abs(e.clientX-drag.x) + Math.abs(e.clientY-drag.y) < 6) return;
+        drag.moving = true;
+        drag.tile.classList.add('dragging');
+        hideTip();
+      }
+      // Near the window's top or bottom edge, the page scrolls along.
+      if(e.clientY < 40) window.scrollBy(0, -16);
+      else if(e.clientY > window.innerHeight - 40) window.scrollBy(0, 16);
+      if(drag.at && Math.abs(e.clientX-drag.at.x) + Math.abs(e.clientY-drag.at.y) < SETTLE) return;
+      const spot = dropSpot(grid, drag.tile, e.clientX, e.clientY);
+      // Once per spot, so a reflow that slides a tile under the pointer
+      // doesn't bounce the dragged one back.
+      if(!spot || spot.key===drag.last) return;
+      drag.last = spot.key;
+      if(spot.before===drag.tile.nextElementSibling) return;
+      grid.insertBefore(drag.tile, spot.before);
+      drag.at = {x:e.clientX, y:e.clientY};
+    });
+    const end = e => {
+      if(!drag || e.pointerId!==drag.id) return;
+      const {tile, moving} = drag;
+      drag = null;
+      tile.classList.remove('dragging');
+      if(moving) syncOrder();
+    };
+    grid.addEventListener('pointerup', end);
+    grid.addEventListener('pointercancel', end);
+
+    grid.addEventListener('keydown', e => {
+      const grip = e.target.closest('.tile-grip');
+      const back = e.key==='ArrowLeft' || e.key==='ArrowUp';
+      const on = e.key==='ArrowRight' || e.key==='ArrowDown';
+      if(!grip || (!back && !on)) return;
+      e.preventDefault();
+      if(home.saving) return;
+      const tile = grip.closest('.tile');
+      if(back && tile.previousElementSibling) grid.insertBefore(tile, tile.previousElementSibling);
+      else if(on && tile.nextElementSibling) grid.insertBefore(tile.nextElementSibling, tile);
+      else return;
+      syncOrder();
+      grip.focus();
+    });
+  }
+
+  /* Where the dragged tile lands with the pointer at x, y: {before, key},
+     before the tile it goes in front of (null: last) and key naming the
+     spot - or null, to stay put (over itself, or a gap with no row). */
+  function dropSpot(grid, dragged, x, y){
+    const tiles = Array.from(grid.children);
+    const box = t => t.getBoundingClientRect();
+    // The tile after t, the dragged one aside: what "after t" goes before.
+    const after = t => { const n = t.nextElementSibling; return n===dragged ? n.nextElementSibling : n; };
+    const over = tiles.find(t => { const r = box(t); return x>=r.left && x<r.right && y>=r.top && y<r.bottom; });
+    if(over===dragged) return null;
+    if(over){
+      // Its place: coming from earlier in the order, the dragged tile
+      // goes after it; from later, before it.
+      const forward = tiles.indexOf(dragged) < tiles.indexOf(over);
+      return {before: forward ? after(over) : over, key: over.dataset.app};
+    }
+    if(y >= Math.max(...tiles.map(t => box(t).bottom))) return {before:null, key:':end'};
+    const beside = tiles.filter(t => { const r = box(t); return t!==dragged && y>=r.top && y<r.bottom && x>=r.right; });
+    if(!beside.length) return null;
+    const last = beside[beside.length-1];
+    return {before:after(last), key:':gap:' + last.dataset.app};
   }
 
   /* ---- spec -> DOM: the display vocabulary ----
@@ -2549,6 +2871,7 @@ h5 + .dnote{margin-top:0;}
   paintData();
   paintAppControls();
   paintApps();
+  paintHomeHead();
   paintHome();
   // In parallel: each part paints as soon as its own reads land.
   refreshConnectors();

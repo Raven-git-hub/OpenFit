@@ -1,4 +1,4 @@
 id: steps
 name: Steps
-default_size: { w: 2, h: 2 }
+sizes: [{ w: 1, h: 1 }]
 reads: [steps]
