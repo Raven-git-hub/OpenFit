@@ -609,6 +609,21 @@ h5 + .dnote{margin-top:0;}
 /* panel: its children, stacked */
 .spec-panel{display:flex;flex-direction:column;gap:12px;}
 .spec-panel > .spec-line{flex:1;}
+/* input: a label over a field, its unit and Save - at a panel's foot -
+   and a refusal under them */
+.spec-input{display:flex;flex-direction:column;justify-content:center;gap:5px;min-width:0;}
+.spec-panel > .spec-input{flex:none;margin-top:auto;}
+.spec-input .t{font-size:10.5px;text-transform:uppercase;letter-spacing:.8px;color:var(--muted);font-weight:600;}
+.spec-input .row{display:flex;align-items:center;gap:6px;min-width:0;}
+.spec-input .input{
+  flex:1 1 0;min-width:0;width:auto;padding:5px 8px;font-size:13px;font-variant-numeric:tabular-nums;
+  appearance:textfield;-moz-appearance:textfield;
+}
+.spec-input .input::-webkit-inner-spin-button, .spec-input .input::-webkit-outer-spin-button{-webkit-appearance:none;margin:0;}
+.spec-input .u{font-size:12px;font-weight:600;color:var(--ink-2);}
+.spec-input .btn{flex:none;padding:5px 9px;}
+.spec-input .m{font-size:11px;font-family:var(--font-mono);color:var(--crit);overflow-wrap:anywhere;}
+.spec-input .m:empty{display:none;}
 /* empty and error: muted, centred */
 .spec-msg{display:grid;place-content:center;gap:4px;text-align:center;color:var(--muted);font-size:13px;padding:4px;}
 .spec-msg b{color:var(--ink-2);font-weight:600;font-size:13.5px;}
@@ -771,6 +786,12 @@ h5 + .dnote{margin-top:0;}
        a POST only to carry the cfg; nothing is written. */
     apps:         ()             => fetchJSON('/api/apps'),
     renderApp:    (id, cfg)      => postJSON('/api/app/'+enc(id)+'/render', {cfg: cfg || {}}),
+    /* An app acted on - its tile's input Saved: its handle() runs, and
+       writes only under the app's own source. The reply is the app's
+       spec, rendered afresh ({ok:true, spec}), or why not ({ok:false,
+       error}), nothing written. */
+    appAction:    (id, action, payload, cfg) =>
+      send('/api/app/'+enc(id)+'/action', 'POST', {action, payload, cfg: cfg || {}}),
     /* Home's layout - its tabs, and on each the tiles' order and sizes
        and the subtitle over them - read reconciled with the apps
        installed now, and saved whole as Configure is switched off - or
@@ -2717,7 +2738,7 @@ h5 + .dnote{margin-top:0;}
       tile.dataset.app = t.app_id;
       tile.setAttribute('aria-label', t.name || t.app_id);
       spanTile(tile, t);
-      tile.appendChild(renderSpec(t.spec, t.name));
+      tile.appendChild(renderSpec(t.spec, t.name, t.app_id));
       if(configuring) tile.appendChild(tileControls(t, tile));
       grid.appendChild(tile);
     });
@@ -2744,7 +2765,7 @@ h5 + .dnote{margin-top:0;}
     if(!tile) return;
     // Mid-Configure its controls stay: only the face is new.
     const controls = tile.querySelector(':scope > .tile-cfg');
-    tile.replaceChildren(renderSpec(spec, t.name));
+    tile.replaceChildren(renderSpec(spec, t.name, appId));
     if(controls) tile.appendChild(controls);
   }
 
@@ -3244,7 +3265,8 @@ h5 + .dnote{margin-top:0;}
   }
 
   /* ---- spec -> DOM: the display vocabulary ----
-     Everything an app sends is set as text, never as markup. */
+     Everything an app sends is set as text, never as markup. A spec is
+     drawn for its app (name, appId): an input acts on it. */
   const SPECS = {
     number: s => {
       const box = el('div','spec-number');
@@ -3260,23 +3282,69 @@ h5 + .dnote{margin-top:0;}
       return box;
     },
     line: s => sparkline(Array.isArray(s.points) ? s.points : [], s.title),
-    panel: (s, name) => {
+    panel: (s, name, appId) => {
       const box = el('div','spec-panel');
-      (Array.isArray(s.children) ? s.children : []).forEach(c => box.appendChild(renderSpec(c, name)));
+      (Array.isArray(s.children) ? s.children : []).forEach(c => box.appendChild(renderSpec(c, name, appId)));
       return box;
     },
+    input: (s, name, appId) => specInput(s, appId),
     empty: s => specMsg(null, s.message || 'No data yet'),
     error: (s, name) => specMsg("Couldn't render "+(name || 'this app'), s.message),
   };
-  function renderSpec(spec, name){
+  function renderSpec(spec, name, appId){
     const type = spec && typeof spec==='object' ? spec.type : null;
     return Object.prototype.hasOwnProperty.call(SPECS, type)
-      ? SPECS[type](spec, name)
+      ? SPECS[type](spec, name, appId)
       : specMsg("Couldn't render "+(name || 'this app'), 'Unknown spec type: '+type);
   }
   const fmtSpecValue = v => v==null ? '—'
     : typeof v==='number' ? (Number.isFinite(v) ? v.toLocaleString() : '—')
     : String(v);
+  /* input: a field under its label, its unit and Save beside it. Save
+     (or Enter) sends the app its action, the payload {key: what was
+     typed} - a number, for kind "number" - with the tile's config; the
+     app's fresh spec redraws the tile, and a refusal shows under the
+     field, kept as typed. Nothing is sent from a tile drawn for no app. */
+  function specInput(s, appId){
+    const box = el('div','spec-input');
+    const label = s.label!=null && s.label!=='' ? String(s.label) : '';
+    if(label){ const l = el('div','t'); l.textContent = label; box.appendChild(l); }
+    const row = el('div','row');
+    const field = el('input','input');
+    const numeric = s.kind!=='text';
+    field.type = numeric ? 'number' : 'text';
+    if(numeric){ field.step = 'any'; field.inputMode = 'decimal'; }
+    field.setAttribute('aria-label', label || String(s.key));
+    row.appendChild(field);
+    if(s.unit!=null && s.unit!==''){ const u = el('span','u'); u.textContent = s.unit; row.appendChild(u); }
+    const save = el('button','btn sm');
+    save.type = 'button';
+    save.textContent = 'Save';
+    save.disabled = !appId;
+    row.appendChild(save);
+    box.appendChild(row);
+    const msg = el('div','m');
+    msg.setAttribute('role','status');
+    box.appendChild(msg);
+    const submit = async () => {
+      if(save.disabled) return;
+      const typed = String(field.value);
+      const value = numeric ? Number(typed) : typed;
+      if(!typed.trim() || (numeric && !Number.isFinite(value))){
+        msg.textContent = numeric ? 'Enter a number.' : 'Enter something to save.';
+        return;
+      }
+      msg.textContent = '';
+      save.disabled = field.disabled = true;
+      const res = await api.appAction(appId, s.action, {[s.key]: value}, tileCfg(appId));
+      save.disabled = field.disabled = false;
+      if(res.ok && res.spec) repaintTile(appId, res.spec);
+      else msg.textContent = res.error || "Couldn't save.";
+    };
+    save.onclick = submit;
+    field.onkeydown = e => { if(e.key==='Enter') submit(); };
+    return box;
+  }
   function specMsg(title, text){
     const box = el('div','spec-msg');
     if(title){ const b = el('b'); b.textContent = title; box.appendChild(b); }

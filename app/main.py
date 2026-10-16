@@ -2,13 +2,13 @@ import base64
 import hashlib
 import hmac
 import json
-import math
 import os
 import re
 import secrets
 import sqlite3
 import threading
 import time
+import traceback
 import urllib.parse
 from datetime import date, datetime, timedelta, timezone
 
@@ -33,16 +33,15 @@ from derived import (
 )
 from metrics import (
     METRICS,
-    PLAUSIBLE_RANGES,
     RESTING_HR_BPM,
     SERIES_METRICS,
     SESSION_KINDS,
     STEPS,
-    WEIGHT_KG,
     category_for,
     grain_for,
+    plausible_value,
 )
-from host import render_app, trailing_window
+from host import APP_SOURCE_PREFIX, WriteCtx, render_app, trailing_window
 
 DB_PATH = os.getenv("DB_PATH", "/data/tracker.db")
 AUDIO_DIR = os.getenv("AUDIO_DIR", "/app/audio")
@@ -106,70 +105,6 @@ def index():
 @app.route("/audio/<name>")
 def audio(name):
     return send_from_directory(app.config["AUDIO_DIR"], name)
-
-
-# ---------- weights ----------
-
-# /api/weights predates the metrics table and keeps its shape for the
-# interim UI: [{date, weight}] in kilograms. Weight is now the weight_kg
-# metric, and these routes read and write the hand-entered readings
-# only - source 'manual'. Any other source's weight_kg readings (a
-# scale plugin, one day) sit beside them and are never touched here.
-MANUAL_SOURCE = "manual"
-
-
-@app.route("/api/weights", methods=["GET"])
-def get_weights():
-    conn = get_conn()
-    # The value comes back as stored - a REAL, as the old weights.weight
-    # column was - so 82 still reads as 82.0. No whole-number cast:
-    # unlike steps, weight was never an INTEGER field.
-    rows = conn.execute(
-        "SELECT date, value AS weight FROM metrics "
-        "WHERE metric = ? AND source = ? ORDER BY date",
-        (WEIGHT_KG, MANUAL_SOURCE),
-    ).fetchall()
-    conn.close()
-    return jsonify([dict(r) for r in rows])
-
-
-@app.route("/api/weights", methods=["POST"])
-def add_weight():
-    body = request.get_json(force=True)
-    d = body.get("date") or date.today().isoformat()
-    w = body.get("weight")
-    if w is None:
-        return jsonify({"error": "weight required"}), 400
-    conn = get_conn()
-    write_metric(conn, d, MANUAL_SOURCE, WEIGHT_KG, w)
-    # Re-derive the day, as the webhook does, so the weigh-in is in the
-    # derived profile - and the access contract - at once rather than
-    # after the next sync. The commit in recompute_derived() lands the
-    # reading and its pick together.
-    recompute_derived(conn, since=d, until=d)
-    conn.close()
-    return jsonify({"ok": True})
-
-
-@app.route("/api/weights", methods=["DELETE"])
-def clear_weights():
-    conn = get_conn()
-    # RETURNING, so the days re-derived are exactly the rows deleted -
-    # a weigh-in posted in between can't be cleared without its day
-    # being re-derived too.
-    cleared = conn.execute(
-        "DELETE FROM metrics WHERE metric = ? AND source = ? RETURNING date",
-        (WEIGHT_KG, MANUAL_SOURCE),
-    ).fetchall()
-    # Each cleared day re-derived on its own, never one span over all of
-    # them: that would re-pick every other metric in between under the
-    # current source roles, which are forward-only. The first commits the
-    # delete along with its day's pick.
-    for row in cleared:
-        recompute_derived(conn, since=row["date"], until=row["date"])
-    conn.commit()
-    conn.close()
-    return jsonify({"ok": True})
 
 
 # ---------- workouts ----------
@@ -350,7 +285,7 @@ def get_activity():
 # samples have no derived pick yet: every source's session or sample is
 # served, each tagged with its source.
 #
-# Unlike /api/activity and /api/weights, these shapes were made for apps,
+# Unlike /api/activity, these shapes were made for apps,
 # not kept for the interim UI: keys and units are the canonical ones from
 # metrics.py, and a value is the number as stored.
 
@@ -671,9 +606,11 @@ def get_samples(metric):
 
 # The Home tab's tiles. Each installed app is a folder in APPS_DIR
 # (apps.py) whose render(ctx, cfg) returns a display spec (host.py); the
-# page lists the apps, renders each and draws the specs. The folder is
-# scanned on every request, so an app added, edited or removed shows on
-# the next load, with no restart. An app is added by hand, or installed
+# page lists the apps, renders each and draws the specs - and an app
+# with a handle(ctx, action, payload) can be acted on from its tile's
+# input, writing under its own source (POST /api/app/<id>/action). The
+# folder is scanned on every request, so an app added, edited or removed
+# shows on the next load, with no restart. An app is added by hand, or installed
 # from the page through POST /api/apps, and removed through DELETE
 # /api/apps/<id>.
 
@@ -727,7 +664,8 @@ def remove_app(app_id):
     used as a path: uninstall_app() checks it, finds the app by scanning
     and removes the folder it loaded from. 200 {"ok": true, "id"}; 400
     for an id no app could have, 404 for one no app loads under - either
-    way nothing is removed. Its data stays: an app writes none yet.
+    way nothing is removed. Its data stays: what it wrote under app:<id>
+    is kept, as a disconnected source's is.
     """
     try:
         removed = uninstall_app(app.config["APPS_DIR"], app_id)
@@ -787,6 +725,83 @@ def render_installed_app(app_id):
     finally:
         conn.close()
     return jsonify(spec)
+
+
+@app.route("/api/app/<app_id>/action", methods=["POST"])
+def act_on_app(app_id):
+    """Act on an app: {"action", "payload", "cfg"} -> {"ok": true, "spec"}.
+
+    What a tile's input element sends when its Save is pressed, and the
+    one place an app writes. The app's handle(ctx, action, payload) runs
+    with a WriteCtx (host.py) whose source is the app's own, app:<id>:
+    the ctx injects it, and no writer takes one, so an app can only ever
+    create or overwrite its own rows - never a device's, nor another
+    app's. payload is the app's to interpret: a mapping, {key: value}
+    from the input, {} if absent. cfg is the instance's config, for the
+    render after; one that isn't a mapping is {}.
+
+    One transaction. If handle() raises - input it refused, a write the
+    ctx refused, a bug - everything it wrote is rolled back and the reply
+    is 400 {"ok": false, "error"}: unlike a render, a write fails
+    visibly, and a ValueError's message is put as the app wrote it.
+    Otherwise each day it wrote is re-derived, landing its writes and
+    their pick together, and the app is rendered afresh (render_app(),
+    which never raises) for the tile: 200 {"ok": true, "spec"}.
+
+    404 for an id with no app that loads; 400 for an app with no
+    handle(), or a body whose action isn't text or whose payload isn't a
+    mapping - with nothing run.
+    """
+    installed = find_app(app.config["APPS_DIR"], app_id)
+    if installed is None:
+        return jsonify({"ok": False, "error": f"unknown app: {app_id}"}), 404
+    if installed.handle is None:
+        return jsonify({
+            "ok": False,
+            "error": f"{app_id} takes no actions: its app.py has no handle(ctx, action, payload)",
+        }), 400
+    body = request.get_json(force=True, silent=True)
+    if not isinstance(body, dict):
+        return jsonify({"ok": False, "error": 'expected {"action": "<name>", "payload": {...}}'}), 400
+    action = body.get("action")
+    if not isinstance(action, str) or not action:
+        return jsonify({"ok": False, "error": "action must name one, as text"}), 400
+    payload = body.get("payload")
+    if payload is None:
+        payload = {}
+    if not isinstance(payload, dict):
+        return jsonify({"ok": False, "error": "payload must be a mapping, such as {\"weight_kg\": 81.2}"}), 400
+    cfg = body.get("cfg")
+    if not isinstance(cfg, dict):
+        cfg = {}
+
+    conn = get_conn()
+    try:
+        ctx = WriteCtx(conn, installed.id)
+        try:
+            installed.handle(ctx, action, payload)
+        except Exception as e:
+            conn.rollback()
+            if isinstance(e, ValueError) and str(e):
+                # A refusal - the app's, or the ctx's: said as it was put.
+                print(f"[apps] {installed.id}: action {action!r} refused: {e}")
+                error = str(e)
+            else:
+                print(f"[apps] {installed.id}: action {action!r} failed")
+                traceback.print_exc()
+                error = f"{type(e).__name__}: {e}"
+            return jsonify({"ok": False, "error": error}), 400
+        # Each day re-derived on its own, never one span over them all,
+        # which would re-pick every other metric in between under the
+        # current source roles (forward-only). The first commits the
+        # writes along with its day's pick.
+        for day in ctx.written:
+            recompute_derived(conn, since=day, until=day)
+        conn.commit()
+        spec = render_app(installed, conn, cfg)
+    finally:
+        conn.close()
+    return jsonify({"ok": True, "spec": spec})
 
 
 # ---------- the Home layout ----------
@@ -960,7 +975,7 @@ def set_source_role_route(metric):
 
 # ---------- webhook ----------
 
-# The push input, beside pull plugins and manual entry: an automation
+# The push input, beside pull plugins and apps: an automation
 # (Home Assistant on a smart-scale weigh-in, a Shortcut, a script) POSTs
 # one reading to /api/webhook/<token> the moment it happens. One URL for
 # every metric - the body names which.
@@ -976,6 +991,12 @@ WEBHOOK_TOKEN_KEY = "webhook_token"
 # An automation can name its device instead (e.g. "eufy"), which then
 # takes part in source roles and the derived pick like any other source.
 WEBHOOK_SOURCE = "webhook"
+
+# Sources nothing writes to any more, kept as they are: "manual" is the
+# weigh-ins typed into the console before the weight-entry app replaced
+# it (POST /api/weights, retired, and migration 006's). History, read
+# and picked like any source's, but never added to.
+FROZEN_SOURCES = ("manual",)
 
 
 def _stored_webhook_token(conn):
@@ -1046,16 +1067,10 @@ def _webhook_reading(body):
     if not isinstance(metric, str) or metric not in METRICS:
         return None, f"unknown metric: {metric!r} - expected one of {', '.join(METRICS)}"
 
-    raw = body.get("value")
-    value = _finite_number(raw)
-    if value is None:
-        return None, "value must be a number"
-
-    low, high = PLAUSIBLE_RANGES.get(metric, (-math.inf, math.inf))
-    if not low <= value <= high:
-        return None, (
-            f"{metric} must be between {low} and {high} {METRICS[metric]}, got {raw}"
-        )
+    try:
+        value = plausible_value(metric, body.get("value"))
+    except ValueError as e:
+        return None, str(e)
 
     day = body.get("date") or date.today().isoformat()
     try:
@@ -1076,24 +1091,17 @@ def _webhook_reading(body):
             f"source {source!r} is the {PLUGINS[source].name} plugin's - "
             "name your device instead"
         )
+    if source.startswith(APP_SOURCE_PREFIX):
+        # An app's own: written by that app alone, through its actions
+        # (POST /api/app/<id>/action), so its rows are only ever its own.
+        return None, f"source {source!r} is an app's - name your device instead"
+    if source in FROZEN_SOURCES:
+        return None, (
+            f"source {source!r} is kept as history and takes no new readings - "
+            "name your device instead"
+        )
 
     return {"date": day, "source": source, "metric": metric, "value": value}, None
-
-
-def _finite_number(raw):
-    """`raw` as a float, or None if it isn't a finite number.
-
-    bool is an int to Python, but true is not a reading; float() can't
-    hold an integer too big to store; and the JSON parser lets NaN and
-    Infinity through.
-    """
-    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
-        return None
-    try:
-        value = float(raw)
-    except OverflowError:
-        return None
-    return value if math.isfinite(value) else None
 
 
 # No token in the URL at all is a 401 like a wrong one, not a 404.
@@ -1539,9 +1547,9 @@ def disconnect_connector(plugin_id):
     try:
         days = []
         if wipe:
-            # RETURNING, as DELETE /api/weights does: the affected range is
-            # exactly the readings deleted, even if a sync commits rows
-            # between a separate read and this delete.
+            # RETURNING: the affected range is exactly the readings
+            # deleted, even if a sync commits rows between a separate read
+            # and this delete.
             days = [
                 row["date"]
                 for row in conn.execute(

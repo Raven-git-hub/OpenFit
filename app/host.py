@@ -21,6 +21,20 @@ the ones GET /api/metric/<metric> serves, as a list of Points (.date,
 .value, .source), oldest first - so an app never sees raw per-source
 readings. ctx.today() is the server's local date.
 
+An app may also write, from an optional handle(ctx, action, payload)
+beside render() - what a tile's input element sends when its Save is
+pressed (POST /api/app/<id>/action):
+
+    def handle(ctx, action, payload):
+        if action == "log":
+            ctx.write_metric("weight_kg", float(payload["weight_kg"]))
+
+handle() is given a WriteCtx: the same reads, plus ctx.write_metric().
+Its source is fixed to the app's own, app:<id>, when it's made - no
+writer takes a source - so an app can only ever create or overwrite its
+own rows, never a device's. That's the whole of the scoping: the app is
+trusted code, as its render() is, not sandboxed.
+
 The spec vocabulary, built by the ctx's builders (an app may also return
 the dicts directly):
 
@@ -31,6 +45,11 @@ the dicts directly):
         undated point, and title (optional) names it
     {"type": "panel", "children": [spec, ...]}
         its children, stacked in order
+    {"type": "input", "key", "action", "label", "kind", "unit"}
+        a field and a Save button: Save sends `action` to the app's
+        handle(), the payload {key: what was typed} - a number for kind
+        "number", text for "text" - then the tile is drawn afresh;
+        label and unit may be null
     {"type": "empty", "message"}
     {"type": "error", "message"}
         the host's, when a render fails - never an app's to return
@@ -43,11 +62,12 @@ broken app shows as one error tile rather than failing the page.
 import json
 import math
 import traceback
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from typing import NamedTuple
 
 from derived import derived_points
-from metrics import METRICS
+from metrics import METRICS, plausible_value
+from plugins.base import write_metric as file_reading
 
 
 class Point(NamedTuple):
@@ -154,6 +174,39 @@ def panel(*children):
     return {"type": "panel", "children": list(children)}
 
 
+# What an input element's field takes: a number, or text.
+INPUT_KINDS = ("number", "text")
+
+
+def _text_or_none(value, what):
+    if value is not None and not isinstance(value, str):
+        raise TypeError(f"an input's {what} must be text: {value!r}")
+    return value
+
+
+def input(key, action, label=None, kind="number", unit=None):
+    """A field and a Save button that sends `action` to the app's handle().
+
+    The payload is {key: what was typed}: a number for kind "number",
+    text for "text". `label` names the field, `unit` sits beside it;
+    either may be None. Once handle() has run, the tile is drawn afresh
+    from render().
+    """
+    for what, value in (("key", key), ("action", action)):
+        if not isinstance(value, str) or not value:
+            raise TypeError(f"an input's {what} must be non-empty text: {value!r}")
+    if kind not in INPUT_KINDS:
+        raise ValueError(f"an input's kind is one of {', '.join(INPUT_KINDS)}: {kind!r}")
+    return {
+        "type": "input",
+        "key": key,
+        "action": action,
+        "label": _text_or_none(label, "label"),
+        "kind": kind,
+        "unit": _text_or_none(unit, "unit"),
+    }
+
+
 def empty(message=None):
     """Nothing to show, and why."""
     return {"type": "empty", "message": message or "No data yet"}
@@ -169,6 +222,7 @@ class Ctx:
     number = staticmethod(number)
     line = staticmethod(line)
     panel = staticmethod(panel)
+    input = staticmethod(input)
     empty = staticmethod(empty)
 
     def __init__(self, conn, today=None):
@@ -200,6 +254,75 @@ class Ctx:
             Point(p["date"], p["value"], p["source"])
             for p in derived_points(self._conn, key, since, until)
         ]
+
+
+# An app's source is this and its id: app:weight. Nothing but the app's
+# own WriteCtx writes under it (the webhook refuses the prefix).
+APP_SOURCE_PREFIX = "app:"
+
+
+def app_source(app_id):
+    """The source an app's writes are filed under: app:<its id>."""
+    return APP_SOURCE_PREFIX + app_id
+
+
+def _iso_day(raw):
+    """`raw` - a date, or YYYY-MM-DD text - as YYYY-MM-DD, or ValueError."""
+    if isinstance(raw, date) and not isinstance(raw, datetime):
+        return raw.isoformat()
+    if isinstance(raw, str):
+        try:
+            # strptime rather than date.fromisoformat, which also takes
+            # '20260101' and week dates: dates are stored as YYYY-MM-DD.
+            return datetime.strptime(raw, "%Y-%m-%d").date().isoformat()
+        except ValueError:
+            pass
+    raise ValueError(f"date must be YYYY-MM-DD: {raw!r}")
+
+
+class WriteCtx(Ctx):
+    """What handle(ctx, action, payload) is given: a Ctx that can also write.
+
+    One per action. Its source is the app's own, app:<id>, fixed here -
+    none of its writers takes one - so whatever the app does, it can only
+    create or overwrite its own rows. It notes the days it wrote to, for
+    the action route to re-derive once the action has succeeded; nothing
+    is committed here.
+    """
+
+    def __init__(self, conn, app_id, today=None):
+        super().__init__(conn, today=today)
+        self._source = app_source(app_id)
+        self._written = set()
+
+    @property
+    def source(self):
+        """The source this ctx writes under: app:<id>."""
+        return self._source
+
+    @property
+    def written(self):
+        """The days written to so far, oldest first."""
+        return sorted(self._written)
+
+    def write_metric(self, metric, value, date=None):
+        """File one reading of a canonical metric under the app's source.
+
+        `value` is in the metric's canonical unit (METRICS in metrics.py)
+        and held to the webhook's rule: a finite number, never a bool,
+        within the metric's plausible range. `date` is the day it's for,
+        YYYY-MM-DD (or a date), today by default. One reading per (date,
+        source, metric): writing a day again replaces it.
+
+        Raises ValueError, writing nothing, for a key outside the
+        vocabulary, a value that won't do, or a date that isn't one.
+        """
+        if metric not in METRICS:
+            raise ValueError(f"unknown metric: {metric!r}")
+        reading = plausible_value(metric, value)
+        day = self.today() if date is None else _iso_day(date)
+        file_reading(self._conn, day, self._source, metric, reading)
+        self._written.add(day)
 
 
 def render_app(installed, conn, cfg=None, today=None):

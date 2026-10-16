@@ -83,7 +83,7 @@ continuous it is, and which source wins each metric — not the product.
 
 ## Webhook input (push)
 
-Beside pull plugins and manual entry, automations can push a reading the moment
+Beside pull plugins and apps, automations can push a reading the moment
 it happens — Home Assistant on each smart-scale weigh-in, a Shortcut, a script.
 One URL for every metric:
 
@@ -110,7 +110,8 @@ curl -X POST http://<your-server-ip>:8080/api/webhook/<token> \
   and defaults to `webhook`. Name your device (`"eufy"`) and it takes part in
   source roles like any other source — make it a metric's primary and it wins.
   A pull plugin's id (`garmin`, `google_health`) is refused: its syncs own those
-  readings.
+  readings. So is an app's (`app:…`), which only that app writes, and
+  `manual`, the old hand-entered weigh-ins, kept as history.
 - A value outside the metric's plausible range is refused (400), so a misfired
   automation can't corrupt your data — e.g. steps 0–100000, resting HR 20–200
   bpm, weight 20–400 kg, blood glucose 1–40 mmol/L, mood 1–5. Every key's
@@ -134,8 +135,8 @@ each tagged with the source it came from — never the raw per-source readings, 
 an app gets one trusted answer and never has to reconcile devices itself.
 Sessions and intraday series aren't picked between sources yet: every source's
 are listed, each tagged. Same trusted-network model as the rest of the API: no
-auth. These shapes are the stable contract; the `/api/activity` and
-`/api/weights` routes are compatibility shims, not for apps.
+auth. These shapes are the stable contract; the `/api/activity` route is a
+compatibility shim, not for apps.
 
 **Discovery — `GET /api/catalog`.** Every metric, session kind and series that
 has data:
@@ -344,6 +345,44 @@ logged and left out, as a hand-placed one would be. Apps run as trusted code
 for now (a sandbox is Phase 4). The full contract is in
 [docs/architecture/app-host.md](docs/architecture/app-host.md).
 
+### Apps that write
+
+An app can also add to your data: it's a source like any device, filed under
+its own id, `app:<id>`. Its tile carries an **input** — a field and Save — and
+its `app.py` a `handle()` beside `render()`, which Save calls:
+
+```python
+# /data/apps/weight/app.py (abridged)
+def render(ctx, cfg):
+    log = ctx.input("weight_kg", "log", label="Log weight", unit="kg")
+    data = ctx.metric("weight_kg")
+    if not data:
+        return ctx.panel(ctx.empty("No weigh-ins yet"), log)
+    return ctx.panel(ctx.number(data[-1].value, unit="kg"), log)
+
+def handle(ctx, action, payload):          # payload: {"weight_kg": <what was typed>}
+    if action != "log":
+        raise ValueError(f"unknown action: {action!r}")
+    ctx.write_metric("weight_kg", float(payload["weight_kg"]))   # today, under app:weight
+```
+
+`ctx.write_metric(metric, value, date=None)` files one reading of a canonical
+metric — today's unless given a date — under the app's own source: the app
+never names one, so it can only ever write its own rows, never a device's. A
+reading is held to the webhook's rule (a number within the metric's plausible
+range), and writing the same day again replaces it. Save posts `POST
+/api/app/<id>/action` (`{"action", "payload", "cfg"}`): if `handle()` raises,
+nothing it wrote is kept and the tile shows why (a `ValueError`'s message as
+written); otherwise the day is re-derived at once and the tile redrawn from a
+fresh `render()`. An app's data competes in the same per-metric pick as any
+source's, after Garmin and Google Health unless you make it a metric's primary
+(`PUT /api/source-roles/<metric>`), and stays when the app is uninstalled.
+
+The **Weight** app above (in full in `tests/fixtures/apps/weight/`) is the one
+way to log a weigh-in by hand: install it from its two files and its tile goes
+on Home. It replaced the old `/api/weights` routes. Weigh-ins logged before it
+keep their source, `manual`: history, still shown and picked, never added to.
+
 ## Quick start
 
 ```bash
@@ -435,9 +474,10 @@ vocabulary (`steps`, `resting_hr_bpm`, `weight_kg`, ... in `app/metrics.py`,
 each with its unit, category, grain and plausible range — see
 [metric schema v2](docs/architecture/metric-schema-v2.md)) — so a new metric
 needs no migration. Weight is one of those
-metrics: hand-entered weigh-ins are `weight_kg` readings (in kg) under the source
-`manual` (Garmin files its own from a compatible scale, under `garmin`), and
-there is no separate weights table any more. A source files only what it
+metrics: a weigh-in logged in the Weight app is a `weight_kg` reading (in kg)
+under its source, `app:weight` — the ones typed in before it stay under
+`manual`, as history — and Garmin files its own from a compatible scale, under
+`garmin`; there is no separate weights table any more. A source files only what it
 measured: on a day a Garmin watch wasn't worn (no heart rate recorded), the 0
 active calories and full day sedentary Garmin still reports are defaults, not
 readings, so they aren't stored and another source's real reading for that day
@@ -468,9 +508,8 @@ lists SpO2, already about a reading a minute, as it comes. Apps read it through
 The per-day value is stored, not worked out on each read: a `derived_metrics`
 table holds one value per `(date, metric)`, tagged with the source it came from,
 picked by `app/derived.py` after every sync (for the days that sync covered) and
-once on the first boot of an upgraded database; a webhook reading or a
-hand-entered weight re-derives its own day as it lands (and clearing weights
-re-derives the days cleared). The access contract and `GET /api/activity` read
+once on the first boot of an upgraded database; a webhook reading, or an
+app's write, re-derives its own day as it lands. The access contract and `GET /api/activity` read
 it.
 By default the pick is a fixed source precedence (Garmin, then Google Health, then
 any other source); per metric, you can name a different primary source — e.g.

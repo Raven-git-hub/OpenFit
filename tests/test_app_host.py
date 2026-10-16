@@ -730,9 +730,37 @@ def test_empty_spec():
     assert host.empty() == {"type": "empty", "message": "No data yet"}
 
 
+def test_input_spec():
+    assert host.input("weight_kg", "log", label="Log weight", unit="kg") == {
+        "type": "input", "key": "weight_kg", "action": "log",
+        "label": "Log weight", "kind": "number", "unit": "kg",
+    }
+    # A number by default; label and unit may be left out.
+    assert host.input("note", "save", kind="text") == {
+        "type": "input", "key": "note", "action": "save", "label": None, "kind": "text", "unit": None,
+    }
+
+
+@pytest.mark.parametrize(
+    "args, kwargs, error",
+    [
+        (("", "log"), {}, TypeError),
+        ((None, "log"), {}, TypeError),
+        (("weight_kg", ""), {}, TypeError),
+        (("weight_kg", 3), {}, TypeError),
+        (("weight_kg", "log"), {"kind": "date"}, ValueError),
+        (("weight_kg", "log"), {"label": 3}, TypeError),
+        (("weight_kg", "log"), {"unit": ["kg"]}, TypeError),
+    ],
+)
+def test_input_spec_rejects_what_it_cant_draw(args, kwargs, error):
+    with pytest.raises(error):
+        host.input(*args, **kwargs)
+
+
 def test_the_ctx_carries_the_builders(conn):
     ctx = host.Ctx(conn)
-    assert ctx.panel(ctx.number(1), ctx.line([1]), ctx.empty())["type"] == "panel"
+    assert ctx.panel(ctx.number(1), ctx.line([1]), ctx.input("k", "a"), ctx.empty())["type"] == "panel"
 
 
 def test_render_app_passes_today_and_a_copy_of_cfg(conn, apps_dir):

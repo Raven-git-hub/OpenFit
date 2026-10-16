@@ -472,9 +472,15 @@ def test_a_resync_replaces_the_days_readings(conn, garmin):
 
 
 def test_garmin_weight_sits_beside_manual_weight_and_wins_the_pick(client, conn, garmin):
-    """weight_kg already exists, from hand entry; Garmin is a second source
-    of it, and the default precedence puts Garmin first."""
-    client.post("/api/weights", json={"date": DAY, "weight": 80.0})
+    """weight_kg already exists, from hand entry - the manual weigh-ins
+    from before the weight app, kept as history; Garmin is a second
+    source of it, and the default precedence puts Garmin first."""
+    conn.execute(
+        "INSERT INTO metrics (date, source, metric, value, unit) "
+        "VALUES (?, 'manual', 'weight_kg', 80.0, 'kg')",
+        (DAY,),
+    )
+    conn.commit()
     garmin(conn, {"body_composition": GARMIN_BODY_COMPOSITION})
     recompute_derived(conn)
 

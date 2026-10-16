@@ -24,6 +24,8 @@ SERIES_METRICS or SESSION_KINDS rather than a migration. grain_for() and
 category_for() (at the end) answer for any of these keys.
 """
 
+import math
+
 # ---- grains ----
 #
 # The shape a key's data takes. A metric is DAILY - one figure per day -
@@ -163,12 +165,37 @@ def unit_for(metric):
 
 
 # Canonical key -> the (low, high) a reading of it can plausibly be, in
-# its unit, both ends inclusive. A pushed reading (the webhook in main.py)
-# outside its metric's range is refused rather than stored, so a misfired
-# automation - a sensor sending 0, a scale reporting grams - can't file
-# nonsense as a reading. Deliberately wide: these catch garbage, not
-# unusual days. A metric with no entry accepts any number.
+# its unit, both ends inclusive. A pushed reading (the webhook in main.py,
+# or an app's write) outside its metric's range is refused rather than
+# stored, so a misfired automation - a sensor sending 0, a scale reporting
+# grams - or a slip of the keyboard can't file nonsense as a reading.
+# Deliberately wide: these catch garbage, not unusual days. A metric with
+# no entry accepts any number.
 PLAUSIBLE_RANGES = {metric: bounds for metric, (_, _, _, bounds) in METRIC_DEFS.items()}
+
+
+def plausible_value(metric, raw):
+    """`raw` as a pushed reading of `metric`: a float, or ValueError saying why not.
+
+    The rule both push paths hold a reading to - the webhook's body and
+    an app's ctx.write_metric() (host.py): a finite number, never a bool,
+    within the metric's PLAUSIBLE_RANGES, both ends included. bool is an
+    int to Python, but true is not a reading; float() can't hold an
+    integer too big to store; and the JSON parser lets NaN and Infinity
+    through. `metric` must already be a canonical key.
+    """
+    value = None
+    if not isinstance(raw, bool) and isinstance(raw, (int, float)):
+        try:
+            value = float(raw)
+        except OverflowError:
+            pass
+    if value is None or not math.isfinite(value):
+        raise ValueError("value must be a number")
+    low, high = PLAUSIBLE_RANGES.get(metric, (-math.inf, math.inf))
+    if not low <= value <= high:
+        raise ValueError(f"{metric} must be between {low} and {high} {METRICS[metric]}, got {raw}")
+    return value
 
 
 # ---- series metrics (intraday samples) ----

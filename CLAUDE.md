@@ -115,14 +115,17 @@ own calls to its device API. Full direction:
   all → `NO_SIZE` ("no tile size: ..."), and YAML's `{w:1,h:1}` (no space
   after a colon, so keys `'w:1'`) is named as such. The host never makes a
   size up. `tile_size(raw)` → a `{w, h}` or None, for the layout) and,
-  optionally, an `app.py` whose `render(ctx, cfg)` is
-  imported by `importlib` from its absolute path (nothing added to
-  `sys.path`/`sys.modules`). With no `app.py` the app still loads and lists,
+  optionally, an `app.py` whose `render(ctx, cfg)` — and, if it has one,
+  `handle(ctx, action, payload)`, the app's write entry point
+  (`InstalledApp.handle`, else None: an app without one can't be actioned)
+  — is imported once by `importlib` from its absolute path (nothing added
+  to `sys.path`/`sys.modules`; `_entry_points()`). With no `app.py` the app still loads and lists,
   its render the empty spec "Nothing to draw yet: this app has no app.py"
   (`NOTHING_TO_DRAW`); any other files in the folder are the app's own. A
   folder with no `app.yaml` isn't an app (no
   log); one that doesn't load — bad YAML or field, an import
-  error, no callable `render` — logs `[apps] skipping <folder>: <why>` and is
+  error, no callable `render`, a `handle` that isn't callable — logs
+  `[apps] skipping <folder>: <why>` and is
   left out, never raising; a duplicate id keeps the first folder. Scanned
   on every request (no restart for a new app); a loaded app is cached until
   its `app.yaml`/`app.py` mtime or size changes, so a broken one logs once per
@@ -192,14 +195,36 @@ own calls to its device API. Full direction:
   date null for a bare number; a date a `YYYY-MM-DD` str, `date` or `None`;
   `None`/non-finite is a gap; anything else `TypeError`; `title` text or
   `None`, else `TypeError`),
-  `panel(*children)` (or one list), `empty(message)`; the host's own is
-  `{"type": "error", "message"}`. `render_app(app, conn, cfg=None,
+  `panel(*children)` (or one list), `input(key, action, label=None,
+  kind="number", unit=None)` → `{"type": "input", key, action, label,
+  kind, unit}` (the one interactive element: a field and Save, which sends
+  `action` to the app's `handle()` with `{key: what was typed}`; `key` and
+  `action` non-empty text, `kind` `"number"`/`"text"` (`INPUT_KINDS`),
+  `label`/`unit` text or `None`, else `TypeError`/`ValueError`),
+  `empty(message)`; the host's own is `{"type": "error", "message"}`. `render_app(app, conn, cfg=None,
   today=None)` calls `render(ctx, dict(cfg or {}))` — `cfg` the
   instance's config, passed as given (the app owns its fallbacks,
   `cfg.get("stride_m", 0.75)`) — and never raises: an exception, a
   non-spec (not a dict with a string `type`) or a spec that isn't plain JSON
   (NaN, a set) is logged (`[apps] <id>: ...`, with the traceback) and comes
-  back as an error spec. Full contract: `docs/architecture/app-host.md`.
+  back as an error spec. **Apps as sources**: an app writes only from its
+  `handle(ctx, action, payload)`, run by `POST /api/app/<id>/action` (the
+  one place an app writes) with a `WriteCtx(conn, app_id, today=None)` — a
+  `Ctx` (the same reads) plus `ctx.write_metric(metric, value, date=None)`,
+  which files through `write_metric()` (`app/plugins/base.py`) under
+  `ctx.source`, `app_source(id)` = `APP_SOURCE_PREFIX` `app:` + the id,
+  fixed when the ctx is made: no writer takes a source, so an app can only
+  ever create or overwrite its own rows (an app whose id is `garmin`
+  writes `app:garmin`). It holds a reading to the webhook's rule
+  (`plausible_value()` in `app/metrics.py`: a canonical key, a finite
+  non-bool number within `PLAUSIBLE_RANGES`) and `date` to `YYYY-MM-DD`
+  (or a `date`; default `ctx.today()`), else `ValueError`, writing
+  nothing; it commits nothing and notes the days written (`ctx.written`,
+  sorted) for the route to re-derive. Canonical keys only for now (an
+  invented `app:<id>:<key>` needs a declared unit — later). The render
+  path's `Ctx` has no writer. The app is trusted code, as its `render()`
+  is: the scoping is the ctx, not a sandbox. Full contract:
+  `docs/architecture/app-host.md`.
   The two real apps, `steps` and `steps-metres`, are committed in
   `tests/fixtures/apps/` (as deployed in `/data/apps`) and run against the
   host by `tests/test_app_host.py`: they're correct per the contract, so a
@@ -207,6 +232,20 @@ own calls to its device API. Full direction:
   is verbatim; their `app.yaml` declares `sizes: [{ w: 1, h: 1 }]`, the
   canonical form, where the deployed copies still say `default_size: { w:
   2, h: 2 }` — which keeps loading (tested from the fixtures, swapped back).
+  Beside them, the first writer: `weight` (`tests/fixtures/apps/weight/`,
+  deployed by installing it — the platform ships no apps), the end-to-end
+  test of the write path (`tests/test_app_actions.py`). Its `app.yaml`:
+  id `weight`, fixed (its source is `app:weight`), name "Weight", `sizes:
+  [{ w: 1, h: 1 }, { w: 2, h: 1 }]`, `reads: [weight_kg]`. `render()`: the
+  latest derived `weight_kg` as a `number` (`unit` kg, `caption` "<date> ·
+  via <source>") over an `input` (`key` `weight_kg`, `action` `log`,
+  "Log weight", kg), panelled — `empty("No weigh-ins yet")` in the
+  number's place when there's none, so the first can still be logged.
+  `handle()`: `log` only (anything else a `ValueError`); `payload
+  ["weight_kg"]` coerced to a finite positive float (a bool, junk, `0`,
+  `nan` → `ValueError("Enter your weight in kg, as a positive number")`),
+  then `ctx.write_metric("weight_kg", kg)` for today — one a day, a
+  second the same day replacing it.
 - `app/home_layout.py` — the Home tab's layout, one `settings` row
   (`LAYOUT_KEY` `home_layout`, no migration): `{"tabs": [{id, name,
   mode: "flow", subtitle, items: [{instance_id, app_id, size: {w, h},
@@ -466,8 +505,8 @@ own calls to its device API. Full direction:
   `/api/connectors/<id>/detail`, `PUT /api/connectors/<id>/cadence`,
   `DELETE /api/connectors/<id>`,
   `/api/sync/<plugin>`), and the app routes (`/api/apps`, `POST /api/apps`,
-  `DELETE /api/apps/<id>`, `POST /api/app/<id>/render`, `/api/app/<id>/file`)
-  and Home's layout (`GET`/`PUT /api/home-layout`);
+  `DELETE /api/apps/<id>`, `POST /api/app/<id>/render`, `POST
+  /api/app/<id>/action`, `/api/app/<id>/file`) and Home's layout (`GET`/`PUT /api/home-layout`);
   not `/api/activity` (the last-sync stamp that read it
   is gone). See `docs/architecture/frontend-redesign-and-widget-model.md`.
   **Home** reads `GET /api/apps` and `GET /api/home-layout` together, then
@@ -579,9 +618,21 @@ own calls to its device API. Full direction:
   latest point; broken at a null and between two dated points with a day
   missing between them — never interpolated or zeroed — a lone point a dot,
   none "No data"),
-  `panel` (children stacked; the line takes the rest), `empty`/`error` (muted,
-  centred; error under "Couldn't render <name>"), any other type an error
-  tile. No apps → a note pointing to ＋ Add Application (or the apps
+  `panel` (children stacked; the line takes the rest, an input sits at the
+  foot), `input` (`specInput(s, appId)`: the `label` small and uppercase
+  over a row of the field — `type="number" step="any"` unless `kind` is
+  `"text"`, named by its label else its key — the `unit` and a **Save**
+  `btn sm`, then a `.m` message line; Save or Enter: a blank field, or a
+  number that isn't one, says so ("Enter a number.") and sends nothing,
+  else `api.appAction(appId, action, {[key]: value}, tileCfg(appId))` →
+  `POST /api/app/<id>/action` `{action, payload, cfg}` with Save and the
+  field held meanwhile, then `{ok, spec}` → `repaintTile(appId, spec)`, or
+  `{ok: false}` → its `error` in the message line, the field kept as
+  typed; drawn with no app id, Save is off; in Configure the face is
+  inert, its input with it), `empty`/`error` (muted, centred; error under
+  "Couldn't render <name>"), any other type an error tile. A spec is drawn
+  for its app — `renderSpec(spec, name, appId)`, the id threaded from the
+  tile (`paintTiles()`, `repaintTile()`) through a panel to its input. No apps → a note pointing to ＋ Add Application (or the apps
   folder); `/api/apps` failing → a Retry.
 - `tests/` — pytest, temp DB, no network.
 - `docs/architecture/` — design direction (read first). `docs/design/` — frontend references.
@@ -663,8 +714,9 @@ own calls to its device API. Full direction:
   `bodyWater` → `body_water_pct` and `visceralFat` → `visceral_fat`.
   Converted from grams (`/ 1000`, `BODY_COMPOSITION_GRAMS`): `weight` →
   `weight_kg`, `muscleMass` → `muscle_mass_kg` and `boneMass` →
-  `bone_mass_kg` — Garmin's `weight_kg` sits beside the `manual` one and
-  outranks it in the default precedence. That unit (and the
+  `bone_mass_kg` — Garmin's `weight_kg` sits beside the weight app's
+  (`app:weight`) and the frozen `manual` history, and outranks both in the
+  default precedence. That unit (and the
   `muscleMass`/`boneMass` names) is unverified (every field was null on the
   account probed — one without a compatible smart scale, which is correct
   behaviour, not a failure), so each converted mass is written only within
@@ -726,6 +778,21 @@ own calls to its device API. Full direction:
   row from `metrics` and `derived_metrics` — nothing else — when schema v2
   retired the key (a night only ever filed as a daily total, from before
   `007`, went with it; a longer sync window re-fetches it as a session).
+  **Apps are sources** (no migration): an app files under `app:<id>` (its
+  installed id) through its action route and `WriteCtx` (see Layout:
+  `app/host.py`) — canonical keys stay canonical (`weight_kg` under
+  `app:weight`), competing in the same pick, after the pull plugins
+  (unlisted, by name) unless a source role says otherwise; no tier, no
+  opt-in, no observed/computed flag. Nothing else writes an `app:` source
+  (the webhook refuses the prefix). Uninstalling an app keeps its rows.
+  **`manual` is frozen**: the hand-entered weigh-ins — migration `006`'s
+  and the retired `POST /api/weights`' — stay under source `manual` as
+  history (where they came from), read and picked like any source's, but
+  nothing writes to it any more (`FROZEN_SOURCES` in `app/main.py`; the
+  webhook refuses it). Not migrated: an app can only write its own source,
+  so it can't relabel `manual`'s rows, and a core migration can't know an
+  app's id. Per date there's no contention, so the weight timeline runs
+  on from `manual`'s days to the weight app's.
 - Beside it, `sessions(id, source, kind, "start", "end", summary_json, synced_at)`
   (migration `007`, purely additive) for interval records: `id` is
   `source:kind:start` so a re-sync upserts, `start`/`end` are ISO 8601 UTC
@@ -822,10 +889,9 @@ own calls to its device API. Full direction:
   range with no readings left loses its row; dates outside `since`..`until`
   are untouched.
   Refreshed after every sync for that sync's window (`today - (days-1)` on),
-  after every webhook reading and manual `POST /api/weights` for its one day
-  (`since=until=date`), after `DELETE /api/weights` for each day it cleared
-  (one day at a time), after `DELETE /api/connectors/<plugin>?wipe=1` over
-  the span its deleted readings covered (min..max date, one call, so the
+  after every webhook reading for its one day (`since=until=date`), after
+  an app's action for each day it wrote (one day at a time), after `DELETE
+  /api/connectors/<plugin>?wipe=1` over the span its deleted readings covered (min..max date, one call, so the
   whole removal is one transaction), and backfilled once by `serve()` only while the table
   is empty — never a blanket re-derive (a policy change is forward-only). The
   access contract and the default `/api/activity` read it; `?by_source=1`
@@ -874,8 +940,11 @@ own calls to its device API. Full direction:
   canonical key, `value` a finite number (not a bool) within the metric's
   `PLAUSIBLE_RANGES` (`app/metrics.py`; inclusive; no entry = any number),
   `date` is `YYYY-MM-DD` (default today), and `source` a non-empty string
-  (default `webhook`) that isn't a pull plugin's id. Idempotent per
-  `(date, source, metric)`. Metrics only — no session ingest yet.
+  (default `webhook`) that isn't a pull plugin's id, an app's (`app:`
+  prefix — `APP_SOURCE_PREFIX`) or a frozen one (`manual`). The value
+  rule is `plausible_value()` (`app/metrics.py`), shared with an app's
+  `ctx.write_metric()`. Idempotent per `(date, source, metric)`. Metrics
+  only — no session ingest yet.
 - The access contract — the app-facing read API (read-only, no auth, no
   migration; in `app/main.py`). Apps read the DERIVED profile from
   `derived_metrics`, never raw per-source `metrics` rows, so they never
@@ -1100,9 +1169,9 @@ same PR:
   **Duplicate** in a Data app row — its files copied into a new app via
   the Add popup, the id and name bumped with the next free sequential
   number (`steps-2`/"Steps 2"), reviewed and installed like any app; a
-  fork, so edits to the original's files don't reach the copy. Once
-  app-tier write-back lands, a copy writing an app-defined metric does so
-  under its own `app:<new-id>:…` stream — a decision to confirm then.
+  fork, so edits to the original's files don't reach the copy — and a
+  copy writes under its own source, `app:<new-id>` (an app's source is its
+  installed id), never the original's.
   Slice 5 landed (client only — it reuses `POST /api/apps` and `GET`/`PUT
   /api/home-layout`, no route or layout change): deploy-to-tab — the Add
   popup's Review offers an **Add to tab** picker when Home has more than
@@ -1115,6 +1184,19 @@ same PR:
   the new tile joins the tab on screen (`flowLayout()` squaring the
   working copy with the apps) and is moved like any tile, the
   Configure-off save the only writer.
+  App write-back landed (apps-as-source slice B, no migration): an
+  optional `handle(ctx, action, payload)` in `app.py`, run by `POST
+  /api/app/<id>/action` with a `WriteCtx` whose source is fixed to
+  `app:<id>`; the `input` spec element (a field and Save) that sends it
+  from a tile, which is redrawn from the reply; and the `weight` app, the
+  first writer, which retired `/api/weights` and `MANUAL_SOURCE` (the
+  console's weigh-in form had already gone) — `manual` frozen as history,
+  not migrated. Still to come for write-back: `write_session` (the
+  roster path), invented `app:<id>:<key>` metrics (a declared unit),
+  `base_tz` (slice A: an app's write lands on the server's local date
+  until then), timestamped weigh-ins more than one a day (the instant
+  grain), and how apps rank against other unnamed sources
+  (`data-consolidation-model.md` §10 — today by name).
   Still to come for multi-tab: richer settings field types
   (select/enum/boolean) and a live preview. Also still to come: the
   grid pass (free cell placement as a second layout
@@ -1128,11 +1210,10 @@ same PR:
   in a read-only viewer (`GET /api/app/<id>/file`), a reserved writes-ticker
   slot, Refresh, Duplicate (slice 4, above) and Uninstall (`DELETE /api/apps/<id>`, the first
   destructive app action); Browse / Build / Create are still placeholders;
-  next the writes ticker (once app-tier write-back exists), then alerts;
+  next the writes ticker (now app write-back exists to count), then alerts;
   updating in place, editing files, disabling an app and zip upload are
   out — Uninstall, then add, is the update path),
-  metric write-back, a custom `app.js`,
-  enforcing `reads`, and the sandbox (Phase 4).
+  a custom `app.js`, enforcing `reads`, and the sandbox (Phase 4).
 - **The access contract:** landed (see Data model): discovery, range queries
   with provenance, sessions, intraday series (passthrough); for the
   data-collation console, each catalog entry's
@@ -1143,7 +1224,7 @@ same PR:
   (one per night across devices), and the series stitch.
 Keep `GET /api/activity` returning its current flat shape (`{date, steps,
 resting_hr, source}`, plus `synced_at` with `?by_source=1` — its `sleep_hours`
-field went with `sleep_minutes` in v2), and `/api/weights` its
-`[{date, weight}]` shape (manual `weight_kg` readings only), as compatibility shims
-during the data-model change (the console reads neither any more). Remove the orphaned
+field went with `sleep_minutes` in v2) as a compatibility shim during the
+data-model change (the console doesn't read it any more); `/api/weights`, the
+other one, is retired — the weight app writes weight now. Remove the orphaned
 `workouts` table + `/api/workouts` when convenient (unused by the UI).

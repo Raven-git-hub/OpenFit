@@ -7,8 +7,8 @@ and category), GET /api/coverage which days hold it, GET
 /api/sessions/<kind> one kind's sessions (by source priority) and GET /api/series/<metric>
 one series metric's intraday samples, each with its provenance. Metrics
 come from derived_metrics - the picked value - never the raw per-source
-rows; samples have no pick yet, so every source's are served. Also here: manual /api/weights writes
-re-derive their days, so a weigh-in reaches the contract at once.
+rows; samples have no pick yet, so every source's are served. (An app's
+write reaching the contract at once is test_app_actions.py's.)
 """
 
 from datetime import datetime, timedelta, timezone
@@ -78,15 +78,6 @@ def sessions(client, kind, query=""):
     resp = client.get(f"/api/sessions/{kind}{query}")
     assert resp.status_code == 200
     return resp.get_json()
-
-
-def picked(conn, date, metric):
-    """(value, source) derived for one (date, metric), or None."""
-    row = conn.execute(
-        "SELECT value, source FROM derived_metrics WHERE date = ? AND metric = ?",
-        (date, metric),
-    ).fetchone()
-    return tuple(row) if row else None
 
 
 def assert_rejected(resp, status):
@@ -854,93 +845,3 @@ def test_a_malformed_date_is_400(client, path, query, named):
 )
 def test_from_after_to_is_400(client, path):
     assert_rejected(client.get(path + "?from=2026-01-02&to=2026-01-01"), 400)
-
-
-# ---------- manual weights reach the contract at once ----------
-
-
-def test_posted_weight_is_in_the_contract_at_once(client):
-    assert client.post("/api/weights", json={"date": "2026-01-02", "weight": 82.5}).status_code == 200
-
-    assert series(client, WEIGHT_KG)["points"] == [
-        {"date": "2026-01-02", "value": 82.5, "source": "manual"}
-    ]
-    [weight] = client.get("/api/catalog").get_json()["metrics"]
-    assert weight["last_value"] == 82.5
-
-
-def test_reposted_weight_replaces_its_derived_value(client):
-    client.post("/api/weights", json={"date": "2026-01-02", "weight": 82.5})
-    client.post("/api/weights", json={"date": "2026-01-02", "weight": 81.0})
-
-    assert series(client, WEIGHT_KG)["points"] == [
-        {"date": "2026-01-02", "value": 81.0, "source": "manual"}
-    ]
-
-
-def test_posted_weight_still_goes_through_the_pick(client, conn):
-    # Garmin outranks hand entry by default, so its weigh-in stays the pick.
-    insert(conn, "2026-01-02", "garmin", weight_kg=83.0)
-    recompute_derived(conn)
-
-    client.post("/api/weights", json={"date": "2026-01-02", "weight": 82.5})
-
-    assert picked(conn, "2026-01-02", WEIGHT_KG) == (83.0, "garmin")
-
-
-def test_posted_weight_re_derives_only_its_day(client, conn):
-    # Forward-only: a role set since the last derive mustn't reach any
-    # other day through a weigh-in.
-    insert(conn, "2026-01-01", "garmin", steps=9000)
-    insert(conn, "2026-01-01", "google_health", steps=8000)
-    recompute_derived(conn)
-    set_source_role(conn, STEPS, "google_health")
-
-    client.post("/api/weights", json={"date": "2026-01-02", "weight": 82.5})
-
-    assert picked(conn, "2026-01-01", STEPS) == (9000, "garmin")
-
-
-def test_cleared_weights_leave_the_contract(client):
-    client.post("/api/weights", json={"date": "2026-01-01", "weight": 82.0})
-    client.post("/api/weights", json={"date": "2026-01-03", "weight": 81.5})
-
-    assert client.delete("/api/weights").status_code == 200
-
-    assert series(client, WEIGHT_KG)["points"] == []
-    assert client.get("/api/catalog").get_json()["metrics"] == []
-
-
-def test_cleared_weights_fall_back_to_another_source(client, conn):
-    # 'manual' sorts before 'scale', so it wins until it's cleared.
-    insert(conn, "2026-01-01", "scale", weight_kg=83.0)
-    client.post("/api/weights", json={"date": "2026-01-01", "weight": 82.0})
-    assert picked(conn, "2026-01-01", WEIGHT_KG) == (82.0, "manual")
-
-    client.delete("/api/weights")
-
-    assert series(client, WEIGHT_KG)["points"] == [
-        {"date": "2026-01-01", "value": 83.0, "source": "scale"}
-    ]
-
-
-def test_clearing_weights_re_derives_only_the_cleared_days(client, conn):
-    # Steps on a day between two weigh-ins: clearing them must not
-    # re-pick it under a role set since its derive.
-    client.post("/api/weights", json={"date": "2026-01-01", "weight": 82.0})
-    insert(conn, "2026-01-02", "garmin", steps=9000)
-    insert(conn, "2026-01-02", "google_health", steps=8000)
-    recompute_derived(conn, since="2026-01-02", until="2026-01-02")
-    client.post("/api/weights", json={"date": "2026-01-03", "weight": 81.5})
-    set_source_role(conn, STEPS, "google_health")
-
-    client.delete("/api/weights")
-
-    assert picked(conn, "2026-01-02", STEPS) == (9000, "garmin")
-    assert picked(conn, "2026-01-01", WEIGHT_KG) is None
-    assert picked(conn, "2026-01-03", WEIGHT_KG) is None
-
-
-def test_clearing_no_weights_is_fine(client):
-    assert client.delete("/api/weights").status_code == 200
-    assert client.get("/api/catalog").get_json() == {"metrics": [], "sessions": [], "series": []}
