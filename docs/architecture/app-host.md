@@ -407,9 +407,10 @@ An app writes no data yet, so uninstalling removes only its folder.
   404 for an unknown app or file, 413 for a file too big to show, 415 for one
   that isn't text. See
   [Showing a file](#showing-a-file-get-apiappidfilenamefile).
-- `GET /api/home-layout` → `{"mode": "flow", "subtitle", "items": [{app_id,
-  size: {w, h}}]}`, Home's layout squared with the apps installed now; `PUT
-  /api/home-layout` saves one. See [The layout](#the-layout-flow-mode).
+- `GET /api/home-layout` → `{"tabs": [{id, name, mode: "flow", subtitle,
+  items: [{instance_id, app_id, size: {w, h}, config}]}], "default_tab"}`,
+  Home's layout squared with the apps installed now; `PUT /api/home-layout`
+  saves one. See [The layout](#the-layout-tabs-of-instances).
 
 The access contract's reads also take **`?days=N`**: the trailing N days, as
 `ctx.metric()` counts them. It can't be combined with `from`/`to`, and a value
@@ -451,49 +452,85 @@ wrapping and scaling.
 The layout is stored in cells, so a window resize only changes how many
 pixels a cell is. Nothing reflows or moves.
 
-### The layout: flow mode
+### The layout: tabs of instances
 
 One `settings` row, `home_layout` (no migration), `app/home_layout.py`:
 
 ```json
-{ "mode": "flow",
-  "subtitle": "<the line over the tiles>",
-  "items": [ { "app_id": "steps", "size": { "w": 1, "h": 1 } }, ... ] }
+{ "tabs": [
+    { "id": "home",
+      "name": "Home",
+      "mode": "flow",
+      "subtitle": "<the line over the tiles>",
+      "items": [
+        { "instance_id": "3f9c0a1b2d4e6f70", "app_id": "steps",
+          "size": { "w": 1, "h": 1 }, "config": {} }, ... ] }, ... ],
+  "default_tab": "home" }
 ```
 
+- **A tab is one flow layout**, plus an `id` (a short slug: up to 32
+  lowercase letters, digits and dashes, not starting with a dash) and a
+  `name` (its label on the tab strip, at most 40 characters). `default_tab`
+  is one tab's id. Home shows the default tab; there's no tab strip yet.
+- **An item is an instance**: a placement of an app, not the app itself.
+  It has its own `instance_id` (a token, unique across every tab), its own
+  `size` (one of the app's declared `sizes`) and its own `config` (an
+  object; `{}` until there's an editor for it, but stored and returned). So
+  one app can be placed more than once, on different tabs or on one. The
+  server mints instance ids: a save can leave one out.
 - **`items` is ordered, and the order is the layout.** There are no
-  coordinates in flow mode. Each item pins an app and the size chosen for
-  its tile, one of the app's declared `sizes`.
-- **`mode` is always `"flow"` for now.** It holds the seat for the grid (free
-  cell placement), so that lands as a second mode, not a migration. There's
-  no mode switch.
-- **The subtitle** is text, at most 120 characters (`MAX_SUBTITLE`), empty
-  for none.
+  coordinates in flow mode.
+- **`mode` is per tab, and always `"flow"` for now.** It holds the seat for
+  the grid (free cell placement), so that lands as a second mode, not a
+  migration. There's no mode switch.
+- **The subtitle** is per tab: text, at most 120 characters
+  (`MAX_SUBTITLE`), empty for none.
 
 **Reading it (`GET /api/home-layout`) reconciles it** with the apps installed
 now, because apps are installed and removed out of band (the Library, or by
 hand on the volume):
 
-1. The saved items, in order, less any whose app isn't installed (or doesn't
-   load), a repeat of one already placed, or anything that isn't an item.
+1. On each tab, the saved instances in order, less any whose app isn't
+   installed (or doesn't load), whose id isn't valid, or whose id was already
+   used on any tab (the first one stands).
 2. Each at its saved size if its app still offers that size, else at the
-   app's default.
-3. Then every installed app no item places, at its default size, in folder
-   order. With nothing saved, that's every app.
+   app's default, with its config.
+3. Then every installed app with no instance on any tab gets one, with a
+   fresh id at its default size, at the end of the default tab, in folder
+   order. So every installed app always has at least one instance: there's
+   no "installed but unplaced", and an app you install appears on Home.
+
+A tab that isn't one, or has a bad or repeated id, is dropped; a name a save
+wouldn't take reads as the tab's id. There's always at least one tab, and
+`default_tab` always names one (the first, if the saved one is gone).
 
 A read never rewrites the saved row: the next save stores the reconciled
 layout. So an app uninstalled and installed again before then (the update
-path) comes back where it was. A saved row that isn't a layout (the row can
-also be written through `/api/settings`) reads as nothing saved.
+path) comes back where it was, with the same instance id and config. It also
+means an instance the read added has an id for that read only, until it's
+saved.
 
-**Saving it (`PUT /api/home-layout`)** takes the layout as JSON and stores it
-once its shape is checked: `mode` `"flow"`, `subtitle` text up to the limit,
-and `items` a list of `{app_id, size: {w, h}}`, each `app_id` one an app could
-have and listed once, each size whole cells from 1 to 6. Anything else in the
-body or an item is dropped. The server doesn't check which apps are installed
-or what sizes they offer (the next read squares that), and it never works out
-a position: the page owns the flow. `200 {"ok": true}`, or a 400 that stores
-nothing.
+**The layout from before tabs** was `{"mode": "flow", "subtitle", "items":
+[{app_id, size}]}`. A row like that (or no row, or one that isn't a layout:
+the row can also be written through `/api/settings`) reads as one tab,
+`home`, named "Home", holding what that layout showed: the same apps in the
+same order at the same sizes under the same subtitle, each an instance with a
+fresh id and `config {}`. There's no migration: the next save stores the new
+shape.
+
+**Saving it (`PUT /api/home-layout`)** takes the whole layout as JSON and
+stores it once its shape is checked: `tabs` a non-empty list, each with a
+valid, unique `id`, a `name` that isn't blank and is at most 40 characters,
+`mode` `"flow"`, `subtitle` text up to the limit and `items` a list. Each item
+needs an `app_id` an app could have and a size of whole cells from 1 to 6;
+`config`, if given, must be an object (left out, it's `{}`); `instance_id`, if
+given, must be a valid token used once across the whole layout (left out, the
+server mints one). The same app can be placed any number of times.
+`default_tab` that names no tab is taken as the first. Anything else in the
+body, a tab or an item is dropped. The server doesn't check which apps are
+installed or what sizes they offer (the next read squares that, and gives any
+app left with no instance one), and it never works out a position: the page
+owns the flow. `200 {"ok": true}`, or a 400 that stores nothing.
 
 ### Configure
 
@@ -514,8 +551,9 @@ filled with the accent while on.
 - **Resize = the picker.** Choose a size and the tile takes it, the grid
   reflowing around it. There's no drag-to-resize, and the page never offers a
   size the app didn't declare.
-- **Off:** the layout (`mode`, `subtitle`, `items`) is saved and the tiles go
-  back to chromeless. If the save fails, Configure stays on with the error,
+- **Off:** the whole layout is saved (every tab, with the tab on screen's
+  subtitle and its tiles' order, sizes, instance ids and configs as they stand)
+  and the tiles go back to chromeless. If the save fails, Configure stays on with the error,
   nothing lost, to try again.
 
 The subtitle and every app name are set as text, never as markup.
@@ -524,12 +562,18 @@ The subtitle and every app name are set as text, never as markup.
 
 The page keeps three parts apart:
 
-1. `loadHome()` reads the apps, the layout and the specs into `home.tiles`:
-   `{app_id, name, spec, w, h, sizes}`, in layout order.
-2. `layoutTiles(items, apps)` is `flowLayout`: the page's copy of the
-   server's reconcile. It squares the layout with the apps read beside it, and
-   an unsaved Configure with an app installed or removed meanwhile (a test
-   holds it to the server's).
+1. `loadHome()` reads the apps, the layout and the specs. It keeps the whole
+   layout (`home.layout`), picks the default tab (`home.activeTab`), and reads
+   that tab's instances into `home.tiles`: `{instance_id, app_id, name, spec,
+   w, h, sizes, config}`, in layout order. Tiles are still keyed by `app_id`,
+   one an app, which is safe while nothing on the page can place an app twice.
+2. `layoutTiles(items, apps, elsewhere)` is `flowLayout`: the page's copy of
+   the server's reconcile for one tab. It squares the tab's instances with the
+   apps read beside it, and an unsaved Configure with an app installed or
+   removed meanwhile, carrying each instance's id and config. An app placed
+   nowhere (not on this tab, nor among `elsewhere`, the apps the other tabs
+   place) goes on the end with no instance id yet; the save mints one. Tests
+   hold it to the server's.
 3. `paintTiles(box, tiles, configuring)` draws them on the grid, with
    Configure's controls when it's on.
 
@@ -554,7 +598,14 @@ saved positions and gives `paintTiles` start cells. The sizes, the CSS grid,
   app can write back) and alerts (an app that doesn't load, or whose render
   fails, flagged in its row). Editing an app's files, updating one in place
   and disabling one are out: there's no mechanism for them.
-- **Per-instance config** and the UI to edit it (`cfg` is `{}`), **metric
+- **Multi-tab Home**, beyond the layout model: the tab strip (switch, create,
+  rename, delete); per-instance render (`/api/app/<id>/render` carrying each
+  instance's `config`); the UI to add a tile, move one between tabs or
+  duplicate one, with tiles keyed by instance; and deploy-to-tab in the Add
+  Application popup. The stored layout already holds tabs of instances (see
+  [The layout](#the-layout-tabs-of-instances)).
+- **Per-instance config** and the UI to edit it (`cfg` is `{}`; each
+  instance's `config` is stored, but nothing reads it yet), **metric
   write-back**, and a custom `app.js` for an app that draws its own face.
 - **Enforcing `reads`:** it's recorded, but `ctx.metric()` serves any key in
   the vocabulary.

@@ -202,25 +202,55 @@ own calls to its device API. Full direction:
   canonical form, where the deployed copies still say `default_size: { w:
   2, h: 2 }` — which keeps loading (tested from the fixtures, swapped back).
 - `app/home_layout.py` — the Home tab's layout, one `settings` row
-  (`LAYOUT_KEY` `home_layout`, no migration): `{"mode": "flow", "subtitle",
-  "items": [{app_id, size: {w, h}}]}`. Flow is the one mode: the items'
-  order is the layout, each size one its app declares; no coordinates
-  (`mode` holds the seat for a later grid mode, so that's a second mode,
-  not a migration). `load_layout(conn, apps)` → `reconcile(stored, apps)`
-  against the apps installed now (`scan_apps()`): stored items in order,
-  less any whose app isn't installed (or a repeat, or junk); each at its
-  stored size if its app still offers it, else the app's default; then
-  every app no item places, at its default, in folder order. A stored row
-  that isn't a layout (it can be written through `/api/settings`) reads as
-  none saved. A read never rewrites the row, so an app uninstalled and
+  (`LAYOUT_KEY` `home_layout`, no migration): `{"tabs": [{id, name,
+  mode: "flow", subtitle, items: [{instance_id, app_id, size: {w, h},
+  config}]}], "default_tab"}`. A tab is one flow layout plus its `id`
+  (`TAB_ID`, a slug of up to 32 `[a-z0-9-]`, not starting with `-`) and
+  `name` (the strip label, ≤ `MAX_TAB_NAME` 40); `default_tab` is one
+  tab's id. An item is an **instance** — a placement of an app, not the
+  app: its own `instance_id` (`INSTANCE_ID`, `[A-Za-z0-9_-]{1,64}`,
+  unique across every tab; the server mints them, `new_instance_id()`,
+  `secrets.token_hex(8)`), `size` and `config` (a dict, `{}` until the
+  config editor lands; stored and round-tripped) — so one app can be placed more
+  than once, across tabs or on one. Flow is the one mode, per tab: the
+  items' order is the layout, each size one its app declares; no
+  coordinates (`mode` holds the seat for a later grid mode, so that's a
+  second mode, not a migration). `load_layout(conn, apps)` →
+  `reconcile(stored, apps)` against the apps installed now
+  (`scan_apps()`). A row with no `tabs` list — the shape from before tabs,
+  `{mode, subtitle, items: [{app_id, size}]}`, or none, or junk (it can be
+  written through `/api/settings`) — is upgraded first (`_upgraded()`):
+  one tab `home`/"Home" with its subtitle and an instance per item (a
+  fresh id, `config {}`; a repeat of an app dropped), so it reads as
+  exactly what it showed — no migration; the next save stores the new
+  shape. Then per tab: stored instances in order, less any whose app
+  isn't installed, or whose `instance_id` is invalid or already used on
+  any tab (the first stands); each at its stored size if its app still
+  offers it, else the app's default; `config` kept if a dict, else `{}`;
+  a tab that isn't one, or whose id is invalid or a repeat, dropped; a
+  name a save wouldn't take reads as the id, a non-text subtitle as `""`,
+  `mode` always `"flow"`; no tab left → an empty `home` tab; a dangling
+  `default_tab` → the first tab. Then the **≥1-instance invariant**:
+  every installed app with no instance on any tab gets one (a fresh id,
+  its default size, `config {}`) at the end of the default tab, in folder
+  order — so there's no installed-but-unplaced app, and an install
+  appears on Home. A read never rewrites the row (so an unsaved
+  instance's id is that read's alone), and an app uninstalled and
   reinstalled before the next save (the update path) comes back where it
-  was. `parse_layout(body)` checks a save's shape only — `mode` `"flow"`,
-  `subtitle` text ≤ `MAX_SUBTITLE` (120), `items` a list of `{app_id`
-  (the scanner's `APP_ID`), `size` (`tile_size()`)}`, each id once —
-  dropping anything else, else `LayoutError`; it never checks which apps
-  are installed or what sizes they offer. `save_layout()` stores it.
-  Routes: `GET /api/home-layout` (reconciled) and `PUT /api/home-layout`
-  (`{ok: true}`, or 400 storing nothing).
+  was, id and config included. `parse_layout(body)` checks a save's shape
+  only: `tabs` a non-empty list, each `{id` (`TAB_ID`, unique), `name`
+  (text, not blank, ≤ 40), `mode` `"flow"`, `subtitle` (text ≤
+  `MAX_SUBTITLE` 120), `items` (a list)`}`; each item `{app_id` (the
+  scanner's `APP_ID`), `size` (`tile_size()`), `config` (a dict; absent →
+  `{}`), `instance_id` (`INSTANCE_ID`, unique across the whole layout;
+  absent → minted, in a second pass so a fresh one can't take an id given
+  further on)`}` — the same app any number of times; `default_tab`
+  coerced to the first tab's id if it names none — dropping anything
+  else, else `LayoutError` (messages name the tab, `tab '<id>': ...`). It
+  never checks which apps are installed or what sizes they offer, so it
+  doesn't enforce the invariant: that's the read's. `save_layout()` stores
+  it. Routes: `GET /api/home-layout` (reconciled) and `PUT
+  /api/home-layout` (`{ok: true}`, or 400 storing nothing).
 - `app/templates/index.html` — the data console, one self-contained page
   (vanilla JS, no build step, no external calls or web fonts; every colour/font/
   radius in its `CUSTOMISE OPENFIT HERE` token block). Under the top bar
@@ -379,12 +409,22 @@ own calls to its device API. Full direction:
   app's error tile), and is re-read after a Sync now or a source removal,
   as the data card is, and after an app install or uninstall; an app row's
   Refresh redraws just its own tile (keeping its Configure controls).
-  Three parts, kept apart: `loadHome()` → `home.tiles`, `[{app_id, name,
-  spec, w, h, sizes}]` in layout order; `layoutTiles` (= `flowLayout(items,
-  apps)`, the server's reconcile mirrored — it squares the read layout with
+  Home shows one tab of the layout, the default (`saved.tabs.find(id ===
+  default_tab)`, else the first; there's no tab strip yet): `home.layout`
+  keeps the whole `{tabs, default_tab}` as read and `home.activeTab` that
+  tab's id, and its `subtitle` and `items` are what's drawn. Three parts,
+  kept apart: `loadHome()` → `home.tiles`, `[{instance_id, app_id, name,
+  spec, w, h, sizes, config}]` in layout order — still keyed and deduped
+  by `app_id` (one tile an app; safe while nothing on the page can place
+  an app twice) and each rendered as `GET /api/app/<id>/render` with `cfg
+  {}`; `layoutTiles` (= `flowLayout(items, apps, elsewhere)`, the
+  server's reconcile mirrored — it squares the tab's read instances with
   the apps read beside it, and an unsaved Configure with an install or
-  uninstall made meanwhile; a node test holds it to `reconcile()`) gives
-  the order and each size; `paintTiles(box, tiles, configuring)` draws them
+  uninstall made meanwhile, carrying each instance's `instance_id` and
+  `config`; an app placed nowhere — not on this tab nor among
+  `elsewhere`, the apps the other tabs place — goes on the end with no
+  `instance_id` (the save mints one) and `config {}`; node tests hold it
+  to `reconcile()`) gives the order and each size; `paintTiles(box, tiles, configuring)` draws them
   on a CSS grid six cells across (`GRID_COLS`, = `MAX_CELLS`):
   `grid-template-columns: repeat(6, var(--tile-cell))`, `grid-auto-rows`
   the same (square cells), `grid-auto-flow: row` (never `dense`: a row-end
@@ -411,8 +451,11 @@ own calls to its device API. Full direction:
   last), the rest reflowing live, once per spot and only after the pointer
   moves `SETTLE` px from the last reorder (mixed sizes would chase it
   otherwise); a handle's arrows step it (←/↑ back, →/↓ on); `home.tiles`
-  follows the DOM. Off: `PUT /api/home-layout` `{mode: 'flow', subtitle,
-  items: layoutItems()}`; on success back to view and "✓ Layout saved",
+  follows the DOM. Off: `PUT /api/home-layout` `layoutToSave()` — the
+  whole `{tabs, default_tab}` from `home.layout`, the tab on screen with
+  `subtitle: home.subtitle` and `items: layoutItems()` (each tile's
+  `{instance_id, app_id, size, config}`, an undefined id left out by
+  JSON), every other tab as read; on success back to view and "✓ Layout saved",
   on failure it stays in Configure with the error. The subtitle and every
   app name are set as text (`textContent`, `.value`, attributes), never
   markup. `renderSpec()` draws the vocabulary, all as text,
@@ -699,12 +742,16 @@ own calls to its device API. Full direction:
   /api/connectors/<id>/cadence` (see Connectors); the baseline itself isn't
   user-configurable.
 - Home layout: the `settings` row `home_layout` (no migration) holds JSON
-  `{"mode": "flow", "subtitle", "items": [{"app_id", "size": {"w", "h"}}]}`
-  — the tiles' order and sizes and the line over them, written by
-  Configure through `PUT /api/home-layout` and read, reconciled with the
-  installed apps, through `GET /api/home-layout` (`app/home_layout.py`;
-  see Layout). It's config, not data: an app's tile placement, never a
-  metric.
+  `{"tabs": [{"id", "name", "mode": "flow", "subtitle", "items":
+  [{"instance_id", "app_id", "size": {"w", "h"}, "config"}]}],
+  "default_tab"}` — Home's tabs, and on each its instances' order, sizes
+  and configs and the line over them, written by Configure through `PUT
+  /api/home-layout` and read, reconciled with the installed apps (every
+  installed app at least one instance), through `GET /api/home-layout`
+  (`app/home_layout.py`; see Layout). The shape from before tabs, `{"mode":
+  "flow", "subtitle", "items": [{"app_id", "size"}]}`, is upgraded on
+  read to one `home` tab — no migration. It's config, not data: an app's
+  tile placement, never a metric.
 - Webhook (push input, no migration): `POST /api/webhook/<token>` with
   `{"metric", "value", "date"?, "source"?}` writes one reading via
   `write_metric()` then `recompute_derived(since=date, until=date)`, in one
@@ -917,7 +964,18 @@ same PR:
   drag-to-reorder and a size picker, an editable subtitle, saved as the
   `home_layout` settings row through `GET`/`PUT /api/home-layout` and
   reconciled with the installed apps on every read (no migration).
-  Still to come: the grid pass (free cell placement as a second layout
+  Multi-tab Home, slice 1 landed (invisible by design): the layout became
+  `{tabs, default_tab}`, each tab a flow of instances (`instance_id` →
+  `app_id` + `size` + `config`, one app placeable more than once), the
+  old shape upgraded on read to one `home` tab and every installed app
+  kept at ≥1 instance (no migration); Home still shows one tab, looks the
+  same and keys tiles by `app_id`. Still to come for multi-tab: the tab
+  strip — switch/create/rename/delete, the `showTab` split — and
+  per-instance render (`/api/app/<id>/render` carrying each instance's
+  `cfg`) (slice 2); the add-a-tile/move/duplicate placement UI and
+  instance-keyed tiles (slice 3); the per-instance config editor (slice
+  4); deploy-to-tab in the Add popup (slice 5). Also still to come: the
+  grid pass (free cell placement as a second layout
   `mode` on the same sizes and CSS grid — coordinates, drop-anywhere,
   deliberate gaps, collision; it swaps `layoutTiles` and adds start cells
   to `spanTile`; resize stays the picker), a phone layout, the rest of the

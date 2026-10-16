@@ -776,24 +776,29 @@ def render_installed_app(app_id):
 
 # ---------- the Home layout ----------
 
-# Which tiles Home shows in what order, at what size, and the line of
-# text over them: the home_layout settings row (home_layout.py). The page
-# owns the flow - it lays the items into its grid in order - so the
-# server only keeps the list, and squares it with the apps installed now
-# on every read.
+# Home's tabs, and on each which tiles it shows in what order, at what
+# size, and the line of text over them: the home_layout settings row
+# (home_layout.py). A tile is an instance - a placement of an app, with
+# its own id, size and config - so one app can be placed more than once.
+# The page owns the flow - it lays a tab's items into its grid in order -
+# so the server only keeps the lists, and squares them with the apps
+# installed now on every read.
 
 
 @app.route("/api/home-layout", methods=["GET"])
 def get_home_layout():
-    """The Home layout: {"mode": "flow", "subtitle", "items": [{app_id,
-    size: {w, h}}]}, reconciled with the installed apps.
+    """The Home layout: {"tabs": [{id, name, mode: "flow", subtitle,
+    items: [{instance_id, app_id, size: {w, h}, config}]}], "default_tab"},
+    reconciled with the installed apps.
 
-    Every installed app has exactly one item: the saved ones in their
-    order (an uninstalled app's dropped, a size its app no longer offers
-    back to its default), then any app the saved layout doesn't place,
-    at its default size, in folder order. Nothing saved yet: every app,
-    in folder order, at its default size, under an empty subtitle. A
-    read never rewrites the saved layout.
+    Each tab's saved instances in their order (an uninstalled app's
+    dropped, a size its app no longer offers back to its default); then
+    every installed app with no instance on any tab gets one, a fresh id
+    at its default size, at the end of the default tab, in folder order -
+    so every installed app has at least one. A layout saved before tabs
+    (or nothing saved yet) reads as one tab, "home", showing what it
+    showed: nothing saved, every app in folder order at its default size,
+    under an empty subtitle. A read never rewrites the saved layout.
     """
     installed = scan_apps(app.config["APPS_DIR"])
     conn = get_conn()
@@ -806,13 +811,14 @@ def get_home_layout():
 
 @app.route("/api/home-layout", methods=["PUT"])
 def put_home_layout():
-    """Save the Home layout: {"mode": "flow", "subtitle", "items": [...]}.
+    """Save the Home layout: {"tabs": [...], "default_tab"}, every tab.
 
     Configure's save, as it's switched off. Stored as given once its
-    shape is checked (parse_layout()): the server doesn't look at which
-    apps are installed or what sizes they offer - the next read squares
-    that - and it never works out a position. 200 {"ok": true}; 400 for
-    a body that isn't a layout, with nothing stored.
+    shape is checked (parse_layout()), an instance sent without an id
+    given a fresh one: the server doesn't look at which apps are
+    installed or what sizes they offer - the next read squares that -
+    and it never works out a position. 200 {"ok": true}; 400 for a body
+    that isn't a layout, with nothing stored.
     """
     body = request.get_json(force=True, silent=True)
     try:

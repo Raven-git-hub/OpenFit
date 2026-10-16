@@ -83,7 +83,13 @@ app declares its tile sizes (`sizes`, 1–6 cells either way — an app without 
 won't install), Home lays the tiles on a six-column grid of square cells in the
 saved order, and Configure reorders them by drag, resizes them from each app's
 sizes, edits the subtitle over them, and saves it all (`/api/home-layout`, one
-settings row). Next: the rest of the Library (the writes ticker once apps can
+settings row). Then the first slice of multi-tab Home, invisible by design: the
+stored layout became tabs of instances (an app placed, with its own size and
+config, one app placeable more than once), the old layout upgraded on read to
+one tab, and every installed app kept at least one instance (no migration).
+Next for multi-tab: the tab strip and per-instance render, then the placement
+UI (add, move, duplicate a tile), the per-instance config editor, and
+deploy-to-tab in the Add popup. Next: the rest of the Library (the writes ticker once apps can
 write back, alerts; Browse / Build / Create are still placeholders), and the
 grid pass (free cell placement, a second layout mode on the same sizes).
 
