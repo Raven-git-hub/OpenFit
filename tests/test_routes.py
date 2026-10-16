@@ -9,6 +9,7 @@ import subprocess
 from datetime import date
 
 import pytest
+import yaml
 
 import apps
 import home_layout
@@ -378,8 +379,9 @@ def test_index_splits_applications_into_controls_and_a_list(client, monkeypatch)
         assert re.search(rf"\['{act}',\s*'{label}',", page), label
     assert "const b = el('button','btn sm', esc(label));" in actions
     assert "b.onclick = () => comingSoon(title);" in actions
-    # ... except Add Application, which opens the install popup.
-    assert "add.onclick = openAddApp;" in actions
+    # ... except Add Application, which opens the install popup - empty:
+    # the click's event isn't handed on as a prefill.
+    assert "add.onclick = () => openAddApp();" in actions
     # The card's one line of news, for what an install did.
     assert "note.id = 'appsMsg';" in controls
 
@@ -421,8 +423,8 @@ def test_add_application_builds_the_app_from_file_slots(client):
 
     # The slots: app.yaml required, app.py optional, and Add file for the
     # rest, each named.
-    assert "fileSlot('app.yaml', true, say)" in popup
-    assert "fileSlot('app.py', false, say)" in popup
+    assert "fileSlot('app.yaml', true, say, prefilled('app.yaml'))" in popup
+    assert "fileSlot('app.py', false, say, prefilled('app.py'))" in popup
     assert "act('add-file').onclick" in popup and "fileSlot('', false, say)" in popup
     assert '>＋ Add file</button>' in popup
     # Each slot is a paste box with Upload beside it, filling the same box.
@@ -1940,6 +1942,450 @@ def test_the_tile_settings_form_sets_values_as_text_never_markup(client):
     assert "api.renderApp(a.id, cfgs.get(a.id) || {})" in _js_function(page, "loadHome")
     # The render route is a POST carrying the cfg, through the API block.
     assert "renderApp:    (id, cfg)      => postJSON('/api/app/'+enc(id)+'/render', {cfg: cfg || {}})," in page
+
+
+# ---------- multi-tab Home, slice 4: Duplicate an app ----------
+#
+# Duplicate, in an open app row, forks the app: its files read back from
+# the file route, its app.yaml given the next free id and name, and the
+# Add popup opened on them to review and install - two apps, not two
+# tiles. The page's own appPanel, openAddApp and fileSlot run under node
+# over the stand-in DOM, taught to parse the page's markup, against the
+# files and listing the server hands out; what the popup installs is then
+# POSTed to the server.
+
+# MINI_DOM, plus what the popup needs: innerHTML parsed into elements -
+# tags, attributes and text, entities decoded (the page's markup is
+# well-formed, its attributes double-quoted), a field's value '' as a
+# browser starts it - classList.add and remove().
+_SETTER = "n._html = String(v); },"
+_CLASSES = "      n.classList = {\n"
+assert MINI_DOM.count(_SETTER) == 1 and MINI_DOM.count(_CLASSES) == 1
+PARSING_DOM = MINI_DOM.replace(
+    _SETTER, "n._html = String(v); parseInto(n, n._html); },"
+).replace(
+    _CLASSES,
+    "      n.remove = () => { if(n.parent){ n.parent.children.splice(n.parent.children.indexOf(n), 1); n.parent = null; } };\n"
+    + _CLASSES + "        add: c => n.classList.toggle(c, true),\n",
+) + r"""
+    const VOID = new Set(['input', 'br', 'img', 'hr']);
+    const unent = s => s.replace(/&(amp|lt|gt|quot|#39|#10);/g, (_, e) =>
+      ({amp:'&', lt:'<', gt:'>', quot:'"', '#39':"'", '#10':'\n'})[e]);
+    function parseInto(root, html){
+      const stack = [root];
+      const tokens = /<!--[\s\S]*?-->|<\/([\w-]+)\s*>|<([\w-]+)((?:\s+[\w-]+(?:="[^"]*")?)*)\s*>|([^<]+)/g;
+      for(const [, close, open, attrs, text] of html.matchAll(tokens)){
+        const top = stack[stack.length-1];
+        if(close){
+          while(stack.length > 1 && stack.pop().tag !== close);
+        }else if(open){
+          const n = top.appendChild(mk(open));
+          for(const [, k, v] of attrs.matchAll(/([\w-]+)(?:="([^"]*)")?/g)){
+            const val = v===undefined ? '' : unent(v);
+            if(k==='class') n.className = val;
+            else if(k==='id') n.id = val;
+            else if(k==='hidden') n.hidden = true;
+            else if(k.startsWith('data-')) n.dataset[camel(k.slice(5))] = val;
+            else n.attrs[k] = val;
+          }
+          if(open==='textarea' || open==='input') n.value = '';
+          if(!VOID.has(open)) stack.push(n);
+        }else if(text && text.trim()){
+          top.appendChild(mk('#text'))._text = unent(text);
+        }
+      }
+    }
+    document.body = document.appendChild(mk('body'));
+    document.addEventListener = document.removeEventListener = () => {};
+"""
+
+# The parts of the page a duplicate goes through: the row, the popup.
+DUPE_PARTS = [
+    "$", "el", "appsList", "appPanelId", "appPanel", "writesTicker", "openModal",
+    "INSTALL_ID", "CUSTOM_CODE", "fileNameProblem", "NO_ID", "manifestId",
+    "dupeTarget", "bumpManifest", "fileSlot", "slotFiles", "openAddApp",
+]
+
+DUPE_HARNESS = r"""
+    const metricName = k => k;
+    const setTimeout = () => 0, clearTimeout = () => {};
+    const copy = x => JSON.parse(JSON.stringify(x));
+    // The server, as the test left it: the apps it lists, and each file's
+    // reply from the file route, as send() hands it on. Every read and
+    // install is noted; an install is answered as the server would.
+    const APPS_ = APPS, FILES_ = FILES;
+    const reads = [], installs = [], installed = [];
+    const api = {
+      appFile: async (id, name) => { reads.push([id, name]); return copy(FILES_[id+'/'+name]); },
+      installApp: async files => {
+        installs.push(copy(files));
+        return {ok:true, id:manifestId(files['app.yaml']).id};
+      },
+    };
+    const appInstalled = res => { installed.push(res); };
+    appsList.apps = copy(APPS_);
+    const r = {};
+
+    // An app's open row, and its Duplicate clicked: what it read, what it
+    // said, and the popup it opened - its slots, then Review and Install.
+    async function duplicate(id){
+      const row = appPanel(APPS_.find(a => a.id===id));
+      const out = {acts: row.querySelectorAll('.a-acts button').map(b => [b.dataset.act, b.textContent, b.className])};
+      const dupe = row.querySelector('[data-act="duplicate"]');
+      const before = document.body.children.length;
+      const pending = dupe.onclick();
+      out.busy = dupe.disabled;
+      await pending;
+      out.after = dupe.disabled;
+      out.reads = reads.splice(0);
+      out.msg = row.querySelector('.a-msg').textContent;
+      if(document.body.children.length===before){ out.popup = null; return out; }
+      const bg = document.body.children[document.body.children.length-1], box = bg.children[0];
+      const q = s => box.querySelector(s);
+      out.popup = {
+        title: q('h4').textContent,
+        hint: q('[data-step="files"] .hint').textContent.replace(/\s+/g, ' '),
+        slots: box.querySelectorAll('.fslot').map(s =>
+          [s.dataset.file || '', s.querySelector('.fname') ? s.querySelector('.fname').value : null,
+           s.querySelector('textarea').value]),
+      };
+      q('[data-act="review"]').onclick();
+      out.review = {
+        id: q('[data-f="id"]').textContent, problem: q('[data-f="msg"]').textContent,
+        files: box.querySelectorAll('[data-f="files"] li').map(li => li.textContent),
+        notice: !q('[data-f="notice"]').hidden, install: !q('[data-act="install"]').disabled,
+      };
+      await q('[data-act="install"]').onclick();
+      out.installs = installs.splice(0);
+      out.installed = installed.splice(0);
+      out.closed = !bg.parent;
+      return out;
+    }
+"""
+
+
+def _dupe_script(page, listed, files, scenario):
+    esc = re.search(r"\n  (const esc = .*?\);)\n", page, re.S).group(1)
+    harness = DUPE_HARNESS.replace("APPS_ = APPS", f"APPS_ = {json.dumps(listed)}").replace(
+        "FILES_ = FILES", f"FILES_ = {json.dumps(files)}"
+    )
+    return (
+        PARSING_DOM + esc + "\n" + "\n".join(_js(page, n) for n in DUPE_PARTS) + harness
+        + "(async () => {\n" + scenario + "\nconsole.log(JSON.stringify(r));\n})()"
+        + ".catch(e => { console.error(e); process.exit(1); });"
+    )
+
+
+def _served(client):
+    """What the page would read: /api/apps, and every file it lists from
+    the file route, each reply as send() hands it on - {ok, ...body}."""
+    listed = client.get("/api/apps").get_json()
+    files = {}
+    for a in listed:
+        for name in a["files"]:
+            resp = client.get(f"/api/app/{a['id']}/file", query_string={"name": name})
+            files[f"{a['id']}/{name}"] = {"ok": 200 <= resp.status_code < 300, **resp.get_json()}
+    return listed, files
+
+
+def _run_dupe(client, scenario):
+    listed, files = _served(client)
+    return _node(_dupe_script(_page(client), listed, files, scenario))
+
+
+@pytest.fixture
+def dupe_apps(tmp_path, monkeypatch):
+    """The two real apps, steps with two more files - one empty - and pics,
+    whose logo isn't text."""
+    import main
+
+    path = tmp_path / "apps"
+    fixtures = os.path.join(os.path.dirname(__file__), "fixtures", "apps")
+    for app_id in ("steps", "steps-metres"):
+        shutil.copytree(os.path.join(fixtures, app_id), path / app_id,
+                        ignore=shutil.ignore_patterns("__pycache__"))
+    (path / "steps" / "notes.txt").write_text("stride: 0.75 m\n")
+    (path / "steps" / "empty.txt").write_text("")
+    (path / "pics").mkdir()
+    (path / "pics" / "app.yaml").write_text("id: pics\nname: Pics\nsizes: [{w: 1, h: 1}]\n")
+    (path / "pics" / "logo.png").write_bytes(b"\x89PNG\r\n\x1a\n\xff\xfe")
+    monkeypatch.setitem(main.app.config, "APPS_DIR", str(path))
+    return path
+
+
+def test_an_open_app_row_has_duplicate_beside_uninstall(client):
+    page = _page(client)
+    panel = _js_function(page, "appPanel")
+    # A plain button, before Uninstall at the row's far end, opening a popup.
+    assert re.search(
+        r'<span class="a-acts-end">\s*'
+        r'<button class="btn sm" data-act="duplicate" type="button" aria-haspopup="dialog">Duplicate</button>\s*'
+        r'<button class="btn sm danger" data-act="uninstall" type="button">Uninstall</button>\s*'
+        r"</span>",
+        panel,
+    )
+    # It reads every file through the file route, and opens the Add popup
+    # on the copy - it installs nothing itself.
+    handler = panel[panel.index("dupe.onclick = async () => {") : panel.index("const gateOpen")]
+    assert "await Promise.all(files.map(f => api.appFile(a.id, f)))" in handler
+    assert "dupeTarget(a, appsList.apps || [])" in handler
+    assert "bumpManifest(manifest.text, to.id, to.name)" in handler
+    assert "openAddApp(copy, name);" in handler
+    for write in ("installApp", "uninstallApp", "loadApps", "loadHome"):
+        assert write not in handler, write
+    # The copy's names and texts go into the slots as values, never markup.
+    slot = _js_function(page, "fileSlot")
+    assert "text.value = prefill.text;" in slot and "if(name) name.value = prefill.name;" in slot
+    assert "${prefill" not in slot
+    assert "${esc(copyOf)}" in _js_function(page, "openAddApp")
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
+def test_duplicate_opens_the_add_popup_on_a_copy_that_installs_as_a_new_app(client, dupe_apps):
+    r = _run_dupe(client, "r.steps = await duplicate('steps');")
+    out = r["steps"]
+    # The row's actions: Refresh, then Duplicate beside Uninstall.
+    assert out["acts"] == [
+        ["refresh", "Refresh", "btn sm"],
+        ["duplicate", "Duplicate", "btn sm"],
+        ["uninstall", "Uninstall", "btn sm danger"],
+    ]
+    # Every file read, the button off while they're read.
+    assert out["reads"] == [["steps", f] for f in ("app.py", "app.yaml", "empty.txt", "notes.txt")]
+    assert (out["busy"], out["after"], out["msg"]) == (True, False, "")
+
+    # The popup, prefilled: app.yaml with the next free id and name, the
+    # rest of it as written; app.py in its slot; an added slot for each
+    # other file, named, the empty one kept.
+    original = {p.name: p.read_text() for p in (dupe_apps / "steps").iterdir() if p.is_file()}
+    manifest = original["app.yaml"].replace("id: steps\nname: Steps\n", 'id: steps-2\nname: "Steps 2"\n')
+    assert manifest != original["app.yaml"]
+    popup = out["popup"]
+    assert popup["title"] == "Duplicate application"
+    assert popup["hint"].startswith("A copy of Steps: its files, with a new id and name in its app.yaml.")
+    assert popup["slots"] == [
+        ["app.yaml", None, manifest],
+        ["app.py", None, original["app.py"]],
+        ["", "empty.txt", ""],
+        ["", "notes.txt", "stride: 0.75 m\n"],
+    ]
+    # Review: the new id, every file, and - there's an app.py - the
+    # custom-code notice, to consent to the copied code.
+    assert out["review"] == {
+        "id": "Install application: steps-2", "problem": "",
+        "files": ["app.yaml", "app.py", "empty.txt", "notes.txt"], "notice": True, "install": True,
+    }
+    # Install: the copy, sent as the popup installs any app.
+    [body] = out["installs"]
+    assert body == {**original, "app.yaml": manifest}
+    assert out["installed"] == [{"ok": True, "id": "steps-2"}] and out["closed"] is True
+
+    # ... which the server installs as a second app, beside the first.
+    resp = client.post("/api/apps", json={"files": body})
+    assert resp.status_code == 201, resp.get_json()
+    assert resp.get_json()["id"] == "steps-2"
+    assert {p.name: p.read_text() for p in (dupe_apps / "steps-2").iterdir() if p.is_file()} == body
+    listed = client.get("/api/apps").get_json()
+    assert [(a["id"], a["name"]) for a in listed] == [
+        ("pics", "Pics"), ("steps", "Steps"), ("steps-2", "Steps 2"), ("steps-metres", "Distance (from steps)"),
+    ]
+    # Home places it: its own instance, at the end of the default tab.
+    layout = client.get("/api/home-layout").get_json()
+    [tab] = layout["tabs"]
+    assert [i["app_id"] for i in tab["items"]] == ["pics", "steps", "steps-2", "steps-metres"]
+    assert len({i["instance_id"] for i in tab["items"]}) == 4
+    # ... rendering as the original does.
+    first = client.post("/api/app/steps/render", json={"cfg": {}}).get_json()
+    assert client.post("/api/app/steps-2/render", json={"cfg": {}}).get_json() == first
+    assert first["type"] != "error"
+
+    # Duplicated again, from the original or the copy: the next in line.
+    r = _run_dupe(client, "r.steps = await duplicate('steps'); r.copy = await duplicate('steps-2');")
+    for out in (r["steps"], r["copy"]):
+        assert out["popup"]["slots"][0][2].startswith('id: steps-3\nname: "Steps 3"\n')
+        assert out["review"]["id"] == "Install application: steps-3"
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
+def test_a_duplicate_has_its_own_settings(client, conn, dupe_apps):
+    r = _run_dupe(client, "r.out = await duplicate('steps-metres');")
+    out = r["out"]
+    assert out["popup"]["slots"][0][2].startswith('id: steps-metres-2\nname: "Distance (from steps) 2"\n')
+    [body] = out["installs"]
+    assert client.post("/api/apps", json={"files": body}).status_code == 201
+
+    # Two apps, two instances, each its own stride - saved, read back, and
+    # rendered with it.
+    layout = client.get("/api/home-layout").get_json()
+    items = {i["app_id"]: i for i in layout["tabs"][0]["items"]}
+    items["steps-metres"]["config"] = {"stride_m": 0.75}
+    items["steps-metres-2"]["config"] = {"stride_m": 1.5}
+    stored = _stored(client, layout)
+    configs = {i["app_id"]: i["config"] for i in stored["tabs"][0]["items"]}
+    assert configs["steps-metres"] == {"stride_m": 0.75} and configs["steps-metres-2"] == {"stride_m": 1.5}
+    conn.execute(
+        "INSERT INTO metrics (date, source, metric, value, unit) VALUES (?, 'garmin', 'steps', 4000, 'count')",
+        (date.today().isoformat(),),
+    )
+    recompute_derived(conn)
+    conn.commit()
+    values = [
+        client.post(f"/api/app/{app_id}/render", json={"cfg": configs[app_id]}).get_json()["value"]
+        for app_id in ("steps-metres", "steps-metres-2")
+    ]
+    assert values == [3000, 6000]
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
+def test_a_file_that_cant_be_read_stops_the_duplicate(client, dupe_apps):
+    r = _run_dupe(client, """
+        r.pics = await duplicate('pics');
+        // A read that fails on the way - the network - stops it too.
+        FILES_['steps/app.py'] = {ok:false, error:'network error'};
+        r.steps = await duplicate('steps');
+    """)
+    # The server's refusal, named in the row; no popup, nothing installed,
+    # the button back on.
+    pics = r["pics"]
+    assert pics["reads"] == [["pics", "app.yaml"], ["pics", "logo.png"]]
+    assert pics["msg"] == "Couldn't read logo.png ('logo.png' isn't text, so it can't be shown) — can't duplicate Pics."
+    assert (pics["popup"], pics["busy"], pics["after"]) == (None, True, False)
+    assert r["steps"]["msg"] == "Couldn't read app.py (network error) — can't duplicate Steps."
+    assert r["steps"]["popup"] is None
+    assert [a["id"] for a in client.get("/api/apps").get_json()] == ["pics", "steps", "steps-metres"]
+
+
+# (the app, the apps installed) -> its duplicate's id and name.
+DUPE_TARGETS = [
+    ({"id": "steps", "name": "Steps"}, [("steps", "Steps")], ("steps-2", "Steps 2")),
+    ({"id": "steps", "name": "Steps"}, [("steps", "Steps"), ("steps-2", "Steps 2")], ("steps-3", "Steps 3")),
+    # A copy's copy counts on from the same base.
+    ({"id": "steps-2", "name": "Steps 2"}, [("steps", "Steps"), ("steps-2", "Steps 2")], ("steps-3", "Steps 3")),
+    # The id and the name move in step: either taken, the next n.
+    ({"id": "steps", "name": "Steps"}, [("steps", "Steps"), ("steps-2", "Other")], ("steps-3", "Steps 3")),
+    ({"id": "steps", "name": "Steps"}, [("steps", "Steps"), ("other", "Steps 2")], ("steps-3", "Steps 3")),
+    # The lowest free.
+    ({"id": "steps", "name": "Steps"}, [("steps", "Steps"), ("steps-3", "Steps 3")], ("steps-2", "Steps 2")),
+    # The name defaults to the id.
+    ({"id": "steps", "name": "steps"}, [("steps", "steps")], ("steps-2", "steps 2")),
+    ({"id": "steps"}, [("steps", "steps")], ("steps-2", "steps 2")),
+    # A hand-placed app's id, put in the installer's form.
+    ({"id": "My_App", "name": "My App"}, [("My_App", "My App")], ("my-app-2", "My App 2")),
+    ({"id": "run-10", "name": "Run10"}, [("run-10", "Run10")], ("run-2", "Run10 2")),
+    ({"id": "2024", "name": "2"}, [("2024", "2")], ("2024-2", "2 2")),
+]
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
+def test_duplicates_are_numbered_in_step_from_two(client):
+    page = _page(client)
+    cases = [[app, [{"id": i, "name": n} for i, n in listed]] for app, listed, _ in DUPE_TARGETS]
+    script = _js(page, "dupeTarget") + f"""
+        console.log(JSON.stringify({json.dumps(cases)}.map(([app, listed]) => dupeTarget(app, listed))));
+    """
+    result = _node(script)
+    assert [(t["id"], t["name"]) for t in result] == [want for _, _, want in DUPE_TARGETS]
+    # Every id one an install takes.
+    for target in result:
+        assert apps.INSTALL_ID.match(target["id"]), target
+
+
+# (an app.yaml, the new id and name) -> the app.yaml bumped: the id and
+# name lines replaced - the last top-level one of each, as manifestId and
+# YAML read them - and every other line as written.
+BUMPS = [
+    ("id: steps\nname: Steps\nsizes: [{ w: 1, h: 1 }]\nreads: [steps]\n", "steps-2", "Steps 2",
+     'id: steps-2\nname: "Steps 2"\nsizes: [{ w: 1, h: 1 }]\nreads: [steps]\n'),
+    # No name: one goes in under the id.
+    ("id: steps\nsizes: [{ w: 1, h: 1 }]\n", "steps-2", "steps 2",
+     'id: steps-2\nname: "steps 2"\nsizes: [{ w: 1, h: 1 }]\n'),
+    # Name first; comments and nested ids and names left alone.
+    ("# My app\nname: Steps # shown\nconfig:\n  - { key: id, label: name }\nsettings:\n  id: nested\n"
+     "  name: nested\nid: 'steps'\nsizes: [{w: 1, h: 1}]\n", "steps-2", "Steps 2",
+     '# My app\nname: "Steps 2"\nconfig:\n  - { key: id, label: name }\nsettings:\n  id: nested\n'
+     "  name: nested\nid: steps-2\nsizes: [{w: 1, h: 1}]\n"),
+    # The last of a repeated key, as YAML keeps.
+    ("id: first\nid: steps\nname: A\nname: B\nsizes: [{w: 1, h: 1}]", "steps-2", "B 2",
+     'id: first\nid: steps-2\nname: A\nname: "B 2"\nsizes: [{w: 1, h: 1}]'),
+    # CRLF kept.
+    ("id: steps\r\nname: Steps\r\nsizes: [{w: 1, h: 1}]\r\n", "steps-2", "Steps 2",
+     'id: steps-2\r\nname: "Steps 2"\r\nsizes: [{w: 1, h: 1}]\r\n'),
+    # No id (it was the folder's name): one goes in above the first key,
+    # after any comment or document marker.
+    ("# c\n---\nname: Steps\nsizes: [{w: 1, h: 1}]\n", "steps-2", "Steps 2",
+     '# c\n---\nid: steps-2\nname: "Steps 2"\nsizes: [{w: 1, h: 1}]\n'),
+    ("sizes: [{w: 1, h: 1}]\n", "x-2", "x 2", 'id: x-2\nname: "x 2"\nsizes: [{w: 1, h: 1}]\n'),
+]
+
+# Names a duplicate can carry - anything an app's name can be - each one
+# YAML string once bumped.
+TRICKY_NAMES = [
+    'He said "hi" 2', "back\\slash\\ 2", "it's 2", "# not a comment 2", "key: value 2", "- dash 2",
+    "[list] {map} 2", "&anchor *alias !tag %pct @at `tick` | > 2", "  padded  2", "ünï 名前 😀 2",
+    "tab\there 2", "line\nbreak 2", "sep par nel\x85 2", "nul\x00del\x7f 2", "\\u0041 2", "\\\" 2",
+]
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
+def test_bump_manifest_rewrites_the_id_and_name_and_keeps_the_rest(client):
+    page = _page(client)
+    yamls = [[text, new_id, name] for text, new_id, name, _ in BUMPS]
+    tricky = [["id: steps\nname: Steps\nsizes: [{w: 1, h: 1}]\n", "steps-2", n] for n in TRICKY_NAMES]
+    script = "\n".join([
+        _js(page, "INSTALL_ID"), _js(page, "NO_ID"), _js(page, "manifestId"), _js(page, "bumpManifest"),
+    ]) + f"""
+        const bump = cases => cases.map(([t, id, name]) => bumpManifest(t, id, name));
+        const bumped = bump({json.dumps(yamls)}), tricky = bump({json.dumps(tricky)});
+        console.log(JSON.stringify({{bumped, tricky, previews: bumped.concat(tricky).map(manifestId)}}));
+    """
+    result = _node(script)
+
+    assert result["bumped"] == [want for *_, want in BUMPS]
+    for (text, new_id, name, _), out in zip(BUMPS + [(*t, None) for t in tricky], result["bumped"] + result["tricky"]):
+        # YAML reads the new id and name, and the server takes the id ...
+        manifest = yaml.safe_load(out)
+        assert (manifest["id"], manifest["name"]) == (new_id, name), out
+        assert apps._install_id(apps._manifest_to_install({"app.yaml": out})) == new_id
+        # ... as the popup's Review preview does.
+        assert apps.manifest_sizes(manifest)
+    assert result["previews"] == [{"id": t[1]} for t in yamls + tricky]
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
+def test_the_duplicate_popup_sets_names_and_texts_as_values_never_markup(client):
+    page = _page(client)
+    script = _dupe_script(page, [], {}, """
+        openAddApp([{name:'app.yaml', text:'id: x <b>'}, {name:'<i>.txt', text:'<b>bold</b> &amp;'}], 'A <b>&');
+        const box = document.body.children[0].children[0];
+        r.hint = box.querySelector('[data-step="files"] .hint').textContent;
+        r.bold = box.querySelectorAll('.hint b').map(b => b.textContent);
+        r.slots = box.querySelectorAll('.fslot').map(s =>
+          [s.querySelector('.fname') ? s.querySelector('.fname').value : null, s.querySelector('textarea').value]);
+        // With no prefill, the popup is as it was: two empty slots.
+        openAddApp();
+        const plain = document.body.children[1].children[0];
+        r.plain = [plain.querySelector('h4').textContent,
+                   plain.querySelectorAll('.fslot').map(s => s.querySelector('textarea').value)];
+    """)
+    r = _node(script)
+    assert r["hint"].startswith("A copy of A <b>&: its files")
+    assert r["bold"] == ["A <b>&"]
+    assert r["slots"] == [[None, "id: x <b>"], [None, ""], ["<i>.txt", "<b>bold</b> &amp;"]]
+    assert r["plain"] == ["Add an application", ["", ""]]
+
+
+def test_the_pages_script_compiles(client):
+    if shutil.which("node") is None:
+        pytest.skip("needs node to compile the page's script")
+    # The whole of it, as served: a stray character (a raw line separator
+    # in a regex, say) would stop every part of the page.
+    page = _page(client)
+    [script] = re.findall(r"<script>(.*?)</script>", page, re.S)
+    out = subprocess.run(
+        ["node", "-e", "new (require('vm').Script)(require('fs').readFileSync(0, 'utf8'))"],
+        input=script, capture_output=True, text=True, timeout=60,
+    )
+    assert out.returncode == 0, out.stderr
 
 
 def test_index_wires_the_voice_buttons_to_the_audio_route(client):

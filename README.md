@@ -75,8 +75,9 @@ continuous it is, and which source wins each metric — not the product.
   window, an **Applications** panel — its controls on top, the apps you've
   installed listed below them. **＋ Add Application** installs an app from
   files you paste or upload, and each app's row opens onto what it reads, its
-  files (viewable, read-only), **Refresh** and **Uninstall** (browsing and
-  building apps from it are still to come).
+  files (viewable, read-only), **Refresh**, **Duplicate** (a copy of the
+  app under a new id and name, to place it twice with different settings)
+  and **Uninstall** (browsing and building apps from it are still to come).
 - A first **app host**: the Home tab shows the apps you install (none ship with
   OpenFit) as live tiles — see [Apps on the Home tab](#apps-on-the-home-tab).
 
@@ -309,8 +310,8 @@ nothing is uninstalled). Switching Configure off saves all of it at once,
 settings included (`GET`/`PUT /api/home-layout`, one settings row). The
 layout is stored as tabs, each holding instances (an app placed, with its
 own size and its settings): a tile moves between tabs, it's never copied, so
-each app has one tile, and the same app twice will be a copy of the app
-under its own id. A layout saved before
+each app has one tile, and the same app twice is a copy of the app under
+its own id (**Duplicate**, below). A layout saved before
 tabs reads as one tab, unchanged. An app installed later gets an instance at
 the end of the default tab at its default size, and one uninstalled drops
 out: every installed app always has at least one. Settings' **Opening page**
@@ -319,9 +320,13 @@ app's declared reads, its config fields and its files) and `POST
 /api/app/<id>/render` (`{"cfg": {...}}`, a tile's settings) returns one app's
 spec; the Data tab's Applications panel lists the same apps. Open
 an app's row there to see what it reads, view any of its files read-only
-(`GET /api/app/<id>/file?name=`), re-run its render (**Refresh**), or
-**Uninstall** it (`DELETE /api/apps/<id>`, after a confirm), which deletes
-its folder from `/data/apps/`.
+(`GET /api/app/<id>/file?name=`), re-run its render (**Refresh**),
+**Duplicate** it, or **Uninstall** it (`DELETE /api/apps/<id>`, after a
+confirm), which deletes its folder from `/data/apps/`. Duplicate copies the
+app's files into the Add Application popup with the next free id and name
+(`steps` → `steps-2`, "Steps" → "Steps 2", then `-3`, …) for you to review
+and install as a separate app, with its own tile and settings. It's a fork:
+editing one app's files later doesn't change the other.
 
 To install one, copy its folder onto the volume, or use **＋ Add
 Application** on the Data tab: paste or upload its `app.yaml`, its `app.py`

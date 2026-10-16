@@ -94,10 +94,11 @@ at once (client only, no route change). Then the third: per-instance config.
 `/api/apps` carries each app's config fields, the render route takes the
 instance's `cfg` (`POST /api/app/<id>/render`), and in Configure a tile's
 gear opens a form of those fields, saved with the layout, the tile
-re-rendered on Save. Next for multi-tab: app-level Duplicate (an app's files
-copied into a new app, its own id, from its Data row), which is how the same
-app is placed twice, so tiles stay keyed by app; then deploy-to-tab in the
-Add popup. Next: the rest of the Library (the writes ticker once apps can
+re-rendered on Save. Then the fourth: app-level Duplicate. An app's Data row
+copies its files into the Add popup as a new app, with the next free id and
+name (`steps-2`, "Steps 2"), to review and install. That's how the same app is
+placed twice, so tiles stay keyed by app (client only, no route change). Next
+for multi-tab: deploy-to-tab in the Add popup. Next: the rest of the Library (the writes ticker once apps can
 write back, alerts; Browse / Build / Create are still placeholders), and the
 grid pass (free cell placement, a second layout mode on the same sizes).
 

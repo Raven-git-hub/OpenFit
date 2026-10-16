@@ -295,7 +295,10 @@ the id from the `app.yaml` (there's no id field of its own) and shows
 "Install application: `<id>`", the files, and, when any file is a `.py`, the
 notice "This app includes custom code and runs with full access to your
 OpenFit data." If the `app.yaml` is empty, has no `id:` line, or its id is
-invalid, the confirm step says so instead and Install is disabled.
+invalid, the confirm step says so instead and Install is disabled. Opened by
+an app row's **Duplicate**, the popup is titled "Duplicate application" and
+starts filled with the copy's files (`app.yaml` and `app.py` in their slots,
+an added slot for each other file), all editable before Review.
 
 The popup's checks mirror the server's (the id charset and the file-name
 rules), for quick feedback only. It reads the id from the top-level `id:`
@@ -332,6 +335,22 @@ An open row stays open when the list is re-read. The detail is three columns
   redraws that app's Home tile in place from the fresh spec: no new route, no
   reload, nothing else repainted. (Every request scans the apps folder, so an edited `app.py` is
   picked up too, as it would be on any load.)
+- **Duplicate** forks the app, from the page alone: it reads every file back
+  (`GET /api/app/<id>/file`), gives the `app.yaml` the next free id and name
+  (the lowest n from 2 with neither `<id>-n` nor "<name> n" installed, so
+  `steps`/"Steps" → `steps-2`/"Steps 2", and a copy of a copy counts on from
+  the same base), and opens the Add Application popup on the copy
+  ([below](#the-add-application-popup)) to review and install like any app.
+  The `app.yaml` is rewritten line by line (its top-level `id:` and `name:`
+  lines; a name line added under the id if there's none), not parsed: the
+  result is in the popup to edit, and the server parses it on Install. A file
+  that can't be read (one that isn't text, 415) stops it, with a message in
+  the row. Nothing is written until Install, which goes through `POST
+  /api/apps`'s checks (a clash the page didn't foresee is the server's 409),
+  and the copy then gets its own tile on Home. It's a fork: later edits to one
+  app's files don't reach the other. Once apps can write back, a copy writing
+  an app-defined metric would do so under its own `app:<new-id>:…` stream,
+  separate from the original's: a decision to confirm when write-back lands.
 - **Uninstall** opens a confirm in the row ("Uninstall <name>? This deletes its
   files from `/data/apps/`.", with Cancel); confirming removes the app, and it
   leaves both the list and Home at once.
@@ -494,7 +513,7 @@ One `settings` row, `home_layout` (no migration), `app/home_layout.py`:
   Configure, `{}` until any are, and passed to `render()` as `cfg`). The
   stored shape lets one app be placed more than once, on different tabs or
   on one, but the page never does: the same app placed twice is a copy of
-  the app, its own app id (app-level Duplicate, to come), so each app id
+  the app, its own app id (app-level Duplicate), so each app id
   has one instance and one config. The server mints instance ids: a save
   can leave one out.
 - **`items` is ordered, and the order is the layout.** There are no
@@ -678,17 +697,16 @@ saved positions and gives `paintTiles` start cells. The sizes, the CSS grid,
   `/api/apps` by name (see
   [frontend-redesign-and-widget-model.md](frontend-redesign-and-widget-model.md)),
   Add Application installs one ([above](#installing-an-app)), and each row
-  expands to what the app reads, its files, Refresh and Uninstall
+  expands to what the app reads, its files, Refresh, Duplicate and Uninstall
   ([above](#an-apps-row-reads-files-refresh-uninstall)). Browse, Build and
   Create are still placeholders. Still to come: the writes ticker (once an
   app can write back) and alerts (an app that doesn't load, or whose render
   fails, flagged in its row). Editing an app's files, updating one in place
   and disabling one are out: there's no mechanism for them.
-- **Multi-tab Home**, beyond the tab strip ([above](#tabs)) and tile settings
-  ([Configure](#configure)): **Duplicate**, in an app's row of the
-  Applications list, copying its files into a new app (its own id, the name
-  bumped with a number) through the Add Application popup, which is how the
-  same app ends up on Home twice, each copy with its own settings; and
+- **Multi-tab Home**, beyond the tab strip ([above](#tabs)), tile settings
+  ([Configure](#configure)) and Duplicate
+  ([an app's row](#an-apps-row-reads-files-refresh-uninstall), the way the
+  same app ends up on Home twice, each copy with its own settings):
   deploy-to-tab in the Add Application popup. Tiles keyed by instance are
   dropped for good: with duplication at the app level, an app id never has
   two instances. (The stored layout keeps its tabs of instances, see
