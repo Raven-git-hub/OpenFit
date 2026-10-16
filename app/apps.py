@@ -37,6 +37,7 @@ below.
 """
 
 import importlib.util
+import json
 import os
 import re
 import secrets
@@ -75,7 +76,8 @@ class InstalledApp:
 
     def summary(self):
         """What GET /api/apps lists for it: the manifest's id, name, sizes
-        (default_size their first) and reads, and the names of the files
+        (default_size their first), reads and config fields - the schema
+        a tile's settings form is built from - and the names of the files
         in its folder."""
         return {
             "id": self.id,
@@ -83,6 +85,7 @@ class InstalledApp:
             "default_size": dict(self.default_size),
             "sizes": [dict(size) for size in self.sizes],
             "reads": list(self.reads),
+            "config": [dict(field) for field in self.config],
             "files": app_files(self.path),
         }
 
@@ -161,8 +164,10 @@ def _config(raw):
     """The manifest's config fields, in order: [{key, label, type, default}, ...].
 
     A list, not a mapping, because the order is the order the app's
-    config form will show them in. Each field needs a key, once; label,
-    type and default are the app's to give and aren't checked yet.
+    config form shows them in. Each field needs a key, once; label, type
+    and default are the app's to give and aren't checked - but a field is
+    sent to the page as it's written (GET /api/apps), so it must be plain
+    JSON: a YAML date, a .nan or a !!binary would fail the whole listing.
     """
     if raw is None:
         return []
@@ -177,6 +182,13 @@ def _config(raw):
             raise AppError(f"each config field needs a key: {field!r}")
         if key in keys:
             raise AppError(f"config field {key!r} is listed twice")
+        try:
+            json.dumps(field, allow_nan=False)
+        except (TypeError, ValueError) as e:
+            raise AppError(
+                f"config field {key!r} must be plain JSON - text, numbers, true/false, "
+                f"lists and mappings (quote a date): {e}"
+            ) from None
         keys.add(key)
         fields.append(dict(field))
     return fields

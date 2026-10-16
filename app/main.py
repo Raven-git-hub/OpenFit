@@ -681,13 +681,17 @@ def get_samples(metric):
 @app.route("/api/apps", methods=["GET"])
 def list_apps():
     """The installed apps, in folder order: [{id, name, default_size:
-    {w, h}, sizes: [{w, h}], reads: [key], files: [name]}].
+    {w, h}, sizes: [{w, h}], reads: [key], config: [{key, label, type,
+    default}], files: [name]}].
 
     Only apps that load: a malformed one - one with no size among them -
     is logged and left out. sizes are the tile sizes the app declares,
     in cells, and default_size the first of them, the size a tile is
     first placed at; reads is the manifest's (declared, not enforced);
-    files names the plain files in the app's folder, each one GET
+    config is the manifest's config fields, in order, as written (only
+    key is checked) - the schema of the settings form a tile's gear
+    opens in Configure, whose values an instance's config holds; files
+    names the plain files in the app's folder, each one GET
     /api/app/<id>/file serves.
     """
     return jsonify([a.summary() for a in scan_apps(app.config["APPS_DIR"])])
@@ -754,9 +758,16 @@ def app_file(app_id):
     return jsonify({"id": installed.id, "name": name, "text": text})
 
 
-@app.route("/api/app/<app_id>/render", methods=["GET"])
+@app.route("/api/app/<app_id>/render", methods=["POST"])
 def render_installed_app(app_id):
-    """One app's display spec, rendered now with cfg {}.
+    """One app's display spec, rendered now: {"cfg": {key: value}} -> the spec.
+
+    cfg is the instance's config - the values its tile's settings form
+    set, stored on the instance in the Home layout - and is passed to
+    the app's render(ctx, cfg) as given: the app is trusted and owns its
+    fallbacks (cfg.get("stride_m", 0.75)), so nothing in it is checked.
+    A body with no cfg, or one that isn't a mapping, renders with {}.
+    POST, not GET, only to carry the cfg: nothing is written.
 
     Always a 200 for an installed app: a render that raises, or returns
     something that isn't a spec, comes back as {"type": "error",
@@ -766,9 +777,13 @@ def render_installed_app(app_id):
     installed = find_app(app.config["APPS_DIR"], app_id)
     if installed is None:
         return jsonify({"ok": False, "error": f"unknown app: {app_id}"}), 404
+    body = request.get_json(force=True, silent=True)
+    cfg = body.get("cfg") if isinstance(body, dict) else None
+    if not isinstance(cfg, dict):
+        cfg = {}
     conn = get_conn()
     try:
-        spec = render_app(installed, conn)
+        spec = render_app(installed, conn, cfg)
     finally:
         conn.close()
     return jsonify(spec)

@@ -66,12 +66,16 @@ shapes the spec reads well at: the host never makes one up.
   `'w:1'` and `'h:1'`, so the error says to write `{w: 1, h: 1}`.
 
 **`config`** is an **ordered list** of fields, not a mapping, because the
-order is the order the app's config form will show them in. Each field is a
+order is the order the tile's settings form shows them in. Each field is a
 mapping, `{key, label, type, default}`. `key` is required: a non-empty string,
 used once per app. `label`, `type` and `default` are the app's to give; the
-host keeps them as written and in order, and doesn't check them yet. A
-mapping, or a field without a key, is malformed, so the app is skipped. The
-fields aren't passed to `render()` yet: `cfg` is `{}` (below).
+host keeps them as written and in order, and doesn't check them. A mapping,
+or a field without a key, is malformed, so the app is skipped. So is a field
+that isn't plain JSON (a YAML date, a `.nan`, a `!!binary`): `GET /api/apps`
+sends the fields to the page as written, so one that isn't would fail the
+whole listing. Quote a date. The fields are the schema; the values are each
+placement's own (its instance's `config`, set from the tile's gear in
+Configure), and reach `render()` as `cfg` (below).
 
 **`app.py`**, when there is one, defines `render(ctx, cfg)`, which returns a
 display spec. This is the real `steps` app:
@@ -95,8 +99,13 @@ def render(ctx, cfg):
     )
 ```
 
-`cfg` is `{}` for now. Per-instance config, and the UI to edit it, come later;
-an app reads a setting with a fallback, such as `cfg.get("stride_m", 0.75)`.
+`cfg` is the tile's settings: its instance's `config`, `{key: value}`, as the
+owner set them from the tile's gear in Configure (see
+[Configure](#configure)), and `{}` until they set any. The host passes it as
+given and checks nothing in it: the app is trusted and owns its fallbacks, so
+it reads a setting defensively, such as `cfg.get("stride_m", 0.75)` (the real
+`steps-metres` app does just that), and copes with a value of a type it didn't
+expect.
 
 **The reference apps.** The first two real apps, `steps` and `steps-metres`,
 are committed in `tests/fixtures/apps/` as they're deployed in `/data/apps`.
@@ -318,10 +327,10 @@ An open row stays open when the list is re-read. The detail is three columns
 - **Writes**: a reserved slot for the writes ticker (Day / Wk / Mth), each
   `—` for now. It's filled in when an app can write back (`app:`-tier
   metrics); until then nothing is counted.
-- **Refresh** re-runs the app's render (`GET /api/app/<id>/render`, the
-  existing route) against the data as it is now, and redraws that app's Home
-  tile in place from the fresh spec: no new route, no reload, nothing else
-  repainted. (Every request scans the apps folder, so an edited `app.py` is
+- **Refresh** re-runs the app's render (`POST /api/app/<id>/render`, the
+  existing route, with its tile's config) against the data as it is now, and
+  redraws that app's Home tile in place from the fresh spec: no new route, no
+  reload, nothing else repainted. (Every request scans the apps folder, so an edited `app.py` is
   picked up too, as it would be on any load.)
 - **Uninstall** opens a confirm in the row ("Uninstall <name>? This deletes its
   files from `/data/apps/`.", with Cancel); confirming removes the app, and it
@@ -385,12 +394,14 @@ An app writes no data yet, so uninstalling removes only its folder.
 ## Routes
 
 - `GET /api/apps` → `[{id, name, default_size: {w, h}, sizes: [{w, h}],
-  reads: [key], files: [name]}]`, the apps that load, in folder order.
-  `sizes` are the tile sizes the manifest declares, in its order, and
-  `default_size` the first of them (for a manifest with the older
-  `default_size` alone, `sizes` is that one). `reads` is the manifest's (`[]`
-  if none); `files` names the plain files in the app's folder, sorted, each
-  one the file route serves.
+  reads: [key], config: [{key, label, type, default}], files: [name]}]`, the
+  apps that load, in folder order. `sizes` are the tile sizes the manifest
+  declares, in its order, and `default_size` the first of them (for a
+  manifest with the older `default_size` alone, `sizes` is that one). `reads`
+  is the manifest's (`[]` if none); `config` its config fields, in order and
+  as written (`[]` if none), the schema a tile's settings form is built from;
+  `files` names the plain files in the app's folder, sorted, each one the
+  file route serves.
 - `POST /api/apps` → installs an app from `{"files": {name: text}}`; `201
   {"ok": true, "id", "has_app_py"}`, or a refusal that writes nothing. See
   [Installing an app](#installing-an-app).
@@ -398,7 +409,10 @@ An app writes no data yet, so uninstalling removes only its folder.
   {"ok": true, "id"}`, or a 400 (an id no app could have) or 404 (no app
   loads under it) that removes nothing. See
   [Uninstalling an app](#uninstalling-an-app-delete-apiappsid).
-- `GET /api/app/<id>/render` → the app's spec, rendered now with `cfg` `{}`.
+- `POST /api/app/<id>/render` with `{"cfg": {key: value}}` → the app's spec,
+  rendered now with that `cfg`, passed to `render()` as given. A body with no
+  `cfg`, or one that isn't an object (or no body at all), renders with `{}`.
+  It's a POST only to carry the cfg: nothing is written, and a GET is a 405.
   It's always a 200 for an installed app, with an error spec if the render
   fails. An id with no app that loads gets `404 {"ok": false, "error": "unknown
   app: <id>"}`.
@@ -476,9 +490,13 @@ One `settings` row, `home_layout` (no migration), `app/home_layout.py`:
 - **An item is an instance**: a placement of an app, not the app itself.
   It has its own `instance_id` (a token, unique across every tab), its own
   `size` (one of the app's declared `sizes`) and its own `config` (an
-  object; `{}` until there's an editor for it, but stored and returned). So
-  one app can be placed more than once, on different tabs or on one. The
-  server mints instance ids: a save can leave one out.
+  object: the values of the app's config fields, set from the tile's gear in
+  Configure, `{}` until any are, and passed to `render()` as `cfg`). The
+  stored shape lets one app be placed more than once, on different tabs or
+  on one, but the page never does: the same app placed twice is a copy of
+  the app, its own app id (app-level Duplicate, to come), so each app id
+  has one instance and one config. The server mints instance ids: a save
+  can leave one out.
 - **`items` is ordered, and the order is the layout.** There are no
   coordinates in flow mode.
 - **`mode` is per tab, and always `"flow"` for now.** It holds the seat for
@@ -555,16 +573,31 @@ filled with the accent while on. Configure edits a working copy of the whole
 layout: switch tabs while it's on and the tab you leave keeps your edits, and
 nothing is saved until it's switched off.
 
-- **On:** each tile gains a handle and, if its app offers more than one size,
-  a size picker listing those sizes. The empty cells are marked faintly, a
-  spare row sits under the tiles to drop one at the end, and the subtitle
-  becomes an input.
-- **Move = drag.** Drag a tile (anywhere but its picker) onto another and it
-  takes that tile's place in the order. The grid reflows live to show where
-  it will land, and the drop keeps it. Into the gap at a row's end, it goes
-  after that row's last tile; into the spare row, last. It's a sortable list,
-  so there are no coordinates and no collisions. From the keyboard, a
-  handle's arrow keys step its tile back (← or ↑) or on (→ or ↓).
+- **On:** each tile gains a handle; beside it, if its app declares config
+  fields, a settings gear; and, if its app offers more than one size, a size
+  picker listing those sizes. The empty cells are marked faintly, a spare row
+  sits under the tiles to drop one at the end, and the subtitle becomes an
+  input.
+- **Settings = the tile's gear.** It opens a form of the app's config fields
+  (`GET /api/apps` carries them), in the manifest's order, each labelled with
+  its `label` (else its `key`) and filled with the instance's value, else the
+  field's `default`. A `number` field is a numeric input; any other `type` is
+  text, for now (a select, a toggle and the like are to come). **Save** puts
+  the values into the instance's `config`: a number as a number (blank, or
+  not a finite number, falls back to the field's default, and with no
+  default the key is left out); text as typed; a key the form doesn't show
+  is kept. Then that tile alone is re-rendered with them (`POST
+  /api/app/<id>/render`) and redrawn in place. There's no preview as you
+  type: the re-render is on Save. The config is saved with the rest of the
+  layout as Configure is switched off: no route of its own. Until then a
+  refresh (a sync, an install) renders with the unsaved settings, and keeps
+  them.
+- **Move = drag.** Drag a tile (anywhere but its pickers and gear) onto
+  another and it takes that tile's place in the order. The grid reflows live
+  to show where it will land, and the drop keeps it. Into the gap at a row's
+  end, it goes after that row's last tile; into the spare row, last. It's a
+  sortable list, so there are no coordinates and no collisions. From the
+  keyboard, a handle's arrow keys step its tile back (← or ↑) or on (→ or ↓).
 - **Resize = the picker.** Choose a size and the tile takes it, the grid
   reflowing around it. There's no drag-to-resize, and the page never offers a
   size the app didn't declare.
@@ -598,18 +631,23 @@ markup.
 
 The page keeps these parts apart:
 
-1. `loadHome()` is the fetch: it reads the apps, the layout and a spec for
-   each app, and keeps them (`home.specs`, `home.layout`). Mid-Configure it
-   keeps the working copy instead of the layout it read. It runs at boot,
-   after a sync, an install or an uninstall, and after Configure saves, but
-   never on a tab switch.
+1. `loadHome()` is the fetch: it reads the apps and the layout, then a spec
+   for each app, rendered with its instance's config (`cfgByApp()`; one
+   instance an app, so one config and one spec an app), and keeps them
+   (`home.specs`, `home.layout`). Mid-Configure it keeps the working copy
+   instead of the layout it read, and renders with the working copy's
+   configs, the tab on screen flushed into it first. It runs at boot, after
+   a sync, an install or an uninstall, and after Configure saves, but never
+   on a tab switch.
 2. `renderActiveTab()` is the render, from what the fetch left: the tab on
    screen (`home.activeTab`, or the default if that names no tab), its
    instances read into `home.tiles` (`{instance_id, app_id, name, spec, w, h,
    sizes, config}`, in layout order) and its subtitle, then the sub-header,
-   the tiles and the strip (`paintTabStrip()`). Tiles are still keyed by
-   `app_id`, one an app, which is safe because every app is on one tab: a tile
-   moves between tabs, it's never copied.
+   the tiles and the strip (`paintTabStrip()`). Tiles are keyed by `app_id`,
+   one an app, which is safe because every app is on one tab: a tile moves
+   between tabs, it's never copied. That stays: the same app placed twice is
+   a copy of the app under its own id (app-level Duplicate), never a second
+   instance, so tiles are never keyed by instance.
 3. `layoutTiles(items, apps, elsewhere)` is `flowLayout`: the page's copy of
    the server's reconcile for one tab. It squares the tab's instances with the
    apps read beside it, and an unsaved Configure with an app installed or
@@ -646,17 +684,19 @@ saved positions and gives `paintTiles` start cells. The sizes, the CSS grid,
   app can write back) and alerts (an app that doesn't load, or whose render
   fails, flagged in its row). Editing an app's files, updating one in place
   and disabling one are out: there's no mechanism for them.
-- **Multi-tab Home**, beyond the tab strip ([above](#tabs)): placing an app
-  more than once (duplicating a tile), with tiles keyed by instance rather
-  than by app (until then `flowLayout` drops a same-app repeat within a tab,
-  so a Configure save would collapse one); the UI to add a tile;
-  per-instance render (`/api/app/<id>/render` carrying each instance's
-  `config`); and deploy-to-tab in the Add Application popup. The stored
-  layout already holds tabs of instances (see
-  [The layout](#the-layout-tabs-of-instances)).
-- **Per-instance config** and the UI to edit it (`cfg` is `{}`; each
-  instance's `config` is stored, but nothing reads it yet), **metric
-  write-back**, and a custom `app.js` for an app that draws its own face.
+- **Multi-tab Home**, beyond the tab strip ([above](#tabs)) and tile settings
+  ([Configure](#configure)): **Duplicate**, in an app's row of the
+  Applications list, copying its files into a new app (its own id, the name
+  bumped with a number) through the Add Application popup, which is how the
+  same app ends up on Home twice, each copy with its own settings; and
+  deploy-to-tab in the Add Application popup. Tiles keyed by instance are
+  dropped for good: with duplication at the app level, an app id never has
+  two instances. (The stored layout keeps its tabs of instances, see
+  [The layout](#the-layout-tabs-of-instances); the page just never places
+  one app twice.)
+- **Richer settings fields** (a select or enum, a toggle) beyond number and
+  text, a live preview as a setting is typed, **metric write-back**, and a
+  custom `app.js` for an app that draws its own face.
 - **Enforcing `reads`:** it's recorded, but `ctx.metric()` serves any key in
   the vocabulary.
 - **A sandbox:** an app is trusted Python running in the server's process.

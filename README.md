@@ -267,7 +267,7 @@ name: Steps
 sizes: [{w: 1, h: 1}, {w: 2, h: 2}]   # required: tile sizes in grid cells, the first the default
 reads: [steps]
 config:                      # the app's settings, in form order
-  - {key: days, label: Days shown, type: int, default: 7}
+  - {key: days, label: Days shown, type: number, default: 7}
 ```
 
 ```python
@@ -282,9 +282,11 @@ def render(ctx, cfg):
     )
 ```
 
-`render()` runs on the server each time Home loads. `ctx.metric()` is its one
-data path — a metric's derived points, as `/api/metric` serves them, as a list
-of points with `.date`, `.value` and `.source` — and it
+`render()` runs on the server each time Home loads, with `cfg` holding the
+tile's settings, its `config` fields' values (`{}` until you set any, so an
+app reads each with a fallback: `cfg.get("days", 7)`). `ctx.metric()` is its
+one data path — a metric's derived points, as `/api/metric` serves them, as a
+list of points with `.date`, `.value` and `.source` — and it
 returns a display spec built from `number`, `line` (a sparkline, with an
 optional title), `panel` and `empty`. An app that fails to load is logged and
 left out, and one whose `render()` fails shows as an error tile, never a
@@ -298,20 +300,24 @@ wide for what's left of a row starting the next. Home can have several tabs,
 each with its own tiles and subtitle: they sit at the left of the tab strip,
 before Data, and clicking one shows it. **Configure**, top right of Home, lets
 you drag tiles into a new order, pick each one's size from those its app
-offers, move a tile to another tab, and edit the subtitle over them. While
-it's on, **＋ Add** on the strip makes a new tab and each tab's gear renames
-or deletes it (a deleted tab's tiles move to the default tab; nothing is
-uninstalled). Switching Configure off saves all of it at once
-(`GET`/`PUT /api/home-layout`, one settings row). The layout is stored as
-tabs, each holding instances (an app placed, with its own size and config,
-so one app can be placed more than once, though the page doesn't offer that
-yet: a tile moves between tabs, it's never copied). A layout saved before
+offers, move a tile to another tab, and edit the subtitle over them. A tile
+whose app declares `config` fields has a gear that opens its settings, a
+form of those fields (a number, or text); Save redraws the tile with them at
+once. While it's on, **＋ Add** on the strip makes a new tab and each tab's
+gear renames or deletes it (a deleted tab's tiles move to the default tab;
+nothing is uninstalled). Switching Configure off saves all of it at once,
+settings included (`GET`/`PUT /api/home-layout`, one settings row). The
+layout is stored as tabs, each holding instances (an app placed, with its
+own size and its settings): a tile moves between tabs, it's never copied, so
+each app has one tile, and the same app twice will be a copy of the app
+under its own id. A layout saved before
 tabs reads as one tab, unchanged. An app installed later gets an instance at
 the end of the default tab at its default size, and one uninstalled drops
 out: every installed app always has at least one. Settings' **Opening page**
 lists Home's tabs beside Data. `GET /api/apps` lists what's installed (with each
-app's declared reads and its files) and `GET /api/app/<id>/render` returns
-one app's spec; the Data tab's Applications panel lists the same apps. Open
+app's declared reads, its config fields and its files) and `POST
+/api/app/<id>/render` (`{"cfg": {...}}`, a tile's settings) returns one app's
+spec; the Data tab's Applications panel lists the same apps. Open
 an app's row there to see what it reads, view any of its files read-only
 (`GET /api/app/<id>/file?name=`), re-run its render (**Refresh**), or
 **Uninstall** it (`DELETE /api/apps/<id>`, after a confirm), which deletes

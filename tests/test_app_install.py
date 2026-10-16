@@ -100,7 +100,7 @@ def test_an_installed_app_is_listed_and_renders(client, apps_dir):
     install(client, {"app.yaml": real("steps", "app.yaml"), "app.py": real("steps", "app.py")})
 
     assert [a["id"] for a in client.get("/api/apps").get_json()] == ["steps"]
-    spec = client.get("/api/app/steps/render").get_json()
+    spec = client.post("/api/app/steps/render").get_json()
     assert spec == {"type": "empty", "message": "No step data yet"}
 
 
@@ -110,9 +110,9 @@ def test_a_yaml_only_app_is_listed_with_nothing_to_draw(client, apps_dir):
 
     assert client.get("/api/apps").get_json() == [
         {"id": "notes", "name": "Notes", "default_size": {"w": 1, "h": 1},
-         "sizes": [{"w": 1, "h": 1}], "reads": [], "files": ["app.yaml"]}
+         "sizes": [{"w": 1, "h": 1}], "reads": [], "config": [], "files": ["app.yaml"]}
     ]
-    assert client.get("/api/app/notes/render").get_json() == {
+    assert client.post("/api/app/notes/render").get_json() == {
         "type": "empty",
         "message": apps.NOTHING_TO_DRAW,
     }

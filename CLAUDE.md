@@ -100,9 +100,12 @@ own calls to its device API. Full direction:
   with an `app.yaml` (`id` (default: the folder's name, `[A-Za-z0-9][A-Za-z0-9_-]*`),
   `name` (default: the id), `reads` (a list of keys — recorded, not
   enforced), `config` (an ordered list of field mappings `{key, label,
-  type, default}` — order drives the config form; `key` a non-empty
-  string, unique; the rest kept as written, unchecked; a mapping is
-  malformed), all optional but type-checked, and its **size, required**:
+  type, default}` — order drives a tile's settings form; `key` a
+  non-empty string, unique; the rest kept as written, unchecked; a
+  mapping, or a field that isn't plain JSON (`json.dumps(allow_nan=False)`
+  fails: a YAML date, `.nan`, `!!binary` — `/api/apps` sends the fields
+  as written, so one would fail the whole listing), is malformed), all
+  optional but type-checked, and its **size, required**:
   `sizes`, a non-empty list of the tile sizes it's drawn at, each `{w, h}`
   in cells, whole numbers 1–`MAX_CELLS` (6, Home's width), none twice,
   the first the default (a fixed-size app lists one) — or the older
@@ -125,7 +128,8 @@ own calls to its device API. Full direction:
   its `app.yaml`/`app.py` mtime or size changes, so a broken one logs once per
   change. `find_app(apps_dir, id)` picks one. `InstalledApp.summary()` is
   what `GET /api/apps` lists: `{id, name, default_size, sizes, reads,
-  files}` — `default_size` the first of `sizes`;
+  config, files}` — `default_size` the first of `sizes`; `config` the
+  manifest's fields as written (the schema of a tile's settings form);
   `files` from `app_files(folder)`, the sorted names of the plain files
   directly in the folder (no sub-folder such as `__pycache__`, no link, no
   name `filename_problem()` refuses), so every name listed is one the file
@@ -190,7 +194,9 @@ own calls to its device API. Full direction:
   `None`, else `TypeError`),
   `panel(*children)` (or one list), `empty(message)`; the host's own is
   `{"type": "error", "message"}`. `render_app(app, conn, cfg=None,
-  today=None)` calls `render(ctx, {})` and never raises: an exception, a
+  today=None)` calls `render(ctx, dict(cfg or {}))` — `cfg` the
+  instance's config, passed as given (the app owns its fallbacks,
+  `cfg.get("stride_m", 0.75)`) — and never raises: an exception, a
   non-spec (not a dict with a string `type`) or a spec that isn't plain JSON
   (NaN, a set) is logged (`[apps] <id>: ...`, with the traceback) and comes
   back as an error spec. Full contract: `docs/architecture/app-host.md`.
@@ -210,9 +216,12 @@ own calls to its device API. Full direction:
   tab's id. An item is an **instance** — a placement of an app, not the
   app: its own `instance_id` (`INSTANCE_ID`, `[A-Za-z0-9_-]{1,64}`,
   unique across every tab; the server mints them, `new_instance_id()`,
-  `secrets.token_hex(8)`), `size` and `config` (a dict, `{}` until the
-  config editor lands; stored and round-tripped) — so one app can be placed more
-  than once, across tabs or on one. Flow is the one mode, per tab: the
+  `secrets.token_hex(8)`), `size` and `config` (a dict: the values of
+  its app's config fields, set from the tile's gear in Configure, `{}`
+  until any are; passed to `render()` as `cfg`) — so one app can be placed
+  more than once, across tabs or on one, as stored, though the page never
+  does (the same app twice is a copy under its own id: app-level
+  Duplicate, so one instance, one config an app id). Flow is the one mode, per tab: the
   items' order is the layout, each size one its app declares; no
   coordinates (`mode` holds the seat for a later grid mode, so that's a
   second mode, not a migration). `load_layout(conn, apps)` →
@@ -359,8 +368,9 @@ own calls to its device API. Full direction:
   as a message), and **Writes** — `writesTicker()`, a reserved slot
   (Day / Wk / Mth, each `—`; nothing counted or read), marked `//
   writes-ticker: filled in when app-tier write-back exists`. Under them
-  **Refresh** (`btn sm`: re-fetches `GET /api/app/<id>/render` — the
-  existing route, no rescan, no reload — and `repaintTile()` redraws that
+  **Refresh** (`btn sm`: re-fetches `POST /api/app/<id>/render` with the
+  tile's config, `tileCfg()` — the existing route, no rescan, no reload —
+  and `repaintTile()` redraws that
   app's Home tile in place from the fresh spec; a render that failed says
   so) and **Uninstall** (`btn sm danger`), which only opens an inline
   `danger-panel` ("Uninstall <name>?" / "This deletes its files from
@@ -411,12 +421,15 @@ own calls to its device API. Full direction:
   `/api/connectors/<id>/detail`, `PUT /api/connectors/<id>/cadence`,
   `DELETE /api/connectors/<id>`,
   `/api/sync/<plugin>`), and the app routes (`/api/apps`, `POST /api/apps`,
-  `DELETE /api/apps/<id>`, `/api/app/<id>/render`, `/api/app/<id>/file`)
+  `DELETE /api/apps/<id>`, `POST /api/app/<id>/render`, `/api/app/<id>/file`)
   and Home's layout (`GET`/`PUT /api/home-layout`);
   not `/api/activity` (the last-sync stamp that read it
   is gone). See `docs/architecture/frontend-redesign-and-widget-model.md`.
   **Home** reads `GET /api/apps` and `GET /api/home-layout` together, then
-  every `GET /api/app/<id>/render` in parallel (a failed fetch is that
+  every `POST /api/app/<id>/render` in parallel, each with its instance's
+  config (`api.renderApp(id, cfg)` → `postJSON()`, `{cfg}`; `cfgByApp()`
+  over the layout read — mid-Configure the working copy, the tab on screen
+  flushed into it first, so an unsaved setting holds; a failed fetch is that
   app's error tile), and is re-read after a Sync now or a source removal,
   as the data card is, and after an app install or uninstall; an app row's
   Refresh redraws just its own tile (keeping its Configure controls).
@@ -429,9 +442,10 @@ own calls to its device API. Full direction:
   flushed into it) — then `renderActiveTab()`, the render from memory (a
   tab switch fetches nothing): the tab's items → `home.tiles`,
   `[{instance_id, app_id, name, spec, w, h, sizes, config}]` in layout
-  order — still keyed and deduped by `app_id` (one tile an app; safe
-  because every app is on one tab: a tile moves, never copies) and each
-  rendered as `GET /api/app/<id>/render` with `cfg {}` — and its subtitle
+  order — keyed and deduped by `app_id` (one tile an app; safe because
+  every app is on one tab: a tile moves, never copies; and for good — the
+  same app twice is a copy under its own id, never a second instance) and
+  each rendered with its instance's config — and its subtitle
   → `home.subtitle`, then the sub-header, the tiles and the strip; an
   empty tab says so ("Nothing on this tab yet"), apart from no apps
   installed; `layoutTiles` (= `flowLayout(items, apps, elsewhere)`, the
@@ -457,7 +471,20 @@ own calls to its device API. Full direction:
   no `data-tab` so it's no Opening page; `aria-pressed`, `.active` (the
   accent) while on; disabled until Home has loaded), then `#homeMsg`.
   `toggleConfigure()`: on, every tile gets `tileControls()` — a handle
-  (`.tile-grip`), only if its app offers more than one size a
+  (`.tile-grip`), beside it, only if its app declares config fields
+  (`configFields()`, the app's `config` from `/api/apps`), a gear
+  (`.tile-gear`, "Settings of <name>") opening `openTileConfig(t)`: a
+  `.modal` "<name> settings" with a field per schema entry, in order —
+  `label` else `key`, `esc()`d; a `number` field `type="number"
+  step="any"`, any other type text — each `.value` the instance's value,
+  else the field's `default`, else blank; Save builds the config from
+  `t.config` (a key the form doesn't show kept): a number field
+  `Number()`d, blank or non-finite → its default (no default → the key
+  dropped), text as typed; sets `t.config`, then one
+  `api.renderApp(app_id, cfg)` and `repaintTile()` (no live preview; Enter
+  saves; Cancel changes nothing) — carried by `layoutItems()` → `flushTab()`
+  into the working copy and saved with it on Configure-off, no route of
+  its own — then only if its app offers more than one size a
   `<select>` of those sizes (`w × h`; choosing one sets the tile's span,
   the grid reflowing live), and, when there's another tab without its app
   (a layout from elsewhere can place one twice: a move, never a merge), a
@@ -482,7 +509,7 @@ own calls to its device API. Full direction:
   the server's rule: not blank, ≤ `TAB_NAME_MAX` (40) code points (a node
   test holds it to `_name_problem()`) — before anything changes, and set
   as text only. `sortableTiles(grid)`: drag a tile
-  (anywhere but its picker) onto another and it takes that one's place
+  (anywhere but its pickers and gear) onto another and it takes that one's place
   (`dropSpot()`: from earlier in the order, after it; from later, before
   it; into a row-end gap, after that row's last tile; into the drop row,
   last), the rest reflowing live, once per spot and only after the pointer
@@ -993,7 +1020,7 @@ same PR:
   come: pushing sessions (sleep, workouts) through it.
 - **The app host** (`docs/architecture/app-host.md`): the first slice landed —
   the scanner (`app/apps.py`), the ctx and spec builders (`app/host.py`),
-  `GET /api/apps`, `GET /api/app/<id>/render` (an error spec, never a 500),
+  `GET /api/apps`, the render route (an error spec, never a 500),
   `?days=` on the contract reads, and Home drawing the tiles flowed at their
   default size (no migration). Apps run as trusted code in the server's
   process. Configure mode landed in flow form: the manifest's `sizes`
@@ -1013,14 +1040,20 @@ same PR:
   `loadHome`), and in Configure creating (client-minted ids), renaming and
   deleting tabs (tiles to the default) and moving a tile to another tab,
   all in a working copy saved at once on Configure-off; every app stays on
-  exactly one tab, so tiles are still keyed by `app_id`. Still to come for
-  multi-tab: placing an app more than once (duplication), the
-  instance-keyed tiles it needs (`flowLayout` drops a same-app repeat
-  within a tab and tiles are keyed by `app_id`, so a Configure save would
-  collapse duplicates until then), the add-a-tile placement UI and
-  per-instance render (`/api/app/<id>/render` carrying each instance's
-  `cfg`) (slice 3); the per-instance config editor (slice 4);
-  deploy-to-tab in the Add popup (slice 5). Also still to come: the
+  exactly one tab, so tiles are still keyed by `app_id`. Slice 3 landed:
+  per-instance config — `/api/apps` carries each app's `config` schema,
+  the render route became `POST /api/app/<id>/render` `{cfg}` (a missing
+  or non-dict `cfg` → `{}`; GET is a 405), and in Configure a tile whose
+  app declares config fields gets a gear opening its settings form, the
+  values saved into the instance's `config` with the layout and the tile
+  re-rendered on Save (no migration). Instance-keyed tiles are dropped
+  for good: one app placed twice is done at the app level (Duplicate,
+  below), so an app id never has two instances and tiles stay `app_id`-
+  keyed. Still to come for multi-tab: app-level **Duplicate** in a Data
+  app row — its files copied into a new app via the Add popup, the name
+  bumped with a sequential number (slice 4); deploy-to-tab in the Add
+  popup; richer settings field types (select/enum/boolean) and a live
+  preview. Also still to come: the
   grid pass (free cell placement as a second layout
   `mode` on the same sizes and CSS grid — coordinates, drop-anywhere,
   deliberate gaps, collision; it swaps `layoutTiles` and adds start cells
@@ -1035,7 +1068,7 @@ same PR:
   next the writes ticker (once app-tier write-back exists), then alerts;
   updating in place, editing files, disabling an app and zip upload are
   out — Uninstall, then add, is the update path),
-  per-instance `cfg` and its UI, metric write-back, a custom `app.js`,
+  metric write-back, a custom `app.js`,
   enforcing `reads`, and the sandbox (Phase 4).
 - **The access contract:** landed (see Data model): discovery, range queries
   with provenance, sessions, intraday series (passthrough); for the
