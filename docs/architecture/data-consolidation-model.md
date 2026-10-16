@@ -1,6 +1,6 @@
 # OpenFit Data Consolidation Model
 
-_Design reference · drafted 2026-10-12_
+_Design reference · drafted 2026-10-12, updated 2026-10-16_
 
 How OpenFit turns multi-source health data into one trusted dataset that hosted
 apps read. This is the design we build slices against; it supersedes the ad-hoc
@@ -110,9 +110,11 @@ is a patchwork, each segment carrying its source. A bucket no source covered is
 metric independently names its source. Forward-only: a change applies from the
 next sync's window, never a blanket re-derive of history.
 
-**Manual input** is just another source competing in the same pick.
+**Every writer is just a source.** A pull plugin, a pushed source, an app (hand
+entry included): each competes in the same pick, and none is a privileged class
+(§7).
 
-**Additive / manual types (calories, fluid): single source, no fall-through.**
+**Additive types (calories, fluid): single source, no fall-through.**
 For a measurement (weight), falling through to another source on a missing day is
 harmless. For an additive log, fall-through is a trap — a partial total from a
 second app (breakfast only) would masquerade as the full day. So additive metrics
@@ -195,11 +197,11 @@ equals, each tagged. The Oura night and the Google nap are both "sleep sessions.
   Core must not bake an overlap heuristic that could hide data from the app that
   cares most (e.g. a shift-worker fatigue tracker reading short, off-cycle rests
   by their real timestamps — not any nocturnal day-bucket).
-- **Custom / app-detected sleep is just another source** in the same pool (tier
-  `app`), queryable alongside vendor sessions, filterable by source. Vendor
-  detection stays the gold standard; custom detectors coexist, they don't
-  replace. *Depends on session write-back (to-build; the webhook is metrics-only
-  today).*
+- **Custom / app-detected sleep is just another source** in the same pool
+  (source `app:<id>`), queryable alongside vendor sessions, filterable by
+  source. Vendor detection stays the gold standard; custom detectors coexist,
+  they don't replace. *Depends on session write-back (to-build; the webhook is
+  metrics-only today).*
 - **Preferred-source-per-session-kind** selection reuses the same priority
   config. *Designed.*
 
@@ -209,28 +211,54 @@ actigraphy/movement often not).
 
 ---
 
-## 7. Trust, write access, and source tiers
+## 7. Trust, write access, and apps as sources
 
 **One store, not a second dataset.** "Device data is read-only to apps" is
 already enforced structurally, without physical separation:
 
 - Tables are **keyed on source** (`metrics` on `(date, source, metric)`; a
-  session id starts with its source). An app writing `source='myapp'` can only
-  ever create or overwrite *its own* rows — it is structurally incapable of
-  touching a `garmin` row.
+  session id starts with its source). An app writing `source='app:myapp'` can
+  only ever create or overwrite *its own* rows — it is structurally incapable
+  of touching a `garmin` row.
 - The **authed write path refuses device source names** (the webhook already
   rejects a pull-plugin id as source). **Built** for metrics.
 - Reads go through the open, read-only contract; writes go through the authed
   push path, own-source only. That *is* the read/write split — not two datasets.
 
-**Source tiers: `device` / `manual` / `app`.** App-derived / custom-detected
-data is a **separate opt-in tier** (confirmed decision): it does **not** compete
-in the default derived pick. Device + manual data form the default trusted
-profile; an app that wants app-contributed data asks for it explicitly. A custom
-detector's guess can never silently outrank Oura. *Tier marker is to-build.*
+**An app is a source, full stop.** An app writes under its own source,
+`app:<id>` (its installed id), the way a pull plugin writes under `garmin`: the
+same tables, the same derive-and-pick (§4), the same read contract. There are no
+source tiers and no separate opt-in dataset for app data. Hand entry is no
+exception: a weigh-in form is an app like any other, writing under its own
+`app:<id>`. *The app write path is to-build. It lands with the weight-entry app,
+which also retires the legacy `manual` source that `POST /api/weights` writes
+today.*
 
-The app-writable tier is for derived *health* data in OpenFit's canonical
-vocabulary — not a home for app context (rosters, calendars). See §1 scope.
+**The source says "app", not the key.** A canonical key an app contributes stays
+the canonical key: a weight-entry app files `weight_kg` under source
+`app:<id>`, picked alongside Garmin's `weight_kg`. Only a metric an app invents
+takes an app-namespaced key, `app:<id>:<key>`. "What have my apps added?" is a
+filter on source (`source = app:*`), not a tier.
+
+**No provenance classification.** OpenFit records *which source* wrote a value,
+never *how* the source got it. Whether an app's value was typed in by hand or
+computed is the app's own concern; OpenFit doesn't record it, tier it or rank on
+it. It stores and tags data; it doesn't classify it.
+
+**No silent outranking, from precedence rather than a tier.** An app can't
+quietly displace a device's value. `DEFAULT_PRIORITY` names the pull plugins (today
+`garmin > google_health`; a new one, such as Oura, joins it), and every source it
+doesn't name, each `app:<id>` among them, ranks after them. So an app's reading
+wins a day only where none of those has one. Making an app a metric's primary is
+the user's call, through that metric's `source_roles` entry (§4): per metric and
+forward-only. A custom detector's guess fills gaps; it outranks Oura only if you
+say so. Among the sources the default doesn't name (apps, webhook-pushed sources
+such as `eufy`), the tie-break is by name, so `source_roles` also settles an
+app against a pushed device (§10).
+
+What an app writes is *health* data, under canonical keys or its own
+`app:<id>:<key>` metrics. It is not a home for app context (rosters, calendars).
+See §1 scope.
 
 ---
 
@@ -246,7 +274,7 @@ vocabulary — not a home for app context (rosters, calendars). See §1 scope.
   priority, provenance per segment (§5). Deferred, though the second series
   source it waited on (Google Health) now exists.
 - A preferred-source session view (per-event dedup, §6).
-- An opt-in to include the `app` tier (§7).
+- A filter on source: `app:*` answers "what have my apps added?" (§7).
 
 ---
 
@@ -282,7 +310,9 @@ vocabulary — not a home for app context (rosters, calendars). See §1 scope.
 - **Wide expansion** — more daily/session/series types, each a fetcher + a
   canonical key/kind (a new metric is data, not a migration).
 - **Per-event session dedup** + preferred-source-per-kind selection view.
-- **Source tiers** (device/manual/app) with app-tier as opt-in.
+- **App write-back**: apps writing metrics under `app:<id>` (canonical keys,
+  plus `app:<id>:<key>` for their own). It lands with the weight-entry app,
+  which retires the legacy `manual` source.
 - **Session write-back** (apps contributing sessions, incl. custom detectors).
 - **Additive-type single-source** handling (no fall-through).
 - **User-local day-boundary** bucketing (requires a timezone setting).
@@ -291,8 +321,16 @@ vocabulary — not a home for app context (rosters, calendars). See §1 scope.
 
 ## 10. Open / deferred decisions
 
-- Confirmed this round: dedicated design doc (this one); app-derived data as a
-  separate opt-in tier; user-local day boundary.
+- Confirmed this round: dedicated design doc (this one); user-local day
+  boundary. The separate opt-in tier for app-derived data, also confirmed then,
+  is withdrawn (2026-10-16). Apps are sources (`app:<id>`), with no tier, no
+  opt-in and no observed/computed flag, governed by precedence and
+  `source_roles` (§7).
+- **Apps against other unnamed sources:** `DEFAULT_PRIORITY` keeps every app
+  behind the pull plugins, but the sources it doesn't name tie-break by name, so
+  `app:…` sorts ahead of a webhook-pushed `eufy` (or the legacy `manual`) unless
+  a `source_roles` entry says otherwise. Open: should apps rank after every other
+  unnamed source by default? Decide with the weight-entry app.
 - **Series materialise vs compute-on-read** — leaning compute-on-read; confirm at
   build time.
 - **Gap-threshold value and "stable segments" anti-flap rule** for series

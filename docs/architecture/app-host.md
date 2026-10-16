@@ -340,8 +340,8 @@ An open row stays open when the list is re-read. The detail is three columns
   read-only, in a popup: its text in a monospace block, set as text, never as
   markup. Nothing can be edited.
 - **Writes**: a reserved slot for the writes ticker (Day / Wk / Mth), each
-  `—` for now. It's filled in when an app can write back (`app:`-tier
-  metrics); until then nothing is counted.
+  `—` for now. It's filled in when an app can write back (metrics under its
+  own `app:<id>` source); until then nothing is counted.
 - **Refresh** re-runs the app's render (`POST /api/app/<id>/render`, the
   existing route, with its tile's config) against the data as it is now, and
   redraws that app's Home tile in place from the fresh spec: no new route, no
@@ -360,9 +360,9 @@ An open row stays open when the list is re-read. The detail is three columns
   the row. Nothing is written until Install, which goes through `POST
   /api/apps`'s checks (a clash the page didn't foresee is the server's 409),
   and the copy then gets its own tile on Home. It's a fork: later edits to one
-  app's files don't reach the other. Once apps can write back, a copy writing
-  an app-defined metric would do so under its own `app:<new-id>:…` stream,
-  separate from the original's: a decision to confirm when write-back lands.
+  app's files don't reach the other. Once apps can write back, a copy writes
+  under its own source, `app:<new-id>`, separate from the original's (an app's
+  source is its installed id), and a metric it invents is `app:<new-id>:<key>`.
 - **Uninstall** opens a confirm in the row ("Uninstall <name>? This deletes its
   files from `/data/apps/`.", with Cancel); confirming removes the app, and it
   leaves both the list and Home at once.

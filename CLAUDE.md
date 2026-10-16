@@ -1101,8 +1101,9 @@ same PR:
   the Add popup, the id and name bumped with the next free sequential
   number (`steps-2`/"Steps 2"), reviewed and installed like any app; a
   fork, so edits to the original's files don't reach the copy. Once
-  app-tier write-back lands, a copy writing an app-defined metric does so
-  under its own `app:<new-id>:…` stream — a decision to confirm then.
+  app write-back lands, a copy writes under its own source, `app:<new-id>`
+  (an app's source is its installed id; a metric it invents
+  `app:<new-id>:<key>`).
   Slice 5 landed (client only — it reuses `POST /api/apps` and `GET`/`PUT
   /api/home-layout`, no route or layout change): deploy-to-tab — the Add
   popup's Review offers an **Add to tab** picker when Home has more than
@@ -1128,10 +1129,15 @@ same PR:
   in a read-only viewer (`GET /api/app/<id>/file`), a reserved writes-ticker
   slot, Refresh, Duplicate (slice 4, above) and Uninstall (`DELETE /api/apps/<id>`, the first
   destructive app action); Browse / Build / Create are still placeholders;
-  next the writes ticker (once app-tier write-back exists), then alerts;
+  next the writes ticker (once app write-back exists), then alerts;
   updating in place, editing files, disabling an app and zip upload are
   out — Uninstall, then add, is the update path),
-  metric write-back, a custom `app.js`,
+  metric write-back (its model settled: an app is a source, `app:<id>`,
+  with no tier, opt-in or observed/computed flag; a canonical key stays
+  canonical, an invented one is `app:<id>:<key>`; it ranks after the
+  pull plugins unless a source role says otherwise; it lands with the
+  weight-entry app, which retires `manual` — see
+  `docs/architecture/data-consolidation-model.md` §7), a custom `app.js`,
   enforcing `reads`, and the sandbox (Phase 4).
 - **The access contract:** landed (see Data model): discovery, range queries
   with provenance, sessions, intraday series (passthrough); for the

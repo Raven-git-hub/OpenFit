@@ -59,9 +59,9 @@ v2 lands in four PRs:
 3. **Canonical keys normalise naming, not measurements.** The same concept from
    two vendors gets the same key; genuinely different measurements get
    different keys, even when they share a name.
-4. **Sources are uniform.** Device plugins, the webhook, hand entry and apps are
-   all just *sources*: a reading carries its source as provenance, and the
-   source-roles precedence picks the primary among them.
+4. **Sources are uniform.** Device plugins, the webhook and apps (hand entry is
+   an app) are all just *sources*: a reading carries its source as provenance,
+   and the source-roles precedence picks the primary among them.
 5. **Declare real metrics, exclude proprietary composites.** Any real,
    non-proprietary measurement gets a key, even before any source supplies it.
    Vendor black-box scores are excluded: Body Battery, readiness, sleep score,
@@ -79,10 +79,11 @@ v2 lands in four PRs:
 `instant` is a label for now: it gets no table of its own, and its readings are
 still filed one per `(date, source)` in `metrics`, like a daily one.
 
-There is **no `manual` grain.** Hand entry is a *source* (`manual`), not a
-shape: a weigh-in is `instant` whether it came from a smart scale, the webhook
-or a keyboard. The pre-v2 `cadence` label (`daily` / `manual` / `session` /
-`reading`), which conflated the two, was removed in PR 4.
+There is **no `manual` grain.** Hand entry is a *source*, not a shape: the app
+it's typed into, `app:<id>` (today still the legacy `manual`, until the
+weight-entry app replaces it). A weigh-in is `instant` whether it came from a
+smart scale, the webhook or a keyboard. The pre-v2 `cadence` label (`daily` /
+`manual` / `session` / `reading`), which conflated the two, was removed in PR 4.
 
 `grain_for(key)` answers for any key: `series` for a series metric, `session`
 for a session kind, else the metric's declared `daily` or `instant`.
@@ -222,11 +223,27 @@ from `active_minutes`.
 ### Sources and precedence
 
 Every reading is tagged with its source, and every source competes the same way
-(law 4): `garmin` and `google_health` (pull plugins), `manual` (hand entry), a
-pushed source the webhook names (`eufy`), an app's own id. Per metric, the pick
-in `app/derived.py` takes the configured primary (its source role) if it has
-one, then `DEFAULT_PRIORITY` (Garmin, then Google Health), then any other source
-by name.
+(law 4): `garmin` and `google_health` (pull plugins), a pushed source the webhook
+names (`eufy`), an app's own `app:<id>`, and the legacy `manual` that
+hand-entered weight is filed under until the weight-entry app replaces it. Per
+metric, the pick in `app/derived.py` takes the configured primary (its source
+role) if it has one, then `DEFAULT_PRIORITY` (Garmin, then Google Health), then
+any other source by name.
+
+**Apps as sources.** An app is a source like any other, with no tier of its own,
+no opt-in for its data, and no flag for whether a value was observed or
+computed. How an app got a value is its own business; OpenFit stores and tags
+the value, it doesn't classify it. An app writes under `app:<id>` (its installed
+id) and only there. A canonical key it contributes stays canonical: a
+weight-entry app files `weight_kg` under `app:<id>`. Only a metric it invents
+takes an app-namespaced key, `app:<id>:<key>`. `source = app:*` answers "what
+have my apps added?". An app can't silently outrank a pull plugin:
+`DEFAULT_PRIORITY` doesn't name it, so it ranks after them, and making it a
+metric's primary is a source role the user sets. Against another source the
+default doesn't name, such as a webhook's `eufy`, the order is by name, so a
+source role settles that too. This model is settled
+(`data-consolidation-model.md` §7). The write path that carries it is built with
+the weight-entry app, which also retires `manual`.
 
 Sessions have no pick yet. `GET /api/sessions/<kind>` is a **priority-ordered
 passthrough**: every source's sessions, unfiltered and unmerged, the source the
