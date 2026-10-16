@@ -213,7 +213,7 @@ actigraphy/movement often not).
 
 ---
 
-## 7. Trust, write access, and source tiers
+## 7. Trust, write access, and apps as sources
 
 **One store, not a second dataset.** "Device data is read-only to apps" is
 already enforced structurally, without physical separation:
@@ -227,11 +227,17 @@ already enforced structurally, without physical separation:
 - Reads go through the open, read-only contract; writes go through the authed
   push path, own-source only. That *is* the read/write split — not two datasets.
 
-**Source tiers: `device` / `manual` / `app`.** App-derived / custom-detected
-data is a **separate opt-in tier** (confirmed decision): it does **not** compete
-in the default derived pick. Device + manual data form the default trusted
-profile; an app that wants app-contributed data asks for it explicitly. A custom
-detector's guess can never silently outrank Oura. *Tier marker is to-build.*
+**Apps are sources, not a tier.** There is no `device` / `manual` / `app` tier
+and no opt-in gate: an app's data is a source like any other, tagged `app:<id>`,
+and OpenFit does not classify it by how the app produced it (typed in or
+computed) — that is the app's concern, not something the engine records or ranks
+on. Precedence is the ordinary pick (§4): a source named in `DEFAULT_PRIORITY`
+(`garmin`, `google_health`) wins, so an app never silently outranks a named
+device; among the unnamed sources (apps, webhook pushes, the frozen `manual`) the
+default tie-break is by source name, so the user settles any real contention per
+metric via `source_roles`. `manual` is now a frozen legacy source — nothing
+writes to it any more. (Whether apps should sort after other unnamed sources by
+default is the open question in §10.)
 
 Apps may write canonical health metrics, their own app-defined keys, **and**
 operational context (rosters, calendars) — all under the app's own source, which
@@ -289,7 +295,6 @@ canonical key competing in the default per-metric pick.
 - **Wide expansion** — more daily/session/series types, each a fetcher + a
   canonical key/kind (a new metric is data, not a migration).
 - **Per-event session dedup** + preferred-source-per-kind selection view.
-- **Source tiers** (device/manual/app) with app-tier as opt-in.
 - **Session write-back** (apps contributing sessions, incl. custom detectors).
 - **Additive-type single-source** handling (no fall-through).
 - **User-local day-boundary** bucketing (requires a timezone setting).
@@ -298,8 +303,8 @@ canonical key competing in the default per-metric pick.
 
 ## 10. Open / deferred decisions
 
-- Confirmed this round: dedicated design doc (this one); app-derived data as a
-  separate opt-in tier; user-local day boundary.
+- Confirmed this round: dedicated design doc (this one); user-local day boundary.
+  (The app-derived "opt-in tier" is withdrawn — apps are sources, §7.)
 - **Series materialise vs compute-on-read** — leaning compute-on-read; confirm at
   build time.
 - **Gap-threshold value and "stable segments" anti-flap rule** for series
