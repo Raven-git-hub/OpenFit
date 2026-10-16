@@ -27,14 +27,18 @@ fine-grained historical series (an intraday HR curve the device already
 recorded and synced). It is never a live/real-time monitor. "The present" is
 only ever as current as each source is, bounded by device→cloud sync lag.
 
-**Health data only (scope boundary).** OpenFit holds health data: device-sourced
-readings, manually-entered health data (weight, calories, fluid), and app-derived
-health data (a custom sleep detection, a computed metric). It does **not** hold
-operational context — rosters, shift calendars, rest-opportunity windows. An app
-brings that from its own storage and joins it against OpenFit's health data on
-its own side. Governance test for any future "should OpenFit store X?": is X a
-health fact from a source, or derived from one? Weight, sleep, HR pass. Rosters,
-calendars, shift patterns fail.
+**OpenFit does not judge what is "health" data (scope).** OpenFit holds what the
+user and their apps choose to keep: device-sourced readings, manually-entered
+data, and app-written data — whether a canonical health metric (weight, resting
+HR), app-defined data (a custom sleep score), or operational context an app needs
+(rosters, shift calendars, rest-opportunity windows). Whether a given datum
+counts as "health" is not OpenFit's call to make: a fatigue app treats duty
+periods as fatigue-relevant data, and the engine's job is to store and serve it,
+not to gatekeep by category. (This reverses the earlier "health data only"
+boundary, which excluded rosters/calendars — decided not to let OpenFit arbitrate
+what belongs.) What stays unchanged is the collation/analysis line in §1: OpenFit
+still *selects and arranges* recorded facts and does not *derive new* ones — but
+which facts are worth keeping is the user's decision, not a gated category.
 
 ---
 
@@ -229,8 +233,11 @@ in the default derived pick. Device + manual data form the default trusted
 profile; an app that wants app-contributed data asks for it explicitly. A custom
 detector's guess can never silently outrank Oura. *Tier marker is to-build.*
 
-The app-writable tier is for derived *health* data in OpenFit's canonical
-vocabulary — not a home for app context (rosters, calendars). See §1 scope.
+Apps may write canonical health metrics, their own app-defined keys, **and**
+operational context (rosters, calendars) — all under the app's own source, which
+it can only ever write to (§1 no longer gatekeeps by category). An app's
+operational-context data is stored and served like any other; it simply isn't a
+canonical key competing in the default per-metric pick.
 
 ---
 
