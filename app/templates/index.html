@@ -546,8 +546,8 @@ h5 + .dnote{margin-top:0;}
   box-shadow:0 0 0 2px var(--accent), var(--shadow);
 }
 .tiles[aria-busy="true"]{opacity:.6;pointer-events:none;}
-/* a tile's controls, over its top edge: the handle, then the size picker
-   and the move-to-tab picker, at the far end */
+/* a tile's controls, over its top edge: the handle and its settings
+   gear, then the size picker and the move-to-tab picker, at the far end */
 .tile-cfg{position:absolute;top:6px;left:6px;right:6px;display:flex;align-items:center;gap:6px;z-index:1;pointer-events:none;}
 .tile-cfg > *{pointer-events:auto;}
 .tile-grip{
@@ -556,6 +556,14 @@ h5 + .dnote{margin-top:0;}
 }
 .tile-grip:hover, .tile-grip:focus-visible{border-color:var(--accent);color:var(--accent);}
 .tile-grip svg{width:8px;height:12px;fill:currentColor;}
+/* its settings, when its app declares any: a gear beside the handle,
+   clear of the pickers */
+.tile-gear{
+  width:24px;height:24px;flex:none;padding:0;display:grid;place-items:center;cursor:pointer;
+  border:1px solid var(--border-strong);border-radius:6px;background:var(--surface);color:var(--muted);
+}
+.tile-gear:hover, .tile-gear:focus-visible{border-color:var(--accent);color:var(--accent);}
+.tile-gear svg{width:12px;height:12px;fill:currentColor;}
 .tile-size, .tile-move{
   min-width:0;padding:2px 4px;cursor:pointer;
   border:1px solid var(--border-strong);border-radius:6px;background:var(--surface);color:var(--ink);
@@ -711,6 +719,13 @@ h5 + .dnote{margin-top:0;}
     if(!r.ok) throw new Error(url+' -> '+r.status);
     return r.json();
   }
+  /* A POST whose reply is the thing asked for, not an {ok} envelope:
+     a failure throws, as fetchJSON's does. */
+  async function postJSON(url, body){
+    const r = await fetch(url, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
+    if(!r.ok) throw new Error(url+' -> '+r.status);
+    return r.json();
+  }
   async function send(url, method, body){
     try{
       const r = await fetch(url, {
@@ -749,9 +764,11 @@ h5 + .dnote{margin-top:0;}
     oauthStart:      (id, values)  => send('/api/connectors/'+enc(id)+'/oauth/start', 'POST', values),
     oauthFinish:     (id, code)    => send('/api/connectors/'+enc(id)+'/oauth/finish', 'POST', {code}),
     syncPlugin:   id             => send('/api/sync/'+enc(id)+'?days=7', 'POST'),
-    /* The app host: the installed apps, and one app's display spec. */
+    /* The app host: the installed apps (each with its config schema),
+       and one app's display spec, rendered with its instance's config -
+       a POST only to carry the cfg; nothing is written. */
     apps:         ()             => fetchJSON('/api/apps'),
-    renderApp:    id             => fetchJSON('/api/app/'+enc(id)+'/render'),
+    renderApp:    (id, cfg)      => postJSON('/api/app/'+enc(id)+'/render', {cfg: cfg || {}}),
     /* Home's layout - its tabs, and on each the tiles' order and sizes
        and the subtitle over them - read reconciled with the apps
        installed now, and saved whole as Configure is switched off. */
@@ -2033,14 +2050,15 @@ h5 + .dnote{margin-top:0;}
 
     p.querySelectorAll('.afile').forEach(b => { b.onclick = () => openAppFile(a, files[+b.dataset.file]); });
 
-    /* Refresh: the app's render, re-run against the data as it is now,
-       and its Home tile redrawn from the fresh spec - nothing else. */
+    /* Refresh: the app's render, re-run against the data as it is now
+       with its tile's config, and its Home tile redrawn from the fresh
+       spec - nothing else. */
     const refresh = act('refresh');
     refresh.onclick = async () => {
       refresh.disabled = true;
       say('', '');
       let spec;
-      try{ spec = await api.renderApp(a.id); }
+      try{ spec = await api.renderApp(a.id, tileCfg(a.id)); }
       catch(e){ say('bad', `Couldn't refresh ${name}.`); refresh.disabled = false; return; }
       repaintTile(a.id, spec);
       refresh.disabled = false;
@@ -2414,15 +2432,22 @@ h5 + .dnote{margin-top:0;}
      default first. The page never makes one up. */
   const appSizes = a => (Array.isArray(a.sizes) && a.sizes.length ? a.sizes : [a.default_size]).map(sizeOf);
 
-  /* The fetch: the apps, a spec each and the layout, then Home drawn
-     from them (renderActiveTab). Re-run after a sync, an install or an
-     uninstall, and after Configure saves - not on a tab switch. */
+  /* The fetch: the apps, the layout and a spec each - rendered with its
+     instance's config - then Home drawn from them (renderActiveTab).
+     Re-run after a sync, an install or an uninstall, and after
+     Configure saves - not on a tab switch. */
   async function loadHome(){
     let read = false;
     try{
       const [apps, saved] = await Promise.all([api.apps(), api.homeLayout()]);
+      // Each app rendered with its instance's config: mid-Configure the
+      // working copy's - the tab on screen flushed into it first, so a
+      // setting not saved yet holds - else the saved layout's.
+      const editing = !!(home.configuring && home.layout);
+      if(editing) flushTab();
+      const cfgs = cfgByApp(editing ? home.layout : saved);
       // An app that can't be fetched is one error tile, not a failed Home.
-      const specs = await Promise.all(apps.map(a => api.renderApp(a.id)
+      const specs = await Promise.all(apps.map(a => api.renderApp(a.id, cfgs.get(a.id) || {})
         .catch(() => ({type:'error', message:"Couldn't load this app."}))));
       home.specs = new Map(apps.map((a, i) => [a.id, {a, spec:specs[i]}]));
       // Mid-Configure the layout holds edits not saved yet: it's kept -
@@ -2520,6 +2545,31 @@ h5 + .dnote{margin-top:0;}
      One with no id yet sends none (JSON leaves an undefined out), and
      the server mints it one. */
   const layoutItems = () => home.tiles.map(t => ({instance_id:t.instance_id, app_id:t.app_id, size:{w:t.w, h:t.h}, config:t.config || {}}));
+
+  /* Each app's config, as a layout places it: app_id -> its instance's
+     config, the values its render is given (the first instance, in tab
+     order, should a layout from elsewhere place an app twice). */
+  function cfgByApp(layout){
+    const cfgs = new Map();
+    layout.tabs.forEach(tab => tab.items.forEach(it => {
+      if(!cfgs.has(it.app_id)) cfgs.set(it.app_id, it.config || {});
+    }));
+    return cfgs;
+  }
+  /* The config an app's tile renders with now: its tile's on screen -
+     mid-Configure, it may hold a setting not flushed yet - else its
+     instance's in the layout; {} before the layout is read. */
+  function tileCfg(appId){
+    const t = home.tiles && home.tiles.find(x => x.app_id===appId);
+    if(t) return t.config || {};
+    return (home.layout && cfgByApp(home.layout).get(appId)) || {};
+  }
+  /* An app's config fields - its manifest's, in order: the schema its
+     tile's settings form is built from. None, no form. */
+  function configFields(appId){
+    const s = home.specs && home.specs.get(appId);
+    return s && Array.isArray(s.a.config) ? s.a.config : [];
+  }
 
   function paintHome(){
     const box = $('#home');
@@ -2671,7 +2721,8 @@ h5 + .dnote{margin-top:0;}
     let saved = false;
     if(!home.configuring){
       home.configuring = true;
-      homeMsg('info', 'Drag a tile to move it, pick a size where an app offers more than one, or move it to another tab. '
+      homeMsg('info', 'Drag a tile to move it, pick a size where an app offers more than one, or move it to another tab; '
+        + 'a tile\'s gear opens its settings. '
         + '＋ Add makes a tab; a tab\'s gear renames or deletes it. Configure again to save.');
     }else{
       flushTab();
@@ -2699,11 +2750,12 @@ h5 + .dnote{margin-top:0;}
 
   /* ---- Configure: a tile's controls ---- */
   const GRIP = '<svg viewBox="0 0 8 12" aria-hidden="true"><circle cx="2" cy="2" r="1.2"/><circle cx="6" cy="2" r="1.2"/><circle cx="2" cy="6" r="1.2"/><circle cx="6" cy="6" r="1.2"/><circle cx="2" cy="10" r="1.2"/><circle cx="6" cy="10" r="1.2"/></svg>';
-  /* Its handle - drag the tile, or step it with the arrow keys - and,
-     when its app offers more than one size, a picker of those sizes:
-     choosing one resizes the tile, and the grid reflows round it. Then,
-     when there's another tab, a picker of them: choosing one moves the
-     tile there (moveTile). */
+  /* Its handle - drag the tile, or step it with the arrow keys - then,
+     when its app declares config fields, a gear opening its settings
+     (openTileConfig). Then, when its app offers more than one size, a
+     picker of those sizes: choosing one resizes the tile, and the grid
+     reflows round it. Then, when there's another tab, a picker of them:
+     choosing one moves the tile there (moveTile). */
   function tileControls(t, tile){
     const name = t.name || t.app_id;
     const bar = el('div','tile-cfg');
@@ -2712,6 +2764,15 @@ h5 + .dnote{margin-top:0;}
     grip.setAttribute('aria-label', 'Move '+name+': drag it, or use the arrow keys');
     grip.title = 'Drag to move, or use the arrow keys';
     bar.appendChild(grip);
+    if(configFields(t.app_id).length){
+      const gear = el('button','tile-gear', GEAR);
+      gear.type = 'button';
+      gear.title = 'Settings';
+      gear.setAttribute('aria-label', 'Settings of '+name);
+      gear.setAttribute('aria-haspopup','dialog');
+      gear.onclick = () => openTileConfig(t);
+      bar.appendChild(gear);
+    }
     if(t.sizes.length > 1){
       const pick = el('select','tile-size');
       pick.setAttribute('aria-label', 'Size of '+name);
@@ -2753,6 +2814,60 @@ h5 + .dnote{margin-top:0;}
       bar.appendChild(move);
     }
     return bar;
+  }
+
+  /* A tile's settings, from its gear: a form of its app's config fields,
+     in the manifest's order, each filled with the instance's value, else
+     the field's default. A number field is a numeric input; any other
+     type, text (richer types are to come). Save puts the values into the
+     instance's config - a number as a number, back to the default when
+     blank or not one; text as typed; a key the form doesn't show kept -
+     and re-renders the tile with them, in place. The config goes to the
+     server with the rest of the layout as Configure is switched off.
+     Labels are escaped; values set as .value, never markup. */
+  function openTileConfig(t){
+    const fields = configFields(t.app_id);
+    const numeric = f => f.type==='number';
+    const {box, close} = openModal(`
+      <h4>${esc(t.name || t.app_id)} settings</h4>
+      <p class="hint">Saved with the layout as you switch Configure off.</p>
+      ${fields.map((f, i) => `
+      <div class="field">
+        <label for="tileCfg${i}">${esc(f.label || f.key)}</label>
+        <input class="input" id="tileCfg${i}" ${numeric(f) ? 'type="number" step="any"' : 'type="text"'} autocomplete="off">
+      </div>`).join('')}
+      <div class="modal-actions">
+        <button class="btn sm" data-act="close" type="button">Cancel</button>
+        <button class="btn sm primary" data-act="save" type="button">Save</button>
+      </div>`);
+    const inputs = fields.map((f, i) => box.querySelector('#tileCfg'+i));
+    const cfg = t.config || {};
+    fields.forEach((f, i) => {
+      const v = Object.prototype.hasOwnProperty.call(cfg, f.key) ? cfg[f.key] : f.default;
+      inputs[i].value = v==null ? '' : String(v);
+    });
+    const save = () => {
+      const next = Object.assign({}, cfg);
+      fields.forEach((f, i) => {
+        let v = inputs[i].value;
+        if(numeric(f)){
+          const n = Number(v);
+          v = String(v).trim()!=='' && Number.isFinite(n) ? n : f.default;
+        }
+        if(v===undefined) delete next[f.key];
+        else next[f.key] = v;
+      });
+      close();
+      t.config = next;
+      // Drawn unless it's been set again since (a later Save's render wins).
+      api.renderApp(t.app_id, next)
+        .catch(() => ({type:'error', message:"Couldn't load this app."}))
+        .then(spec => { if(t.config===next) repaintTile(t.app_id, spec); });
+    };
+    inputs.forEach(input => { input.onkeydown = e => { if(e.key==='Enter') save(); }; });
+    box.querySelector('[data-act="save"]').onclick = save;
+    box.querySelector('[data-act="close"]').onclick = close;
+    if(inputs.length) inputs[0].focus();
   }
 
   /* ---- Configure: tabs, and moving a tile to one ----
@@ -2895,12 +3010,13 @@ h5 + .dnote{margin-top:0;}
   }
 
   /* ---- Configure: reorder ----
-     A sortable list, not a placement: drag a tile onto another and it
-     takes that one's place in the order, the rest reflowing live to show
-     where it will land; the drop keeps it there. Into the gap at a
-     row's end, it goes after that row's last tile; under them all, into
-     the drop row, last. A handle's arrow keys step its tile back (←, ↑)
-     or on (→, ↓). home.tiles follows the order on every drop or step. */
+     A sortable list, not a placement: drag a tile (anywhere but its
+     pickers and its gear) onto another and it takes that one's place in
+     the order, the rest reflowing live to show where it will land; the
+     drop keeps it there. Into the gap at a row's end, it goes after that
+     row's last tile; under them all, into the drop row, last. A handle's
+     arrow keys step its tile back (←, ↑) or on (→, ↓). home.tiles
+     follows the order on every drop or step. */
   function sortableTiles(grid){
     const syncOrder = () => {
       const order = Array.from(grid.children).map(t => t.dataset.app);
@@ -2913,7 +3029,7 @@ h5 + .dnote{margin-top:0;}
 
     grid.addEventListener('pointerdown', e => {
       const tile = e.target.closest('.tile');
-      if(!tile || e.button!==0 || e.target.closest('select') || home.saving) return;
+      if(!tile || e.button!==0 || e.target.closest('select, .tile-gear') || home.saving) return;
       drag = {tile, id:e.pointerId, x:e.clientX, y:e.clientY, moving:false, last:null, at:null};
       grid.setPointerCapture(e.pointerId);
       e.preventDefault();

@@ -90,9 +90,14 @@ one tab, and every installed app kept at least one instance (no migration).
 Then the second slice: the tab strip shows the layout's tabs and switches
 between them, and Configure makes, renames and deletes tabs (a deleted tab's
 tiles go to the default) and moves a tile from one tab to another, all saved
-at once (client only, no route change). Next for multi-tab: duplicating a
-tile (instance-keyed tiles), adding one, and per-instance render; then the
-per-instance config editor, and deploy-to-tab in the Add popup. Next: the rest of the Library (the writes ticker once apps can
+at once (client only, no route change). Then the third: per-instance config.
+`/api/apps` carries each app's config fields, the render route takes the
+instance's `cfg` (`POST /api/app/<id>/render`), and in Configure a tile's
+gear opens a form of those fields, saved with the layout, the tile
+re-rendered on Save. Next for multi-tab: app-level Duplicate (an app's files
+copied into a new app, its own id, from its Data row), which is how the same
+app is placed twice, so tiles stay keyed by app; then deploy-to-tab in the
+Add popup. Next: the rest of the Library (the writes ticker once apps can
 write back, alerts; Browse / Build / Create are still placeholders), and the
 grid pass (free cell placement, a second layout mode on the same sizes).
 

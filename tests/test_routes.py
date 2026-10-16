@@ -685,7 +685,8 @@ def test_refresh_reruns_the_render_and_redraws_the_tile(client):
     refresh = panel[panel.index("refresh.onclick = async () => {") : panel.index("const gateOpen")]
     # The existing render route, re-run - no new endpoint, no rescan, no
     # page reload - and its Home tile redrawn from the fresh spec.
-    assert "spec = await api.renderApp(a.id);" in refresh
+    # With its tile's config: the one on screen, else its instance's.
+    assert "spec = await api.renderApp(a.id, tileCfg(a.id));" in refresh
     assert "repaintTile(a.id, spec);" in refresh
     for other in ("loadApps", "loadHome", "location.reload"):
         assert other not in refresh, other
@@ -798,6 +799,8 @@ def test_configure_shows_controls_only_while_on_and_a_picker_only_for_a_choice(c
     sortable = _js_function(page, "sortableTiles")
     assert "home.tiles.sort((a, b) => order.indexOf(a.app_id) - order.indexOf(b.app_id));" in sortable
     assert "grid.insertBefore(drag.tile, spot.before);" in sortable
+    # A press on a picker or the gear is theirs, never a drag.
+    assert "e.target.closest('select, .tile-gear')" in sortable
     assert "e.key==='ArrowLeft' || e.key==='ArrowUp'" in sortable
 
 
@@ -853,6 +856,8 @@ def test_paint_tiles_spans_each_tile_and_configure_adds_its_controls(client):
     page = _page(client)
     script = FAKE_DOM + "\n".join([
         _const(page, "GRIP"),
+        _const(page, "GEAR"),
+        _js_source(page, "configFields"),
         _js_source(page, "spanTile"),
         _js_source(page, "tileControls"),
         _js_source(page, "paintTiles"),
@@ -860,8 +865,10 @@ def test_paint_tiles_spans_each_tile_and_configure_adds_its_controls(client):
         const renderSpec = (spec, name) => ({tag:'face', spec, name, className:'face'});
         let sortable = 0;
         const sortableTiles = grid => { sortable++; };
-        // One tab: nowhere to move a tile to.
-        const home = {activeTab:'home', layout:{default_tab:'home', tabs:[{id:'home', name:'Home', items:[]}]}};
+        // One tab: nowhere to move a tile to. Week declares a config field,
+        // Steps none.
+        const home = {activeTab:'home', layout:{default_tab:'home', tabs:[{id:'home', name:'Home', items:[]}]},
+          specs:new Map([['week', {a:{config:[{key:'days', type:'number', default:7}]}}], ['steps', {a:{config:[]}}]])};
         const tiles = [
           {app_id:'week', name:'Week <b>', spec:{type:'empty'}, w:2, h:1,
            sizes:[{w:2, h:1}, {w:1, h:1}, {w:3, h:2}]},
@@ -883,7 +890,7 @@ def test_paint_tiles_spans_each_tile_and_configure_adds_its_controls(client):
         const grid = box.children[0];
         const configuring = look(grid);
         // Pick week's 3 x 2: the tile and its entry both change.
-        const pick = grid.children[0].children[1].children[1];
+        const pick = grid.children[0].children[1].children[2];
         pick.value = '2';
         pick.onchange();
         console.log(JSON.stringify({view, sortableInView, configuring, sortable,
@@ -899,13 +906,15 @@ def test_paint_tiles_spans_each_tile_and_configure_adds_its_controls(client):
          "parts": ["face"], "controls": []},
     ]}
     assert result["sortableInView"] == 0
-    # Configure: every tile its handle; only the app with a choice of sizes
-    # a picker, its sizes in the app's order, the current one selected.
+    # Configure: every tile its handle; only the app with config fields a
+    # gear, beside it; only the app with a choice of sizes a picker, its
+    # sizes in the app's order, the current one selected.
     week, steps = result["configuring"]["tiles"]
     assert result["configuring"]["cls"] == "tiles configuring"
     assert week["parts"] == ["face", "tile-cfg"] and steps["parts"] == ["face", "tile-cfg"]
     assert week["controls"] == [
         {"cls": "tile-grip", "label": "Move Week <b>: drag it, or use the arrow keys", "options": []},
+        {"cls": "tile-gear", "label": "Settings of Week <b>", "options": []},
         {"cls": "tile-size", "label": "Size of Week <b>",
          "options": [["0", "2 × 1", True], ["1", "1 × 1", False], ["2", "3 × 2", False]]},
     ]
@@ -1197,7 +1206,9 @@ MINI_DOM = r"""
         get: () => n._html,
         set: v => { n.children = []; n._text = ''; n._html = String(v); },
       });
-      n.querySelectorAll = sel => below(n).filter(x => matches(x, sel));
+      n.querySelectorAll = sel => sel.startsWith(':scope > ')
+        ? n.children.filter(x => matches(x, sel.slice(9)))
+        : below(n).filter(x => matches(x, sel));
       n.querySelector = sel => n.querySelectorAll(sel)[0] || null;
       n.focus = () => {};
       return n;
@@ -1214,6 +1225,7 @@ TAB_PARTS = [
     "toggleConfigure", "GRIP", "tileControls", "moveTile", "createTab", "renameTab", "deleteTarget",
     "deleteTab", "newTabId", "tabNameProblem", "openTabEditor", "GEAR", "PANEL_TABS", "panelShown",
     "showTab", "showPanel", "markTabs", "OPENING_TAB", "tabButtons", "openingTab",
+    "cfgByApp", "tileCfg", "configFields", "openTileConfig", "repaintTile",
 ]
 # ... and the strip's own wiring, as the page has it.
 TAB_WIRING = [
@@ -1242,7 +1254,7 @@ TAB_HARNESS = r"""
     document.appendChild(mk('section')).dataset.panel = 'data';
 
     // What the page draws with but these tests don't look at.
-    const renderSpec = (spec, name) => { const n = mk('div'); n.className = 'face'; return n; };
+    const renderSpec = (spec, name) => { const n = mk('div'); n.className = 'face'; n.dataset.message = spec.message; return n; };
     const sortableTiles = () => {};
     const closeFloating = () => {};
     const setTimeout = () => 0, clearTimeout = () => {};
@@ -1251,14 +1263,18 @@ TAB_HARNESS = r"""
     const localStorage = {getItem: k => k in store ? store[k] : null, setItem: (k, v) => { store[k] = String(v); }};
 
     // The server, as the test left it: the apps, the layout (what a save
-    // stored, from then on) and a spec each.
+    // stored, from then on) and a spec each, saying what it was rendered
+    // with - every render is noted, with the cfg it was sent.
     let served = LAYOUT;
-    const saves = [];
+    const saves = [], renders = [];
     const copy = x => JSON.parse(JSON.stringify(x));
     const api = {
       apps: async () => copy(APPS),
       homeLayout: async () => copy(served),
-      renderApp: async id => ({type:'empty', message:id}),
+      renderApp: async (id, cfg) => {
+        renders.push([id, cfg===undefined ? 'none' : copy(cfg)]);
+        return {type:'empty', message:id+' '+JSON.stringify(cfg)};
+      },
       saveLayout: async layout => { served = copy(layout); saves.push(copy(layout)); return {ok:true}; },
     };
 
@@ -1336,17 +1352,28 @@ def _tab_script(page, apps_listed, layout, scenario, opening=None):
         .replace("APPS", json.dumps(apps_listed))
         .replace("WIRING", "\n".join(TAB_WIRING))
     )
+    esc = re.search(r"\n  (const esc = .*?\);)\n", page, re.S).group(1)
     return (
-        MINI_DOM + "\n".join(_js(page, n) for n in TAB_PARTS) + harness
+        MINI_DOM + esc + "\n" + "\n".join(_js(page, n) for n in TAB_PARTS) + harness
         + "(async () => {\n" + scenario + "\nconsole.log(JSON.stringify(r));\n})()"
         + ".catch(e => { console.error(e); process.exit(1); });"
     )
 
 
+# a's config fields: a number with a label and a default, one with no
+# type (so text), and a number with neither label nor default.
+A_CONFIG = (
+    "config:\n"
+    '  - {key: goal, label: "Daily <goal>", type: number, default: 10000}\n'
+    "  - {key: unit, label: Unit, default: steps}\n"
+    "  - {key: cap, type: number}\n"
+)
+
+
 @pytest.fixture
 def tab_apps(tmp_path, monkeypatch):
     """Four apps installed, in a temp apps folder: a with two sizes, c
-    with two, b and d with one."""
+    with two, b and d with one. Only a declares config fields."""
     import main
 
     path = tmp_path / "apps"
@@ -1357,7 +1384,9 @@ def tab_apps(tmp_path, monkeypatch):
         ("d", "[{w: 1, h: 1}]"),
     ):
         (path / app_id).mkdir(parents=True)
-        (path / app_id / "app.yaml").write_text(f"id: {app_id}\nname: App {app_id.upper()}\nsizes: {sizes}\n")
+        (path / app_id / "app.yaml").write_text(
+            f"id: {app_id}\nname: App {app_id.upper()}\nsizes: {sizes}\n" + (A_CONFIG if app_id == "a" else "")
+        )
     monkeypatch.setitem(main.app.config, "APPS_DIR", str(path))
     return path
 
@@ -1729,6 +1758,188 @@ def test_the_page_opens_on_its_opening_tab_once_the_strip_has_it(client, tab_app
     active = [s[0] for s in r["after"]["strip"] if s[2]]
     assert active == [shown if panel == "home" else "data"]
     assert r["opening"] == resolved
+
+
+# ---------- a tile's settings: its instance's config ----------
+
+# a's instance holds a setting and a key its form doesn't show; c's holds
+# one though c declares no fields (a layout from elsewhere can). d is
+# placed nowhere: the read puts it on Home, with config {}.
+CONFIGURED = {"tabs": [
+    _tab("home", "Home", _instance("ia", "a", config={"goal": 5, "old": "kept"}), _instance("ib", "b")),
+    _tab("two", "Two", _instance("ic", "c", 2, 2, {"x": 1})),
+], "default_tab": "home"}
+
+
+def _message(app_id, cfg):
+    """The face of a tile the harness drew: its spec's message, which names the cfg it was rendered with."""
+    return app_id + " " + json.dumps(cfg, separators=(",", ":"), ensure_ascii=False)
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
+def test_home_renders_each_app_with_its_instances_config_and_a_gear_only_for_fields(client, tab_apps):
+    r, read = _run_tabs(client, """
+        await boot(); click('home');
+        r.boot = copy(renders);
+        r.faces = $('#home .tiles').children.map(t => [t.dataset.app, t.children[0].dataset.message]);
+        r.cfgs = ['a', 'b', 'c', 'd', 'nope'].map(tileCfg);
+        await toggleConfigure();
+        const gear = id => { const g = controlOf(id, 'tile-gear'); return g && [g.attrs['aria-label'], g.attrs['aria-haspopup']]; };
+        r.gears = ['a', 'b', 'd'].map(gear);
+        r.bar = tileOf('a').children[1].children.map(c => c.className);
+        click('two'); r.gearsTwo = [gear('c')];
+    """, layout=CONFIGURED)
+    # One render an app, in folder order, each sent its instance's config.
+    assert r["boot"] == [["a", {"goal": 5, "old": "kept"}], ["b", {}], ["c", {"x": 1}], ["d", {}]]
+    assert r["faces"] == [
+        ["a", _message("a", {"goal": 5, "old": "kept"})], ["b", _message("b", {})], ["d", _message("d", {})],
+    ]
+    # What Refresh renders with: the tile's on screen, else the layout's.
+    assert r["cfgs"] == [{"goal": 5, "old": "kept"}, {}, {"x": 1}, {}, {}]
+    # A gear only where the app declares config fields - not for c, whose
+    # instance holds a config its app has no form for - beside the handle.
+    assert r["gears"] == [["Settings of App A", "dialog"], None, None]
+    assert r["gearsTwo"] == [None]
+    assert r["bar"] == ["tile-grip", "tile-gear", "tile-size", "tile-move"]
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
+def test_a_tiles_settings_save_into_its_instance_rerender_it_and_go_with_the_layout(client, tab_apps):
+    r, read = _run_tabs(client, """
+        await boot(); click('home');
+        await toggleConfigure();
+        const before = renders.length;
+        controlOf('a', 'tile-gear').onclick();
+        const m = modals.pop();
+        r.html = m.box.html;
+        r.inputs = [0, 1, 2, 3].map(i => m.q('#tileCfg'+i) !== null);
+        r.given = [0, 1, 2].map(i => m.q('#tileCfg'+i).value);
+        m.q('#tileCfg0').value = '12500';
+        m.q('#tileCfg1').value = 'km <i>';
+        m.q('#tileCfg2').value = '3';
+        m.q('[data-act="save"]').onclick();
+        r.closed = m.closed;
+        r.config = copy(home.tiles.find(t => t.app_id==='a').config);
+        await tick();
+        r.rendered = renders.slice(before);
+        r.tile = tileOf('a').children.map(c => [c.className, c.dataset.message || null]);
+        // A refresh mid-Configure (a sync, an install) renders with the
+        // setting not saved yet, and keeps it.
+        const mid = renders.length;
+        await loadHome();
+        r.refreshed = renders.slice(mid);
+        r.kept = copy(home.tiles.find(t => t.app_id==='a').config);
+        r.refreshCfg = tileCfg('a');
+        await toggleConfigure(); await tick();
+        r.saves = saves;
+        r.reread = renders.slice(-4);
+    """, layout=CONFIGURED)
+    html = r["html"]
+    # Titled by the app's name; a field per schema entry, in order -
+    # labelled by its label, else its key, escaped; a number field a
+    # numeric input, the rest text - and no values in the markup.
+    assert "<h4>App A settings</h4>" in html
+    assert '<label for="tileCfg0">Daily &lt;goal&gt;</label>' in html
+    assert 'id="tileCfg0" type="number" step="any"' in html
+    assert '<label for="tileCfg1">Unit</label>' in html and 'id="tileCfg1" type="text"' in html
+    assert '<label for="tileCfg2">cap</label>' in html and 'id="tileCfg2" type="number" step="any"' in html
+    assert "value=" not in html and "kept" not in html
+    assert r["inputs"] == [True, True, True, False]
+    # Filled from the instance's config, else the field's default, else blank.
+    assert r["given"] == ["5", "steps", ""]
+    # Saved into the instance - the number a number, text as typed, the
+    # key the form doesn't show kept - and the tile rendered once with it,
+    # its face redrawn in place, its controls kept.
+    config = {"goal": 12500, "old": "kept", "unit": "km <i>", "cap": 3}
+    assert r["closed"] and r["config"] == config
+    assert r["rendered"] == [["a", config]]
+    assert r["tile"] == [["face", _message("a", config)], ["tile-cfg", None]]
+    assert ["a", config] in r["refreshed"] and r["kept"] == config and r["refreshCfg"] == config
+    # Configure off: the instance's config goes with the layout, and the
+    # re-read renders with what was stored.
+    [body] = r["saves"]
+    assert body["tabs"][0]["items"][0] == _instance("ia", "a", config=config)
+    assert body["tabs"][1] == read["tabs"][1]
+    stored = _stored(client, body)
+    assert stored == body
+    assert r["reread"] == [["a", config], ["b", {}], ["c", {"x": 1}], ["d", {}]]
+
+    # Reloaded: the form opens on the saved values.
+    r, _ = _run_tabs(client, """
+        await boot(); click('home');
+        r.boot = renders.filter(x => x[0]==='a');
+        await toggleConfigure();
+        controlOf('a', 'tile-gear').onclick();
+        const m = modals.pop();
+        r.given = [0, 1, 2].map(i => m.q('#tileCfg'+i).value);
+    """, layout=stored)
+    assert r["boot"] == [["a", config]]
+    assert r["given"] == ["12500", "km <i>", "3"]
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
+def test_a_number_setting_saves_a_number_or_falls_back_to_its_default(client, tab_apps):
+    r, _ = _run_tabs(client, """
+        await boot(); click('home'); await toggleConfigure();
+        const cfgA = () => copy(home.tiles.find(t => t.app_id==='a').config);
+        const set = async (goal, cap, act) => {
+          controlOf('a', 'tile-gear').onclick();
+          const m = modals.pop();
+          m.q('#tileCfg0').value = goal; m.q('#tileCfg2').value = cap;
+          m.q('[data-act="'+(act || 'save')+'"]').onclick();
+          await tick();
+          return cfgA();
+        };
+        r.tries = [];
+        for(const [goal, cap] of [['8000.5', '0'], ['  ', ''], ['abc', 'Infinity'], ['1e3', ' 2 '], ['-4', '']]){
+          r.tries.push(await set(goal, cap));
+        }
+        // Cancel changes nothing and renders nothing.
+        const n = renders.length;
+        r.cancelled = await set('1', '1', 'close');
+        r.cancelRenders = renders.length - n;
+        // Enter in a field saves, as the button does.
+        controlOf('a', 'tile-gear').onclick();
+        const m = modals.pop();
+        m.q('#tileCfg0').value = '42';
+        m.q('#tileCfg1').onkeydown({key:'Enter'});
+        r.entered = [m.closed, cfgA()];
+        // A render that fails is an error tile, the setting kept.
+        api.renderApp = async () => { throw new Error('offline'); };
+        await set('7', '');
+        r.failed = [tileOf('a').children[0].dataset.message, cfgA().goal];
+    """, layout=CONFIGURED)
+    kept = {"old": "kept", "unit": "steps"}
+    assert r["tries"] == [
+        {**kept, "goal": 8000.5, "cap": 0},
+        # Blank: the default - and with no default, no key at all.
+        {**kept, "goal": 10000},
+        # Not a number, or not a finite one: the same.
+        {**kept, "goal": 10000},
+        {**kept, "goal": 1000, "cap": 2},
+        {**kept, "goal": -4},
+    ]
+    assert r["cancelled"] == {**kept, "goal": -4} and r["cancelRenders"] == 0
+    assert r["entered"] == [True, {**kept, "goal": 42}]
+    assert r["failed"] == ["Couldn't load this app.", 7]
+
+
+def test_the_tile_settings_form_sets_values_as_text_never_markup(client):
+    page = _page(client)
+    form = _js_function(page, "openTileConfig")
+    # Labels and the name escaped into the markup; values only ever .value.
+    assert "${esc(t.name || t.app_id)} settings" in form
+    assert "${esc(f.label || f.key)}" in form
+    assert "inputs[i].value = v==null ? '' : String(v);" in form
+    assert "${v" not in form and "${cfg" not in form and "${f.default" not in form
+    # Saved into the instance, re-rendered with it: no route of its own.
+    assert "t.config = next;" in form
+    assert "api.renderApp(t.app_id, next)" in form
+    assert "repaintTile(t.app_id, spec)" in form
+    assert "saveLayout" not in form
+    assert "api.renderApp(a.id, cfgs.get(a.id) || {})" in _js_function(page, "loadHome")
+    # The render route is a POST carrying the cfg, through the API block.
+    assert "renderApp:    (id, cfg)      => postJSON('/api/app/'+enc(id)+'/render', {cfg: cfg || {}})," in page
 
 
 def test_index_wires_the_voice_buttons_to_the_audio_route(client):

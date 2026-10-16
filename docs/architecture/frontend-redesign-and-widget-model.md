@@ -98,12 +98,12 @@ Right column:
    - **Writes**: a reserved slot for the writes ticker (Day / Wk / Mth, each
      `—`), filled in once an app can write back.
 
-   Under them, **Refresh** re-runs the app's render (`GET
-   /api/app/<id>/render`) and redraws its Home tile in place, without a
-   reload; **Uninstall** (in the danger style) opens a confirm in the row,
-   "Uninstall <name>? This deletes its files from `/data/apps/`.", and
-   confirming it (`DELETE /api/apps/<id>`) takes the app off the list and
-   Home at once. Still to come, each its own branch: the writes ticker, then
+   Under them, **Refresh** re-runs the app's render (`POST
+   /api/app/<id>/render`, with its tile's settings) and redraws its Home
+   tile in place, without a reload; **Uninstall** (in the danger style)
+   opens a confirm in the row, "Uninstall <name>? This deletes its files
+   from `/data/apps/`.", and confirming it (`DELETE /api/apps/<id>`) takes
+   the app off the list and Home at once. Still to come, each its own branch: the writes ticker, then
    alerts. The server side of both actions is in
    [app-host.md](app-host.md#an-apps-row-reads-files-refresh-uninstall).
 

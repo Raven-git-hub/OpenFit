@@ -3,9 +3,10 @@ The app host: installed apps, their render() and the Home tab's routes.
 
 An app is a folder in APPS_DIR holding app.yaml (its manifest) and,
 usually, app.py (its render(ctx, cfg)). scan_apps() lists the ones that
-load and logs and skips the rest; GET /api/apps lists them, and GET
-/api/app/<id>/render runs one's render() against a fresh ctx and returns
-its display spec - or an error spec, never a 500. ctx.metric() is an
+load and logs and skips the rest; GET /api/apps lists them, and POST
+/api/app/<id>/render runs one's render() against a fresh ctx and the
+cfg it's sent, and returns its display spec - or an error spec, never a
+500. ctx.metric() is an
 app's one data path: a metric's derived points as a list of Points,
 trailing `days` days.
 Every test gets its own temp apps folder; nothing reads /data/apps.
@@ -172,6 +173,11 @@ MALFORMED = {
     "config field with no key": (SIZE + "config: [{label: Days}]\n", STEPS_APP),
     "config field key not a string": (SIZE + "config: [{key: 7}]\n", STEPS_APP),
     "config field listed twice": (SIZE + "config: [{key: days}, {key: days}]\n", STEPS_APP),
+    # A field is sent to the page as written (GET /api/apps), so it must
+    # be plain JSON: one that isn't would fail the whole listing.
+    "config default a YAML date": (SIZE + "config: [{key: start, default: 2026-01-01}]\n", STEPS_APP),
+    "config default not a number": (SIZE + "config: [{key: stride, type: number, default: .nan}]\n", STEPS_APP),
+    "config default binary": (SIZE + "config: [{key: blob, default: !!binary aGk=}]\n", STEPS_APP),
 }
 
 # Manifests whose size won't do, and why: each app is skipped with the reason.
@@ -276,9 +282,9 @@ def test_an_app_with_no_app_py_loads_with_nothing_to_draw(client, apps_dir, caps
     assert "[apps]" not in capsys.readouterr().out
     assert client.get("/api/apps").get_json() == [
         {"id": "notes", "name": "Notes", "default_size": {"w": 1, "h": 1},
-         "sizes": [{"w": 1, "h": 1}], "reads": [], "files": ["app.yaml"]}
+         "sizes": [{"w": 1, "h": 1}], "reads": [], "config": [], "files": ["app.yaml"]}
     ]
-    assert client.get("/api/app/notes/render").get_json() == {
+    assert client.post("/api/app/notes/render").get_json() == {
         "type": "empty",
         "message": "Nothing to draw yet: this app has no app.py",
     }
@@ -361,9 +367,9 @@ def test_api_apps_lists_the_installed_apps(client, apps_dir):
     assert resp.get_json() == [
         {"id": "steps", "name": "Steps", "default_size": {"w": 1, "h": 1},
          "sizes": [{"w": 1, "h": 1}, {"w": 2, "h": 2}],
-         "reads": [], "files": ["app.py", "app.yaml"]},
+         "reads": [], "config": [], "files": ["app.py", "app.yaml"]},
         {"id": "steps-metres", "name": "Distance", "default_size": {"w": 2, "h": 1},
-         "sizes": [{"w": 2, "h": 1}], "reads": [], "files": ["app.py", "app.yaml"]},
+         "sizes": [{"w": 2, "h": 1}], "reads": [], "config": [], "files": ["app.py", "app.yaml"]},
     ]
 
 
@@ -371,7 +377,7 @@ def test_api_apps_with_none_installed(client, apps_dir):
     assert client.get("/api/apps").get_json() == []
 
 
-# ---------- GET /api/app/<id>/render ----------
+# ---------- POST /api/app/<id>/render ----------
 
 
 def test_the_real_apps_are_listed_and_both_render_specs(client, conn, apps_dir):
@@ -386,11 +392,15 @@ def test_the_real_apps_are_listed_and_both_render_specs(client, conn, apps_dir):
 
     assert client.get("/api/apps").get_json() == [
         {"id": "steps", "name": "Steps", "default_size": {"w": 1, "h": 1},
-         "sizes": [{"w": 1, "h": 1}], "reads": ["steps"], "files": ["app.py", "app.yaml"]},
+         "sizes": [{"w": 1, "h": 1}], "reads": ["steps"], "config": [], "files": ["app.py", "app.yaml"]},
+        # steps-metres' config schema, as the manifest gives it: the
+        # tile's settings form is built from it.
         {"id": "steps-metres", "name": "Distance (from steps)", "default_size": {"w": 1, "h": 1},
-         "sizes": [{"w": 1, "h": 1}], "reads": ["steps"], "files": ["app.py", "app.yaml"]},
+         "sizes": [{"w": 1, "h": 1}], "reads": ["steps"],
+         "config": [{"key": "stride_m", "label": "Stride length (m)", "type": "number", "default": 0.75}],
+         "files": ["app.py", "app.yaml"]},
     ]
-    assert client.get("/api/app/steps/render").get_json() == {
+    assert client.post("/api/app/steps/render").get_json() == {
         "type": "panel",
         "children": [
             {"type": "number", "value": 4000, "label": "steps",
@@ -399,7 +409,7 @@ def test_the_real_apps_are_listed_and_both_render_specs(client, conn, apps_dir):
              "points": [[today_minus(1), 8000], [today, 4000]]},
         ],
     }
-    assert client.get("/api/app/steps-metres/render").get_json() == {
+    assert client.post("/api/app/steps-metres/render").get_json() == {
         "type": "number", "value": 3000, "label": "metres",
         "caption": "4000 steps × 0.75 m · so far today", "unit": None,
     }
@@ -427,7 +437,7 @@ def test_render_returns_the_apps_spec_over_live_data(client, conn, apps_dir):
     insert(conn, today_minus(1), "garmin", steps=4499.6)
     recompute_derived(conn)
 
-    resp = client.get("/api/app/steps/render")
+    resp = client.post("/api/app/steps/render")
     assert resp.status_code == 200
     assert resp.get_json() == {
         "type": "panel",
@@ -447,13 +457,13 @@ def test_render_with_no_data_is_the_apps_empty_spec(client, apps_dir):
     install_real_apps(apps_dir)
 
     for app_id in ("steps", "steps-metres"):
-        assert client.get(f"/api/app/{app_id}/render").get_json() == {
+        assert client.post(f"/api/app/{app_id}/render").get_json() == {
             "type": "empty", "message": "No step data yet",
         }
 
 
 def test_render_of_an_unknown_app_is_404(client, apps_dir):
-    resp = client.get("/api/app/nope/render")
+    resp = client.post("/api/app/nope/render")
     assert resp.status_code == 404
     assert resp.get_json() == {"ok": False, "error": "unknown app: nope"}
 
@@ -461,13 +471,13 @@ def test_render_of_an_unknown_app_is_404(client, apps_dir):
 def test_render_of_a_malformed_app_is_404(client, apps_dir):
     make_app(apps_dir, "broken", SIZE, "def render(ctx, cfg)\n")
 
-    assert client.get("/api/app/broken/render").status_code == 404
+    assert client.post("/api/app/broken/render").status_code == 404
 
 
 def test_a_render_that_raises_is_an_error_spec_not_a_500(client, apps_dir, capsys):
     make_app(apps_dir, "raises", SIZE, "def render(ctx, cfg):\n    raise KeyError('series')\n")
 
-    resp = client.get("/api/app/raises/render")
+    resp = client.post("/api/app/raises/render")
     assert resp.status_code == 200
     assert resp.get_json() == {"type": "error", "message": "KeyError: 'series'"}
     log = capsys.readouterr()
@@ -479,7 +489,7 @@ def test_a_render_that_raises_is_an_error_spec_not_a_500(client, apps_dir, capsy
 def test_an_app_asking_for_an_unknown_metric_is_an_error_spec(client, apps_dir):
     make_app(apps_dir, "typo", SIZE, "def render(ctx, cfg):\n    return ctx.metric('stepz')\n")
 
-    assert client.get("/api/app/typo/render").get_json() == {
+    assert client.post("/api/app/typo/render").get_json() == {
         "type": "error", "message": "ValueError: unknown metric: 'stepz'",
     }
 
@@ -498,18 +508,85 @@ def test_an_app_asking_for_an_unknown_metric_is_an_error_spec(client, apps_dir):
 def test_a_render_that_returns_no_spec_is_an_error_spec(client, apps_dir, returned, message):
     make_app(apps_dir, "odd", SIZE, f"def render(ctx, cfg):\n    return {returned}\n")
 
-    resp = client.get("/api/app/odd/render")
+    resp = client.post("/api/app/odd/render")
     assert resp.status_code == 200
     spec = resp.get_json()
     assert spec["type"] == "error"
     assert spec["message"].startswith(message)
 
 
-def test_render_is_given_an_empty_cfg(client, apps_dir):
-    make_app(apps_dir, "cfg", "config: [{key: days, default: 7}]\n" + SIZE,
-             "def render(ctx, cfg):\n    return ctx.number(len(cfg), label=repr(cfg))\n")
+ECHO_CFG = "def render(ctx, cfg):\n    return ctx.number(len(cfg), label=repr(cfg))\n"
 
-    assert client.get("/api/app/cfg/render").get_json()["label"] == "{}"
+
+def test_render_is_given_the_cfg_its_sent(client, apps_dir):
+    # The instance's config, as given: the app is trusted and owns its
+    # fallbacks, so nothing in it is checked - not even against the
+    # app's own config fields.
+    make_app(apps_dir, "cfg", "config: [{key: days, default: 7}]\n" + SIZE, ECHO_CFG)
+
+    resp = client.post("/api/app/cfg/render", json={"cfg": {"days": 14, "note": "a <b>", "on": True}})
+    assert resp.status_code == 200
+    assert resp.get_json()["label"] == "{'days': 14, 'note': 'a <b>', 'on': True}"
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {},                                                     # no body at all
+        {"data": "", "content_type": "application/json"},
+        {"data": "{not json", "content_type": "application/json"},
+        {"json": {}},
+        {"json": {"cfg": None}},
+        {"json": {"cfg": [1, 2]}},
+        {"json": {"cfg": "days=14"}},
+        {"json": {"cfg": 5}},
+        {"json": [{"cfg": {"days": 14}}]},
+    ],
+    ids=["no body", "empty", "not JSON", "no cfg", "cfg null", "cfg a list", "cfg a string",
+         "cfg a number", "a list body"],
+)
+def test_render_with_no_cfg_or_one_thats_not_a_mapping_is_given_an_empty_one(client, apps_dir, body):
+    make_app(apps_dir, "cfg", "config: [{key: days, default: 7}]\n" + SIZE, ECHO_CFG)
+
+    resp = client.post("/api/app/cfg/render", **body)
+    assert resp.status_code == 200
+    assert resp.get_json() == {"type": "number", "value": 0, "label": "{}", "caption": None, "unit": None}
+
+
+def test_the_real_metres_app_renders_with_the_stride_its_sent(client, conn, apps_dir):
+    # steps-metres declares stride_m (default 0.75): its tile's settings
+    # set it, and the spec follows.
+    install_real_apps(apps_dir)
+    insert(conn, today_minus(0), "garmin", steps=4000)
+    recompute_derived(conn)
+    url = "/api/app/steps-metres/render"
+
+    assert client.post(url, json={"cfg": {"stride_m": 1.0}}).get_json() == {
+        "type": "number", "value": 4000, "label": "metres",
+        "caption": "4000 steps × 1.0 m · so far today", "unit": None,
+    }
+    # With none set, the app's own fallback.
+    assert client.post(url, json={"cfg": {}}).get_json()["value"] == 3000
+    assert client.post(url).get_json()["value"] == 3000
+    # An app that declares no config is sent one all the same, and draws
+    # as ever.
+    assert client.post("/api/app/steps/render", json={"cfg": {"stride_m": 1.0}}).get_json() == \
+        client.post("/api/app/steps/render").get_json()
+
+
+def test_render_is_a_post_a_get_is_refused(client, apps_dir):
+    # POST only to carry the cfg: a GET, the route's old method, no longer
+    # renders anything.
+    install_real_apps(apps_dir)
+
+    assert client.get("/api/app/steps/render").status_code == 405
+    assert client.post("/api/app/steps/render").status_code == 200
+
+
+def test_render_of_an_unknown_app_with_a_cfg_is_404(client, apps_dir):
+    resp = client.post("/api/app/nope/render", json={"cfg": {"stride_m": 1.0}})
+    assert resp.status_code == 404
+    assert resp.get_json() == {"ok": False, "error": "unknown app: nope"}
 
 
 # ---------- ctx ----------

@@ -74,9 +74,9 @@ def test_api_apps_lists_each_apps_reads_and_files(client, apps_dir):
 
     assert client.get("/api/apps").get_json() == [
         {"id": "notes", "name": "notes", "default_size": {"w": 1, "h": 1}, "sizes": [{"w": 1, "h": 1}],
-         "reads": [], "files": ["app.yaml"]},
+         "reads": [], "config": [], "files": ["app.yaml"]},
         {"id": "walk", "name": "Walk", "default_size": {"w": 1, "h": 1}, "sizes": [{"w": 1, "h": 1}],
-         "reads": ["steps", "distance_m"], "files": ["app.py", "app.yaml", "thresholds.yaml"]},
+         "reads": ["steps", "distance_m"], "config": [], "files": ["app.py", "app.yaml", "thresholds.yaml"]},
     ]
 
 
@@ -84,7 +84,7 @@ def test_the_files_listed_are_the_plain_ones_in_the_folder(client, apps_dir, tmp
     install(client, {**STEPS, "notes.txt": "hello\n", ".env": "X=1\n"})
     folder = apps_dir / "steps"
     # Rendering imports app.py, which leaves a __pycache__ folder.
-    assert client.get("/api/app/steps/render").status_code == 200
+    assert client.post("/api/app/steps/render").status_code == 200
     assert (folder / "__pycache__").is_dir()
     # Neither a sub-folder nor a link is a file of the app's: a link could
     # point anywhere.
@@ -179,7 +179,7 @@ def test_a_name_with_no_name_param_is_refused(client, apps_dir):
 def test_a_name_the_folder_doesnt_hold_as_a_plain_file_is_404(client, apps_dir, tmp_path, name):
     install(client, STEPS)
     folder = apps_dir / "steps"
-    client.get("/api/app/steps/render")   # leaves __pycache__
+    client.post("/api/app/steps/render")   # leaves __pycache__
     (folder / "data").mkdir()
     (folder / "secret-link.txt").symlink_to(tmp_path / "secret.txt")
     (folder / "alias.yaml").symlink_to(folder / "app.yaml")
@@ -248,7 +248,7 @@ def test_a_file_too_big_to_show_is_413(client, apps_dir):
 def test_uninstall_removes_the_app_its_folder_and_its_tile(client, apps_dir, tmp_path):
     install(client, {**STEPS, "thresholds.yaml": "goal: 10000\n"})
     install(client, {"app.yaml": "id: notes\n" + SIZE})
-    client.get("/api/app/steps/render")
+    client.post("/api/app/steps/render")
     before = tree(tmp_path)
 
     resp = client.delete("/api/apps/steps")
@@ -257,7 +257,7 @@ def test_uninstall_removes_the_app_its_folder_and_its_tile(client, apps_dir, tmp
     assert resp.get_json() == {"ok": True, "id": "steps"}
     assert sorted(os.listdir(apps_dir)) == ["notes"]   # no trash left behind
     assert [a["id"] for a in client.get("/api/apps").get_json()] == ["notes"]
-    assert client.get("/api/app/steps/render").status_code == 404
+    assert client.post("/api/app/steps/render").status_code == 404
     # Nothing else changed: only the app's own folder went.
     assert tree(tmp_path) == [p for p in before if not p.startswith("apps/steps")]
 
@@ -359,7 +359,7 @@ def test_remove_then_add_is_the_update_path(client, apps_dir):
     v1 = {"app.yaml": "id: echo\n" + SIZE, "app.py": "def render(ctx, cfg):\n    return ctx.empty('one')\n"}
     v2 = {"app.yaml": "id: echo\n" + SIZE, "app.py": "def render(ctx, cfg):\n    return ctx.empty('two')\n"}
     install(client, v1)
-    assert client.get("/api/app/echo/render").get_json()["message"] == "one"
+    assert client.post("/api/app/echo/render").get_json()["message"] == "one"
     stamps = {n: os.stat(apps_dir / "echo" / n).st_mtime_ns for n in v1}
 
     assert client.post("/api/apps", json={"files": v2}).status_code == 409
@@ -370,7 +370,7 @@ def test_remove_then_add_is_the_update_path(client, apps_dir):
     for name, ns in stamps.items():
         os.utime(apps_dir / "echo" / name, ns=(ns, ns))
 
-    assert client.get("/api/app/echo/render").get_json()["message"] == "two"
+    assert client.post("/api/app/echo/render").get_json()["message"] == "two"
 
 
 # ---------- uninstall_app(): whole, or not at all ----------
