@@ -10,6 +10,8 @@ default) holding its manifest and, usually, its engine:
                     first; config an ordered list of fields:
                     {key, label, type, default})
         app.py      def render(ctx, cfg): -> a display spec (see host.py)
+                    and, optionally, def handle(ctx, action, payload):
+                    what its tile's input sends (POST /api/app/<id>/action)
 
 app.py is optional: an app with a manifest alone loads and lists, and
 its tile says it has nothing to draw. Any other files in the folder
@@ -18,7 +20,8 @@ its tile says it has nothing to draw. Any other files in the folder
 scan_apps() lists every app that loads. A folder without an app.yaml
 isn't an app and is passed over quietly; one with an app.yaml that
 doesn't load - bad YAML, a manifest field of the wrong type, an app.py
-that fails to import or has no callable render - is logged and skipped,
+that fails to import, has no callable render or a handle that isn't
+callable - is logged and skipped,
 so one broken app never stops the rest from being listed, and never
 takes the server down.
 
@@ -73,6 +76,9 @@ class InstalledApp:
     config: list
     path: str
     render: object = field(repr=False)
+    # handle(ctx, action, payload), or None: an app without one can't be
+    # actioned, only drawn.
+    handle: object = field(default=None, repr=False)
 
     def summary(self):
         """What GET /api/apps lists for it: the manifest's id, name, sizes
@@ -240,13 +246,14 @@ def _nothing_to_draw(ctx, cfg):
     return {"type": "empty", "message": NOTHING_TO_DRAW}
 
 
-def _render_function(folder, app_id):
+def _entry_points(folder, app_id):
+    """app.py's render and handle, imported once: (render, handle or None)."""
     path = os.path.join(folder, MODULE)
     if not os.path.isfile(path):
         # app.py is optional: the app still loads and lists, and its
         # tile says there's nothing to draw. Adding one later is picked
         # up like any edit (_signature watches it).
-        return _nothing_to_draw
+        return _nothing_to_draw, None
     spec = importlib.util.spec_from_file_location(f"openfit_app_{app_id}", path)
     module = importlib.util.module_from_spec(spec)
     try:
@@ -258,14 +265,18 @@ def _render_function(folder, app_id):
     render = getattr(module, "render", None)
     if not callable(render):
         raise AppError(f"{MODULE} has no render(ctx, cfg) function")
-    return render
+    # Optional, but an app that has one meant it to be called.
+    handle = getattr(module, "handle", None)
+    if handle is not None and not callable(handle):
+        raise AppError(f"{MODULE}'s handle must be a function: handle(ctx, action, payload)")
+    return render, handle
 
 
 def load_app(folder):
     """The app in `folder`, or AppError saying why it doesn't load."""
     manifest = _manifest(folder)
-    render = _render_function(folder, manifest["id"])
-    return InstalledApp(path=folder, render=render, **manifest)
+    render, handle = _entry_points(folder, manifest["id"])
+    return InstalledApp(path=folder, render=render, handle=handle, **manifest)
 
 
 def _signature(folder):
@@ -642,6 +653,10 @@ def uninstall_app(apps_dir, app_id):
     A delete that fails part way leaves only that hidden folder, logged,
     never a half-app the scanner would try to load. A folder that's a
     link is unlinked: what it points to is never touched.
+
+    Only the app's files go: what it wrote stays, under its source
+    (app:<id>), as a disconnected device's data does - and an app
+    installed again under the same id carries on writing to it.
 
     Returns {"id"}. Raises UninstallError, having removed nothing: 400 for
     an id no app could have, 404 for one no app loads under, 500 if the

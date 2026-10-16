@@ -4,7 +4,6 @@ import json
 import os
 import re
 import shutil
-import sqlite3
 import subprocess
 from datetime import date
 
@@ -14,121 +13,6 @@ import yaml
 import apps
 import home_layout
 from derived import recompute_derived
-from migrations import run_migrations
-
-
-def test_weights_round_trip(client):
-    assert client.get("/api/weights").get_json() == []
-
-    assert client.post("/api/weights", json={"date": "2026-01-02", "weight": 81.5}).status_code == 200
-    client.post("/api/weights", json={"date": "2026-01-01", "weight": 82.0})
-
-    rows = client.get("/api/weights").get_json()
-    assert rows == [
-        {"date": "2026-01-01", "weight": 82.0},
-        {"date": "2026-01-02", "weight": 81.5},
-    ]
-
-
-def test_weights_post_upserts_same_date(client):
-    client.post("/api/weights", json={"date": "2026-01-01", "weight": 82.0})
-    client.post("/api/weights", json={"date": "2026-01-01", "weight": 81.0})
-
-    rows = client.get("/api/weights").get_json()
-    assert rows == [{"date": "2026-01-01", "weight": 81.0}]
-
-
-def test_weights_post_requires_weight(client):
-    resp = client.post("/api/weights", json={"date": "2026-01-01"})
-    assert resp.status_code == 400
-    assert "error" in resp.get_json()
-
-
-def test_weights_delete_clears_all(client):
-    client.post("/api/weights", json={"date": "2026-01-01", "weight": 82.0})
-    assert client.delete("/api/weights").status_code == 200
-    assert client.get("/api/weights").get_json() == []
-
-
-def test_weights_are_manual_weight_kg_readings(client, conn):
-    client.post("/api/weights", json={"date": "2026-01-01", "weight": 82})
-
-    assert [tuple(r) for r in conn.execute(
-        "SELECT date, source, metric, value, unit FROM metrics"
-    )] == [("2026-01-01", "manual", "weight_kg", 82.0, "kg")]
-    # Read back as stored - a float, as the old REAL column gave - not
-    # cast to a whole number the way steps are.
-    rows = client.get("/api/weights").get_json()
-    assert rows == [{"date": "2026-01-01", "weight": 82.0}]
-    assert isinstance(rows[0]["weight"], float)
-
-
-def test_weights_post_defaults_to_today(client):
-    client.post("/api/weights", json={"weight": 80.5})
-
-    assert client.get("/api/weights").get_json() == [
-        {"date": date.today().isoformat(), "weight": 80.5}
-    ]
-
-
-def test_weights_are_manual_weight_only(client, conn):
-    # Other sources' weight and other manual metrics share the table:
-    # /api/weights neither lists them nor clears them.
-    others = [
-        ("2026-01-01", "manual", "steps", 9000, "count"),
-        ("2026-01-01", "scale", "weight_kg", 83.0, "kg"),
-        ("2026-01-02", "garmin", "steps", 8000, "count"),
-    ]
-    conn.executemany(
-        "INSERT INTO metrics (date, source, metric, value, unit) VALUES (?, ?, ?, ?, ?)",
-        others,
-    )
-    conn.commit()
-    client.post("/api/weights", json={"date": "2026-01-02", "weight": 82.0})
-
-    assert client.get("/api/weights").get_json() == [{"date": "2026-01-02", "weight": 82.0}]
-
-    client.delete("/api/weights")
-
-    assert client.get("/api/weights").get_json() == []
-    assert [tuple(r) for r in conn.execute(
-        "SELECT date, source, metric, value, unit FROM metrics ORDER BY date, source"
-    )] == others
-
-
-def test_weights_migrated_by_006_read_back_unchanged(db_at_version, monkeypatch):
-    """Weigh-ins stored before 006 come out of the API byte for byte as before.
-
-    Seeded at version 5 - the shape a production database is in - and
-    the old route's answer taken straight from the weights table, then
-    migrated and read back through the new one.
-    """
-    import main
-
-    path = db_at_version(5)
-    conn = sqlite3.connect(path)
-    conn.row_factory = sqlite3.Row
-    conn.executemany(
-        "INSERT INTO weights (date, weight) VALUES (?, ?)",
-        [("2026-01-02", 81.5), ("2026-01-01", 82), ("2026-01-03", 80.25)],
-    )
-    conn.commit()
-    with main.app.app_context():
-        before = main.jsonify([
-            dict(r) for r in conn.execute("SELECT date, weight FROM weights ORDER BY date")
-        ]).get_data()
-    assert 6 in run_migrations(conn)
-    conn.close()
-
-    monkeypatch.setitem(main.app.config, "DB_PATH", path)
-    after = main.app.test_client().get("/api/weights")
-
-    assert after.get_data() == before
-    assert after.get_json() == [
-        {"date": "2026-01-01", "weight": 82.0},
-        {"date": "2026-01-02", "weight": 81.5},
-        {"date": "2026-01-03", "weight": 80.25},
-    ]
 
 
 def test_workouts_round_trip(client):
@@ -244,7 +128,7 @@ def test_index_draws_home_from_the_app_host(client):
     assert "'/api/apps'" in page
     assert "'/api/app/'+enc(id)+'/render'" in page
     # The display vocabulary the renderer draws (host.py's builders).
-    for spec in ("number:", "line:", "panel:", "empty:", "error:"):
+    for spec in ("number:", "line:", "panel:", "input:", "empty:", "error:"):
         assert spec in page
     # The layout is tabs, each a flow - an order and a size per tile -
     # read with the apps and a spec each (the fetch), kept, and drawn a
@@ -320,11 +204,13 @@ def test_index_splits_applications_into_controls_and_a_list(client, monkeypatch)
     import main
 
     # What the list shows: the installed apps, as /api/apps returns them -
-    # the two real apps.
+    # the three real apps.
     fixtures = os.path.join(os.path.dirname(__file__), "fixtures", "apps")
     monkeypatch.setitem(main.app.config, "APPS_DIR", fixtures)
     apps = client.get("/api/apps").get_json()
-    assert [(a["id"], a["name"]) for a in apps] == [("steps", "Steps"), ("steps-metres", "Distance (from steps)")]
+    assert [(a["id"], a["name"]) for a in apps] == [
+        ("steps", "Steps"), ("steps-metres", "Distance (from steps)"), ("weight", "Weight"),
+    ]
 
     resp = client.get("/")
     page = resp.get_data(as_text=True)
@@ -695,7 +581,8 @@ def test_refresh_reruns_the_render_and_redraws_the_tile(client):
     tile = _js_function(page, "repaintTile")
     assert "home.tiles.find(x => x.app_id===appId)" in tile
     assert "t.spec = spec;" in tile
-    assert "tile.replaceChildren(renderSpec(spec, t.name));" in tile
+    # Drawn for its app, so an input on it acts on that app.
+    assert "tile.replaceChildren(renderSpec(spec, t.name, appId));" in tile
     # Mid-Configure, the tile keeps its handle and picker.
     assert "if(controls) tile.appendChild(controls);" in tile
 
@@ -2614,6 +2501,199 @@ def test_installing_onto_a_chosen_tab_moves_the_new_app_and_saves_once(client, t
     assert stored["tabs"][1]["items"][-1] == new
     assert stored["default_tab"] == "home"
     assert client.get("/api/home-layout").get_json() == stored
+
+
+# ---------- apps as sources: the input element ----------
+#
+# An app's tile can carry an input: a labelled field and Save. Save sends
+# the app its action (POST /api/app/<id>/action) with {key: what was
+# typed} and the tile's config, and the tile is redrawn from the spec the
+# reply carries - or the refusal shown on the tile. The page's own spec
+# renderer runs under node over the stand-in DOM, against the replies the
+# server gives.
+
+INPUT_PARTS = ["el", "SPECS", "renderSpec", "specInput", "specMsg"]
+
+INPUT_HARNESS = r"""
+    // What Save reaches: the action route (each call noted, the reply the
+    // test's), the tile's config, and the tile's redraw.
+    const calls = [], repaints = [];
+    let reply = {ok:true, spec:{type:'empty', message:'fresh'}};
+    let release = null;
+    const api = {appAction: (id, action, payload, cfg) => {
+      calls.push([id, action, payload, cfg]);
+      return new Promise(done => { release = () => done(reply); });
+    }};
+    const tileCfg = id => ({for:id});
+    const repaintTile = (id, spec) => repaints.push([id, spec]);
+    // What the other specs draw with, which these tests don't look at.
+    const sparkline = () => mk('div'), fmtSpecValue = v => String(v);
+
+    // The input's parts, as drawn: its label, its field, unit and Save,
+    // and its message line.
+    const parts = box => {
+      const label = box.children.find(c => c.className==='t');
+      const row = box.children.find(c => c.className==='row');
+      const field = row.children.find(c => c.tag==='input');
+      const unit = row.children.find(c => c.className==='u');
+      const save = row.children.find(c => c.tag==='button');
+      const msg = box.children.find(c => c.className==='m');
+      return {label, field, unit, save, msg};
+    };
+    const look = box => {
+      const {label, field, unit, save, msg} = parts(box);
+      return {cls:box.className, kids:box.children.map(c => c.className),
+        label:label ? label.textContent : null, field:[field.className, field.type, field.step || null, field.attrs['aria-label']],
+        unit:unit ? unit.textContent : null, save:[save.className, save.type, save.textContent, !!save.disabled],
+        msg:[msg.textContent, msg.attrs.role], html:[box, ...box.querySelectorAll('*')].map(n => n._html).join('')};
+    };
+    // Save pressed - or Enter in the field - with `typed` in it, and the
+    // reply let through: what was sent, what the tile shows meanwhile and
+    // after.
+    async function save(box, typed, how){
+      const {field, save:btn, msg} = parts(box);
+      field.value = typed;
+      const pending = how==='enter' ? field.onkeydown({key:'Enter'}) : btn.onclick();
+      const busy = [!!btn.disabled, !!field.disabled];
+      if(release){ release(); release = null; }
+      await pending;
+      return {busy, after:[!!btn.disabled, !!field.disabled], value:field.value, msg:msg.textContent,
+        calls:calls.splice(0), repaints:repaints.splice(0)};
+    }
+    const r = {};
+"""
+
+
+def _input_script(page, scenario):
+    return (
+        MINI_DOM + "\n".join(_js(page, n) for n in INPUT_PARTS) + INPUT_HARNESS
+        + "(async () => {\n" + scenario + "\nconsole.log(JSON.stringify(r));\n})()"
+        + ".catch(e => { console.error(e); process.exit(1); });"
+    )
+
+
+WEIGHT_FIELD = {"type": "input", "key": "weight_kg", "action": "log",
+                "label": "Log <b>weight</b>", "kind": "number", "unit": "kg"}
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
+def test_an_input_draws_a_labelled_field_and_save_as_text(client):
+    page = _page(client)
+    spec = {"type": "panel", "children": [{"type": "number", "value": 81.2, "unit": "kg"}, WEIGHT_FIELD]}
+    r = _node(_input_script(page, f"""
+        const panel = renderSpec({json.dumps(spec)}, 'Weight', 'weight');
+        r.panel = panel.children.map(c => c.className);
+        r.input = look(panel.children[1]);
+        r.text = look(renderSpec({json.dumps({"type": "input", "key": "note", "action": "save", "kind": "text"})}, 'Notes', 'notes'));
+        r.unknownKind = look(renderSpec({json.dumps({"type": "input", "key": "k", "action": "a", "kind": "date"})}, 'X', 'x')).field;
+    """))
+
+    # In a panel, under the number: the label over the field, its unit and
+    # Save - all of it text, the label's markup included - and an empty
+    # message line for a refusal.
+    assert r["panel"] == ["spec-number", "spec-input"]
+    assert r["input"] == {
+        "cls": "spec-input", "kids": ["t", "row", "m"], "label": "Log <b>weight</b>",
+        "field": ["input", "number", "any", "Log <b>weight</b>"], "unit": "kg",
+        "save": ["btn sm", "button", "Save", False], "msg": ["", "status"], "html": "",
+    }
+    # A text field: no step, no unit, no label - named by its key.
+    assert r["text"]["kids"] == ["row", "m"]
+    assert r["text"]["field"] == ["input", "text", None, "note"]
+    assert r["text"]["unit"] is None
+    # Only "text" is text: any other kind is a number, the builder's default.
+    assert r["unknownKind"][1] == "number"
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
+def test_save_sends_the_action_and_redraws_the_tile_from_the_reply(client):
+    page = _page(client)
+    r = _node(_input_script(page, f"""
+        const box = () => renderSpec({{type:'panel', children:[{json.dumps(WEIGHT_FIELD)}]}}, 'Weight', 'weight').children[0];
+        r.clicked = await save(box(), '81.2');
+        r.entered = await save(box(), ' 80.9 ', 'enter');
+        r.text = await save(renderSpec({json.dumps({"type": "input", "key": "note", "action": "save", "kind": "text"})}, 'Notes', 'notes'), '  hi  ');
+    """))
+
+    fresh = {"type": "empty", "message": "fresh"}
+    # The app's action, {key: the number typed}, with the tile's config;
+    # Save and the field held while it's on its way; the tile redrawn from
+    # the spec the reply carries.
+    assert r["clicked"] == {
+        "busy": [True, True], "after": [False, False], "value": "81.2", "msg": "",
+        "calls": [["weight", "log", {"weight_kg": 81.2}, {"for": "weight"}]],
+        "repaints": [["weight", fresh]],
+    }
+    assert r["entered"]["calls"] == [["weight", "log", {"weight_kg": 80.9}, {"for": "weight"}]]
+    assert r["entered"]["repaints"] == [["weight", fresh]]
+    # Text is sent as typed.
+    assert r["text"]["calls"] == [["notes", "save", {"note": "  hi  "}, {"for": "notes"}]]
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
+def test_a_refused_save_shows_why_on_the_tile(client):
+    page = _page(client)
+    r = _node(_input_script(page, f"""
+        const box = renderSpec({json.dumps(WEIGHT_FIELD)}, 'Weight', 'weight');
+        reply = {{ok:false, error:'Enter your weight in kg, as a <b>positive</b> number'}};
+        r.refused = await save(box, '-3');
+        reply = {{ok:false}};
+        r.unsaid = await save(box, '81');
+        r.html = look(box).html;
+    """))
+
+    # The server's reason, as text, under the field - still as typed, Save
+    # back - and the tile left as it was.
+    assert r["refused"] == {
+        "busy": [True, True], "after": [False, False], "value": "-3",
+        "msg": "Enter your weight in kg, as a <b>positive</b> number",
+        "calls": [["weight", "log", {"weight_kg": -3}, {"for": "weight"}]], "repaints": [],
+    }
+    assert r["unsaid"]["msg"] == "Couldn't save."
+    assert r["html"] == ""
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
+def test_nothing_is_sent_for_a_blank_field_or_a_tile_drawn_for_no_app(client):
+    page = _page(client)
+    r = _node(_input_script(page, f"""
+        const box = () => renderSpec({json.dumps(WEIGHT_FIELD)}, 'Weight', 'weight');
+        r.blank = await save(box(), '   ');
+        r.junk = await save(box(), 'abc');
+        r.text = await save(renderSpec({json.dumps({"type": "input", "key": "note", "action": "save", "kind": "text"})}, 'Notes', 'notes'), ' ');
+        const orphan = renderSpec({json.dumps(WEIGHT_FIELD)}, 'Weight');
+        r.orphan = look(orphan).save;
+        r.orphanSave = await save(orphan, '81');
+    """))
+
+    assert r["blank"]["msg"] == r["junk"]["msg"] == "Enter a number."
+    assert r["text"]["msg"] == "Enter something to save."
+    for case in ("blank", "junk", "text", "orphanSave"):
+        assert r[case]["calls"] == [] and r[case]["repaints"] == [], case
+    assert r["orphan"] == ["btn sm", "button", "Save", True]
+
+
+def test_the_input_reaches_the_action_route_through_the_api_block(client):
+    page = _page(client)
+    # The only place a URL lives: the action, its payload and the tile's
+    # config, POSTed.
+    assert (
+        "    appAction:    (id, action, payload, cfg) =>\n"
+        "      send('/api/app/'+enc(id)+'/action', 'POST', {action, payload, cfg: cfg || {}}),"
+    ) in page
+    spec_input = _js_function(page, "specInput")
+    assert "api.appAction(appId, s.action, {[s.key]: value}, tileCfg(appId));" in spec_input
+    assert "if(res.ok && res.spec) repaintTile(appId, res.spec);" in spec_input
+    for markup in ("innerHTML", "${", "fetch(", "'/api/"):
+        assert markup not in spec_input, markup
+    # Drawn for its app - the id threaded from the tile, through a panel,
+    # to the input.
+    assert "tile.appendChild(renderSpec(t.spec, t.name, t.app_id));" in _js_function(page, "paintTiles")
+    assert "input: (s, name, appId) => specInput(s, appId)," in page
+    assert "box.appendChild(renderSpec(c, name, appId))" in page
+    # In Configure a tile's face is inert, its input with it: Configure
+    # arranges tiles, it doesn't act on them.
+    assert ".tiles.configuring .tile > :not(.tile-cfg){pointer-events:none;}" in page
 
 
 def test_the_pages_script_compiles(client):

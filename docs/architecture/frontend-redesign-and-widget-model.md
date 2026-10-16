@@ -349,9 +349,10 @@ setting they were saved in). Home's tiles are now installed apps, drawn by the
 app host (below), and none ship with OpenFit. The Plan tab went,
 which saved nothing, and so did the Configuration tab and its "Custom tabs"
 placeholder. Those were tracker features, and trackers are external apps. The
-manual weigh-in form went with them. `POST /api/weights` and the webhook still
-accept hand-entered readings, and a manual-entry surface can come back as an
-app. The Settings disclosure that briefly sat at the foot of the console went
+manual weigh-in form went with them. The manual-entry surface came back as an
+app: the Weight app's tile, whose input writes under its own source
+(`app:weight`; see [app-host.md](app-host.md#writing-apps-as-sources)), and
+`POST /api/weights` is retired. The webhook still takes a pushed reading. The Settings disclosure that briefly sat at the foot of the console went
 too: the theme toggle in the top bar covers it, and the token-block note lives
 in the `CUSTOMISE OPENFIT HERE` comment itself.
 

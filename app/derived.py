@@ -10,10 +10,10 @@ access contract (/api/catalog, /api/metric/<metric>) read the stored
 result rather than choosing again.
 
 When it runs: after each sync, over the window that sync wrote
-(recompute_derived(conn, since=...)), after each webhook reading or
-manual weigh-in, over that reading's day (since=until=its date), after
-manual weigh-ins are cleared, over each cleared day, after a source is
-removed with its data wiped, over the span its readings covered, and once
+(recompute_derived(conn, since=...)), after each webhook reading, over
+that reading's day (since=until=its date), after an app's action, over
+each day it wrote, after a source is removed with its data wiped, over
+the span its readings covered, and once
 on first boot to fill a database whose readings predate derived_metrics
 (backfill_derived()).
 Never as a blanket re-derive of all history on startup: the policy is
@@ -33,8 +33,9 @@ from metrics import unit_for
 
 # Order of trust when two sources report the same metric for the same day.
 # Earlier wins. Sources not listed here (e.g. 'unknown' rows migrated from
-# before the source column was populated, or 'manual' entry) rank last,
-# ordered by name so the result is deterministic.
+# before the source column was populated, a webhook's device, an app's
+# app:<id>, or the 'manual' weigh-ins from before the weight app) rank
+# last, ordered by name so the result is deterministic.
 DEFAULT_PRIORITY = ["garmin", "google_health"]
 
 

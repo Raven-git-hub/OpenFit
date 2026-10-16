@@ -1,7 +1,9 @@
 # The app host: installed apps and the Home tab
 
 OpenFit ships no apps. The app host runs the ones you install and draws them
-as tiles on the **Home** tab. Apps are found on disk and rendered
+as tiles on the **Home** tab, and an app can write too: it's a source like any
+device, filed under its own id ([Writing: apps as sources](#writing-apps-as-sources),
+below). Apps are found on disk and rendered
 server-side, and their tiles sit on a grid six square cells across, in the
 order and at the sizes the owner chose in **Configure**, each size one the
 app declares. That layout is flow: an order and a size per tile, no
@@ -17,7 +19,8 @@ manifest and, usually, its engine:
 ```
 /data/apps/steps/
   app.yaml     the manifest (required)
-  app.py       render(ctx, cfg) -> a display spec (optional)
+  app.py       render(ctx, cfg) -> a display spec (optional), and
+               handle(ctx, action, payload) -> its writes (optional)
 ```
 
 `app.py` is optional. An app with a manifest alone loads and is listed like
@@ -115,7 +118,9 @@ is fixed to match it, never the app. Their `app.py` is verbatim. Their
 `app.yaml` declares `sizes: [{ w: 1, h: 1 }]`, the canonical form, where the
 deployed copies still have `default_size: { w: 2, h: 2 }`: the tests check
 that form keeps loading too, and moving a deployed app to one cell is a
-one-line manifest edit and a reinstall.
+one-line manifest edit and a reinstall. The third, `weight`, is the first app
+that writes, and the write path's end-to-end test (`test_app_actions.py`; see
+[The weight app](#the-weight-app), below).
 
 ### Loading: `app/apps.py`
 
@@ -128,13 +133,16 @@ reuse it.
 - A folder with an `app.yaml` that doesn't load is **logged and skipped**:
   `[apps] skipping <folder>: <why>`. That covers bad YAML, a field of the wrong
   type, no size (or one outside 1-6), an `app.py` that fails to import (its
-  traceback is printed too), and a missing or non-callable `render`. One broken app never stops the others, and
+  traceback is printed too), a missing or non-callable `render`, and a
+  `handle` that's there but not callable. One broken app never stops the others, and
   never takes the server down. A folder with no `app.py` isn't broken: it
   loads, with nothing to draw (above).
 - Two folders with the same id: the first by folder name wins, and the other
   is logged and skipped.
-- `app.py` is imported from its absolute path with `importlib`. Nothing is
-  added to `sys.path` or `sys.modules`.
+- `app.py` is imported once, from its absolute path, with `importlib`, and
+  both `render` and the optional `handle` taken from it (`InstalledApp.render`,
+  `.handle`; `None` for an app without one). Nothing is added to `sys.path` or
+  `sys.modules`.
 - The folder is re-scanned on every request, so an app that's added, edited or
   removed shows on the next page load without a restart. A loaded app is kept
   until its `app.yaml` or `app.py` changes (by mtime and size), so a scan stays
@@ -176,6 +184,7 @@ the dicts itself.
 | `ctx.number(value, label=None, caption=None, unit=None)` | `{"type": "number", "value", "label", "caption", "unit"}` | A large value in tabular figures, `unit` small beside it, `label` beneath, and `caption` smaller and muted. A null value reads `—`, and a null label, caption or unit is left out. A number is shown with thousands separators; a string is shown as given. The caption is cut to two lines, or one in a short tile (a 2×2 on a phone), with the full text on hover. |
 | `ctx.line(points, title=None)` | `{"type": "line", "points": [[date, value], ...], "title"}` | A sparkline with its title above it. See [the line builder](#the-line-builder), below. |
 | `ctx.panel(*children)` or `ctx.panel([children])` | `{"type": "panel", "children": [...]}` | Its children stacked in order. A number keeps its height and a line takes the rest. |
+| `ctx.input(key, action, label=None, kind="number", unit=None)` | `{"type": "input", "key", "action", "label", "kind", "unit"}` | A field under its label (small, uppercase), its unit and a **Save** button beside it. Save, or Enter, sends `action` to the app's `handle()` with the payload `{key: what was typed}` (a number for kind `"number"`, text as typed for `"text"`), and the tile is redrawn from the fresh spec the reply carries; a refusal shows under the field, which keeps what was typed. A blank field, or a number that isn't one, says so and sends nothing. In a panel it sits at the foot. In Configure it's inert, like the rest of the face. See [Writing](#writing-apps-as-sources). |
 | `ctx.empty(message=None)` | `{"type": "empty", "message"}` | Muted, centred text (default "No data yet"). |
 | (the host's) | `{"type": "error", "message"}` | Muted, centred: "Couldn't render <app name>" over the message. |
 
@@ -217,6 +226,113 @@ catches a return value that isn't a spec (a dict with a string `type`) or
 isn't plain JSON, such as NaN or a set. Any of these come back as an error
 spec with a 200, so the page shows one error tile. A spec type the page
 doesn't know is drawn as an error tile too.
+
+## Writing: apps as sources
+
+An app is a source, as a device is: what it writes lands in the same tables,
+competes in the same per-metric pick, and is read back through the same
+contract. Its source is `app:<id>`, its installed id (`app_source()` in
+`app/host.py`), and it can write nowhere else.
+
+**`handle(ctx, action, payload)`**, beside `render()` in `app.py`, is the
+app's write entry point, and the only place an app writes. It's what a tile's
+input element sends (`POST /api/app/<id>/action`, below). `action` is the
+input's action, a non-empty string; `payload` a mapping, `{key: what was
+typed}` from an input; the app interprets both. An app without a `handle()`
+can be drawn but not actioned.
+
+**The writing ctx.** `handle()` gets a `WriteCtx`: a `Ctx` (so
+`ctx.metric()` and `ctx.today()` read as in `render()`), plus
+
+```python
+ctx.write_metric(metric, value, date=None)   # files one reading, under ctx.source
+```
+
+- **The source is the ctx's, never the app's.** It's fixed when the ctx is
+  made, `ctx.source`, and no writer takes one. So an app can only ever create
+  or overwrite its own rows: an app installed with the id `garmin` writes
+  `app:garmin`, beside Garmin's rows, never over them. Structural scoping, not
+  a sandbox: the app is trusted code, as its `render()` is.
+- **`metric`** is a canonical key (`METRICS`; anything else is a
+  `ValueError`). The source carries "app", not the key: a weight-entry app
+  files `weight_kg`. Invented `app:<id>:<key>` metrics need a declared unit,
+  and come later.
+- **`value`** is in the metric's canonical unit and held to the webhook's
+  rule (`plausible_value()` in `app/metrics.py`): a finite number, never a
+  bool, within the metric's plausible range, both ends included.
+- **`date`** is `YYYY-MM-DD` (or a `date`), today (`ctx.today()`, the server's
+  local date until `base_tz` lands) by default. One reading per
+  `(date, source, metric)`: writing a day again replaces it.
+- A refused write raises `ValueError` and writes nothing. The ctx commits
+  nothing; it notes the days it wrote (`ctx.written`) for the route.
+
+`render()`'s plain `Ctx` has no writer, so a render can't write.
+
+**The action route, `POST /api/app/<id>/action`,** body `{"action",
+"payload", "cfg"}`:
+
+1. `404` for an id no app loads under; `400` for an app with no `handle()`,
+   or a body whose `action` isn't non-empty text or whose `payload` (absent:
+   `{}`) isn't a mapping. Nothing is run.
+2. `handle()` runs with a `WriteCtx` for the app, in one transaction.
+3. **If it raises**, everything it wrote is rolled back, and the reply is
+   `400 {"ok": false, "error"}`: unlike a render, a write fails visibly, and
+   never as a 500. A `ValueError` is a refusal, its message put as the app
+   (or the ctx) wrote it, so `raise ValueError("Enter your weight in kg")` is
+   what the tile shows; anything else is a bug, `"<Type>: <message>"`, logged
+   with its traceback.
+4. **Otherwise** each day it wrote is re-derived on its own (as a webhook
+   reading's day is: never one span over several, which would re-pick the
+   days between under the current source roles), landing its writes and
+   their pick together; then the app is rendered afresh with `cfg` (the
+   instance's config; not a mapping, `{}`), and the reply is `200 {"ok":
+   true, "spec"}`, which the page redraws the tile from. A render that fails
+   then is an error spec, as ever: the write stands.
+
+**Precedence.** An app's readings take part in the derived pick like any
+source's. `DEFAULT_PRIORITY` names the pull plugins, so an app ranks after
+them; among the other sources (a webhook's device, the legacy `manual`) it's
+by name. Making an app a metric's primary is a source role the user sets
+(`PUT /api/source-roles/<metric>`). An app doesn't claim one on its first
+write: that, and how apps should rank against other unnamed sources, waits
+for a second weight source (the open item in `data-consolidation-model.md`
+§10).
+
+**Nothing else writes an app's source**: the webhook refuses a source that
+starts `app:`. Uninstalling an app keeps what it wrote, as a disconnected
+device's data stays, and an app installed again under the same id carries
+on under the same source. A Duplicate is a different app, `app:<new-id>`.
+
+### The weight app
+
+The first writer, committed in `tests/fixtures/apps/weight/` (deployed by
+installing it: the platform ships no apps) and run by `test_app_actions.py`.
+
+```yaml
+id: weight          # fixed: its source is app:weight
+name: Weight
+sizes: [{ w: 1, h: 1 }, { w: 2, h: 1 }]
+reads: [weight_kg]
+```
+
+`render()` shows the latest derived `weight_kg` as a `number` (kg, captioned
+with its date and source), over an `input` (`key: weight_kg`, `action: log`,
+"Log weight", kg). With no weigh-in yet, `empty("No weigh-ins yet")` takes the
+number's place, so the first can still be logged. `handle()` takes `log` only:
+it coerces `payload["weight_kg"]` to a finite positive number (junk, a bool,
+`0` → `ValueError("Enter your weight in kg, as a positive number")`) and files
+it for today with `ctx.write_metric("weight_kg", kg)`. One weigh-in a day: a
+second the same day replaces it (more than one a day, timestamped, is a later
+job for the instant grain).
+
+It replaced `/api/weights` (and the console's weigh-in form before it): it's
+now the one way weight is typed in. The weigh-ins typed in before it keep
+their source, `manual`, frozen as history: read and picked like any source's,
+but nothing writes to it (the webhook refuses it too). They aren't migrated:
+an app can only write its own source, so it can't relabel `manual`'s rows,
+and a core migration can't know an app's id. Per day there's no contention,
+so the derived weight timeline runs on seamlessly, old days from `manual`,
+new ones from `app:weight`.
 
 ## Installing an app
 
@@ -340,8 +456,9 @@ An open row stays open when the list is re-read. The detail is three columns
   read-only, in a popup: its text in a monospace block, set as text, never as
   markup. Nothing can be edited.
 - **Writes**: a reserved slot for the writes ticker (Day / Wk / Mth), each
-  `—` for now. It's filled in when an app can write back (`app:`-tier
-  metrics); until then nothing is counted.
+  `—` for now. An app can write back now (metrics under its own `app:<id>`
+  source, [above](#writing-apps-as-sources)), but nothing is counted here
+  yet.
 - **Refresh** re-runs the app's render (`POST /api/app/<id>/render`, the
   existing route, with its tile's config) against the data as it is now, and
   redraws that app's Home tile in place from the fresh spec: no new route, no
@@ -360,9 +477,8 @@ An open row stays open when the list is re-read. The detail is three columns
   the row. Nothing is written until Install, which goes through `POST
   /api/apps`'s checks (a clash the page didn't foresee is the server's 409),
   and the copy then gets its own tile on Home. It's a fork: later edits to one
-  app's files don't reach the other. Once apps can write back, a copy writing
-  an app-defined metric would do so under its own `app:<new-id>:…` stream,
-  separate from the original's: a decision to confirm when write-back lands.
+  app's files don't reach the other, and a copy writes under its own source,
+  `app:<new-id>`, separate from the original's.
 - **Uninstall** opens a confirm in the row ("Uninstall <name>? This deletes its
   files from `/data/apps/`.", with Cancel); confirming removes the app, and it
   leaves both the list and Home at once.
@@ -420,7 +536,8 @@ the app, never a path. It's `uninstall_app()` in `app/apps.py`.
    uninstalled either way.
 5. **The response** is `200 {"ok": true, "id": "<id>"}`.
 
-An app writes no data yet, so uninstalling removes only its folder.
+Uninstalling removes only its folder: what the app wrote stays, under its
+source `app:<id>`, as a disconnected device's data does.
 
 ## Routes
 
@@ -447,6 +564,12 @@ An app writes no data yet, so uninstalling removes only its folder.
   It's always a 200 for an installed app, with an error spec if the render
   fails. An id with no app that loads gets `404 {"ok": false, "error": "unknown
   app: <id>"}`.
+- `POST /api/app/<id>/action` with `{"action", "payload", "cfg"}` → runs the
+  app's `handle()` with a writing ctx scoped to `app:<id>`; `200 {"ok": true,
+  "spec"}` (the app rendered afresh) once its writes are committed and their
+  days re-derived, or `400 {"ok": false, "error"}` with everything rolled back.
+  404 for an unknown app, 400 for one with no `handle()` or a body that isn't
+  an action. See [Writing](#writing-apps-as-sources).
 - `GET /api/app/<id>/file?name=<file>` → `{id, name, text}`, one of the app's
   files as text, for the read-only viewer. 400 for a name that isn't plain,
   404 for an unknown app or file, 413 for a file too big to show, 415 for one
@@ -711,8 +834,8 @@ saved positions and gives `paintTiles` start cells. The sizes, the CSS grid,
   Add Application installs one ([above](#installing-an-app)), and each row
   expands to what the app reads, its files, Refresh, Duplicate and Uninstall
   ([above](#an-apps-row-reads-files-refresh-uninstall)). Browse, Build and
-  Create are still placeholders. Still to come: the writes ticker (once an
-  app can write back) and alerts (an app that doesn't load, or whose render
+  Create are still placeholders. Still to come: the writes ticker (an app can
+  write back now) and alerts (an app that doesn't load, or whose render
   fails, flagged in its row). Editing an app's files, updating one in place
   and disabling one are out: there's no mechanism for them.
 - **Multi-tab Home**, beyond the tab strip ([above](#tabs)), tile settings
@@ -728,8 +851,12 @@ saved positions and gives `paintTiles` start cells. The sizes, the CSS grid,
   [The layout](#the-layout-tabs-of-instances); the page just never places
   one app twice.)
 - **Richer settings fields** (a select or enum, a toggle) beyond number and
-  text, a live preview as a setting is typed, **metric write-back**, and a
-  custom `app.js` for an app that draws its own face.
+  text, a live preview as a setting is typed, and a custom `app.js` for an
+  app that draws its own face.
+- **More write-back**: `ctx.write_session()` (an app contributing sessions:
+  a roster, a custom sleep detector), metrics an app invents
+  (`app:<id>:<key>`, with a declared unit), timestamped weigh-ins more than
+  one a day, and a `base_tz` setting for the day a write lands on.
 - **Enforcing `reads`:** it's recorded, but `ctx.metric()` serves any key in
   the vocabulary.
 - **A sandbox:** an app is trusted Python running in the server's process.

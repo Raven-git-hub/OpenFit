@@ -409,5 +409,5 @@ def test_other_routes_need_no_token(client):
     # The webhook is the one token-authed route: the trusted-network
     # model holds everywhere else, the token routes included.
     get_token(client)
-    for path in ("/api/activity", "/api/weights", "/api/source-roles", "/api/webhook-token"):
+    for path in ("/api/activity", "/api/source-roles", "/api/webhook-token"):
         assert client.get(path).status_code == 200, path
