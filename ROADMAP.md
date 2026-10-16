@@ -87,9 +87,12 @@ settings row). Then the first slice of multi-tab Home, invisible by design: the
 stored layout became tabs of instances (an app placed, with its own size and
 config, one app placeable more than once), the old layout upgraded on read to
 one tab, and every installed app kept at least one instance (no migration).
-Next for multi-tab: the tab strip and per-instance render, then the placement
-UI (add, move, duplicate a tile), the per-instance config editor, and
-deploy-to-tab in the Add popup. Next: the rest of the Library (the writes ticker once apps can
+Then the second slice: the tab strip shows the layout's tabs and switches
+between them, and Configure makes, renames and deletes tabs (a deleted tab's
+tiles go to the default) and moves a tile from one tab to another, all saved
+at once (client only, no route change). Next for multi-tab: duplicating a
+tile (instance-keyed tiles), adding one, and per-instance render; then the
+per-instance config editor, and deploy-to-tab in the Add popup. Next: the rest of the Library (the writes ticker once apps can
 write back, alerts; Browse / Build / Create are still placeholders), and the
 grid pass (free cell placement, a second layout mode on the same sizes).
 

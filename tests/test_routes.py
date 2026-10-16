@@ -246,17 +246,25 @@ def test_index_draws_home_from_the_app_host(client):
     for spec in ("number:", "line:", "panel:", "empty:", "error:"):
         assert spec in page
     # The layout is tabs, each a flow - an order and a size per tile -
-    # read with the apps; Home shows the default tab, squared with them.
+    # read with the apps and a spec each (the fetch), kept, and drawn a
+    # tab at a time from memory (the render), squared with the apps.
     assert "const layoutTiles = flowLayout;" in page
     assert "autoLayout" not in page
     load = _js_function(page, "loadHome")
     assert "await Promise.all([api.apps(), api.homeLayout()]);" in load
-    assert "const tab = saved.tabs.find(t => t.id===saved.default_tab) || saved.tabs[0];" in load
-    assert "home.tiles = layoutTiles(items, apps, elsewhere).map(it => {" in load
+    assert "home.specs = new Map(apps.map((a, i) => [a.id, {a, spec:specs[i]}]));" in load
+    assert "home.layout = saved;" in load and "if(read) renderActiveTab();" in load
+    render = _js_function(page, "renderActiveTab")
+    assert "api." not in render
+    assert (
+        "const tab = tabs.find(t => t.id===home.activeTab) || "
+        "tabs.find(t => t.id===home.layout.default_tab) || tabs[0];" in render
+    )
+    assert "home.activeTab = tab.id;" in render
+    assert "home.tiles = layoutTiles(tab.items, apps, elsewhere).map(it => {" in render
     # Each tile carries its instance's id and config, for the save.
-    assert "return {instance_id:it.instance_id, app_id:a.id, name:a.name, spec," in load
-    assert "w:it.size.w, h:it.size.h, sizes:appSizes(a), config:it.config};" in load
-    assert "home.layout = saved;" in load and "home.activeTab = tab.id;" in load
+    assert "return {instance_id:it.instance_id, app_id:a.id, name:a.name, spec," in render
+    assert "w:it.size.w, h:it.size.h, sizes:appSizes(a), config:it.config};" in render
 
 
 def test_index_lays_the_data_tab_out_in_two_columns(client):
@@ -804,22 +812,21 @@ def test_home_reads_its_layout_and_writes_it_only_through_configure(client):
         assert other not in home, other
     assert "homeLayout:   ()             => fetchJSON('/api/home-layout')," in page
     assert "saveLayout:   layout         => send('/api/home-layout', 'PUT', layout)," in page
-    # Saved once, as Configure is switched off: every tab, the one on
-    # screen with its subtitle and its instances' order, sizes, ids and
-    # configs.
+    # Saved once, as Configure is switched off: the working copy, every
+    # tab, the one on screen flushed into it first - its subtitle and its
+    # instances' order, sizes, ids and configs.
     toggle = _js_function(page, "toggleConfigure")
     assert home.count("api.saveLayout(") == 1
-    assert "const res = await api.saveLayout(layoutToSave());" in toggle
+    assert "const res = await api.saveLayout(home.layout);" in toggle
+    assert toggle.index("flushTab();") < toggle.index("api.saveLayout(")
+    assert "layoutToSave" not in page
     assert _const(page, "layoutItems") == (
         "const layoutItems = () => home.tiles.map(t => ({instance_id:t.instance_id, app_id:t.app_id, "
         "size:{w:t.w, h:t.h}, config:t.config || {}}));"
     )
-    save = _js_function(page, "layoutToSave")
-    assert (
-        "tabs:home.layout.tabs.map(t => t.id===home.activeTab ? "
-        "{...t, subtitle:home.subtitle, items:layoutItems()} : t)," in save
-    )
-    assert "default_tab:home.layout.default_tab," in save
+    flush = _js_function(page, "flushTab")
+    assert "home.layout.tabs.find(t => t.id===home.activeTab)" in flush
+    assert "tab.items = layoutItems();" in flush and "tab.subtitle = home.subtitle;" in flush
 
 
 def _node(script):
@@ -853,6 +860,8 @@ def test_paint_tiles_spans_each_tile_and_configure_adds_its_controls(client):
         const renderSpec = (spec, name) => ({tag:'face', spec, name, className:'face'});
         let sortable = 0;
         const sortableTiles = grid => { sortable++; };
+        // One tab: nowhere to move a tile to.
+        const home = {activeTab:'home', layout:{default_tab:'home', tabs:[{id:'home', name:'Home', items:[]}]}};
         const tiles = [
           {app_id:'week', name:'Week <b>', spec:{type:'empty'}, w:2, h:1,
            sizes:[{w:2, h:1}, {w:1, h:1}, {w:3, h:2}]},
@@ -912,7 +921,7 @@ def test_configure_saves_the_layout_as_its_switched_off(client):
     page = _page(client)
     script = "\n".join([
         _const(page, "layoutItems"),
-        _js_source(page, "layoutToSave"),
+        _js_source(page, "flushTab"),
         _js_source(page, "toggleConfigure"),
     ]) + """
         // The tab on screen and one more: its tiles are what's saved of it
@@ -931,23 +940,27 @@ def test_configure_saves_the_layout_as_its_switched_off(client):
         const api = {saveLayout: async layout => { saved.push(JSON.parse(JSON.stringify(layout))); return reply; }};
         const notes = [];
         const homeMsg = (cls, text) => notes.push(cls);
-        const paintHomeHead = () => {}, paintHome = () => {};
+        let reads = 0;
+        const loadHome = () => { reads++; };
+        const paintHomeHead = () => {}, paintHome = () => {}, paintTabStrip = () => {};
         const $ = () => ({setAttribute(){}});
         (async () => {
           const seen = [];
-          await toggleConfigure(); seen.push(home.configuring);
+          const look = () => seen.push([home.configuring, reads]);
+          await toggleConfigure(); look();
           home.tiles.reverse(); home.tiles[1].w = 3; home.subtitle = 'Edited';
-          await toggleConfigure(); seen.push(home.configuring);
-          await toggleConfigure(); seen.push(home.configuring);
+          await toggleConfigure(); look();
+          await toggleConfigure(); look();
           reply = {ok:false, error:'disk full'};
-          await toggleConfigure(); seen.push(home.configuring);
+          await toggleConfigure(); look();
           console.log(JSON.stringify({seen, saved, notes, saving:home.saving}));
         })();
     """
     result = _node(script)
 
-    # On, then off (saved), on, then a failed save: still configuring.
-    assert result["seen"] == [True, False, True, True]
+    # On, then off (saved, and Home read again as the server squares it),
+    # on, then a failed save: still configuring, and nothing re-read.
+    assert result["seen"] == [[True, 0], [False, 1], [True, 1], [True, 1]]
     assert result["saving"] is False
     assert result["notes"] == ["info", "info", "ok", "info", "info", "bad"]
     # Nothing is saved going in; going out, the layout as it stands - the
@@ -1113,6 +1126,609 @@ def test_a_dragged_tile_takes_the_place_of_the_one_its_dropped_on(client):
         "dropRow": [None, ":end"],
         "overItself": None,
     }
+
+
+# ---------- multi-tab Home: the tab strip, switching, and managing tabs ----------
+#
+# The page's own functions, run under node over a small stand-in DOM -
+# enough of one for the strip, the two panels and Home - against a layout
+# the server read back (seeded with PUT), with every save the page sends
+# put back to the server.
+
+
+def _js(page, name):
+    """A top-level function, const or let in the page's script, as written."""
+    m = re.search(rf"\n  ((?:async )?function {re.escape(name)}\([\w, ]*\)\{{\n.*?\n  \}})\n", page, re.S)
+    if m:
+        return m.group(1)
+    m = re.search(rf"\n  ((?:const|let) {re.escape(name)} = \{{\n.*?\n  \}};)\n", page, re.S)
+    if m:
+        return m.group(1)
+    m = re.search(rf"\n  ((?:const|let) {re.escape(name)} = .*?;)(?: +//[^\n]*)?\n", page)
+    assert m, name
+    return m.group(1)
+
+
+# A stand-in DOM: elements with children, classes, data-* and attributes,
+# text, and querySelector(All) for the selectors the page uses (compound
+# simple selectors - tag, #id, .class, [attr], [attr="v"] - and descendants).
+MINI_DOM = r"""
+    const camel = s => s.replace(/-(\w)/g, (_, c) => c.toUpperCase());
+    const attrOf = (n, k) => k.startsWith('data-') ? n.dataset[camel(k.slice(5))] : k==='id' ? n.id : n.attrs[k];
+    const simple = (n, sel) => (sel.match(/[#.]?[\w-]+|\[[^\]]+\]/g) || []).every(p => {
+      if(p[0]==='#') return n.id===p.slice(1);
+      if(p[0]==='.') return (n.className || '').split(/\s+/).includes(p.slice(1));
+      if(p[0]==='['){
+        const [, k, v] = p.match(/^\[([\w-]+)(?:="([^"]*)")?\]$/);
+        const got = attrOf(n, k);
+        return v===undefined ? got!==undefined && got!==null : String(got)===v;
+      }
+      return n.tag===p;
+    });
+    const matches = (n, sel) => {
+      const chain = sel.trim().split(/\s+/);
+      if(!simple(n, chain[chain.length-1])) return false;
+      let i = chain.length-2, a = n.parent;
+      for(; i >= 0 && a; a = a.parent) if(simple(a, chain[i])) i--;
+      return i < 0;
+    };
+    const below = n => n.children.flatMap(c => [c, ...below(c)]);
+    const mk = tag => {
+      const n = {tag, children:[], style:{}, dataset:{}, attrs:{}, className:'', id:'', hidden:false, parent:null,
+                 _text:'', _html:''};
+      n.setAttribute = (k, v) => { n.attrs[k] = String(v); if(k==='id') n.id = String(v); };
+      n.getAttribute = k => k in n.attrs ? n.attrs[k] : null;
+      n.removeAttribute = k => { delete n.attrs[k]; };
+      n.appendChild = c => { c.parent = n; n.children.push(c); return c; };
+      n.replaceChildren = (...cs) => { cs.forEach(c => { c.parent = n; }); n.children = cs; n._html = ''; n._text = ''; };
+      n.classList = {
+        contains: c => n.className.split(/\s+/).includes(c),
+        toggle: (c, on) => {
+          const set = new Set(n.className.split(/\s+/).filter(Boolean));
+          if(on===undefined ? !set.has(c) : on) set.add(c); else set.delete(c);
+          n.className = [...set].join(' ');
+        },
+      };
+      Object.defineProperty(n, 'textContent', {
+        get: () => n.children.length ? n.children.map(c => c.textContent).join('') : n._text,
+        set: v => { n.children = []; n._text = String(v); },
+      });
+      Object.defineProperty(n, 'innerHTML', {
+        get: () => n._html,
+        set: v => { n.children = []; n._text = ''; n._html = String(v); },
+      });
+      n.querySelectorAll = sel => below(n).filter(x => matches(x, sel));
+      n.querySelector = sel => n.querySelectorAll(sel)[0] || null;
+      n.focus = () => {};
+      return n;
+    };
+    const document = mk('#document');
+    document.createElement = mk;
+"""
+
+# The parts of the page the strip, the switch and Configure are made of.
+TAB_PARTS = [
+    "$", "el", "GRID_COLS", "SUBTITLE_MAX", "TAB_NAME_MAX", "home", "cells", "sizeOf", "appSizes",
+    "loadHome", "renderActiveTab", "switchTab", "flushTab", "flowLayout", "layoutTiles", "layoutItems",
+    "paintHome", "paintTiles", "spanTile", "paintHomeHead", "homeMsgTimer", "homeMsg", "paintTabStrip",
+    "toggleConfigure", "GRIP", "tileControls", "moveTile", "createTab", "renameTab", "deleteTarget",
+    "deleteTab", "newTabId", "tabNameProblem", "openTabEditor", "GEAR", "PANEL_TABS", "panelShown",
+    "showTab", "showPanel", "markTabs", "OPENING_TAB", "tabButtons", "openingTab",
+]
+# ... and the strip's own wiring, as the page has it.
+TAB_WIRING = [
+    "  document.querySelectorAll('.tab[data-tab]').forEach(b => { b.onclick = () => showTab(b.dataset.tab); });",
+    "  $('#addTabBtn').onclick = () => { if(home.configuring && !home.saving) openTabEditor(null); };",
+]
+
+TAB_HARNESS = r"""
+    // The page's markup, as far as these tests go: the strip - the stand-in
+    // Home tab, Data, the hidden ＋ Add - and the two panels.
+    const button = (cls, tab, text) => {
+      const b = mk('button'); b.className = cls; if(tab) b.dataset.tab = tab;
+      const label = mk('span'); label.textContent = text; b.appendChild(label);
+      return b;
+    };
+    const nav = document.appendChild(mk('nav'));
+    const region = nav.appendChild(mk('div'));
+    region.id = 'layoutTabs'; region.className = 'layout-tabs';
+    region.appendChild(button('tab', 'home', 'Home'));
+    nav.appendChild(button('tab tab-end active', 'data', 'Data')).setAttribute('aria-current', 'page');
+    const addBtn = nav.appendChild(button('tab tab-add', null, '＋ Add'));
+    addBtn.id = 'addTabBtn'; addBtn.hidden = true;
+    const homePanel = document.appendChild(mk('section'));
+    homePanel.dataset.panel = 'home'; homePanel.hidden = true;
+    ['homeHead', 'homeMsg', 'home'].forEach(id => { homePanel.appendChild(mk('div')).id = id; });
+    document.appendChild(mk('section')).dataset.panel = 'data';
+
+    // What the page draws with but these tests don't look at.
+    const renderSpec = (spec, name) => { const n = mk('div'); n.className = 'face'; return n; };
+    const sortableTiles = () => {};
+    const closeFloating = () => {};
+    const setTimeout = () => 0, clearTimeout = () => {};
+    const store = {};
+    if(OPENING!==null) store['of-opening-tab'] = OPENING;
+    const localStorage = {getItem: k => k in store ? store[k] : null, setItem: (k, v) => { store[k] = String(v); }};
+
+    // The server, as the test left it: the apps, the layout (what a save
+    // stored, from then on) and a spec each.
+    let served = LAYOUT;
+    const saves = [];
+    const copy = x => JSON.parse(JSON.stringify(x));
+    const api = {
+      apps: async () => copy(APPS),
+      homeLayout: async () => copy(served),
+      renderApp: async id => ({type:'empty', message:id}),
+      saveLayout: async layout => { served = copy(layout); saves.push(copy(layout)); return {ok:true}; },
+    };
+
+    // The modals: each records its markup, and finds in it what the page
+    // asks for - an #id, a [data-act]/[data-f] - and its [data-step]s.
+    const modals = [];
+    function openModal(html){
+      const found = {};
+      const steps = [...html.matchAll(/data-step="([\w-]+)"( hidden)?/g)].map(([, step, hidden]) => {
+        const n = mk('div'); n.dataset.step = step; n.hidden = !!hidden; return n;
+      });
+      const box = {
+        html,
+        querySelector: sel => {
+          if(!(sel in found)){
+            const id = sel.match(/^#([\w-]+)$/), attr = sel.match(/^\[([\w-]+)="([^"]*)"\]$/);
+            const there = id ? html.includes(`id="${id[1]}"`) : !!attr && html.includes(`${attr[1]}="${attr[2]}"`);
+            found[sel] = there ? mk(sel) : null;
+          }
+          return found[sel];
+        },
+        querySelectorAll: sel => sel==='[data-step]' ? steps : [],
+      };
+      const modal = {box, closed:false, q: box.querySelector};
+      modals.push(modal);
+      return {box, close: () => { modal.closed = true; }};
+    }
+
+    WIRING
+
+    // What's on screen.
+    const tileOf = id => $('#home .tiles').children.find(t => t.dataset.app===id);
+    const controlOf = (id, cls) => {
+      const bar = tileOf(id).children.find(c => c.className==='tile-cfg');
+      return bar ? bar.children.find(c => c.className===cls) || null : null;
+    };
+    const gearOf = id => { const kids = $('#layoutTabs').children; return kids[kids.findIndex(k => k.dataset.tab===id) + 1]; };
+    const click = id => tabButtons().find(b => b.dataset.tab===id).onclick();
+    const look = () => {
+      const grid = $('#home .tiles'), head = $('#homeHead').children[0];
+      return {
+        strip: tabButtons().map(b => [b.dataset.tab, b.textContent, b.classList.contains('active'), b.getAttribute('aria-current')]),
+        gears: $('#layoutTabs').children.filter(c => c.className==='tab-gear').map(g => g.attrs['aria-label']),
+        add: !$('#addTabBtn').hidden,
+        panels: document.querySelectorAll('[data-panel]').filter(p => !p.hidden).map(p => p.dataset.panel),
+        tiles: grid ? grid.children.map(t => [t.dataset.app, t.style.gridColumn, t.style.gridRow]) : null,
+        controls: grid ? grid.children.some(t => t.children.some(c => c.className==='tile-cfg')) : null,
+        note: grid ? null : $('#home').innerHTML,
+        subtitle: head ? (head.tag==='input' ? head.value : head.textContent) : null,
+        active: home.activeTab,
+      };
+    };
+    const tick = () => new Promise(r => setImmediate(r));
+    // Boot, as the page does it: the shell painted, then Home read.
+    async function boot(){
+      showTab(openingTab());
+      paintHomeHead();
+      paintHome();
+      const before = look();
+      await loadHome();
+      return before;
+    }
+    const r = {};
+"""
+
+
+def _tab_script(page, apps_listed, layout, scenario, opening=None):
+    boot = page[page.index("BOOT - paint the shell") :]
+    assert "\n  showTab(openingTab());\n" in boot and "\n  loadHome();\n" in boot
+    for line in TAB_WIRING:
+        assert line + "\n" in page, line
+    harness = (
+        TAB_HARNESS.replace("OPENING", json.dumps(opening))
+        .replace("LAYOUT", json.dumps(layout))
+        .replace("APPS", json.dumps(apps_listed))
+        .replace("WIRING", "\n".join(TAB_WIRING))
+    )
+    return (
+        MINI_DOM + "\n".join(_js(page, n) for n in TAB_PARTS) + harness
+        + "(async () => {\n" + scenario + "\nconsole.log(JSON.stringify(r));\n})()"
+        + ".catch(e => { console.error(e); process.exit(1); });"
+    )
+
+
+@pytest.fixture
+def tab_apps(tmp_path, monkeypatch):
+    """Four apps installed, in a temp apps folder: a with two sizes, c
+    with two, b and d with one."""
+    import main
+
+    path = tmp_path / "apps"
+    for app_id, sizes in (
+        ("a", "[{w: 1, h: 1}, {w: 2, h: 1}]"),
+        ("b", "[{w: 1, h: 1}]"),
+        ("c", "[{w: 2, h: 2}, {w: 1, h: 1}]"),
+        ("d", "[{w: 1, h: 1}]"),
+    ):
+        (path / app_id).mkdir(parents=True)
+        (path / app_id / "app.yaml").write_text(f"id: {app_id}\nname: App {app_id.upper()}\nsizes: {sizes}\n")
+    monkeypatch.setitem(main.app.config, "APPS_DIR", str(path))
+    return path
+
+
+def _tab(tab_id, name, *items, subtitle=""):
+    return {"id": tab_id, "name": name, "mode": "flow", "subtitle": subtitle, "items": list(items)}
+
+
+# Two tabs, as a save would store them: a and b on Home, c on Two; d is
+# placed nowhere, so the read puts it on the end of Home (the default).
+SEEDED = {"tabs": [
+    _tab("home", "Home", _instance("ia", "a", config={"goal": 5}), _instance("ib", "b"), subtitle="Today"),
+    _tab("two", "Two <b>", _instance("ic", "c", 2, 2)),
+], "default_tab": "home"}
+
+
+def _seeded(client, layout=SEEDED):
+    """The layout saved with PUT, then read back as the page reads it."""
+    assert client.put("/api/home-layout", json=layout).status_code == 200
+    return client.get("/api/apps").get_json(), client.get("/api/home-layout").get_json()
+
+
+def _run_tabs(client, scenario, layout=SEEDED, opening=None):
+    page = _page(client)
+    listed, read = _seeded(client, layout)
+    return _node(_tab_script(page, listed, read, scenario, opening)), read
+
+
+def _stored(client, body):
+    """A save the page sent, PUT to the server: what it then reads back."""
+    resp = client.put("/api/home-layout", json=body)
+    assert resp.status_code == 200, resp.get_json()
+    return client.get("/api/home-layout").get_json()
+
+
+def test_the_strip_holds_the_layouts_tabs_before_data(client):
+    page = _page(client)
+    # A region of the strip, filled from the layout, before Data; until
+    # it's read, a stand-in for its first tab. ＋ Add starts hidden.
+    assert re.search(
+        r'<nav class="tabstrip" aria-label="Tabs">\s*(?:<!--.*?-->\s*)?'
+        r'<div class="layout-tabs" id="layoutTabs">\s*'
+        r'<button class="tab" data-tab="home" type="button"><span>Home</span></button>\s*</div>\s*'
+        r'<button class="tab tab-end active" data-tab="data" type="button" aria-current="page"><span>Data</span></button>\s*'
+        r'<button class="tab tab-add" id="addTabBtn" type="button" aria-haspopup="dialog" hidden><span>＋ Add</span></button>\s*'
+        r"</nav>",
+        page,
+        re.S,
+    )
+    # The region lays its tabs out as the strip's own.
+    assert re.search(r"^\.layout-tabs\{display:contents;\}", page, re.M)
+    assert re.search(r"^\.tab\[hidden\]\{display:none;\}", page, re.M)
+    assert _const(page, "TAB_NAME_MAX") == f"const TAB_NAME_MAX = {home_layout.MAX_TAB_NAME};"
+    # A tab's name is only ever set as text.
+    strip = _js_function(page, "paintTabStrip")
+    assert "label.textContent = t.name;" in strip
+    assert "${" not in strip and "innerHTML" not in strip
+    # Data is the strip's own, never a layout tab; the rest share Home.
+    assert _const(page, "PANEL_TABS") == "const PANEL_TABS = ['data'];"
+    show = _js_function(page, "showTab")
+    assert "if(PANEL_TABS.includes(name)) showPanel(name);" in show and "else switchTab(name);" in show
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
+def test_clicking_a_tab_draws_its_tiles_and_data_shows_the_console(client, tab_apps):
+    r, read = _run_tabs(client, """
+        r.loading = await boot();
+        r.booted = look();
+        click('two'); r.two = look();
+        click('home'); r.home = look();
+        click('data'); r.data = look();
+        store['of-opening-tab'] = 'two'; r.opening = openingTab();
+        r.saves = saves.length;
+    """)
+    # Booted on Data (no opening page chosen), the stand-in Home on the
+    # strip; once read, the layout's tabs, by name, as text - and Home has
+    # drawn the default tab underneath.
+    assert r["loading"]["strip"] == [["home", "Home", False, None], ["data", "Data", True, "page"]]
+    assert r["loading"]["panels"] == ["data"]
+    data_on = [["home", "Home", False, None], ["two", "Two <b>", False, None], ["data", "Data", True, "page"]]
+    assert r["booted"]["strip"] == data_on
+    assert r["booted"]["panels"] == ["data"]
+    assert [t[0] for t in r["booted"]["tiles"]] == ["a", "b", "d"]
+    # Each tab draws its own tiles, into the one Home panel, and is the
+    # strip's active tab.
+    assert r["two"]["panels"] == ["home"]
+    assert r["two"]["tiles"] == [["c", "span 2", "span 2"]]
+    assert r["two"]["strip"] == [["home", "Home", False, None], ["two", "Two <b>", True, "page"], ["data", "Data", False, None]]
+    assert r["two"]["subtitle"] == ""
+    assert r["home"]["tiles"] == [["a", "span 1", "span 1"], ["b", "span 1", "span 1"], ["d", "span 1", "span 1"]]
+    assert r["home"]["subtitle"] == "Today"
+    assert r["data"]["panels"] == ["data"] and r["data"]["strip"] == data_on
+    # Not configuring: just the tabs - no gears, no ＋ Add, no tile controls.
+    for seen in (r["booted"], r["two"], r["home"]):
+        assert seen["gears"] == [] and seen["add"] is False and seen["controls"] is False
+    # The strip's buttons are what Settings' Opening page reads.
+    assert r["opening"] == "two"
+    # Viewing writes nothing.
+    assert r["saves"] == 0
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
+def test_add_makes_a_tab_with_a_minted_id_and_the_save_stores_it(client, tab_apps):
+    r, read = _run_tabs(client, """
+        await boot(); click('home');
+        await toggleConfigure();
+        r.configuring = look();
+        $('#addTabBtn').onclick();
+        const m = modals.pop();
+        r.titled = m.box.html.includes('<h4>New tab</h4>');
+        r.canDelete = m.q('[data-act="delete"]') !== null;
+        m.q('#tabName').value = '  Training  ';
+        m.q('[data-act="save"]').onclick();
+        r.closed = m.closed;
+        r.created = look();
+        await toggleConfigure(); await tick();
+        r.saves = saves;
+        r.after = look();
+    """)
+    # Configure: every layout tab has its gear, and ＋ Add shows.
+    assert r["configuring"]["gears"] == ["Tab settings: Home", "Tab settings: Two <b>"]
+    assert r["configuring"]["add"] is True
+    assert r["titled"] and r["canDelete"] is False and r["closed"]
+    # A new, empty tab on the end of the strip, shown - its id minted on
+    # the page, in the server's form.
+    created = r["created"]
+    new_id = created["active"]
+    assert home_layout.TAB_ID.match(new_id) and new_id not in ("home", "two")
+    assert created["strip"][:3] == [
+        ["home", "Home", False, None], ["two", "Two <b>", False, None], [new_id, "Training", True, "page"],
+    ]
+    assert created["panels"] == ["home"] and created["tiles"] is None
+    assert "Nothing on this tab yet" in created["note"]
+    # Saved as Configure goes off: the new tab, as given; the server
+    # takes its id and keeps it, empty.
+    [body] = r["saves"]
+    assert body["tabs"][2] == {"id": new_id, "name": "Training", "mode": "flow", "subtitle": "", "items": []}
+    assert body["tabs"][:2] == read["tabs"]
+    stored = _stored(client, body)
+    assert stored == body
+    assert r["after"]["add"] is False and r["after"]["gears"] == []
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
+def test_a_tab_is_renamed_from_its_gear_and_a_bad_name_is_refused_first(client, tab_apps):
+    r, read = _run_tabs(client, """
+        await boot(); click('two');
+        await toggleConfigure();
+        gearOf('two').onclick();
+        const m = modals.pop();
+        r.titled = m.box.html.includes('<h4>Tab settings</h4>');
+        r.given = m.q('#tabName').value;
+        r.tries = [];
+        for(const name of ['   ', 'x'.repeat(41), 'Runs ☕ <i>']){
+          m.q('#tabName').value = name; m.q('#tabName').oninput();
+          m.q('[data-act="save"]').onclick();
+          r.tries.push([m.q('[data-f="msg"]').textContent, m.closed, home.layout.tabs[1].name]);
+        }
+        r.renamed = look();
+        await toggleConfigure();
+        r.saves = saves;
+    """)
+    assert r["titled"]
+    # The name in the box as text, as stored.
+    assert r["given"] == "Two <b>"
+    # Blank, then over the server's limit: refused in the popup, nothing
+    # changed; then a good one, which closes it and relabels the tab.
+    assert r["tries"] == [
+        ["A tab needs a name.", False, "Two <b>"],
+        [f"A tab's name can be at most {home_layout.MAX_TAB_NAME} characters.", False, "Two <b>"],
+        ["", True, "Runs ☕ <i>"],
+    ]
+    assert r["renamed"]["strip"][1] == ["two", "Runs ☕ <i>", True, "page"]
+    [body] = r["saves"]
+    assert [t["name"] for t in body["tabs"]] == ["Home", "Runs ☕ <i>"]
+    assert _stored(client, body) == body
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
+def test_the_pages_tab_name_check_is_the_servers(client):
+    page = _page(client)
+    names = ["Home", "", " ", "\t\n ", "a" * 40, "a" * 41, " " + "a" * 39, "☕" * 40, "☕" * 41,
+             "🏃" * 40, "🏃" * 41, "<b>&</b>", " x ", 5, None]
+    script = "\n".join([_const(page, "TAB_NAME_MAX"), _js_source(page, "tabNameProblem")]) + f"""
+        console.log(JSON.stringify({json.dumps(names)}.map(n => tabNameProblem(n)===null)));
+    """
+    # Characters as Python counts them - code points, so 40 emoji pass.
+    assert _node(script) == [home_layout._name_problem(n) is None for n in names]
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
+def test_a_new_tabs_id_is_the_servers_form_and_never_one_taken(client):
+    page = _page(client)
+    script = _js_source(page, "newTabId") + """
+        const ids = Array.from({length:200}, () => newTabId([]));
+        // Random draws that come out as 'a' x 8, then 'b' x 8: the first is taken.
+        const draws = [...Array(8).fill(10/36), ...Array(8).fill(11/36)];
+        Math.random = () => draws.shift();
+        console.log(JSON.stringify({ids, retaken: newTabId(['aaaaaaaa'])}));
+    """
+    result = _node(script)
+    assert all(home_layout.TAB_ID.match(i) and len(i) == 8 for i in result["ids"]), result["ids"]
+    assert "data" not in result["ids"]
+    assert result["retaken"] == "bbbbbbbb"
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
+def test_deleting_a_tab_moves_its_tiles_to_the_default(client, tab_apps):
+    # The default isn't the first tab: deleted tiles go to the default,
+    # not to whichever tab comes first.
+    home, two = SEEDED["tabs"]
+    layout = {"tabs": [two, _tab("three", "Three"), home], "default_tab": "home"}
+    r, read = _run_tabs(client, """
+        await boot(); click('two');
+        await toggleConfigure();
+        let m;
+        gearOf('two').onclick(); m = modals.pop();
+        m.q('[data-act="delete"]').onclick();
+        r.steps = m.box.querySelectorAll('[data-step]').map(s => [s.dataset.step, s.hidden]);
+        r.confirm = m.q('[data-f="confirm"]').textContent;
+        m.q('[data-act="confirm"]').onclick();
+        r.closed = m.closed;
+        r.afterTwo = look();
+        r.layoutAfterTwo = copy(home.layout);
+        // The default, deleted from the Data tab: its tiles go to the first
+        // tab left, which becomes the default - and Home draws it.
+        click('data');
+        gearOf('home').onclick(); m = modals.pop();
+        m.q('[data-act="delete"]').onclick();
+        r.confirmHome = m.q('[data-f="confirm"]').textContent;
+        m.q('[data-act="confirm"]').onclick();
+        r.afterHome = look();
+        r.layoutAfterHome = copy(home.layout);
+        // The only tab left: no Delete, and deleting it does nothing.
+        gearOf('three').onclick(); m = modals.pop();
+        r.lastCanDelete = m.q('[data-act="delete"]') !== null;
+        deleteTab('three');
+        r.left = home.layout.tabs.map(t => t.id);
+        await toggleConfigure();
+        r.saves = saves;
+    """, layout=layout)
+    home_items = read["tabs"][2]["items"]
+    d = home_items[2]
+    assert [i["app_id"] for i in home_items] == ["a", "b", "d"]
+    # Asked first, saying where its tiles go - and that nothing's uninstalled.
+    assert r["steps"] == [["name", True], ["delete", False]]
+    assert r["confirm"] == "“Two <b>” goes, and its tile moves to “Home”. Nothing is uninstalled."
+    assert r["closed"]
+    # Two's instance on the end of Home, as it was - id, size, config -
+    # and Home on screen in Two's place.
+    assert r["layoutAfterTwo"]["tabs"] == [
+        read["tabs"][1],
+        {**read["tabs"][2], "items": home_items + [_instance("ic", "c", 2, 2)]},
+    ]
+    assert r["layoutAfterTwo"]["default_tab"] == "home"
+    assert r["afterTwo"]["active"] == "home" and r["afterTwo"]["panels"] == ["home"]
+    assert [t[0] for t in r["afterTwo"]["tiles"]] == ["a", "b", "d", "c"]
+    assert [s[0] for s in r["afterTwo"]["strip"]] == ["three", "home", "data"]
+    # Home itself: to Three, the new default, drawn though Data is on screen.
+    assert r["confirmHome"] == "“Home” goes, and its 4 tiles move to “Three”. Nothing is uninstalled."
+    assert r["layoutAfterHome"] == {"tabs": [
+        {**read["tabs"][1], "items": home_items + [_instance("ic", "c", 2, 2)]},
+    ], "default_tab": "three"}
+    assert r["afterHome"]["panels"] == ["data"] and r["afterHome"]["active"] == "three"
+    assert [t[0] for t in r["afterHome"]["tiles"]] == ["a", "b", "d", "c"]
+    assert r["afterHome"]["strip"] == [["three", "Three", False, None], ["data", "Data", True, "page"]]
+    assert r["lastCanDelete"] is False and r["left"] == ["three"]
+    # Saved: one tab holding every instance, the ids as they were.
+    [body] = r["saves"]
+    assert body == r["layoutAfterHome"]
+    stored = _stored(client, body)
+    assert stored == body
+    assert [i["instance_id"] for i in stored["tabs"][0]["items"]] == ["ia", "ib", d["instance_id"], "ic"]
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
+def test_a_tile_moved_to_another_tab_takes_its_instance_with_it(client, tab_apps):
+    r, read = _run_tabs(client, """
+        await boot(); click('home');
+        await toggleConfigure();
+        r.options = controlOf('a', 'tile-move').children.map(o => [o.value, o.textContent, !!o.disabled, !!o.selected]);
+        // Resized first, then moved: it goes at that size.
+        const size = controlOf('a', 'tile-size'); size.value = '1'; size.onchange();
+        const move = controlOf('a', 'tile-move'); move.value = 'two'; move.onchange();
+        r.moved = look();
+        click('two'); r.onTwo = look();
+        r.layout = copy(home.layout);
+        await toggleConfigure();
+        r.saves = saves;
+    """)
+    # The other tabs, by name, as text; this one isn't offered.
+    assert r["options"] == [["", "Move…", True, True], ["two", "Two <b>", False, False]]
+    # Off Home's grid, on the end of Two - its id, its size, its config.
+    assert [t[0] for t in r["moved"]["tiles"]] == ["b", "d"]
+    assert r["onTwo"]["tiles"] == [["c", "span 2", "span 2"], ["a", "span 2", "span 1"]]
+    assert r["layout"]["tabs"][1]["items"] == [_instance("ic", "c", 2, 2), _instance("ia", "a", 2, 1, {"goal": 5})]
+    assert [i["app_id"] for i in r["layout"]["tabs"][0]["items"]] == ["b", "d"]
+    [body] = r["saves"]
+    placed = [i["app_id"] for t in body["tabs"] for i in t["items"]]
+    assert sorted(placed) == ["a", "b", "c", "d"]
+    assert _stored(client, body) == body
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
+def test_a_tile_isnt_offered_a_tab_that_has_its_app_already(client, tab_apps):
+    # A layout saved from elsewhere can place b on both tabs: moving
+    # Home's b onto Two would merge them, so Two isn't offered for it.
+    layout = {"tabs": [
+        _tab("home", "Home", _instance("ia", "a"), _instance("ib", "b")),
+        _tab("two", "Two", _instance("ic", "c", 2, 2), _instance("ib2", "b")),
+        _tab("three", "Three"),
+    ], "default_tab": "home"}
+    r, _ = _run_tabs(client, """
+        await boot(); click('home'); await toggleConfigure();
+        const options = id => controlOf(id, 'tile-move').children.slice(1).map(o => o.value);
+        r.a = options('a'); r.b = options('b');
+    """, layout=layout)
+    assert r["a"] == ["two", "three"]
+    assert r["b"] == ["three"]
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
+def test_configures_edits_on_a_tab_survive_a_switch_away_and_back(client, tab_apps):
+    r, read = _run_tabs(client, """
+        await boot(); click('home');
+        await toggleConfigure();
+        // Reordered (as a drag leaves home.tiles), a resized, the subtitle
+        // typed into its input.
+        home.tiles.reverse();
+        const size = controlOf('a', 'tile-size'); size.value = '1'; size.onchange();
+        const input = $('#homeHead').children[0]; input.value = 'Edited'; input.oninput();
+        click('two'); r.two = look();
+        click('home'); r.back = look();
+        await toggleConfigure();
+        r.saves = saves;
+    """)
+    d = read["tabs"][0]["items"][2]
+    assert r["two"]["tiles"] == [["c", "span 2", "span 2"]] and r["two"]["subtitle"] == ""
+    # Back on Home, as it was left.
+    assert r["back"]["tiles"] == [["d", "span 1", "span 1"], ["b", "span 1", "span 1"], ["a", "span 2", "span 1"]]
+    assert r["back"]["subtitle"] == "Edited"
+    [body] = r["saves"]
+    assert body["tabs"][0] == _tab(
+        "home", "Home", d, _instance("ib", "b"), _instance("ia", "a", 2, 1, {"goal": 5}), subtitle="Edited",
+    )
+    assert body["tabs"][1] == read["tabs"][1]
+    assert _stored(client, body) == body
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
+@pytest.mark.parametrize("opening, panel, shown, resolved", [
+    # A layout tab: Home, straight away, then that tab once it's read.
+    ("two", "home", "two", "two"),
+    ("home", "home", "home", "home"),
+    # One since deleted: Home's default tab, without an error.
+    ("gone", "home", "home", "home"),
+    # Data, or nothing chosen: the console.
+    ("data", "data", "home", "data"),
+    (None, "data", "home", "data"),
+])
+def test_the_page_opens_on_its_opening_tab_once_the_strip_has_it(client, tab_apps, opening, panel, shown, resolved):
+    r, _ = _run_tabs(client, """
+        r.before = await boot();
+        r.after = look();
+        r.opening = openingTab();
+    """, opening=opening)
+    assert r["before"]["panels"] == [panel] and r["after"]["panels"] == [panel]
+    assert r["after"]["active"] == shown
+    active = [s[0] for s in r["after"]["strip"] if s[2]]
+    assert active == [shown if panel == "home" else "data"]
+    assert r["opening"] == resolved
 
 
 def test_index_wires_the_voice_buttons_to_the_audio_route(client):

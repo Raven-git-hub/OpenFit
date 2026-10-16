@@ -189,9 +189,23 @@ button{font-family:inherit;cursor:pointer;}
 .tab.active{background:var(--accent);color:var(--accent-ink);}
 .tab-add{margin-left:auto;background:transparent;border:1.5px dashed var(--border-strong);color:var(--muted);font-weight:600;}
 .tab-add:hover{background:transparent;border-color:var(--accent);color:var(--accent);}
-/* Home holds the left end alone; Data sits at the right end, beside Add */
+.tab[hidden]{display:none;}
+/* Home's tabs - the layout's, drawn by the page - hold the left end, in
+   the strip as if they were its own; Data sits at the right end, beside
+   Add (shown only while Configure is on) */
+.layout-tabs{display:contents;}
 .tab-end{margin-left:auto;}
 .tab-end + .tab-add{margin-left:0;}
+/* Configure: a tab's gear, just after it - rename it, or delete it */
+.tab-gear{
+  width:24px;height:24px;flex:none;padding:0;border-radius:50%;display:grid;place-items:center;
+  align-self:center;margin-left:-3px;
+  border:1px solid var(--border-strong);background:var(--surface);color:var(--muted);
+}
+.tab-gear:hover{border-color:var(--accent);color:var(--accent);}
+.tab-gear:focus-visible{border-radius:50%;}
+.tab-gear:disabled{opacity:.5;cursor:not-allowed;}
+.tab-gear svg{width:12px;height:12px;fill:currentColor;}
 
 .main{padding:24px 30px 60px;min-width:0;}
 
@@ -356,6 +370,8 @@ a.btn{display:inline-block;text-decoration:none;}
 .modal-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:16px;}
 /* Remove source on the left, Close on the right */
 .modal-actions.split{justify-content:space-between;}
+/* one button on the left, the rest on the right - Delete tab */
+.modal-actions .lead{margin-right:auto;}
 /* a source's Settings: its account as a label / value list */
 .info{display:grid;grid-template-columns:auto minmax(0,1fr);margin:14px 0 0;}
 .info dt, .info dd{display:flex;align-items:center;padding:10px 0;border-bottom:1px solid var(--border);}
@@ -530,7 +546,8 @@ h5 + .dnote{margin-top:0;}
   box-shadow:0 0 0 2px var(--accent), var(--shadow);
 }
 .tiles[aria-busy="true"]{opacity:.6;pointer-events:none;}
-/* a tile's controls, over its top edge: the handle, then the size picker */
+/* a tile's controls, over its top edge: the handle, then the size picker
+   and the move-to-tab picker, at the far end */
 .tile-cfg{position:absolute;top:6px;left:6px;right:6px;display:flex;align-items:center;gap:6px;z-index:1;pointer-events:none;}
 .tile-cfg > *{pointer-events:auto;}
 .tile-grip{
@@ -539,12 +556,16 @@ h5 + .dnote{margin-top:0;}
 }
 .tile-grip:hover, .tile-grip:focus-visible{border-color:var(--accent);color:var(--accent);}
 .tile-grip svg{width:8px;height:12px;fill:currentColor;}
-.tile-size{
-  margin-left:auto;min-width:0;padding:2px 4px;cursor:pointer;
+.tile-size, .tile-move{
+  min-width:0;padding:2px 4px;cursor:pointer;
   border:1px solid var(--border-strong);border-radius:6px;background:var(--surface);color:var(--ink);
   font-family:var(--font-mono);font-size:11.5px;
 }
-.tile-size:focus{border-color:var(--accent);outline:none;}
+.tile-cfg > select:first-of-type{margin-left:auto;}
+/* a select is as wide as its widest option: the size keeps its width,
+   the move picker (tab names) takes what's left */
+.tile-size{flex:none;}
+.tile-size:focus, .tile-move:focus{border-color:var(--accent);outline:none;}
 .tile > *{flex:1;min-height:0;}
 /* number: a large value, its label beneath, a smaller muted caption */
 .spec-number{display:flex;flex-direction:column;justify-content:center;min-width:0;}
@@ -629,9 +650,13 @@ h5 + .dnote{margin-top:0;}
   </header>
 
   <nav class="tabstrip" aria-label="Tabs">
-    <button class="tab" data-tab="home" type="button"><span>Home</span></button>
+    <!-- Home's tabs: the layout's, drawn by paintTabStrip() once it's
+         read - until then, a stand-in for its first -->
+    <div class="layout-tabs" id="layoutTabs">
+      <button class="tab" data-tab="home" type="button"><span>Home</span></button>
+    </div>
     <button class="tab tab-end active" data-tab="data" type="button" aria-current="page"><span>Data</span></button>
-    <button class="tab tab-add" id="addTabBtn" type="button"><span>＋ Add</span></button>
+    <button class="tab tab-add" id="addTabBtn" type="button" aria-haspopup="dialog" hidden><span>＋ Add</span></button>
   </nav>
 
   <main class="main">
@@ -727,9 +752,9 @@ h5 + .dnote{margin-top:0;}
     /* The app host: the installed apps, and one app's display spec. */
     apps:         ()             => fetchJSON('/api/apps'),
     renderApp:    id             => fetchJSON('/api/app/'+enc(id)+'/render'),
-    /* Home's layout - the tiles' order and sizes, and the subtitle over
-       them - read reconciled with the apps installed now, and saved as
-       Configure is switched off. */
+    /* Home's layout - its tabs, and on each the tiles' order and sizes
+       and the subtitle over them - read reconciled with the apps
+       installed now, and saved whole as Configure is switched off. */
     homeLayout:   ()             => fetchJSON('/api/home-layout'),
     saveLayout:   layout         => send('/api/home-layout', 'PUT', layout),
     /* Install one from its files, {name: text}; the server reads the id
@@ -1687,7 +1712,7 @@ h5 + .dnote{margin-top:0;}
   }
 
   /* A stand-in for popups that aren't built yet: Add source (when nothing
-     is left to add), Add tab, and Applications' Browse / Build / Create. */
+     is left to add), and Applications' Browse / Build / Create. */
   function comingSoon(title){
     const {box, close} = openModal(`
       <h4>${esc(title)}</h4>
@@ -2343,33 +2368,44 @@ h5 + .dnote{margin-top:0;}
      HOME - the installed apps' tiles
      Each app (a folder in the server's apps directory) renders a
      display spec server-side (app/host.py); this page only draws
-     specs. Three parts, kept apart so the layout can change
-     without touching the others:
-       loadHome()   the apps, their specs and the saved layout
+     specs. The saved layout is a set of tabs, each a flow of
+     instances (an app placed, with its own size and config): the tab
+     strip shows them, before Data, and Home draws the one picked. The
+     parts, kept apart so the layout can change without touching the
+     others:
+       loadHome()   the fetch: the apps, their specs and the layout
+                    -> home.specs, home.layout; then the render
+       renderActiveTab()  the render, from what the fetch left - a
+                    tab switch fetches nothing - for the tab on screen
                     -> home.tiles: [{instance_id, app_id, name, spec,
                                      w, h, sizes, config}]
        layoutTiles  the tab's saved instances over the apps installed
                     now: the tiles' order, and each one's size
        paintTiles() any such list -> the tiles on the six-cell grid,
                     each spec drawn by renderSpec()
-     The saved layout is a set of tabs, each a flow of instances (an
-     app placed, with its own size and config); Home shows one, the
-     default - there's no tab strip yet. The layout is flow: an order
-     and a size per tile, no cells. The grid (CSS) lays them out, row
-     by row. Configure, in the sub-header under the tab strip,
-     rearranges home.tiles in place - drag a tile to move it, pick its
-     size from its app's - makes the subtitle editable, and saves it
-     all, every tab, as it's switched off.
+       paintTabStrip()  the layout's tabs, on the strip
+     The layout is flow: an order and a size per tile, no cells. The
+     grid (CSS) lays them out, row by row. Configure, in the sub-header
+     under the tab strip, edits home.layout as a working copy: drag a
+     tile to move it, pick its size from its app's, or move it to
+     another tab; edit the subtitle; make, rename and delete tabs. The
+     tab on screen's edits are in home.tiles and home.subtitle until
+     they're flushed into the copy (flushTab) - on every switch, and
+     before the save - and it's all saved, every tab, as Configure is
+     switched off. Every app is on one tab: a tile moves, never copies,
+     so tiles are still keyed by app_id.
      ========================================================= */
   const GRID_COLS = 6;          // the grid's width in cells, and the most a tile spans either way
   const SUBTITLE_MAX = 120;     // the server's MAX_SUBTITLE (home_layout.py)
+  const TAB_NAME_MAX = 40;      // the server's MAX_TAB_NAME (home_layout.py)
   const home = {
     status:'loading',   // loading | ready | error
-    layout:null,        // the saved layout as read: {tabs, default_tab}
-    activeTab:null,     // the id of the tab on screen: the default (no strip to pick another yet)
+    layout:null,        // the layout, {tabs, default_tab}: as read, then Configure's working copy
+    specs:null,         // app_id -> {a, spec}: the apps installed, in folder order, each with its spec
+    activeTab:null,     // the id of the layout's tab Home shows
     tiles:null,         // its [{instance_id, app_id, name, spec, w, h, sizes, config}], in layout order; w/h in cells
     subtitle:'',        // its line in the sub-header
-    configuring:false,  // Configure is on: tiles move and resize, the subtitle edits
+    configuring:false,  // Configure is on: tiles move and resize, the subtitle edits, tabs come and go
     saving:false,       // Configure's save is on its way
   };
   const cells = n => Math.min(GRID_COLS, Math.max(1, Math.round(+n) || 1));
@@ -2378,35 +2414,74 @@ h5 + .dnote{margin-top:0;}
      default first. The page never makes one up. */
   const appSizes = a => (Array.isArray(a.sizes) && a.sizes.length ? a.sizes : [a.default_size]).map(sizeOf);
 
+  /* The fetch: the apps, a spec each and the layout, then Home drawn
+     from them (renderActiveTab). Re-run after a sync, an install or an
+     uninstall, and after Configure saves - not on a tab switch. */
   async function loadHome(){
+    let read = false;
     try{
       const [apps, saved] = await Promise.all([api.apps(), api.homeLayout()]);
       // An app that can't be fetched is one error tile, not a failed Home.
       const specs = await Promise.all(apps.map(a => api.renderApp(a.id)
         .catch(() => ({type:'error', message:"Couldn't load this app."}))));
-      const byId = new Map(apps.map((a, i) => [a.id, {a, spec:specs[i]}]));
-      const tab = saved.tabs.find(t => t.id===saved.default_tab) || saved.tabs[0];
-      // The apps the other tabs place: placed already, not this tab's to add.
-      const elsewhere = saved.tabs.filter(t => t!==tab).flatMap(t => t.items.map(it => it.app_id));
-      // Mid-Configure the arrangement on screen isn't saved yet: it's
-      // kept, and squared with the apps as they are now, not replaced.
-      const items = home.configuring && home.tiles ? layoutItems() : tab.items;
-      if(!home.configuring) home.subtitle = typeof tab.subtitle==='string' ? tab.subtitle : '';
-      home.tiles = layoutTiles(items, apps, elsewhere).map(it => {
-        const {a, spec} = byId.get(it.app_id);
-        return {instance_id:it.instance_id, app_id:a.id, name:a.name, spec,
-          w:it.size.w, h:it.size.h, sizes:appSizes(a), config:it.config};
-      });
-      home.layout = saved;
-      home.activeTab = tab.id;
+      home.specs = new Map(apps.map((a, i) => [a.id, {a, spec:specs[i]}]));
+      // Mid-Configure the layout holds edits not saved yet: it's kept -
+      // the tab on screen as it stands - and squared with the apps as
+      // they are now when it's drawn, not replaced.
+      if(home.configuring && home.layout) flushTab();
+      else home.layout = saved;
       home.status = 'ready';
+      read = true;
     }catch(e){
       // A failed refresh leaves the tiles already drawn.
       if(!home.tiles) home.status = 'error';
     }
-    // Mid-Configure the sub-header holds an edit in progress: left be.
-    if(!home.configuring) paintHomeHead();
+    if(read) renderActiveTab();
+    else if(home.status==='error'){ paintHomeHead(); paintHome(); }
+  }
+
+  /* The render, from memory: the tab on screen - home.activeTab, or the
+     default if that names no tab (none picked yet, or one since
+     deleted) - its instances squared with the apps (layoutTiles) into
+     home.tiles, its subtitle, then the sub-header, the tiles and the
+     strip. */
+  function renderActiveTab(){
+    const tabs = home.layout.tabs;
+    const tab = tabs.find(t => t.id===home.activeTab) || tabs.find(t => t.id===home.layout.default_tab) || tabs[0];
+    home.activeTab = tab.id;
+    const apps = Array.from(home.specs.values(), s => s.a);
+    // The apps the other tabs place: placed already, not this tab's to add.
+    const elsewhere = tabs.filter(t => t!==tab).flatMap(t => t.items.map(it => it.app_id));
+    home.tiles = layoutTiles(tab.items, apps, elsewhere).map(it => {
+      const {a, spec} = home.specs.get(it.app_id);
+      return {instance_id:it.instance_id, app_id:a.id, name:a.name, spec,
+        w:it.size.w, h:it.size.h, sizes:appSizes(a), config:it.config};
+    });
+    home.subtitle = typeof tab.subtitle==='string' ? tab.subtitle : '';
+    paintHomeHead();
     paintHome();
+    paintTabStrip();
+  }
+
+  /* A layout tab picked on the strip: Home shows it. Mid-Configure the
+     tab being left is flushed first, so its edits go with the save.
+     Before the layout is read there's nothing to draw: the read draws
+     this tab, or the default if it's no tab. */
+  function switchTab(id){
+    if(home.configuring) flushTab();
+    home.activeTab = id;
+    showPanel('home');
+    if(home.layout && home.specs) renderActiveTab();
+  }
+
+  /* Configure's edits to the tab on screen - its tiles' order and sizes,
+     and its subtitle - written back into the working copy: before a
+     switch, a move, a delete, and the save. */
+  function flushTab(){
+    const tab = home.layout && home.tiles ? home.layout.tabs.find(t => t.id===home.activeTab) : null;
+    if(!tab) return;
+    tab.items = layoutItems();
+    tab.subtitle = home.subtitle;
   }
 
   /* Flow, for the tab on screen: its saved instances in their order,
@@ -2446,15 +2521,6 @@ h5 + .dnote{margin-top:0;}
      the server mints it one. */
   const layoutItems = () => home.tiles.map(t => ({instance_id:t.instance_id, app_id:t.app_id, size:{w:t.w, h:t.h}, config:t.config || {}}));
 
-  /* The whole layout to save: every tab as it was read, the one on
-     screen with its subtitle and tiles as they stand now. */
-  function layoutToSave(){
-    return {
-      tabs:home.layout.tabs.map(t => t.id===home.activeTab ? {...t, subtitle:home.subtitle, items:layoutItems()} : t),
-      default_tab:home.layout.default_tab,
-    };
-  }
-
   function paintHome(){
     const box = $('#home');
     if(home.status==='loading'){
@@ -2463,10 +2529,14 @@ h5 + .dnote{margin-top:0;}
       box.innerHTML = `<div class="home-state">Couldn't load your apps.<br>
         <button class="btn sm" type="button">Retry</button></div>`;
       box.querySelector('button').onclick = () => { home.status = 'loading'; paintHomeHead(); paintHome(); loadHome(); };
-    }else if(!home.tiles.length){
+    }else if(!home.specs.size){
       box.innerHTML = `<p class="home-state">No apps installed yet. Add one with ＋ Add Application
         on the Data tab, or put its folder in the server's apps directory (<code>/data/apps</code>
         by default) and reload.</p>`;
+    }else if(!home.tiles.length){
+      box.innerHTML = home.configuring
+        ? '<p class="home-state">Nothing on this tab yet. Move a tile here from another tab, with its Move… picker.</p>'
+        : '<p class="home-state">Nothing on this tab yet. Configure, then move a tile here from another tab.</p>';
     }else{
       paintTiles(box, home.tiles, home.configuring);
     }
@@ -2497,9 +2567,12 @@ h5 + .dnote{margin-top:0;}
   }
 
   /* One app's tile, redrawn from a fresh spec - the Applications list's
-     Refresh. Only that tile changes, in place; an app with no tile on
-     Home (none drawn yet) has nothing to redraw. */
+     Refresh. Only that tile changes, in place. The spec is kept for a
+     switch to draw from; an app with no tile on screen (on another tab,
+     or none drawn yet) has nothing to redraw now. */
   function repaintTile(appId, spec){
+    const s = home.specs && home.specs.get(appId);
+    if(s) s.spec = spec;
     const t = home.tiles && home.tiles.find(x => x.app_id===appId);
     if(!t) return;
     t.spec = spec;
@@ -2549,26 +2622,70 @@ h5 + .dnote{margin-top:0;}
     if(cls === 'ok') homeMsgTimer = setTimeout(() => { note.textContent = ''; }, 4000);
   }
 
-  /* Configure on: the tiles get their controls and the subtitle its
-     input. Off: the layout - every tab, the one on screen with its
-     subtitle and its tiles' order and sizes - is saved, and the tiles
-     go back to chromeless. A save that fails stays in Configure, the
-     arrangement as it was, to try again. */
+  /* ---- the tab strip: the layout's tabs ----
+     One tab on the strip per tab of the layout, in its order, before
+     Data: its name as text, never markup. Each keeps the strip's own
+     form - a .tab with data-tab, its name its text - so Settings'
+     Opening page offers it as it does any tab. While Configure is on,
+     each has a gear after it (rename it, or delete it) and ＋ Add makes
+     a tab; otherwise the strip is just the tabs. Until the layout is
+     read, the stand-in in the markup stays. */
+  function paintTabStrip(){
+    const add = $('#addTabBtn');
+    add.hidden = !home.configuring;
+    add.disabled = home.saving;
+    if(home.layout){
+      const strip = [];
+      home.layout.tabs.forEach(t => {
+        const b = el('button','tab');
+        b.type = 'button';
+        b.dataset.tab = t.id;
+        const label = el('span');
+        label.textContent = t.name;
+        b.appendChild(label);
+        b.onclick = () => switchTab(t.id);
+        strip.push(b);
+        if(!home.configuring) return;
+        const gear = el('button','tab-gear', GEAR);
+        gear.type = 'button';
+        gear.title = 'Rename or delete this tab';
+        gear.setAttribute('aria-label', 'Tab settings: '+t.name);
+        gear.setAttribute('aria-haspopup','dialog');
+        gear.disabled = home.saving;
+        gear.onclick = () => openTabEditor(t);
+        strip.push(gear);
+      });
+      $('#layoutTabs').replaceChildren(...strip);
+    }
+    markTabs();
+  }
+
+  /* Configure on: the tiles get their controls, the subtitle its input
+     and the strip its tab controls. Off: the working copy - every tab,
+     the one on screen flushed into it - is saved, the tiles go back to
+     chromeless, and Home is read again, as the server squares what it
+     stored (an id it minted, an app left with no tile). A save that
+     fails stays in Configure, the arrangement as it was, to try again. */
   async function toggleConfigure(){
     if(home.saving || home.status!=='ready') return;
+    let saved = false;
     if(!home.configuring){
       home.configuring = true;
-      homeMsg('info', 'Drag a tile to move it, and pick a size where an app offers more than one. Configure again to save.');
+      homeMsg('info', 'Drag a tile to move it, pick a size where an app offers more than one, or move it to another tab. '
+        + '＋ Add makes a tab; a tab\'s gear renames or deletes it. Configure again to save.');
     }else{
+      flushTab();
       home.saving = true;
       homeMsg('info', 'Saving the layout…');
       paintHomeHead();
+      paintTabStrip();
       const grid = $('#home .tiles');
       if(grid) grid.setAttribute('aria-busy','true');
-      const res = await api.saveLayout(layoutToSave());
+      const res = await api.saveLayout(home.layout);
       home.saving = false;
       if(res.ok){
         home.configuring = false;
+        saved = true;
         homeMsg('ok', '✓ Layout saved');
       }else{
         homeMsg('bad', (res.error || "Couldn't save the layout") + ' - nothing is lost: Configure again to retry.');
@@ -2576,13 +2693,17 @@ h5 + .dnote{margin-top:0;}
     }
     paintHomeHead();
     paintHome();
+    paintTabStrip();
+    if(saved) loadHome();
   }
 
   /* ---- Configure: a tile's controls ---- */
   const GRIP = '<svg viewBox="0 0 8 12" aria-hidden="true"><circle cx="2" cy="2" r="1.2"/><circle cx="6" cy="2" r="1.2"/><circle cx="2" cy="6" r="1.2"/><circle cx="6" cy="6" r="1.2"/><circle cx="2" cy="10" r="1.2"/><circle cx="6" cy="10" r="1.2"/></svg>';
   /* Its handle - drag the tile, or step it with the arrow keys - and,
      when its app offers more than one size, a picker of those sizes:
-     choosing one resizes the tile, and the grid reflows round it. */
+     choosing one resizes the tile, and the grid reflows round it. Then,
+     when there's another tab, a picker of them: choosing one moves the
+     tile there (moveTile). */
   function tileControls(t, tile){
     const name = t.name || t.app_id;
     const bar = el('div','tile-cfg');
@@ -2608,7 +2729,169 @@ h5 + .dnote{margin-top:0;}
       };
       bar.appendChild(pick);
     }
+    // Not to a tab that has the app already (a layout saved from
+    // elsewhere can place it twice): a move, never a merge.
+    const targets = home.layout.tabs.filter(tab =>
+      tab.id!==home.activeTab && !tab.items.some(it => it.app_id===t.app_id));
+    if(targets.length){
+      const move = el('select','tile-move');
+      move.setAttribute('aria-label', 'Move '+name+' to another tab');
+      move.title = 'Move to another tab';
+      const hint = el('option');
+      hint.value = '';
+      hint.textContent = 'Move…';
+      hint.disabled = true;
+      hint.selected = true;
+      move.appendChild(hint);
+      targets.forEach(tab => {
+        const o = el('option');
+        o.value = tab.id;
+        o.textContent = tab.name;
+        move.appendChild(o);
+      });
+      move.onchange = () => moveTile(t.app_id, move.value);
+      bar.appendChild(move);
+    }
     return bar;
+  }
+
+  /* ---- Configure: tabs, and moving a tile to one ----
+     All of it edits the working copy, home.layout: nothing is saved
+     until Configure is switched off, and then all of it at once. */
+
+  /* A tile moved to another tab: its instance - id, size, config - goes
+     on the end of that tab, and the tile leaves this one's grid. A move,
+     never a copy: the app is still on one tab. */
+  function moveTile(appId, tabId){
+    flushTab();
+    const tabs = home.layout.tabs;
+    const from = tabs.find(t => t.id===home.activeTab), to = tabs.find(t => t.id===tabId);
+    const i = from ? from.items.findIndex(it => it.app_id===appId) : -1;
+    if(!to || to===from || i < 0) return;
+    to.items.push(from.items.splice(i, 1)[0]);
+    renderActiveTab();
+  }
+
+  /* A new tab, empty, on the end of the strip, and shown. Its id is
+     minted here - the page needs it at once - and the server takes it
+     as given. */
+  function createTab(name){
+    const id = newTabId(home.layout.tabs.map(t => t.id));
+    home.layout.tabs.push({id, name, mode:'flow', subtitle:'', items:[]});
+    switchTab(id);
+  }
+  function renameTab(id, name){
+    const tab = home.layout.tabs.find(t => t.id===id);
+    if(!tab) return;
+    tab.name = name;
+    paintTabStrip();
+  }
+
+  /* Where a deleted tab's tiles go: the default tab - or, the default
+     itself deleted, the first tab left, the new default. */
+  function deleteTarget(id){
+    const left = home.layout.tabs.filter(t => t.id!==id);
+    return left.find(t => t.id===home.layout.default_tab) || left[0];
+  }
+  /* A tab deleted: its instances - ids, sizes, configs - go on the end
+     of deleteTarget(), so nothing is uninstalled and every app is still
+     on a tab. Home shows that tab if it showed this one. The only tab
+     can't go: Home has at least one. */
+  function deleteTab(id){
+    const tabs = home.layout.tabs;
+    const i = tabs.findIndex(t => t.id===id);
+    if(i < 0 || tabs.length < 2) return;
+    flushTab();
+    const dest = deleteTarget(id);
+    const gone = tabs.splice(i, 1)[0];
+    home.layout.default_tab = dest.id;
+    dest.items.push(...gone.items);
+    if(home.activeTab===id) home.activeTab = dest.id;
+    renderActiveTab();
+  }
+
+  /* A new tab's id: eight lowercase letters and digits - the server's
+     TAB_ID - none of `taken`. */
+  function newTabId(taken){
+    for(;;){
+      let id = '';
+      while(id.length < 8) id += Math.floor(Math.random()*36).toString(36);
+      if(!taken.includes(id)) return id;
+    }
+  }
+
+  /* Why a tab can't have this name, or null - the server's rule: not
+     blank, at most TAB_NAME_MAX characters (as Python counts them, by
+     code point). */
+  function tabNameProblem(name){
+    if(typeof name!=='string' || !name.trim()) return 'A tab needs a name.';
+    if([...name].length > TAB_NAME_MAX) return `A tab's name can be at most ${TAB_NAME_MAX} characters.`;
+    return null;
+  }
+
+  /* ＋ Add's popup (tab null): a name, then Create. A tab's gear (its
+     settings): its name, to rename it, and - unless it's the only tab -
+     Delete tab, behind a confirm saying where its tiles go. The name is
+     checked here (tabNameProblem) before anything changes, trimmed, and
+     set as text, never markup; the server checks it again on the save. */
+  function openTabEditor(tab){
+    const canDelete = !!tab && home.layout.tabs.length > 1;
+    const {box, close} = openModal(`
+      <h4>${tab ? 'Tab settings' : 'New tab'}</h4>
+      <div data-step="name">
+        <div class="field">
+          <label for="tabName">Name</label>
+          <input class="input" id="tabName" type="text" maxlength="${TAB_NAME_MAX}" autocomplete="off">
+        </div>
+        <div class="form-msg bad src-msg" data-f="msg"></div>
+        <div class="modal-actions">
+          ${canDelete ? '<button class="btn sm danger lead" data-act="delete" type="button">Delete tab</button>' : ''}
+          <button class="btn sm" data-act="close" type="button">Cancel</button>
+          <button class="btn sm primary" data-act="save" type="button">${tab ? 'Save' : 'Create'}</button>
+        </div>
+      </div>
+      <div data-step="delete" hidden>
+        <div class="danger-panel">
+          <h5>Delete this tab?</h5>
+          <p data-f="confirm"></p>
+          <div class="modal-actions">
+            <button class="btn sm" data-act="back" type="button">Cancel</button>
+            <button class="btn sm danger solid" data-act="confirm" type="button">Delete tab</button>
+          </div>
+        </div>
+      </div>`);
+    const input = box.querySelector('#tabName');
+    const msg = box.querySelector('[data-f="msg"]');
+    const step = name => {
+      box.querySelectorAll('[data-step]').forEach(s => { s.hidden = s.dataset.step!==name; });
+      (name==='name' ? input : box.querySelector('[data-act="back"]')).focus();
+    };
+    input.value = tab ? tab.name : '';
+    input.oninput = () => { msg.textContent = ''; };
+    const save = () => {
+      const name = input.value.trim();
+      const problem = tabNameProblem(name);
+      if(problem){ msg.textContent = problem; input.focus(); return; }
+      close();
+      if(tab) renameTab(tab.id, name);
+      else createTab(name);
+    };
+    input.onkeydown = e => { if(e.key==='Enter') save(); };
+    box.querySelector('[data-act="save"]').onclick = save;
+    box.querySelector('[data-act="close"]').onclick = close;
+    if(canDelete){
+      box.querySelector('[data-act="delete"]').onclick = () => {
+        // The tab on screen's tiles are the live ones.
+        const n = tab.id===home.activeTab ? home.tiles.length : tab.items.length;
+        box.querySelector('[data-f="confirm"]').textContent = n
+          ? `“${tab.name}” goes, and its ${n===1 ? 'tile moves' : n+' tiles move'} to “${deleteTarget(tab.id).name}”. Nothing is uninstalled.`
+          : `“${tab.name}” goes. There's nothing on it.`;
+        step('delete');
+      };
+      box.querySelector('[data-act="back"]').onclick = () => step('name');
+      box.querySelector('[data-act="confirm"]').onclick = () => { close(); deleteTab(tab.id); };
+    }
+    input.focus();
   }
 
   /* ---- Configure: reorder ----
@@ -2840,32 +3123,57 @@ h5 + .dnote{margin-top:0;}
     $('#today').textContent = new Date().toLocaleDateString('en-GB',{weekday:'short',day:'numeric',month:'short'});
   }
 
-  /* ---- tabs: Home (the app tiles) and Data (the console) ----
-     Switching only shows one panel and hides the other; the console
-     keeps its state underneath. */
+  /* ---- tabs: Home's (the layout's tabs: the app tiles) and Data (the console) ----
+     Data has a panel of its own. A layout tab has none: they all share
+     the Home panel, and pick which of the layout's tabs it draws
+     (switchTab). Switching only shows one panel and hides the other;
+     the console keeps its state underneath. */
+  const PANEL_TABS = ['data'];   // the strip's tabs with a panel of their own - never a layout tab
+  let panelShown = null;          // the panel on screen: 'home', or one of PANEL_TABS
   function closeFloating(){ closePop(); hideTip(); }
   function showTab(name){
-    document.querySelectorAll('.tab[data-tab]').forEach(b => {
-      const on = b.dataset.tab===name;
-      b.classList.toggle('active', on);
-      if(on) b.setAttribute('aria-current','page'); else b.removeAttribute('aria-current');
-    });
-    document.querySelectorAll('[data-panel]').forEach(p => { p.hidden = p.dataset.panel!==name; });
+    if(PANEL_TABS.includes(name)) showPanel(name);
+    else switchTab(name);
+  }
+  function showPanel(panel){
+    panelShown = panel;
+    document.querySelectorAll('[data-panel]').forEach(p => { p.hidden = p.dataset.panel!==panel; });
+    markTabs();
     closeFloating();
   }
+  /* The strip's active tab: the panel's - or, on Home, the layout tab it
+     draws. */
+  function markTabs(){
+    const on = panelShown==='home' ? home.activeTab : panelShown;
+    tabButtons().forEach(b => {
+      const active = b.dataset.tab===on;
+      b.classList.toggle('active', active);
+      if(active) b.setAttribute('aria-current','page'); else b.removeAttribute('aria-current');
+    });
+  }
+  // The strip's own buttons (the stand-in Home, and Data); the layout's
+  // tabs get theirs as they're drawn (paintTabStrip).
   document.querySelectorAll('.tab[data-tab]').forEach(b => { b.onclick = () => showTab(b.dataset.tab); });
-  $('#addTabBtn').onclick = () => comingSoon('Add a tab');
+  // Shown only while Configure is on.
+  $('#addTabBtn').onclick = () => { if(home.configuring && !home.saving) openTabEditor(null); };
 
   /* ---- settings (per browser, like the theme) ----
      One control for now: the tab the page opens on. Its options are the
-     tab strip's own tabs, so a new tab is offered without touching this. */
+     tab strip's own tabs - Home's, as the layout names them, and Data -
+     so a new tab is offered without touching this. */
   const OPENING_TAB = 'of-opening-tab';
   const tabButtons = () => Array.from(document.querySelectorAll('.tab[data-tab]'));
   function openingTab(){
     let t = null;
     try{ t = localStorage.getItem(OPENING_TAB); }catch(e){}
-    // Unset, or a tab that no longer exists: Data.
-    return tabButtons().some(b => b.dataset.tab===t) ? t : 'data';
+    // None chosen: Data.
+    if(!t) return 'data';
+    // Until the layout is read, its tabs aren't on the strip: the choice
+    // stands, and Home draws it once it's read - or, if it's no tab, the
+    // default (renderActiveTab).
+    if(!home.layout || tabButtons().some(b => b.dataset.tab===t)) return t;
+    // A tab since deleted: Home's default tab.
+    return home.layout.default_tab;
   }
   function openSettings(){
     const current = openingTab();
