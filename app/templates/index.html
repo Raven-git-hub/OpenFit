@@ -773,7 +773,8 @@ h5 + .dnote{margin-top:0;}
     renderApp:    (id, cfg)      => postJSON('/api/app/'+enc(id)+'/render', {cfg: cfg || {}}),
     /* Home's layout - its tabs, and on each the tiles' order and sizes
        and the subtitle over them - read reconciled with the apps
-       installed now, and saved whole as Configure is switched off. */
+       installed now, and saved whole as Configure is switched off - or
+       as a new app is put on the tab the Add popup picked. */
     homeLayout:   ()             => fetchJSON('/api/home-layout'),
     saveLayout:   layout         => send('/api/home-layout', 'PUT', layout),
     /* Install one from its files, {name: text}; the server reads the id
@@ -2382,6 +2383,10 @@ h5 + .dnote{margin-top:0;}
       </div>
       <div data-step="confirm" hidden>
         <p class="install-id" data-f="id"></p>
+        <div class="field install-tab" data-f="tabField" hidden>
+          <label for="installTab">Add to tab</label>
+          <select class="input" id="installTab" data-f="tab"></select>
+        </div>
         <ul class="install-files" data-f="files" aria-label="Files"></ul>
         <p class="install-warn" data-f="notice" hidden>${esc(CUSTOM_CODE)}</p>
       </div>
@@ -2438,6 +2443,16 @@ h5 + .dnote{margin-top:0;}
       else idLine.textContent = read.problem;
       f('files').innerHTML = files.map(x => `<li><code>${esc(x.name)}</code></li>`).join('');
       f('notice').hidden = !files.some(x => /\.py$/i.test(x.name));
+      // Which of Home's tabs it goes on - asked only when there's a
+      // choice, the layout's default tab picked to start with.
+      const tabs = home.layout && Array.isArray(home.layout.tabs) ? home.layout.tabs : [];
+      if(tabs.length > 1){
+        f('tab').innerHTML = tabs.map(t =>
+          `<option value="${esc(t.id)}"${t.id===home.layout.default_tab ? ' selected' : ''}>${esc(t.name)}</option>`).join('');
+        f('tabField').hidden = false;
+      }else{
+        f('tabField').hidden = true;
+      }
       install.disabled = !read.id;
       show('confirm');
       (read.id ? install : act('back')).focus();
@@ -2451,7 +2466,10 @@ h5 + .dnote{margin-top:0;}
       files.forEach(x => { body[x.name] = x.text; });
       const res = await api.installApp(body);
       if(res.ok){
+        // The tab picked, if there was a choice (null: the default's).
+        const tabId = f('tabField').hidden ? null : f('tab').value;
         close();
+        if(tabId) await placeNewAppOnTab(res.id, tabId);
         appInstalled(res);
       }else{
         // The server's own refusal - a taken id, a parse error - as-is.
@@ -2839,6 +2857,30 @@ h5 + .dnote{margin-top:0;}
     paintHome();
     paintTabStrip();
     if(saved) loadHome();
+  }
+
+  /* The layout's one other write: an app just installed, put on the tab
+     the Add popup's picker chose. The server's read has already given it
+     an instance on the default tab (every installed app has one), so the
+     layout is read, that instance - id, size, config - lifted onto the
+     end of the chosen tab, and the layout saved. The default chosen,
+     nothing to do; a read or save that fails leaves it on the default,
+     as before the picker. */
+  async function placeNewAppOnTab(appId, tabId){
+    let layout;
+    try{ layout = await api.homeLayout(); }
+    catch(e){ return; }
+    if(!layout || !Array.isArray(layout.tabs) || tabId === layout.default_tab) return;
+    const to = layout.tabs.find(t => t.id === tabId);
+    if(!to) return;
+    let inst = null;
+    for(const tab of layout.tabs){
+      const i = tab.items.findIndex(it => it.app_id === appId);
+      if(i >= 0){ inst = tab.items.splice(i, 1)[0]; break; }
+    }
+    if(!inst) return;
+    to.items.push(inst);
+    await api.saveLayout(layout);
   }
 
   /* ---- Configure: a tile's controls ---- */

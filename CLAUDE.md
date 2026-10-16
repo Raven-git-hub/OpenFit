@@ -420,10 +420,23 @@ own calls to its device API. Full direction:
   preview (the last top-level `id:` line, quotes and a trailing comment
   stripped, checked against the server's `INSTALL_ID`): "Install
   application: `<id>`", or why it can't (empty, no id, an unclosed quote,
-  a bad id) with Install disabled; the file names as chips; and, when any
+  a bad id) with Install disabled; under it, only when Home's layout
+  (`home.layout`, as last read — mid-Configure the working copy) has
+  more than one tab, an **Add to tab** `<select>` (`.field.install-tab`,
+  the modal's own field styling) of its tabs by name, in order, the
+  layout's `default_tab` selected — one tab, or none read yet, and it
+  stays hidden; the file names as chips; and, when any
   file ends `.py`, "This app includes custom code and runs with full
   access to your OpenFit data." (`CUSTOM_CODE`). **Install** `POST`s
-  `/api/apps` `{files}`: on success the popup closes and
+  `/api/apps` `{files}`: on success the popup closes, a tab picked
+  (the picker shown) goes to `placeNewAppOnTab(id, tabId)` — in Home's
+  section, the layout's one write besides Configure-off: it reads `GET
+  /api/home-layout` (the server's reconcile has already put the new
+  app's instance on the end of the default tab), and unless the tab is
+  that default lifts the instance — id, size, config — onto the end of
+  the chosen tab and `PUT`s the layout once; a failed read, a tab it
+  doesn't hold or no instance found leaves it on the default, as before
+  the picker — and then
   `appInstalled()` re-reads Home and the list at once, then notes "✓
   Installed <name>" — or, if the new id isn't listed (installed but the
   scanner skipped it), that it doesn't load and the server's log says
@@ -839,7 +852,8 @@ own calls to its device API. Full direction:
   `{"tabs": [{"id", "name", "mode": "flow", "subtitle", "items":
   [{"instance_id", "app_id", "size": {"w", "h"}, "config"}]}],
   "default_tab"}` — Home's tabs, and on each its instances' order, sizes
-  and configs and the line over them, written by Configure through `PUT
+  and configs and the line over them, written by Configure (and by an
+  install the Add popup put on a tab other than the default) through `PUT
   /api/home-layout` and read, reconciled with the installed apps (every
   installed app at least one instance), through `GET /api/home-layout`
   (`app/home_layout.py`; see Layout). The shape from before tabs, `{"mode":
@@ -1086,9 +1100,18 @@ same PR:
   fork, so edits to the original's files don't reach the copy. Once
   app-tier write-back lands, a copy writing an app-defined metric does so
   under its own `app:<new-id>:…` stream — a decision to confirm then.
-  Still to come for multi-tab: deploy-to-tab in the Add
-  popup; richer settings field types (select/enum/boolean) and a live
-  preview. Also still to come: the
+  Slice 5 landed (client only — it reuses `POST /api/apps` and `GET`/`PUT
+  /api/home-layout`, no route or layout change): deploy-to-tab — the Add
+  popup's Review offers an **Add to tab** picker when Home has more than
+  one tab, the default tab picked; a non-default choice has the new
+  app's instance lifted onto that tab (appended — reordering stays
+  Configure's) and the layout saved, by `placeNewAppOnTab()`. Duplicate
+  opens the same popup, so a copy gets the same picker. Mid-Configure
+  the placement doesn't hold: the server's layout is moved, but the
+  working copy kept on screen doesn't have the app, so it's drawn on the
+  tab on screen and Configure-off's save puts it there.
+  Still to come for multi-tab: richer settings field types
+  (select/enum/boolean) and a live preview. Also still to come: the
   grid pass (free cell placement as a second layout
   `mode` on the same sizes and CSS grid — coordinates, drop-anywhere,
   deliberate gaps, collision; it swaps `layoutTiles` and adds start cells

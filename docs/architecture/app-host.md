@@ -295,7 +295,10 @@ the id from the `app.yaml` (there's no id field of its own) and shows
 "Install application: `<id>`", the files, and, when any file is a `.py`, the
 notice "This app includes custom code and runs with full access to your
 OpenFit data." If the `app.yaml` is empty, has no `id:` line, or its id is
-invalid, the confirm step says so instead and Install is disabled. Opened by
+invalid, the confirm step says so instead and Install is disabled. When Home
+has more than one tab, the confirm step also has an **Add to tab** dropdown
+of them, the layout's default tab selected; with one tab (or before Home's
+layout is read) it isn't shown. Opened by
 an app row's **Duplicate**, the popup is titled "Duplicate application" and
 starts filled with the copy's files (`app.yaml` and `app.py` in their slots,
 an added slot for each other file), all editable before Review.
@@ -303,7 +306,13 @@ an added slot for each other file), all editable before Review.
 The popup's checks mirror the server's (the id charset and the file-name
 rules), for quick feedback only. It reads the id from the top-level `id:`
 line without a YAML parser, so it's a preview: the server's parse is the one
-that counts. **Install** posts the files. On success the popup closes and the
+that counts. **Install** posts the files. On success the popup closes; if a
+tab other than the default was picked, the page reads the layout (where the
+server has already given the new app an instance at the end of the default
+tab), moves that instance, with its id, size and settings, to the end of the
+chosen tab, and saves the layout (`GET`/`PUT /api/home-layout`, the same
+routes Configure uses; no route of its own). A read or save that fails
+leaves the app on the default tab. Then the
 Applications list and Home are re-read at once, so the app appears without a
 reload, and the controls card notes "✓ Installed <name>", or, if the new app
 didn't load, that the server's log says why. On a refusal the popup stays
@@ -704,10 +713,13 @@ saved positions and gives `paintTiles` start cells. The sizes, the CSS grid,
   fails, flagged in its row). Editing an app's files, updating one in place
   and disabling one are out: there's no mechanism for them.
 - **Multi-tab Home**, beyond the tab strip ([above](#tabs)), tile settings
-  ([Configure](#configure)) and Duplicate
+  ([Configure](#configure)), Duplicate
   ([an app's row](#an-apps-row-reads-files-refresh-uninstall), the way the
-  same app ends up on Home twice, each copy with its own settings):
-  deploy-to-tab in the Add Application popup. Tiles keyed by instance are
+  same app ends up on Home twice, each copy with its own settings) and
+  deploy-to-tab in the Add Application popup
+  ([above](#the-add-application-popup)): an install placed on its tab
+  while Configure is on (the picker's choice is lost to the working copy's
+  save today). Tiles keyed by instance are
   dropped for good: with duplication at the app level, an app id never has
   two instances. (The stored layout keeps its tabs of instances, see
   [The layout](#the-layout-tabs-of-instances); the page just never places
