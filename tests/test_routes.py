@@ -453,11 +453,11 @@ def test_add_application_builds_the_app_from_file_slots(client):
     assert '<p class="install-warn" data-f="notice" hidden>${esc(CUSTOM_CODE)}</p>' in popup
     assert "f('notice').hidden = !files.some(x => /\\.py$/i.test(x.name));" in popup
 
-    # Install sends the files; success closes the popup and re-reads the
-    # list and Home at once - an error keeps it open, the server's message
-    # shown as given.
+    # Install sends the files; success closes the popup, puts the app on
+    # the tab picked (if one was), and re-reads the list and Home at once -
+    # an error keeps it open, the server's message shown as given.
     assert "const res = await api.installApp(body);" in popup
-    assert "close();\n        appInstalled(res);" in popup
+    assert "close();\n        if(tabId) await placeNewAppOnTab(res.id, tabId);\n        appInstalled(res);" in popup
     assert "say(res.error || 'Could not install this application');" in popup
     after = _js_function(page, "appInstalled")
     assert "loadHome();" in after and "const listed = await loadApps();" in after
@@ -806,7 +806,7 @@ def test_configure_shows_controls_only_while_on_and_a_picker_only_for_a_choice(c
     assert "e.key==='ArrowLeft' || e.key==='ArrowUp'" in sortable
 
 
-def test_home_reads_its_layout_and_writes_it_only_through_configure(client):
+def test_home_reads_its_layout_and_writes_it_only_through_configure_or_placement(client):
     page = _page(client)
     home = _home(page)
     # Through the API block, the only place that knows a URL.
@@ -817,13 +817,22 @@ def test_home_reads_its_layout_and_writes_it_only_through_configure(client):
         assert other not in home, other
     assert "homeLayout:   ()             => fetchJSON('/api/home-layout')," in page
     assert "saveLayout:   layout         => send('/api/home-layout', 'PUT', layout)," in page
-    # Saved once, as Configure is switched off: the working copy, every
-    # tab, the one on screen flushed into it first - its subtitle and its
-    # instances' order, sizes, ids and configs.
+    # Written in two places, both in Home's section, each its own function
+    # and one save apiece - and nowhere else on the page.
     toggle = _js_function(page, "toggleConfigure")
-    assert home.count("api.saveLayout(") == 1
+    place = _js_function(page, "placeNewAppOnTab")
+    assert "async function placeNewAppOnTab(appId, tabId){" in home
+    assert page.count("api.saveLayout(") == home.count("api.saveLayout(") == 2
+    assert toggle.count("api.saveLayout(") == place.count("api.saveLayout(") == 1
+    # As Configure is switched off: the working copy, every tab, the one on
+    # screen flushed into it first - its subtitle and its instances' order,
+    # sizes, ids and configs.
     assert "const res = await api.saveLayout(home.layout);" in toggle
     assert toggle.index("flushTab();") < toggle.index("api.saveLayout(")
+    # And as an install is put on the tab the Add popup picked: the layout
+    # as the server reads it, never the working copy.
+    assert "await api.saveLayout(layout);" in place
+    assert place.index("api.homeLayout()") < place.index("api.saveLayout(")
     assert "layoutToSave" not in page
     assert _const(page, "layoutItems") == (
         "const layoutItems = () => home.tiles.map(t => ({instance_id:t.instance_id, app_id:t.app_id, "
@@ -1999,9 +2008,11 @@ PARSING_DOM = MINI_DOM.replace(
     document.addEventListener = document.removeEventListener = () => {};
 """
 
-# The parts of the page a duplicate goes through: the row, the popup.
+# The parts of the page a duplicate goes through: the row, the popup (and
+# Home's state, whose layout its Review reads for the tab picker - not read
+# here, so no picker).
 DUPE_PARTS = [
-    "$", "el", "appsList", "appPanelId", "appPanel", "writesTicker", "openModal",
+    "$", "el", "home", "appsList", "appPanelId", "appPanel", "writesTicker", "openModal",
     "INSTALL_ID", "CUSTOM_CODE", "fileNameProblem", "NO_ID", "manifestId",
     "dupeTarget", "bumpManifest", "fileSlot", "slotFiles", "openAddApp",
 ]
@@ -2372,6 +2383,211 @@ def test_the_duplicate_popup_sets_names_and_texts_as_values_never_markup(client)
     assert r["bold"] == ["A <b>&"]
     assert r["slots"] == [[None, "id: x <b>"], [None, ""], ["<i>.txt", "<b>bold</b> &amp;"]]
     assert r["plain"] == ["Add an application", ["", ""]]
+
+
+# ---------- multi-tab Home, slice 5: deploy-to-tab ----------
+#
+# The Add popup's Review asks which of Home's tabs the app goes on - only
+# when there's more than one, the layout's default tab picked to start
+# with. On Install a tab other than the default has the new app's
+# instance - which the server's read has already put on the end of the
+# default tab - lifted onto it, and the layout saved. The page's own
+# openAddApp and placeNewAppOnTab run under node over the parsing DOM,
+# against layouts the server hands out; what the page saves is then PUT
+# to the server.
+
+
+def test_the_add_popup_offers_a_tab_picker_wired_to_placement(client):
+    page = _page(client)
+    popup = _js_function(page, "openAddApp")
+    # On Review, under the id: a field for the tab, hidden until there's a
+    # choice - the modal's own field and select styling, no CSS of its own.
+    assert re.search(
+        r'<p class="install-id" data-f="id"></p>\s*'
+        r'<div class="field install-tab" data-f="tabField" hidden>\s*'
+        r'<label for="installTab">Add to tab</label>\s*'
+        r'<select class="input" id="installTab" data-f="tab"></select>\s*'
+        r"</div>",
+        popup,
+    )
+    assert ".install-tab" not in page
+    # Review fills it from Home's layout - only with more than one tab, the
+    # default selected - every id and name escaped.
+    review = popup[popup.index("act('review').onclick") : popup.index("act('back').onclick")]
+    assert "const tabs = home.layout && Array.isArray(home.layout.tabs) ? home.layout.tabs : [];" in review
+    assert "if(tabs.length > 1){" in review
+    assert (
+        "`<option value=\"${esc(t.id)}\"${t.id===home.layout.default_tab ? ' selected' : ''}>"
+        "${esc(t.name)}</option>`"
+    ) in review
+    assert "f('tabField').hidden = false;" in review and "f('tabField').hidden = true;" in review
+    # Install reads the choice - none when it wasn't asked - and, the popup
+    # closed, places the app before Home and the list are re-read.
+    install = popup[popup.index("install.onclick") :]
+    assert "const tabId = f('tabField').hidden ? null : f('tab').value;" in install
+    assert "close();\n        if(tabId) await placeNewAppOnTab(res.id, tabId);\n        appInstalled(res);" in install
+    # Placement: the layout read, the new app's instance lifted onto the
+    # chosen tab and the layout saved - nothing to do for the default, and
+    # nothing more if the read fails. Home's working copy is never touched.
+    place = _js_function(page, "placeNewAppOnTab")
+    assert "try{ layout = await api.homeLayout(); }\n    catch(e){ return; }" in place
+    assert "tabId === layout.default_tab) return;" in place
+    assert "inst = tab.items.splice(i, 1)[0]; break;" in place
+    assert "to.items.push(inst);" in place
+    assert "await api.saveLayout(layout);" in place
+    assert "home." not in place
+
+
+# The parts of the page an install goes through: the popup, Home's state
+# (its layout, for the picker) and the placement.
+ADD_PARTS = [
+    "$", "el", "home", "openModal", "INSTALL_ID", "CUSTOM_CODE", "fileNameProblem", "NO_ID", "manifestId",
+    "fileSlot", "slotFiles", "openAddApp", "placeNewAppOnTab",
+]
+
+ADD_HARNESS = r"""
+    const setTimeout = () => 0, clearTimeout = () => {};
+    const copy = x => JSON.parse(JSON.stringify(x));
+    // The server, as the test left it: the layout its read hands out now
+    // the app's installed. Every install, read and save is noted; a save
+    // is stored, and read back from then on.
+    let served = SERVED;
+    const installs = [], reads = [], saves = [], installed = [];
+    const api = {
+      installApp: async files => {
+        installs.push(copy(files));
+        return {ok:true, id:manifestId(files['app.yaml']).id};
+      },
+      homeLayout: async () => { reads.push(1); return copy(served); },
+      saveLayout: async layout => { served = copy(layout); saves.push(copy(layout)); return {ok:true}; },
+    };
+    // Home and the list re-read - noting how many saves came first.
+    const appInstalled = res => { installed.push({res, saves:saves.length}); };
+    const r = {};
+
+    // Add Application with Home's layout as `layout`: the app.yaml pasted,
+    // Review - the picker as shown - then the tab `pick`ed, as a browser
+    // sets the select (no pick: the option marked selected, else the
+    // first), and Install.
+    async function add(layout, yaml, pick){
+      home.layout = copy(layout);
+      openAddApp();
+      const bg = document.body.children[document.body.children.length-1], box = bg.children[0];
+      const q = s => box.querySelector(s);
+      q('[data-file="app.yaml"] textarea').value = yaml;
+      q('[data-act="review"]').onclick();
+      const field = q('[data-f="tabField"]'), select = q('[data-f="tab"]');
+      const options = select.querySelectorAll('option');
+      const out = {
+        id: q('[data-f="id"]').textContent,
+        picker: field.hidden ? null : options.map(o => [o.attrs.value, o.textContent, 'selected' in o.attrs]),
+      };
+      const marked = options.find(o => 'selected' in o.attrs) || options[0];
+      select.value = pick !== undefined ? pick : marked ? marked.attrs.value : '';
+      await q('[data-act="install"]').onclick();
+      out.installs = installs.splice(0).length;
+      out.reads = reads.splice(0).length;
+      out.saves = saves.splice(0);
+      out.installed = installed.splice(0);
+      out.closed = !bg.parent;
+      return out;
+    }
+"""
+
+
+def _add_script(page, served, scenario):
+    esc = re.search(r"\n  (const esc = .*?\);)\n", page, re.S).group(1)
+    harness = ADD_HARNESS.replace("served = SERVED", f"served = {json.dumps(served)}")
+    return (
+        PARSING_DOM + esc + "\n" + "\n".join(_js(page, n) for n in ADD_PARTS) + harness
+        + "(async () => {\n" + scenario + "\nconsole.log(JSON.stringify(r));\n})()"
+        + ".catch(e => { console.error(e); process.exit(1); });"
+    )
+
+
+NEW_APP = "id: e\nname: App E\nsizes: [{w: 2, h: 1}, {w: 1, h: 1}]\n"
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
+def test_the_add_popups_tab_picker_shows_only_with_two_tabs(client, tab_apps):
+    page = _page(client)
+    # Home and Two, Home the default; the same with Two the default; one tab.
+    _, two = _seeded(client)
+    _, second = _seeded(client, {**SEEDED, "default_tab": "two"})
+    _, one = _seeded(client, {"tabs": [_tab("home", "Home", _instance("ia", "a"))], "default_tab": "home"})
+    r = _node(_add_script(page, two, f"""
+        r.two = await add({json.dumps(two)}, {json.dumps(NEW_APP)});
+        served = {json.dumps(second)};
+        r.second = await add({json.dumps(second)}, {json.dumps(NEW_APP)});
+        served = {json.dumps(one)};
+        r.one = await add({json.dumps(one)}, {json.dumps(NEW_APP)});
+        // Home not read yet: no layout to pick from.
+        r.unread = await add(null, {json.dumps(NEW_APP)});
+    """))
+    # Two tabs: an option a tab, in the layout's order, by name (as text),
+    # the default selected - not merely the first.
+    assert r["two"]["picker"] == [["home", "Home", True], ["two", "Two <b>", False]]
+    assert r["second"]["picker"] == [["home", "Home", False], ["two", "Two <b>", True]]
+    # One tab, or none read: no picker, and nothing read or saved - it
+    # lands on the default, as before the picker.
+    for out in (r["one"], r["unread"]):
+        assert out["picker"] is None
+        assert (out["reads"], out["saves"]) == (0, [])
+    # Every time: installed, the popup closed, Home and the list re-read.
+    for out in r.values():
+        assert out["id"] == "Install application: e"
+        assert out["installs"] == 1 and out["closed"] is True
+        assert out["installed"] == [{"res": {"ok": True, "id": "e"}, "saves": 0}]
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
+def test_installing_onto_a_chosen_tab_moves_the_new_app_and_saves_once(client, tab_apps):
+    page = _page(client)
+    # Home (the default): a, b, then d, placed nowhere; Two: c.
+    _, before = _seeded(client)
+    # The app installed - as the popup's POST does - and the server's read
+    # now has its instance on the end of the default tab.
+    assert client.post("/api/apps", json={"files": {"app.yaml": NEW_APP}}).status_code == 201
+    after = client.get("/api/home-layout").get_json()
+    assert [[i["app_id"] for i in t["items"]] for t in after["tabs"]] == [["a", "b", "d", "e"], ["c"]]
+    new = after["tabs"][0]["items"][-1]
+    assert new["size"] == {"w": 2, "h": 1} and new["config"] == {}
+
+    r = _node(_add_script(page, after, f"""
+        r.kept = await add({json.dumps(before)}, {json.dumps(NEW_APP)});
+        r.moved = await add({json.dumps(before)}, {json.dumps(NEW_APP)}, 'two');
+        // A read that fails leaves it where the server put it.
+        api.homeLayout = async () => {{ throw new Error('down'); }};
+        r.failed = await add({json.dumps(before)}, {json.dumps(NEW_APP)}, 'two');
+    """))
+
+    # The default taken: read, nothing to move, nothing saved.
+    kept = r["kept"]
+    assert kept["picker"] == [["home", "Home", True], ["two", "Two <b>", False]]
+    assert (kept["reads"], kept["saves"]) == (1, [])
+    assert kept["installed"] == [{"res": {"ok": True, "id": "e"}, "saves": 0}]
+    # Two picked: the layout the server read, with the new instance - id,
+    # size and config intact - lifted off the default onto the end of Two,
+    # saved once, whole, before Home is re-read.
+    moved = r["moved"]
+    want = json.loads(json.dumps(after))
+    want["tabs"][1]["items"].append(want["tabs"][0]["items"].pop())
+    assert moved["reads"] == 1 and moved["saves"] == [want]
+    assert want["tabs"][1]["items"][-1] == new
+    assert moved["installed"] == [{"res": {"ok": True, "id": "e"}, "saves": 1}]
+    # The read failing: no save, and Home re-read all the same.
+    failed = r["failed"]
+    assert failed["saves"] == []
+    assert failed["installed"] == [{"res": {"ok": True, "id": "e"}, "saves": 0}]
+    assert all(out["closed"] for out in r.values())
+
+    # What the page saved, stored: the app on Two, under the instance id
+    # the read gave it - and still there on every read after (a reload).
+    stored = _stored(client, moved["saves"][0])
+    assert [[i["app_id"] for i in t["items"]] for t in stored["tabs"]] == [["a", "b", "d"], ["c", "e"]]
+    assert stored["tabs"][1]["items"][-1] == new
+    assert stored["default_tab"] == "home"
+    assert client.get("/api/home-layout").get_json() == stored
 
 
 def test_the_pages_script_compiles(client):

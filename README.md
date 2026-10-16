@@ -330,7 +330,9 @@ editing one app's files later doesn't change the other.
 
 To install one, copy its folder onto the volume, or use **＋ Add
 Application** on the Data tab: paste or upload its `app.yaml`, its `app.py`
-and any files it reads, review, and install. That's `POST /api/apps`
+and any files it reads, review, and install. With more than one tab on
+Home, the review step also asks which tab it goes on (the default tab to
+start with); otherwise it lands on the default tab. That's `POST /api/apps`
 (`{"files": {name: text}}`), which writes them to `/data/apps/<id>/`, the
 id read from the `app.yaml` (lowercase letters, digits and dashes). The
 server checks every id and file name stays inside the apps folder, refuses

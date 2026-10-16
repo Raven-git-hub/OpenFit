@@ -97,8 +97,11 @@ gear opens a form of those fields, saved with the layout, the tile
 re-rendered on Save. Then the fourth: app-level Duplicate. An app's Data row
 copies its files into the Add popup as a new app, with the next free id and
 name (`steps-2`, "Steps 2"), to review and install. That's how the same app is
-placed twice, so tiles stay keyed by app (client only, no route change). Next
-for multi-tab: deploy-to-tab in the Add popup. Next: the rest of the Library (the writes ticker once apps can
+placed twice, so tiles stay keyed by app (client only, no route change). Then
+the fifth: deploy-to-tab. With more than one tab, the Add popup's Review asks
+which tab the app goes on (the default tab picked to start with), and a
+different choice moves the new app's instance there and saves the layout
+(client only, no route change). Next: the rest of the Library (the writes ticker once apps can
 write back, alerts; Browse / Build / Create are still placeholders), and the
 grid pass (free cell placement, a second layout mode on the same sizes).
 
