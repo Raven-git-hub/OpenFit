@@ -634,6 +634,22 @@ def test_a_wipe_leaves_days_outside_its_range_alone(client, db_path, two_sources
     assert derived_pick(db_path, "2026-09-01") == (1234, "google_health")
 
 
+@pytest.mark.parametrize("wipe", ["", "?wipe=1"])
+def test_a_removed_source_keeps_its_roles(client, db_path, two_sources, wipe):
+    """As its cadence is: added back, it's primary again where it was."""
+    from derived import load_source_roles, set_source_role
+
+    conn = sqlite3.connect(db_path)
+    set_source_role(conn, "steps", "garmin")
+    conn.close()
+
+    client.delete(f"/api/connectors/garmin{wipe}")
+
+    conn = sqlite3.connect(db_path)
+    assert load_source_roles(conn) == {"steps": "garmin"}
+    conn.close()
+
+
 def test_a_wipe_with_no_readings_still_removes_the_rest(client, db_path):
     """Samples and sessions alone: nothing to re-derive, but they still go."""
     add_garmin(client)

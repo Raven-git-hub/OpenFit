@@ -2696,6 +2696,281 @@ def test_the_input_reaches_the_action_route_through_the_api_block(client):
     assert ".tiles.configuring .tile > :not(.tile-cfg){pointer-events:none;}" in page
 
 
+# ---------- an uninstalled app's data: Remove data ----------
+#
+# Uninstall keeps what an app wrote; GET /api/app-sources lists every
+# app source, orphaned or not, and DELETE /api/app-sources/<id> removes
+# an orphan's data. The page shows an orphan in Connected sources, and
+# under a Your data row's source list, with a red Remove data behind one
+# confirm; a live app's source gets no control. The page's own functions
+# run under node over the stand-in DOM, against the listings and the
+# reply the server gives.
+
+ORPHAN_PARTS = [
+    "$", "el", "num", "orphans", "loadAppSources", "orphanRow", "countOf", "appDataSummary",
+    "openRemoveAppData", "openModal", "paintSources", "orphanLines", "fillSources", "sourceList",
+]
+
+ORPHAN_HARNESS = r"""
+    const copy = x => JSON.parse(JSON.stringify(x));
+    // The server, as the test left it: the listing before and after the
+    // removal, and the removal's reply, as send() hands it on.
+    const BEFORE_ = BEFORE, AFTER_ = AFTER, REPLY_ = REPLY;
+    let listing = BEFORE_;
+    const calls = [], loads = [];
+    const api = {
+      appSources: async () => copy(listing),
+      removeAppSource: async id => { calls.push(id); listing = AFTER_; return copy(REPLY_); },
+    };
+    const loadData = () => loads.push('data'), loadHome = () => loads.push('home');
+    // The rest of the card, which these tests don't look at.
+    const cardTitle = t => el('h3', null, esc(t));
+    const sourceRow = c => { const row = el('div', 'src'); row.dataset.id = c.id; return row; };
+    const addSourceRow = () => el('div', 'src-add');
+    const repaintPanel = () => {};
+    const metricName = k => ({weight_kg:'Weight', steps:'Steps'})[k] || k;
+    const srcName = id => id, makeSortable = () => {};
+    const state = {connectors:[{id:'garmin', name:'Garmin', connected:true}], appSources:null,
+                   data:null, roles:{}, note:{}, open:new Set()};
+    const card = document.body.appendChild(mk('section'));
+    card.id = 'sourcesCard';
+    const r = {};
+    const settle = () => new Promise(done => setImmediate(done));
+
+    // The card's rows: each one's class, its text and its buttons.
+    const look = () => card.querySelectorAll('.src').map(row => ({
+      cls:row.className, id:row.dataset.id || null, source:row.dataset.source || null, text:row.textContent,
+      buttons:row.querySelectorAll('button').map(b => [b.textContent, b.className]),
+    }));
+    const modal = () => {
+      const bg = document.body.children[document.body.children.length-1];
+      return bg.className==='modal-bg' ? bg : null;
+    };
+    const lookModal = bg => {
+      const box = bg.children[0];
+      return {
+        title:box.querySelector('h4').textContent, what:box.querySelector('[data-f="what"]').textContent,
+        buttons:box.querySelectorAll('button').map(b => [b.dataset.act, b.textContent, b.className]),
+        msg:box.querySelector('[data-f="msg"]').textContent,
+      };
+    };
+    // Remove data clicked, then confirmed: what the page sent, what it
+    // said, and the card once the refresh has landed.
+    async function removeVia(button){
+      button.onclick();
+      const bg = modal();
+      const out = {modal:lookModal(bg)};
+      const confirm = bg.children[0].querySelector('[data-act="confirm"]');
+      await confirm.onclick();
+      await settle();
+      out.calls = calls.splice(0);
+      out.loads = loads.splice(0);
+      out.closed = !bg.parent;
+      out.after = bg.parent ? lookModal(bg) : null;
+      out.confirm = [confirm.textContent, !!confirm.disabled];
+      out.card = look();
+      return out;
+    }
+"""
+
+
+def _orphan_script(page, before, after, reply, scenario):
+    esc = re.search(r"\n  (const esc = .*?\);)\n", page, re.S).group(1)
+    harness = (
+        ORPHAN_HARNESS.replace("BEFORE_ = BEFORE", f"BEFORE_ = {json.dumps(before)}")
+        .replace("AFTER_ = AFTER", f"AFTER_ = {json.dumps(after)}")
+        .replace("REPLY_ = REPLY", f"REPLY_ = {json.dumps(reply)}")
+    )
+    return (
+        PARSING_DOM + esc + "\n" + "\n".join(_js(page, n) for n in ORPHAN_PARTS) + harness
+        + "(async () => {\n" + scenario + "\nconsole.log(JSON.stringify(r));\n})()"
+        + ".catch(e => { console.error(e); process.exit(1); });"
+    )
+
+
+@pytest.fixture
+def orphaned_app(client, db_path, tmp_path, monkeypatch):
+    """app:old, whose app is uninstalled, with two weigh-ins; app:steps,
+    the installed steps app's, with a reading; Garmin beside them."""
+    import sqlite3
+
+    import main
+
+    path = tmp_path / "apps"
+    path.mkdir()
+    shutil.copytree(
+        os.path.join(os.path.dirname(__file__), "fixtures", "apps", "steps"), path / "steps",
+        ignore=shutil.ignore_patterns("__pycache__"),
+    )
+    monkeypatch.setitem(main.app.config, "APPS_DIR", str(path))
+    conn = sqlite3.connect(db_path)
+    conn.executemany(
+        "INSERT INTO metrics (date, source, metric, value, unit, synced_at) VALUES (?, ?, ?, ?, ?, 'x')",
+        [
+            ("2026-10-01", "app:old", "weight_kg", 80.0, "kg"),
+            ("2026-10-02", "app:old", "weight_kg", 81.0, "kg"),
+            ("2026-10-01", "app:steps", "steps", 500, "count"),
+            ("2026-10-02", "garmin", "weight_kg", 82.0, "kg"),
+        ],
+    )
+    conn.commit()
+    recompute_derived(conn)
+    conn.close()
+    return path
+
+
+def _sent(resp):
+    """A reply as the page's send() hands it on: {ok, ...body}."""
+    return {"ok": 200 <= resp.status_code < 300, **resp.get_json()}
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
+def test_an_orphan_shows_remove_data_and_a_live_app_doesnt(client, orphaned_app):
+    before = client.get("/api/app-sources").get_json()
+    assert [(a["id"], a["orphaned"]) for a in before] == [("old", True), ("steps", False)]
+    script = _orphan_script(_page(client), before, before, {"ok": True}, """
+        paintSources();
+        r.loading = look();
+        await loadAppSources();
+        r.card = look();
+        // Under a Your data row's source list: one line, for the orphan.
+        const lines = box => box.querySelectorAll('.orphan-src').map(l => [
+          l.querySelector('.dnote').textContent, l.querySelector('button').textContent,
+          l.querySelector('button').className]);
+        state.roles = {weight_kg:{sources:['garmin', 'app:old', 'app:steps', 'apple_health']}};
+        const metricBox = mk('div');
+        fillSources({id:'metric:weight_kg', key:'weight_kg', cov:'metrics'}, metricBox);
+        r.metric = lines(metricBox);
+        const seriesBox = mk('div');
+        fillSources({id:'series:heart_rate', key:'heart_rate', cov:'series', grain:'series',
+                     sources:['garmin', 'app:steps']}, seriesBox);
+        r.series = lines(seriesBox);
+        // Its button opens the same confirm.
+        metricBox.querySelector('.orphan-src button').onclick();
+        r.fromRow = lookModal(modal());
+    """)
+    result = _node(script)
+
+    # Connected sources: the device's row, then the orphan's - name, its
+    # source, status and a red Remove data - and nothing for steps, live.
+    assert result["card"] == [
+        {"cls": "src", "id": "garmin", "source": None, "text": "", "buttons": []},
+        {"cls": "src orphan", "id": None, "source": "app:old", "text": "oldapp:old○ app uninstalledRemove data",
+         "buttons": [["Remove data", "btn sm danger"]]},
+    ]
+    assert result["metric"] == [
+        ["app:old is from an uninstalled app.", "Remove data", "btn sm danger"],
+    ]
+    assert result["series"] == []
+    assert result["fromRow"]["title"] == "app:old"
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
+def test_remove_data_confirms_what_goes_then_calls_the_route_and_refreshes(client, orphaned_app):
+    import sqlite3
+
+    import main
+
+    before = client.get("/api/app-sources").get_json()
+    # The request the page is checked below to send, made here first, so
+    # the listing it refreshes to is the server's own.
+    reply = _sent(client.delete("/api/app-sources/old"))
+    after = client.get("/api/app-sources").get_json()
+    assert reply == {"ok": True, "removed": {"metrics": 2, "sessions": 0, "samples": 0}}
+    assert [a["id"] for a in after] == ["steps"]
+    conn = sqlite3.connect(main.app.config["DB_PATH"])
+    assert conn.execute("SELECT COUNT(*) FROM metrics WHERE source = 'app:old'").fetchone()[0] == 0
+    conn.close()
+
+    script = _orphan_script(_page(client), before, after, reply, """
+        await loadAppSources();
+        Object.assign(r, await removeVia(card.querySelector('.src.orphan [data-act="remove-data"]')));
+    """)
+    result = _node(script)
+
+    # The confirm names what goes, as text.
+    assert result["modal"] == {
+        "title": "app:old",
+        "what": "Remove all data from the uninstalled app 'old'? 2 readings across 1 metric (Weight). "
+                "This can't be undone.",
+        "buttons": [["cancel", "Cancel", "btn sm"], ["confirm", "Remove data", "btn sm danger solid"]],
+        "msg": "",
+    }
+    # Confirmed: the route, once, for old; the popup closes, the data card
+    # and Home are re-read, and the card no longer has the orphan.
+    assert result["calls"] == ["old"]
+    assert result["closed"] is True
+    assert result["loads"] == ["data", "home"]
+    assert [row["cls"] for row in result["card"]] == ["src"]
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
+def test_a_refused_removal_says_why_and_keeps_the_source(client, orphaned_app):
+    before = client.get("/api/app-sources").get_json()
+    # Reinstalled since the page read the listing: the server refuses.
+    old = orphaned_app / "old"
+    old.mkdir()
+    (old / "app.yaml").write_text("id: old\nname: Old\nsizes: [{w: 1, h: 1}]\n")
+    reply = _sent(client.delete("/api/app-sources/old"))
+    assert reply["ok"] is False and "is installed" in reply["error"]
+
+    script = _orphan_script(_page(client), before, before, reply, """
+        await loadAppSources();
+        Object.assign(r, await removeVia(card.querySelector('.src.orphan [data-act="remove-data"]')));
+    """)
+    result = _node(script)
+
+    assert result["calls"] == ["old"]
+    assert result["closed"] is False
+    assert result["after"]["msg"] == reply["error"]
+    assert result["confirm"] == ["Remove data", False]
+    assert result["loads"] == []
+    assert [row["source"] for row in result["card"]] == [None, "app:old"]
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
+def test_the_summary_counts_every_kind_of_row(client):
+    page = _page(client)
+    script = "\n".join(_js(page, n) for n in ["num", "countOf", "appDataSummary"]) + """
+        const metricName = k => ({weight_kg:'Weight', steps:'Steps'})[k] || k;
+        console.log(JSON.stringify([
+          appDataSummary({metrics:['weight_kg'], readings:1, sessions:0, samples:0}),
+          appDataSummary({metrics:['steps', 'weight_kg'], readings:1200, sessions:1, samples:3}),
+          appDataSummary({metrics:[], readings:0, sessions:2, samples:0}),
+        ]));
+    """
+    assert _node(script) == [
+        "1 reading across 1 metric (Weight)",
+        "1,200 readings across 2 metrics (Steps, Weight), 1 session and 3 samples",
+        "2 sessions",
+    ]
+
+
+def test_remove_data_reaches_the_route_through_the_api_block(client):
+    page = _page(client)
+    # The only place the URLs live.
+    assert "    appSources:      ()          => fetchJSON('/api/app-sources')," in page
+    assert "    removeAppSource: id          => send('/api/app-sources/'+enc(id), 'DELETE')," in page
+    confirm = _js_function(page, "openRemoveAppData")
+    assert "api.removeAppSource(o.id)" in confirm
+    for value in ("fetch(", "'/api/"):
+        assert value not in confirm, value
+    # Every id, source and count is set as text: the markup itself is
+    # fixed, nothing interpolated into it.
+    for name, call in (("openRemoveAppData", "openModal("), ("orphanRow", "el('div','src orphan', "),
+                       ("orphanLines", "el('div','orphan-src', ")):
+        body = _js_function(page, name)
+        markup = re.search(re.escape(call) + r"`(.*?)`", body, re.S)
+        assert markup, name
+        assert "${" not in markup.group(1), name
+        assert "innerHTML" not in body, name
+    # Read at boot, and again whenever what's orphaned may change: an
+    # uninstall, an install - and after a removal, above.
+    assert "  refreshConnectors();\n  loadAppSources();\n" in page
+    assert "loadAppSources();   // what it wrote stays - orphaned now" in _js_function(page, "appPanel")
+    assert "loadAppSources();" in _js_function(page, "appInstalled")
+
+
 def test_the_pages_script_compiles(client):
     if shutil.which("node") is None:
         pytest.skip("needs node to compile the page's script")

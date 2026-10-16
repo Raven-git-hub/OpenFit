@@ -25,6 +25,7 @@ from crypto import encrypt
 from home_layout import LayoutError, load_layout, parse_layout, save_layout
 from derived import (
     backfill_derived,
+    clear_source_roles,
     derived_points,
     load_source_roles,
     recompute_derived,
@@ -41,7 +42,7 @@ from metrics import (
     grain_for,
     plausible_value,
 )
-from host import APP_SOURCE_PREFIX, WriteCtx, render_app, trailing_window
+from host import APP_SOURCE_PREFIX, WriteCtx, app_source, render_app, trailing_window
 
 DB_PATH = os.getenv("DB_PATH", "/data/tracker.db")
 AUDIO_DIR = os.getenv("AUDIO_DIR", "/app/audio")
@@ -665,7 +666,8 @@ def remove_app(app_id):
     and removes the folder it loaded from. 200 {"ok": true, "id"}; 400
     for an id no app could have, 404 for one no app loads under - either
     way nothing is removed. Its data stays: what it wrote under app:<id>
-    is kept, as a disconnected source's is.
+    is kept, as a disconnected source's is, until DELETE
+    /api/app-sources/<id> removes it.
     """
     try:
         removed = uninstall_app(app.config["APPS_DIR"], app_id)
@@ -802,6 +804,169 @@ def act_on_app(app_id):
     finally:
         conn.close()
     return jsonify({"ok": True, "spec": spec})
+
+
+# ---------- removing a source's data ----------
+
+# A source's data outlives it: disconnecting a device keeps what it
+# synced, and uninstalling an app keeps what it wrote - hand-entered
+# data can't be re-synced. Removing that is its own explicit step: a
+# device's with DELETE /api/connectors/<id>?wipe=1, an uninstalled app's
+# with DELETE /api/app-sources/<id>. Both are purge_source().
+
+
+def purge_source(conn, source, keep_roles=False):
+    """Delete everything `source` wrote, and re-derive what it fed.
+
+    Every metric, sample and session filed under `source` goes, and the
+    days its readings covered are re-derived, so each falls to whatever
+    source is left or loses its derived row. The metrics themselves
+    stay - only the readings go. Every source role naming it as a
+    primary is cleared too (clear_source_roles()), so none is left
+    pointing at data that's gone - unless `keep_roles`: a disconnected
+    device keeps its roles, as it keeps its sync cadence, for when it's
+    added back.
+
+    One transaction with whatever the caller has already done on `conn`:
+    recompute_derived() commits it (this does, with no readings to
+    re-derive), so a failure part way leaves every row and role as it
+    was. Returns {days, metrics, sessions, samples}: how many distinct
+    days its readings covered, and the rows deleted from each table.
+    """
+    # RETURNING: the affected range is exactly the readings deleted,
+    # even if a sync commits rows between a separate read and this delete.
+    dates = [
+        row[0]
+        for row in conn.execute("DELETE FROM metrics WHERE source = ? RETURNING date", (source,))
+    ]
+    samples = conn.execute("DELETE FROM samples WHERE source = ?", (source,)).rowcount
+    sessions = conn.execute("DELETE FROM sessions WHERE source = ?", (source,)).rowcount
+    if not keep_roles:
+        # Inside the transaction the deletes opened, before the re-derive.
+        clear_source_roles(conn, source)
+    if dates:
+        # One span rather than a day at a time, so the whole removal
+        # stays one transaction (recompute_derived() commits it). Every
+        # metric on every day in the span is re-picked under the
+        # current source roles, as a re-derived day's other metrics
+        # already are. Samples and sessions have no derived pick.
+        recompute_derived(conn, since=min(dates), until=max(dates))
+    conn.commit()
+    return {
+        "days": len(set(dates)),
+        "metrics": len(dates),
+        "sessions": sessions,
+        "samples": samples,
+    }
+
+
+def _has_data(conn, source):
+    """Whether `source` has a metric, session or sample row at all."""
+    return any(
+        conn.execute(f"SELECT 1 FROM {table} WHERE source = ? LIMIT 1", (source,)).fetchone()
+        for table in ("metrics", "sessions", "samples")
+    )
+
+
+@app.route("/api/app-sources", methods=["GET"])
+def list_app_sources():
+    """What apps have written: [{id, source, orphaned, metrics, readings,
+    sessions, samples}].
+
+    One entry per app source - app:<id> - that has any rows, by id: the
+    app's id and its source; `orphaned` when no installed app has that
+    id (it was uninstalled - or doesn't load, which as far as the
+    Library knows is the same); the metrics it has readings of, in
+    vocabulary order; and how many readings, sessions and samples it
+    holds. An orphan's data can be removed (DELETE
+    /api/app-sources/<id>); a live app's can't. Devices, the webhook's
+    sources and manual aren't apps', so aren't listed.
+    """
+    # Every source from "app:" up to "app;" - the prefix, compared as
+    # stored (LIKE would ignore case), and a range the samples table's
+    # (source, metric, ts) key can serve.
+    low = APP_SOURCE_PREFIX
+    high = low[:-1] + chr(ord(low[-1]) + 1)
+    found = {}
+
+    def entry(source):
+        return found.setdefault(
+            source, {"metrics": set(), "readings": 0, "sessions": 0, "samples": 0}
+        )
+
+    conn = get_conn()
+    try:
+        for row in conn.execute(
+            "SELECT source, metric, COUNT(*) AS n FROM metrics "
+            "WHERE source >= ? AND source < ? GROUP BY source, metric",
+            (low, high),
+        ):
+            got = entry(row["source"])
+            got["metrics"].add(row["metric"])
+            got["readings"] += row["n"]
+        for table in ("sessions", "samples"):
+            for row in conn.execute(
+                f"SELECT source, COUNT(*) AS n FROM {table} "
+                "WHERE source >= ? AND source < ? GROUP BY source",
+                (low, high),
+            ):
+                entry(row["source"])[table] = row["n"]
+    finally:
+        conn.close()
+
+    installed = {a.id for a in scan_apps(app.config["APPS_DIR"])}
+    order = {metric: i for i, metric in enumerate(METRICS)}
+    out = []
+    for source in sorted(found):
+        app_id = source[len(APP_SOURCE_PREFIX):]
+        got = found[source]
+        out.append({
+            "id": app_id,
+            "source": source,
+            "orphaned": app_id not in installed,
+            "metrics": sorted(got["metrics"], key=lambda m: (order.get(m, len(order)), m)),
+            "readings": got["readings"],
+            "sessions": got["sessions"],
+            "samples": got["samples"],
+        })
+    return jsonify(out)
+
+
+@app.route("/api/app-sources/<app_id>", methods=["DELETE"])
+def remove_app_source(app_id):
+    """Remove an uninstalled app's data: everything app:<app_id> wrote.
+
+    The explicit step after Uninstall, which keeps it. Every metric,
+    session and sample filed under app:<app_id> is deleted, the days its
+    readings covered re-derived, and every source role naming it cleared
+    - purge_source(), one transaction. The metrics stay: weight_kg
+    without app:weight's readings is still weight_kg, empty or fed by
+    another source. 200 {"ok": true, "removed": {metrics, sessions,
+    samples}}, the rows deleted from each.
+
+    Only ever an app's source: the id is always read as app:<id>, so
+    this can't reach a device's data (DELETE /api/connectors/<id>?wipe=1
+    is that), a webhook source's, or manual's. 400 while an installed
+    app has the id - a live app's data is never removed - and 404 when
+    app:<id> has no rows; either way nothing changes.
+    """
+    if find_app(app.config["APPS_DIR"], app_id) is not None:
+        return jsonify({
+            "ok": False,
+            "error": f"'{app_id}' is installed — uninstall it first; an installed app's data is never removed",
+        }), 400
+    source = app_source(app_id)
+    conn = get_conn()
+    try:
+        if not _has_data(conn, source):
+            return jsonify({"ok": False, "error": f"no data from {source} to remove"}), 404
+        removed = purge_source(conn, source)
+    finally:
+        conn.close()
+    return jsonify({
+        "ok": True,
+        "removed": {k: removed[k] for k in ("metrics", "sessions", "samples")},
+    })
 
 
 # ---------- the Home layout ----------
@@ -1535,8 +1700,10 @@ def disconnect_connector(plugin_id):
     The source's data stays: disconnecting stops future syncs, nothing
     more. ?wipe=1 (also true/yes) deletes that too - every metric, sample
     and session it wrote - and re-derives the days its readings covered,
-    so each falls to whatever source is left or loses its derived row.
-    The wipe, the re-derive and the account delete are one transaction.
+    so each falls to whatever source is left or loses its derived row
+    (purge_source()). Its source roles stay either way, as its cadence
+    does. The wipe, the re-derive and the account delete are one
+    transaction.
     """
     plugin = PLUGINS.get(plugin_id)
     if not plugin:
@@ -1545,27 +1712,11 @@ def disconnect_connector(plugin_id):
 
     conn = get_conn()
     try:
-        days = []
-        if wipe:
-            # RETURNING: the affected range is exactly the readings
-            # deleted, even if a sync commits rows between a separate read
-            # and this delete.
-            days = [
-                row["date"]
-                for row in conn.execute(
-                    "DELETE FROM metrics WHERE source = ? RETURNING date", (plugin_id,)
-                )
-            ]
-            conn.execute("DELETE FROM samples WHERE source = ?", (plugin_id,))
-            conn.execute("DELETE FROM sessions WHERE source = ?", (plugin_id,))
         conn.execute("DELETE FROM accounts WHERE plugin_id = ?", (plugin_id,))
-        if days:
-            # One span rather than a day at a time, so the whole removal
-            # stays one transaction (recompute_derived() commits it). Every
-            # metric on every day in the span is re-picked under the
-            # current source roles, as a re-derived day's other metrics
-            # already are. Samples and sessions have no derived pick.
-            recompute_derived(conn, since=min(days), until=max(days))
+        if wipe:
+            # Commits the account delete along with it. Its roles are
+            # kept: a device added back is primary again where it was.
+            purge_source(conn, plugin_id, keep_roles=True)
         conn.commit()
     finally:
         conn.close()
