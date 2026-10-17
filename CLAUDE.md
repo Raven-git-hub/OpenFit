@@ -108,7 +108,20 @@ own calls to its device API. Full direction:
   non-empty string, unique; the rest kept as written, unchecked; a
   mapping, or a field that isn't plain JSON (`json.dumps(allow_nan=False)`
   fails: a YAML date, `.nan`, `!!binary` — `/api/apps` sends the fields
-  as written, so one would fail the whole listing), is malformed), all
+  as written, so one would fail the whole listing), is malformed),
+  `metrics` (the metrics the app **invents** — declare what you invent,
+  write what exists: a canonical key it writes isn't listed — an ordered
+  list read by `_metrics()`, each exactly `{key, label, unit, category,
+  grain}` plus an optional `range` (`METRIC_FIELDS`; any other field
+  refused, so a misspelt `range` can't mean none): `key` `APP_ID`-shaped,
+  unique, and never in `RESERVED_KEYS` (every canonical metric, series
+  metric and session kind — a custom key can't shadow a built-in);
+  `label`/`unit` non-blank text (trimmed); `category` one of `CATEGORIES`
+  as written; `grain` `daily`/`instant` (`APP_METRIC_GRAINS`; `session`/
+  `series` refused — not yet); `range` `[low, high]`, finite non-bool
+  numbers, low ≤ high, kept as written, or absent/null (any finite
+  number); a bad block fails the load, as a bad `config` does — install's
+  `check_app()` doesn't check it), all
   optional but type-checked, and its **size, required**:
   `sizes`, a non-empty list of the tile sizes it's drawn at, each `{w, h}`
   in cells, whole numbers 1–`MAX_CELLS` (6, Home's width), none twice,
@@ -140,8 +153,10 @@ own calls to its device API. Full direction:
   an id failing `APP_ID` → False — which decides whether its data is
   orphaned (`/api/app-sources`). `InstalledApp.summary()` is
   what `GET /api/apps` lists: `{id, name, default_size, sizes, reads,
-  config, files}` — `default_size` the first of `sizes`; `config` the
+  config, metrics, files}` — `default_size` the first of `sizes`; `config` the
   manifest's fields as written (the schema of a tile's settings form);
+  `metrics` `InstalledApp.metrics`, the declared metrics by short key
+  (`range` a list or null, `[]` for none);
   `files` from `app_files(folder)`, the sorted names of the plain files
   directly in the folder (no sub-folder such as `__pycache__`, no link, no
   name `filename_problem()` refuses), so every name listed is one the file
@@ -187,15 +202,28 @@ own calls to its device API. Full direction:
   (1 MiB) → 413, not UTF-8 → 415; else its text, as given. Nothing outside
   the app's folder is ever read. `UninstallError`/`AppFileError` are
   `InstallError`'s siblings, all `LibraryError(message, status)`.
-- `app/host.py` — the app host: `Ctx(conn, today=None)`, built per render
-  call, is all an app's `render()` gets. `ctx.metric(key, days=None)` → a
+- `app/host.py` — the app host: `Ctx(conn, today=None, app=None)`, built
+  per render call for the app (`app` its `InstalledApp`; None, a ctx for no
+  app, reads canonical keys only), is all an app's `render()` gets.
+  `ctx.metric(key, days=None)` → a
   list of `Point(date, value, source)` (a `NamedTuple`: `.date` a
-  `YYYY-MM-DD` str, `.value` a float in the canonical unit, `.source`),
+  `YYYY-MM-DD` str, `.value` a float in the canonical unit — or an app
+  metric's declared one — `.source`),
   ascending by date — `data[-1]` the latest day, `[]` for none — the derived
   points `GET /api/metric/<key>` serves (`derived_points()` in
   `app/derived.py`, shared by both), trailing `days` (`trailing_window()`:
-  today − (days−1) … today) or all history; unknown key or a `days` not an
-  int ≥ 1 (bools refused) → `ValueError`. `ctx.today()` → the server's
+  today − (days−1) … today) or all history; `key` a canonical metric or
+  one the ctx's app declares, by its short key (`_resolve()`: read from
+  `custom_metric_key(id, key)` = `app:<id>:<key>`); any other key —
+  another app's, by either form — or a `days` not an
+  int ≥ 1 (bools refused) → `ValueError`. **An app's own metrics**:
+  `CustomMetric(unit, category, grain, range, app_id, key, label)` (a
+  `NamedTuple`); `app_metric_defs(installed)` → one app's, `{app:<id>:<key>:
+  CustomMetric}`; `custom_metric_defs(apps_dir)` → every installed app's
+  (over `scan_apps()`, folder then manifest order) — the one place they're
+  enumerated: with `METRICS` the effective vocabulary the catalog,
+  `/api/coverage` and `/api/metric/<key>` serve (`app/metrics.py` stays
+  canonical-only). `ctx.today()` → the server's
   local date as `YYYY-MM-DD`. The spec builders (also module functions):
   `number(value, label, caption, unit)`, `line(points, title=None)` →
   `{"type": "line", "points": [[date, value], ...], "title"}` (points
@@ -211,26 +239,34 @@ own calls to its device API. Full direction:
   `action` non-empty text, `kind` `"number"`/`"text"` (`INPUT_KINDS`),
   `label`/`unit` text or `None`, else `TypeError`/`ValueError`),
   `empty(message)`; the host's own is `{"type": "error", "message"}`. `render_app(app, conn, cfg=None,
-  today=None)` calls `render(ctx, dict(cfg or {}))` — `cfg` the
+  today=None)` calls `render(ctx, dict(cfg or {}))` (the ctx made for
+  `app`) — `cfg` the
   instance's config, passed as given (the app owns its fallbacks,
   `cfg.get("stride_m", 0.75)`) — and never raises: an exception, a
   non-spec (not a dict with a string `type`) or a spec that isn't plain JSON
   (NaN, a set) is logged (`[apps] <id>: ...`, with the traceback) and comes
   back as an error spec. **Apps as sources**: an app writes only from its
   `handle(ctx, action, payload)`, run by `POST /api/app/<id>/action` (the
-  one place an app writes) with a `WriteCtx(conn, app_id, today=None)` — a
+  one place an app writes) with a `WriteCtx(conn, app, today=None)` (`app`
+  the `InstalledApp`) — a
   `Ctx` (the same reads) plus `ctx.write_metric(metric, value, date=None)`,
-  which files through `write_metric()` (`app/plugins/base.py`) under
+  which files through `write_reading()` (`app/plugins/base.py`,
+  `write_metric()`'s upsert with the unit given) under
   `ctx.source`, `app_source(id)` = `APP_SOURCE_PREFIX` `app:` + the id,
   fixed when the ctx is made: no writer takes a source, so an app can only
   ever create or overwrite its own rows (an app whose id is `garmin`
-  writes `app:garmin`). It holds a reading to the webhook's rule
-  (`plausible_value()` in `app/metrics.py`: a canonical key, a finite
-  non-bool number within `PLAUSIBLE_RANGES`) and `date` to `YYYY-MM-DD`
+  writes `app:garmin`). A canonical key is filed as itself, in its unit,
+  held to the webhook's rule (`plausible_value()` in `app/metrics.py`: a
+  finite non-bool number within `PLAUSIBLE_RANGES`); a key the app
+  declares (its manifest's `metrics`), by its short key, is filed as
+  `app:<id>:<key>` in the declared unit, a finite non-bool number
+  (`finite_number()`) within the declared `range` if any
+  (`_declared_value()`); any other key (undeclared, another app's by
+  either form) → `ValueError("unknown metric: '<key>' - declare it in
+  app.yaml's metrics to write it")`. `date` to `YYYY-MM-DD`
   (or a `date`; default `ctx.today()`), else `ValueError`, writing
   nothing; it commits nothing and notes the days written (`ctx.written`,
-  sorted) for the route to re-derive. Canonical keys only for now (an
-  invented `app:<id>:<key>` needs a declared unit — later). The render
+  sorted) for the route to re-derive. The render
   path's `Ctx` has no writer. The app is trusted code, as its `render()`
   is: the scoping is the ctx, not a sandbox. Full contract:
   `docs/architecture/app-host.md`.
@@ -254,7 +290,20 @@ own calls to its device API. Full direction:
   ["weight_kg"]` coerced to a finite positive float (a bool, junk, `0`,
   `nan` → `ValueError("Enter your weight in kg, as a positive number")`),
   then `ctx.write_metric("weight_kg", kg)` for today — one a day, a
-  second the same day replacing it.
+  second the same day replacing it. And the first to invent a metric:
+  `caffeine` (`tests/fixtures/apps/caffeine/`, run by
+  `tests/test_app_custom_metrics.py`, the end-to-end test of app metrics).
+  Its `app.yaml`: id `caffeine`, name "Caffeine", `sizes: [{ w: 1, h: 1 },
+  { w: 2, h: 1 }]`, `reads: [caffeine_mg]`, `metrics:` one — `caffeine_mg`,
+  "Caffeine", mg, Nutrition & hydration, daily, `range: [0, 2000]` (stored
+  `app:caffeine:caffeine_mg`). `render()`: the latest day's `caffeine_mg`
+  as a `number` (mg, `caption` "today" or its date) over an `input` (`key`
+  `caffeine_mg`, `action` `log`, "Caffeine today", mg), panelled —
+  `empty("No caffeine logged yet")` before the first. `handle()`: `log`
+  only; `payload["caffeine_mg"]` coerced to a finite float ≥ 0 (a bool,
+  junk, a negative → `ValueError("Enter today's caffeine in mg, as a
+  number")`), then `ctx.write_metric("caffeine_mg", mg)` for today, the
+  declared range the host's to hold it to — one a day, replacing.
 - `app/home_layout.py` — the Home tab's layout, one `settings` row
   (`LAYOUT_KEY` `home_layout`, no migration): `{"tabs": [{id, name,
   mode: "flow", subtitle, items: [{instance_id, app_id, size: {w, h},
@@ -405,7 +454,17 @@ own calls to its device API. Full direction:
   catalog's `metrics` list (`row.cov === 'metrics'`) — `daily` or `instant`
   grain — renders as a picked metric (latest value, draggable source
   priority); a session kind's latest session is the one with the latest
-  `start`, since `/api/sessions` lists by source priority. **Applications**
+  `start`, since `/api/sessions` lists by source priority. An installed
+  app's own metric (a catalog entry with `app`/`label`) is a row in its
+  declared category like any: named by its `label` (`buildRows()` notes
+  it in `CUSTOM_LABELS`, which `metricName()` reads; an `app:<id>:<key>`
+  with none — an orphan's, in `appDataSummary()` — is its short key,
+  prettified), a small `.d-app` "app" mark beside it (`.d-name.custom`,
+  the label ellipsised, the mark whole; the tooltip "… · defined by the
+  app '<id>'"), and — with no `/api/source-roles` entry — its source from
+  the catalog's `sources`, never draggable, noted "Defined by the app
+  '<id>': only it writes this metric." ("… Nothing logged yet." with
+  none). **Applications**
   is two stacked blocks in the right column, never one card. On top, the
   controls card (`#appsCard`, painted once at boot by `paintAppControls()`):
   the title and its voice button, then **＋ Add Application** (Add source's
@@ -428,7 +487,7 @@ own calls to its device API. Full direction:
   refresh. An app row is a `.ditem.aitem`, its head a `.drow.arow`
   (chevron · name); open, `appPanel()` is a `.dpanel.apanel` of three
   columns (one on a phone): **Reads** (the manifest's keys, `esc()`d, the
-  metric's name on hover; none → a muted "No declared reads"), **Files**
+  metric's name on hover — a key the app invents by its declared label; none → a muted "No declared reads"), **Files**
   (each a button opening `openAppFile()`: a `.wide` modal reading
   `GET /api/app/<id>/file` into a read-only monospace `<pre>` as
   `textContent`, never markup; an empty file or the server's refusal shown
@@ -671,7 +730,9 @@ own calls to its device API. Full direction:
 - Current: a tidy `metrics(date, source, metric, value, unit, synced_at)` keyed
   `(date, source, metric)` — one row per reading, so a new metric is data not a
   migration. Keys, units, categories, grains and plausible ranges come from
-  `app/metrics.py` — the v2 vocabulary, 35 keys (the full table is
+  `app/metrics.py` — the v2 vocabulary, 35 keys (beside them, at the
+  call sites with app context, each installed app's own, `app:<id>:<key>`
+  — below) (the full table is
   `docs/architecture/metric-schema-v2.md`). Activity: `steps`/count,
   `distance_m`/m, `floors`/count, `active_kcal`, `total_kcal`, `basal_kcal`
   (kcal), `sedentary_min`/min, `elevation_gain_m`/m,
@@ -813,7 +874,24 @@ own calls to its device API. Full direction:
   `app/host.py`) — canonical keys stay canonical (`weight_kg` under
   `app:weight`), competing in the same pick, after the pull plugins
   (unlisted, by name) unless a source role says otherwise; no tier, no
-  opt-in, no observed/computed flag. Nothing else writes an `app:` source
+  opt-in, no observed/computed flag. **An app's own metrics** (no
+  migration): declare what you invent, write what exists — a metric the
+  app invents is declared in its manifest's `metrics` (see Layout:
+  `app/apps.py`) and stored as `metric = app:<id>:<key>`, `source =
+  app:<id>`, in the declared unit (the `unit` column; the derived row
+  copies it), its one source winning every day of the pick; two apps
+  declaring one short key keep two metrics, and an app writes only its
+  own (and canonical keys). The effective vocabulary is `METRICS` plus
+  every installed app's declarations (`custom_metric_defs()`): the
+  catalog, `/api/coverage` and `/api/metric/<metric>` serve them while the
+  app is installed; uninstalled, they drop out (the metric route 404s)
+  and their readings stay under the source — the "orphaned custom
+  metric" a purge (B1) is still to come for; `DELETE
+  /api/app-sources/<id>` already takes them with the rest of the
+  source's rows, and a reinstall brings the metric back, history and
+  all. No source role names one (`/api/source-roles` lists canonical
+  metrics, and its `PUT` 404s an app's key); the webhook refuses one (a
+  canonical key only). Nothing else writes an `app:` source
   (the webhook refuses the prefix). Uninstalling an app keeps its rows —
   hand-entered data can't be re-synced — until they're removed, a separate
   explicit step for an app no longer installed (no migration; `app/main.py`):
@@ -1024,6 +1102,12 @@ own calls to its device API. Full direction:
     same order — one with no data as `count: 0`, `sources: []`,
     `first`/`last` null (metrics also `last_value`/`last_date` null) — so a
     console can show "not yet reporting" slots; split them by `count`.
+    After the canonical metrics come the installed apps' own
+    (`custom_metric_defs()`, folder then manifest order), `metric` the full
+    key `app:<id>:<key>`, `unit`/`grain`/`category` as declared, plus two
+    fields only they carry: `app` (the defining app's id) and `label`;
+    with `?include_empty` a declared one with no data is listed as above.
+    An uninstalled app's are left out, data or not.
   - `GET /api/coverage?from=&to=` → `{"metrics": {metric: [date, ...]},
     "series": {metric: [date, ...]}, "sessions": {kind: [date, ...]}}` — which
     `YYYY-MM-DD` dates hold any data, source-agnostic, ascending and
@@ -1034,10 +1118,14 @@ own calls to its device API. Full direction:
     `date()` reads `iso_utc()`'s `Z`); a user-local day boundary is a later
     refinement. Only vocabulary keys with ≥1 date in range are listed (the
     empty slots come from the catalog's `?include_empty`), so an empty
-    install has three empty maps.
+    install has three empty maps; metrics' vocabulary is the catalog's,
+    the installed apps' own included.
   - `GET /api/metric/<metric>?from=&to=` → `{metric, unit, points: [{date,
-    value, source}]}` ascending; `value` as stored (a float). Unknown metric
-    404; known with no data → `points: []`.
+    value, source}]}` ascending; `value` as stored (a float). `<metric>` a
+    canonical key or an installed app's own by its full key
+    (`app:<id>:<key>`, `unit` the declared one); anything else — a short
+    key, an undeclared or uninstalled app's — 404; known with no data →
+    `points: []`.
   - `GET /api/sessions/<kind>?from=&to=` → `[{start, end, source, summary}]`,
     a priority-ordered passthrough: every source's sessions — no pick, filter
     or merge — the source the pick would rank first leading, then the rest
@@ -1253,8 +1341,17 @@ same PR:
   from a tile, which is redrawn from the reply; and the `weight` app, the
   first writer, which retired `/api/weights` and `MANUAL_SOURCE` (the
   console's weigh-in form had already gone) — `manual` frozen as history,
-  not migrated. Still to come for write-back: `write_session` (the
-  roster path), invented `app:<id>:<key>` metrics (a declared unit),
+  not migrated. Custom app-defined metrics (B0) landed (no migration): an
+  app declares the metrics it invents in its manifest's `metrics` block
+  (`{key, label, unit, category, grain, range?}`, daily/instant only, no
+  built-in key), reads and writes them by short key, and the host stores
+  them as `app:<id>:<key>` under `app:<id>`; the effective vocabulary
+  (canonical + installed apps' own, `custom_metric_defs()`) feeds the
+  catalog (entries marked `app`/`label`), coverage and the metric route;
+  the console names them by label with an `app` mark; the `caffeine` app
+  is the reference. Still to come for write-back: `write_session` (the
+  roster path), an app's own session kinds and series, cross-app reads
+  of a custom metric, new input types,
   `base_tz` (slice A: an app's write lands on the server's local date
   until then), timestamped weigh-ins more than one a day (the instant
   grain), and how apps rank against other unnamed sources
@@ -1267,8 +1364,9 @@ same PR:
   clearing the source's stale source roles, and a red Remove data in
   Connected sources and under a metric's sources. Still to come for the
   data lifecycle: the same for `manual`'s frozen weigh-ins (a possible
-  later addition), then custom app-defined metrics (B0) and purging an
-  orphaned one (B1) — `docs/architecture/apps-as-source.md`.
+  later addition), and purging an orphaned custom metric (B1; B0, the
+  custom metrics themselves, landed — above) —
+  `docs/architecture/apps-as-source.md`.
   Still to come for multi-tab: richer settings field types
   (select/enum/boolean) and a live preview. Also still to come: the
   grid pass (free cell placement as a second layout

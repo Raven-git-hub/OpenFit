@@ -73,7 +73,9 @@ Worked example: a steps-to-metres app takes a stride length. Stride is **config*
 (overwrite on change, `settings`), not a metric — even though it's a number —
 because it isn't dated and its history is meaningless. The steps it multiplies are
 a **metric**. If the app persisted metres-per-day, that persisted output would be
-a new metric (dated, history kept). Same app, values in three different homes.
+a new metric (dated, history kept) — one the app invents, so it declares it
+([Defining your own metric](#defining-your-own-metric), below). Same app, values
+in three different homes.
 
 ---
 
@@ -157,6 +159,67 @@ app sharing, if it's ever built, is a separate sandboxed mechanism — not this.
   before merging.
 
 ---
+
+## Defining your own metric
+
+OpenFit's vocabulary (`app/metrics.py`) is what devices measure. An app can go
+further and **invent a metric** — caffeine, a focus score, cups of coffee — and
+write it like any other. The rule is **declare what you invent, write what
+exists**:
+
+- **A built-in metric** (`calories_in`, `weight_kg`) is just written:
+  `ctx.write_metric("calories_in", 2100)`. Don't declare it — the manifest
+  refuses a key OpenFit already has, so a custom metric can never shadow a
+  built-in one.
+- **A metric you invent** is declared in `app.yaml`'s `metrics:` block, then
+  written by its short key:
+
+  ```yaml
+  metrics:
+    - key: caffeine_mg            # letters, digits, - and _; once per app
+      label: Caffeine             # what the data console calls it
+      unit: mg                    # your unit: every reading is in it
+      category: Nutrition & hydration   # one of the 8 categories; Other is the catch-all
+      grain: daily                # daily or instant
+      range: [0, 2000]            # optional: a write outside it is refused
+  ```
+
+  ```python
+  ctx.write_metric("caffeine_mg", 95)     # today
+  ctx.metric("caffeine_mg", days=7)       # read back, like any metric
+  ```
+
+**The manifest is the metric's identity; the code is where its value comes
+from.** The declaration says *what* the metric is — its name, unit, category and
+grain — and is the same for every install. `handle()` says *where a value comes
+from* — typed in, computed, read off something else. Keep the two apart: the host
+never guesses a unit or a category, and your code never states them.
+
+**Short key in the app, full key in storage.** Your code only ever says
+`caffeine_mg`. The host stores it as `app:<id>:caffeine_mg` (under your source,
+`app:<id>`), and that full key is what the catalog lists and
+`GET /api/metric/app:<id>:caffeine_mg` serves. So two apps can each declare a
+`caffeine_mg` without colliding — they're two metrics — and no app can write
+another's: a ctx knows only its own app's declarations.
+
+**The shape is fixed per key.** Pick the unit once. Changing it later doesn't
+convert what's stored: invent a new key instead (`caffeine_g`). The same goes for
+the grain.
+
+What a declaration can't be yet, and why:
+
+- **Only `daily` or `instant`.** An app's own session kind (a roster) or series
+  is a later job; `session`/`series` fail to load.
+- **Only your own.** Reading another app's custom metric isn't offered — read the
+  canonical metrics and your own.
+- **Its data outlives the app.** Uninstall the app and its metrics drop out of
+  the catalog, but what it wrote stays under `app:<id>` until you remove it
+  (Connected sources → Remove data). Reinstall it and the metric comes back,
+  history and all.
+
+A bad block — an unknown category, a built-in key, a key twice, a misspelt field
+(`ragne`) — means the app doesn't load, logged like any manifest error. The
+reference app is `tests/fixtures/apps/caffeine/`.
 
 ## Sizes: the app declares them, the host never guesses
 

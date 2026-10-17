@@ -1,7 +1,8 @@
 # Apps-as-source — design reference
 
-_Apps as a data source: the write capability, the weight app, and the data
-lifecycle. Drafted Oct 16 2026; records the decisions and current build state._
+_Apps as a data source: the write capability, the weight app, app-defined
+metrics, and the data lifecycle. Drafted Oct 16 2026; records the decisions and
+current build state._
 
 ## Decisions made
 
@@ -28,7 +29,7 @@ lifecycle. Drafted Oct 16 2026; records the decisions and current build state._
   `app:<id>`; `source = app:*` is the "what have my apps added?" filter.
 - **Canonical keys stay canonical.** The weight app writes `weight_kg` under
   source `app:weight`. A key is only `app:<id>:<key>` when the app invents a new
-  concept — and **that path is NOT built yet** (see Data lifecycle -> B0).
+  concept — **built (B0)**: see [App-defined metrics](#app-defined-metrics-b0--built), below.
 - **"manual" retired as a concept** (cadence, tier) and as a write path (tile +
   `/api/weights` removed in #57). But the **historical `manual` weigh-in rows
   remain** as a frozen legacy source — slice B **froze** them (did NOT migrate),
@@ -51,7 +52,57 @@ source tied, broken alphabetically by name**.
   device weight source doesn't silently outrank it). Deferred; decide with the
   ordering question.
 
-## Data lifecycle — removing app data (settled Oct 16; A built, B not yet)
+## App-defined metrics (B0) — built
+
+**Declare what you invent, write what exists.** An app lists the metrics it
+invents in its `app.yaml`'s `metrics:` block, an ordered list mirroring
+`config:`; a canonical metric it merely writes (`calories_in`) isn't declared.
+
+- **Each entry** is `{key, label, unit, category, grain}` plus an optional
+  `range: [low, high]`, and nothing else (a misspelt field fails, so `ragne`
+  can't silently mean no range). `key` is an app-id-shaped slug, unique in the
+  app, and never a key OpenFit's vocabulary already has — metric, series metric
+  or session kind — so a custom key can't shadow a built-in one. `label` and
+  `unit` are non-empty text; `category` one of the 8 `CATEGORIES`; `grain`
+  `daily` or `instant` (`session`/`series` fail: not B0's). `range` is
+  enforced like a canonical one when given; without it any finite number goes.
+  Parsed by `_metrics()` in `app/apps.py`, carried on `InstalledApp.metrics` and
+  listed by `/api/apps`. A bad block means the app doesn't load — logged and
+  skipped, as a bad `config:` is (install doesn't check it: `check_app()` still
+  checks only the size).
+- **Short key in the app, full key in storage.** The app's code says
+  `caffeine_mg`; the host stores `metric = app:<id>:caffeine_mg` with
+  `source = app:<id>` (`custom_metric_key()` in `app/host.py`). A canonical key
+  passes straight through. So two apps declaring the same short key keep two
+  metrics.
+- **The effective vocabulary** is canonical `METRIC_DEFS` plus every installed
+  app's declarations. `app/metrics.py` stays canonical-only and pure;
+  `custom_metric_defs(apps_dir)` (`app/host.py`, over `scan_apps()`) is the one
+  place customs are enumerated, and the call sites with app context use it: the
+  catalog (customs after the canonical metrics, each with `app` — the defining
+  app's id — and `label`), `/api/coverage`, and `/api/metric/<metric>` (a
+  current custom's full key serves its points in its declared unit; anything
+  else 404s).
+- **The ctx is made for the app.** Both the render ctx and the write ctx carry
+  the `InstalledApp`. `ctx.metric(key)` reads a canonical key, or one this app
+  declared (from `app:<id>:<key>`); anything else — another app's key, by
+  either form — is a `ValueError`. `ctx.write_metric(key, …)` writes a
+  canonical key (its unit, its plausible range) or one this app declared (its
+  full key, its declared unit and range); anything else is
+  `ValueError("unknown metric: … - declare it in app.yaml's metrics to write
+  it")`, nothing written. So an app writes only its own customs and canonical
+  keys.
+- **Reference app:** `tests/fixtures/apps/caffeine/` declares `caffeine_mg`
+  (mg, Nutrition & hydration, daily, 0–2000) and logs it from the existing
+  number input; `tests/test_app_custom_metrics.py` runs the loop.
+- **The console** names a custom row by its label, marks it `app`, and lists its
+  one source from the catalog (it has no source role).
+
+Out of B0: custom session kinds and series, new input types, cross-app custom
+reads through the ctx, autonomous/background compute, and purging a custom
+metric (B1, below).
+
+## Data lifecycle — removing app data (settled Oct 16; A and B0 built, B1 not yet)
 
 Two distinct cleanups, both wanted. Guardrails for both: only ever for a source
 **with no live app behind it** (never a live app's data); a guarded confirm
@@ -81,13 +132,16 @@ built-in/default metrics themselves are never purgeable.
 - **(B) Purge a whole CUSTOM metric** (`app:<id>:<key>`) once no installed app
   defines it -> metric + data vanish from the dataset/catalog. This is "tidy up a
   custom metric I don't use any more"; built-in metrics are never purgeable.
-  - **Prerequisite (B0): custom app-defined metrics don't exist yet.** The slice-B
-    `WriteCtx.write_metric` rejects any key not in the canonical `METRICS` set, so
-    an app currently can ONLY write canonical keys. Writing `app:<id>:<key>` was
-    explicitly deferred in the slice-B brief. So B is really: **B0** build
-    app-defined custom metrics (the app declares a new key's unit/category/label;
-    the write path accepts it; the catalog lists it), then **B1** purge an
-    orphaned one. B0 is the substantive piece — a capability in its own right.
+  - **B0 — app-defined custom metrics: built** (above). An app declares a new
+    key's label/unit/category/grain/range, the write path accepts it, the catalog
+    lists it.
+  - **B1 — purge an orphaned one: not yet.** After an uninstall a custom metric's
+    readings (and their derived picks) persist under `app:<id>:<key>` but it
+    drops out of the catalog — it's no longer in the effective vocabulary, and
+    `/api/metric/app:<id>:<key>` 404s. That's the "orphaned custom metric" state
+    B1 handles. Meanwhile (A) already removes it with everything else its source
+    wrote (`DELETE /api/app-sources/<id>`), and reinstalling the app brings the
+    metric back with its history.
   - Note: custom keys are namespaced per app (`app:<id>:<key>`), so two apps can't
     feed one shared custom metric. "Multiple app sources for one metric" only
     happens for canonical keys. A *shared* custom namespace would be a further
@@ -101,7 +155,9 @@ built-in/default metrics themselves are never purgeable.
   uses server-local date until it lands.
 - **Data-lifecycle (A):** orphaned-source data removal (above). Done for app
   sources; reuses the disconnect path and clears the stale `source_roles` entry.
-- **Custom metrics (B0) then purge (B1):** larger; schedule deliberately.
+- **Custom metrics (B0):** done — app-declared `daily`/`instant` metrics stored
+  as `app:<id>:<key>` (above).
+- **Purge (B1):** an orphaned custom metric; next on this path.
 - **(later) fatigue / roster path**, unblocked by the scope reversal.
 
 ## Minor / noted
@@ -121,5 +177,5 @@ built-in/default metrics themselves are never purgeable.
   upserts (ON CONFLICT(date,metric) DO UPDATE).
 - Connector disconnect deletes a source's metrics/samples/sessions + re-derives —
   the machinery the (A) removal reuses.
-- Uninstall keeps an app's data (by design); `WriteCtx.write_metric` rejects
-  non-canonical keys (so B0 is unbuilt).
+- Uninstall keeps an app's data (by design); `WriteCtx.write_metric` accepts a
+  canonical key or one the app declares in its manifest (B0), nothing else.

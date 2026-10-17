@@ -51,7 +51,14 @@ from metrics import (
     grain_for,
     plausible_value,
 )
-from host import APP_SOURCE_PREFIX, WriteCtx, app_source, render_app, trailing_window
+from host import (
+    APP_SOURCE_PREFIX,
+    WriteCtx,
+    app_source,
+    custom_metric_defs,
+    render_app,
+    trailing_window,
+)
 
 DB_PATH = os.getenv("DB_PATH", "/data/tracker.db")
 AUDIO_DIR = os.getenv("AUDIO_DIR", "/app/audio")
@@ -298,6 +305,13 @@ def get_activity():
 # Unlike /api/activity, these shapes were made for apps,
 # not kept for the interim UI: keys and units are the canonical ones from
 # metrics.py, and a value is the number as stored.
+#
+# The metrics are the effective vocabulary: the canonical ones, then every
+# installed app's own (custom_metric_defs() in host.py), each under its
+# full key, app:<id>:<key>, in the unit its app declares. An app's metric
+# is served while its app is installed; uninstalled, it drops out of the
+# catalog and its reads 404, its readings kept under its source until
+# they're removed (DELETE /api/app-sources/<id>).
 
 
 def _date_range(args):
@@ -369,8 +383,16 @@ def get_catalog():
     unless ?include_empty=1, which lists every key in the vocabulary, one
     with no data as count 0, sources [] and null first/last (and
     last_value/last_date).
+
+    After the canonical metrics come the installed apps' own, in folder
+    then manifest order: `metric` is the full key, app:<id>:<key>, its
+    unit, grain and category the ones its app declares, and two more
+    fields mark it - `app`, the id of the app that defines it, and
+    `label`, its declared name. An uninstalled app's are left out, data
+    or not.
     """
     include_empty = request.args.get("include_empty", "").lower() in ("1", "true", "yes")
+    customs = custom_metric_defs(app.config["APPS_DIR"])
     conn = get_conn()
     roles = load_source_roles(conn)
     # One statement, so the coverage and the last value are one snapshot
@@ -413,16 +435,24 @@ def get_catalog():
         if include_empty else None
     )
 
+    # (key, unit, grain, category, the app's CustomMetric or None)
+    vocabulary = [
+        (metric, unit, grain_for(metric), category_for(metric), None)
+        for metric, unit in METRICS.items()
+    ] + [
+        (metric, custom.unit, custom.grain, custom.category, custom)
+        for metric, custom in customs.items()
+    ]
     metrics = []
-    for metric, unit in METRICS.items():
+    for metric, unit, grain, category, custom in vocabulary:
         row = coverage.get(metric, nothing)
         if row is None:
             continue
-        metrics.append({
+        entry = {
             "metric": metric,
             "unit": unit,
-            "grain": grain_for(metric),
-            "category": category_for(metric),
+            "grain": grain,
+            "category": category,
             "sources": sorted(
                 json.loads(row["sources"]),
                 key=lambda s: source_rank(s, roles.get(metric)),
@@ -432,7 +462,11 @@ def get_catalog():
             "count": row["count"],
             "last_value": row["last_value"],
             "last_date": row["last"],
-        })
+        }
+        if custom is not None:
+            entry["app"] = custom.app_id
+            entry["label"] = custom.label
+        metrics.append(entry)
     sessions = [
         {"kind": kind, "grain": grain_for(kind), "category": category_for(kind),
          "count": row["count"], "first": row["first"], "last": row["last"]}
@@ -466,11 +500,13 @@ def get_coverage():
     sample on, and the dates a kind has a session starting on. Only keys
     with at least one date are listed (?include_empty on the catalog
     names the rest), so an empty install has three empty maps. ?from= and
-    ?to= (YYYY-MM-DD, inclusive) narrow the dates.
+    ?to= (YYYY-MM-DD, inclusive) narrow the dates. Metrics are the
+    catalog's: the canonical ones, then the installed apps' own.
     """
     bounds, error = _date_range(request.args)
     if error:
         return jsonify({"ok": False, "error": error}), 400
+    metrics = [*METRICS, *custom_metric_defs(app.config["APPS_DIR"])]
 
     since, until = bounds
     daily = _in_range("date", since, until)
@@ -487,7 +523,7 @@ def get_coverage():
     # Series and session dates are UTC-bucketed; a user-local day boundary is
     # a later refinement (docs/architecture/data-consolidation-model.md).
     for grain, vocabulary, select, (in_range, params) in (
-        ("metrics", METRICS, "SELECT metric, date FROM derived_metrics", daily),
+        ("metrics", metrics, "SELECT metric, date FROM derived_metrics", daily),
         ("series", SERIES_METRICS, "SELECT metric, date(ts) FROM samples", sampled),
         ("sessions", sorted(SESSION_KINDS), 'SELECT kind, date("start") FROM sessions', started),
     ):
@@ -508,11 +544,17 @@ def get_metric_series(metric):
 
     One point per day with a derived value, oldest first, `source` naming
     the source it was picked from. ?from= and ?to= (YYYY-MM-DD, inclusive)
-    narrow it, or ?days=N to the trailing N days. 404 for a metric outside
-    the vocabulary; a known one with no data in range has no points.
+    narrow it, or ?days=N to the trailing N days. `metric` is a canonical
+    key or an installed app's own, by its full key (app:<id>:<key>, its
+    unit the declared one). 404 for anything else - an uninstalled app's
+    metric among them; a known one with no data in range has no points.
     """
-    if metric not in METRICS:
-        return jsonify({"ok": False, "error": f"unknown metric: {metric}"}), 404
+    unit = METRICS.get(metric)
+    if unit is None:
+        custom = custom_metric_defs(app.config["APPS_DIR"]).get(metric)
+        if custom is None:
+            return jsonify({"ok": False, "error": f"unknown metric: {metric}"}), 404
+        unit = custom.unit
     bounds, error = _date_range(request.args)
     if error:
         return jsonify({"ok": False, "error": error}), 400
@@ -520,7 +562,7 @@ def get_metric_series(metric):
     conn = get_conn()
     points = derived_points(conn, metric, *bounds)
     conn.close()
-    return jsonify({"metric": metric, "unit": METRICS[metric], "points": points})
+    return jsonify({"metric": metric, "unit": unit, "points": points})
 
 
 @app.route("/api/sessions/<kind>", methods=["GET"])
@@ -629,7 +671,8 @@ def get_samples(metric):
 def list_apps():
     """The installed apps, in folder order: [{id, name, default_size:
     {w, h}, sizes: [{w, h}], reads: [key], config: [{key, label, type,
-    default}], files: [name]}].
+    default}], metrics: [{key, label, unit, category, grain, range}],
+    files: [name]}].
 
     Only apps that load: a malformed one - one with no size among them -
     is logged and left out. sizes are the tile sizes the app declares,
@@ -637,9 +680,11 @@ def list_apps():
     first placed at; reads is the manifest's (declared, not enforced);
     config is the manifest's config fields, in order, as written (only
     key is checked) - the schema of the settings form a tile's gear
-    opens in Configure, whose values an instance's config holds; files
-    names the plain files in the app's folder, each one GET
-    /api/app/<id>/file serves.
+    opens in Configure, whose values an instance's config holds; metrics
+    are the ones it invents, in order, by their short key (stored and
+    served as app:<id>:<key>), range [low, high] or null; files names the
+    plain files in the app's folder, each one GET /api/app/<id>/file
+    serves.
     """
     return jsonify([a.summary() for a in scan_apps(app.config["APPS_DIR"])])
 
@@ -747,7 +792,9 @@ def act_on_app(app_id):
     with a WriteCtx (host.py) whose source is the app's own, app:<id>:
     the ctx injects it, and no writer takes one, so an app can only ever
     create or overwrite its own rows - never a device's, nor another
-    app's. payload is the app's to interpret: a mapping, {key: value}
+    app's. It writes canonical metrics and the ones its manifest declares
+    (as app:<id>:<key>), never another app's. payload is the app's to
+    interpret: a mapping, {key: value}
     from the input, {} if absent. cfg is the instance's config, for the
     render after; one that isn't a mapping is {}.
 
@@ -788,7 +835,7 @@ def act_on_app(app_id):
 
     conn = get_conn()
     try:
-        ctx = WriteCtx(conn, installed.id)
+        ctx = WriteCtx(conn, installed)
         try:
             installed.handle(ctx, action, payload)
         except Exception as e:

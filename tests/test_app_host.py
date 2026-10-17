@@ -282,7 +282,7 @@ def test_an_app_with_no_app_py_loads_with_nothing_to_draw(client, apps_dir, caps
     assert "[apps]" not in capsys.readouterr().out
     assert client.get("/api/apps").get_json() == [
         {"id": "notes", "name": "Notes", "default_size": {"w": 1, "h": 1},
-         "sizes": [{"w": 1, "h": 1}], "reads": [], "config": [], "files": ["app.yaml"]}
+         "sizes": [{"w": 1, "h": 1}], "reads": [], "config": [], "metrics": [], "files": ["app.yaml"]}
     ]
     assert client.post("/api/app/notes/render").get_json() == {
         "type": "empty",
@@ -367,9 +367,9 @@ def test_api_apps_lists_the_installed_apps(client, apps_dir):
     assert resp.get_json() == [
         {"id": "steps", "name": "Steps", "default_size": {"w": 1, "h": 1},
          "sizes": [{"w": 1, "h": 1}, {"w": 2, "h": 2}],
-         "reads": [], "config": [], "files": ["app.py", "app.yaml"]},
+         "reads": [], "config": [], "metrics": [], "files": ["app.py", "app.yaml"]},
         {"id": "steps-metres", "name": "Distance", "default_size": {"w": 2, "h": 1},
-         "sizes": [{"w": 2, "h": 1}], "reads": [], "config": [], "files": ["app.py", "app.yaml"]},
+         "sizes": [{"w": 2, "h": 1}], "reads": [], "config": [], "metrics": [], "files": ["app.py", "app.yaml"]},
     ]
 
 
@@ -392,13 +392,13 @@ def test_the_real_apps_are_listed_and_both_render_specs(client, conn, apps_dir):
 
     assert client.get("/api/apps").get_json() == [
         {"id": "steps", "name": "Steps", "default_size": {"w": 1, "h": 1},
-         "sizes": [{"w": 1, "h": 1}], "reads": ["steps"], "config": [], "files": ["app.py", "app.yaml"]},
+         "sizes": [{"w": 1, "h": 1}], "reads": ["steps"], "config": [], "metrics": [], "files": ["app.py", "app.yaml"]},
         # steps-metres' config schema, as the manifest gives it: the
         # tile's settings form is built from it.
         {"id": "steps-metres", "name": "Distance (from steps)", "default_size": {"w": 1, "h": 1},
          "sizes": [{"w": 1, "h": 1}], "reads": ["steps"],
          "config": [{"key": "stride_m", "label": "Stride length (m)", "type": "number", "default": 0.75}],
-         "files": ["app.py", "app.yaml"]},
+         "metrics": [], "files": ["app.py", "app.yaml"]},
     ]
     assert client.post("/api/app/steps/render").get_json() == {
         "type": "panel",

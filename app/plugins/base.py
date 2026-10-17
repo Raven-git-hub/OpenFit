@@ -57,6 +57,22 @@ def write_metric(conn, date, source, metric, value):
     """
     if value is None:
         return False
+    return write_reading(conn, date, source, metric, value, unit_for(metric))
+
+
+def write_reading(conn, date, source, metric, value, unit):
+    """The upsert under write_metric(), with the unit given. Returns whether it wrote.
+
+    A plugin never calls this: it writes canonical keys, through
+    write_metric(), which fills the unit in from the vocabulary. The
+    other caller is an app's ctx.write_metric() (host.py), which writes
+    canonical keys and the metrics the app invents - app:<id>:<key>,
+    whose unit is the one its manifest declares: the vocabulary that
+    metric belongs to. As write_metric(): None writes nothing, a re-write
+    replaces the value and bumps synced_at, and nothing is committed.
+    """
+    if value is None:
+        return False
     conn.execute(
         """
         INSERT INTO metrics (date, source, metric, value, unit, synced_at)
@@ -66,7 +82,7 @@ def write_metric(conn, date, source, metric, value):
             unit=excluded.unit,
             synced_at=datetime('now')
         """,
-        (date, source, metric, value, unit_for(metric)),
+        (date, source, metric, value, unit),
     )
     return True
 

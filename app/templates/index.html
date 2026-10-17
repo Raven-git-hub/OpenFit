@@ -422,6 +422,13 @@ a.btn{display:inline-block;text-decoration:none;}
 .ditem .chev{color:var(--muted);display:inline-block;transition:transform .15s;}
 .ditem.open .chev{transform:rotate(90deg);}
 .d-name{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+/* an app's own metric: its label, then a small "app" mark that stays whole */
+.d-name.custom{display:flex;align-items:center;gap:6px;min-width:0;}
+.d-name.custom .d-label{overflow:hidden;text-overflow:ellipsis;}
+.d-app{
+  flex:none;font-family:var(--font-mono);font-size:10px;font-weight:600;letter-spacing:.4px;
+  padding:1px 6px;border-radius:20px;color:var(--accent);background:var(--accent-soft);
+}
 .d-read{font-family:var(--font-mono);font-size:13px;color:var(--ink-2);white-space:nowrap;}
 .d-grain{font-size:12.5px;color:var(--muted);}
 .dcap > *{font-size:inherit;color:inherit;}
@@ -835,10 +842,14 @@ h5 + .dnote{margin-top:0;}
     heart_rate:'Heart rate', respiration:'Respiration', spo2:'SpO₂',
     sleep:'Sleep', workout:'Workouts',
   };
+  /* An app's own metric, app:<id>:<key>, is named by the label its app
+     declares - the catalog's `label`, noted here as its rows are built
+     (buildRows()) - else, its app uninstalled, by its short key. */
+  const CUSTOM_LABELS = {};
   const titleCase = s => String(s||'').split(/[_\-\s]+/).filter(Boolean)
     .map(w => w[0].toUpperCase() + w.slice(1)).join(' ');
-  const metricName = key => METRIC_NAMES[key] ||
-    titleCase(String(key).replace(/_(bpm|brpm|min|minutes|kcal|pct|ms|ml|kg|m|count)$/, '')) || key;
+  const metricName = key => METRIC_NAMES[key] || CUSTOM_LABELS[key] ||
+    titleCase(String(key).replace(/^app:[^:]*:/, '').replace(/_(bpm|brpm|min|minutes|kcal|pct|ms|ml|kg|m|count)$/, '')) || key;
   /* "garmin" -> "Garmin", "google_health" -> "Google Health"; a pushed
      source ("eufy") reads the same way. */
   const srcName = id => titleCase(id) || 'Unknown';
@@ -902,10 +913,13 @@ h5 + .dnote{margin-top:0;}
   }
 
   /* One row per catalog entry - metrics, then series, then sessions,
-     each in the order the catalog lists them (vocabulary order). `cov`
-     names the /api/coverage map its dates are in. */
+     each in the order the catalog lists them (vocabulary order; an
+     installed app's own metrics after the canonical ones, each marked
+     with its `app` and `label`). `cov` names the /api/coverage map its
+     dates are in. */
   function buildRows(catalog){
     const rows = [];
+    (catalog.metrics  || []).forEach(e => { if(e.app && e.label) CUSTOM_LABELS[e.metric] = e.label; });
     (catalog.metrics  || []).forEach(e => rows.push(Object.assign({}, e, {id:'metric:'+e.metric, key:e.metric, cov:'metrics'})));
     (catalog.series   || []).forEach(e => rows.push(Object.assign({}, e, {id:'series:'+e.metric, key:e.metric, cov:'series'})));
     (catalog.sessions || []).forEach(e => rows.push(Object.assign({}, e, {id:'session:'+e.kind, key:e.kind, cov:'sessions'})));
@@ -1148,9 +1162,15 @@ h5 + .dnote{margin-top:0;}
     item.dataset.id = row.id;
     const read = readingFor(row);
     const cont = continuity(datesOf(row), state.data.win);
+    const tip = row.key + (row.unit ? ' · ' + (UNIT_LABEL[row.unit] || row.unit) : '')
+      + (row.app ? ` · defined by the app '${row.app}'` : '');
+    // An app's own metric is marked as such beside its name.
+    const name = row.app
+      ? `<span class="d-name custom" data-tip="${esc(tip)}"><span class="d-label">${esc(metricName(row.key))}</span><span class="d-app">app</span></span>`
+      : `<span class="d-name" data-tip="${esc(tip)}">${esc(metricName(row.key))}</span>`;
     const head = el('button','drow dgrid', `
       <span class="chev" aria-hidden="true">›</span>
-      <span class="d-name" data-tip="${esc(row.key + (row.unit ? ' · ' + (UNIT_LABEL[row.unit] || row.unit) : ''))}">${esc(metricName(row.key))}</span>
+      ${name}
       <span class="d-read tnum" data-tip="${esc(read.tip)}">${esc(read.text)}</span>
       <span class="d-grain">${esc(cap(row.grain))}</span>
       <span class="d-gap"></span>
@@ -1190,20 +1210,28 @@ h5 + .dnote{margin-top:0;}
   /* ---------- the source list (expanded, left) ----------
      Metrics (daily or instant) have a pick, so their sources are a priority list -
      /api/source-roles, primary first, draggable. Series and sessions are
-     a per-source passthrough with no pick yet: read-only. */
+     a per-source passthrough with no pick yet: read-only. An app's own
+     metric has one source, its app's, and no source role: its sources
+     are the catalog's. */
   function fillSources(row, box){
     const note = text => box.appendChild(el('p','dnote', esc(text)));
 
     if(row.cov==='metrics'){
       const role = state.roles[row.key];
-      const sources = role && Array.isArray(role.sources) ? role.sources : [];
-      if(!sources.length){ note('No source is reporting this yet.'); }
+      const sources = role && Array.isArray(role.sources) ? role.sources
+        : row.app ? (row.sources || []) : [];
+      const sortable = !row.app && sources.length > 1;
+      if(!sources.length){
+        note(row.app ? `Defined by the app '${row.app}'. Nothing logged yet.` : 'No source is reporting this yet.');
+      }
       else{
-        const list = sourceList(sources, {primary:true, sortable:sources.length > 1});
+        const list = sourceList(sources, {primary:true, sortable});
         box.appendChild(list);
-        if(sources.length > 1){
+        if(sortable){
           makeSortable(list, (after, before, focusSrc) => commitPriority(row, list, after, before, focusSrc));
           note('Changing the primary source re-derives the dataset at the next sync.');
+        }else if(row.app){
+          note(`Defined by the app '${row.app}': only it writes this metric.`);
         }else{
           note(`${srcName(sources[0])} is the only source. Connect another to set a priority.`);
         }
@@ -2155,11 +2183,14 @@ h5 + .dnote{margin-top:0;}
     const name = a.name || a.id;
     const reads = Array.isArray(a.reads) ? a.reads : [];
     const files = Array.isArray(a.files) ? a.files : [];
+    // A key the app invents is named by the label it declares.
+    const own = Array.isArray(a.metrics) ? a.metrics : [];
+    const readName = k => (own.find(m => m.key===k) || {}).label || metricName(k);
     const p = el('div','dpanel apanel', `
       <div>
         <h5>Reads</h5>
         ${reads.length
-          ? `<ul class="akeys">${reads.map(k => `<li class="akey" data-tip="${esc(metricName(k))}">${esc(k)}</li>`).join('')}</ul>`
+          ? `<ul class="akeys">${reads.map(k => `<li class="akey" data-tip="${esc(readName(k))}">${esc(k)}</li>`).join('')}</ul>`
           : '<p class="dnote">No declared reads</p>'}
       </div>
       <div>
