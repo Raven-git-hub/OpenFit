@@ -51,7 +51,7 @@ source tied, broken alphabetically by name**.
   device weight source doesn't silently outrank it). Deferred; decide with the
   ordering question.
 
-## Data lifecycle — removing app data (settled Oct 16, not yet built)
+## Data lifecycle — removing app data (settled Oct 16; A built, B not yet)
 
 Two distinct cleanups, both wanted. Guardrails for both: only ever for a source
 **with no live app behind it** (never a live app's data); a guarded confirm
@@ -65,9 +65,19 @@ built-in/default metrics themselves are never purgeable.
   dates. The **metric stays** (e.g. `weight_kg` remains, possibly fed by other
   sources or empty). **Reuses the connector-disconnect delete+re-derive path.**
   This is the one the weight app needs (purge `app:weight` data after uninstall;
-  also lets the leftover `manual` weigh-ins be cleared). Buildable now.
-  - Open design point: per-source (remove everything that orphaned source wrote,
-    like disconnect) vs per-(source, metric). Lean per-source.
+  also lets the leftover `manual` weigh-ins be cleared).
+  - **Built, for `app:<id>` sources:** `GET /api/app-sources` lists every app
+    source with data, each marked `orphaned`; `DELETE /api/app-sources/<id>`
+    removes an orphan's data (400 while the app's folder is still on the
+    volume, even if it fails to load - broken isn't gone; 404 with no rows)
+    through `purge_source()` in `app/main.py` — the disconnect wipe's delete +
+    re-derive, now shared, plus `clear_source_roles()`. The page shows
+    an orphan in Connected sources and under a metric's sources with a red
+    Remove data behind one confirm.
+  - Decided: per-source (everything that orphaned source wrote, like
+    disconnect), not per-(source, metric).
+  - Not yet: the legacy `manual` source — left alone for now, a possible later
+    addition on the same `purge_source()`.
 - **(B) Purge a whole CUSTOM metric** (`app:<id>:<key>`) once no installed app
   defines it -> metric + data vanish from the dataset/catalog. This is "tidy up a
   custom metric I don't use any more"; built-in metrics are never purgeable.
@@ -89,8 +99,8 @@ built-in/default metrics themselves are never purgeable.
 - **A — base_tz universal setting:** home timezone in universal settings,
   validated IANA, read-only to apps via `ctx`. Small, independent. Weight app
   uses server-local date until it lands.
-- **Data-lifecycle (A):** orphaned-source data removal (above). Small; reuses the
-  disconnect path. Includes clearing the stale `source_roles` entry on removal.
+- **Data-lifecycle (A):** orphaned-source data removal (above). Done for app
+  sources; reuses the disconnect path and clears the stale `source_roles` entry.
 - **Custom metrics (B0) then purge (B1):** larger; schedule deliberately.
 - **(later) fatigue / roster path**, unblocked by the scope reversal.
 

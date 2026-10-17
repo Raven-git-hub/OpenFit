@@ -92,6 +92,10 @@ own calls to its device API. Full direction:
   picked by them.
 - `app/derived.py` — the one place a source is picked per `(date, metric)`:
   `recompute_derived()` writes `derived_metrics`. Never pick a source anywhere else.
+  Beside it the source roles (`load_source_roles()`, `set_source_role()`,
+  and `clear_source_roles(conn, source)` — every entry naming that source
+  dropped, a session kind's too, committing nothing: a step of
+  `purge_source()`'s transaction).
 - `app/crypto.py` — Fernet encrypt/decrypt for stored credentials.
 - `app/apps.py` — the app scanner/loader, the one way the host finds an app
   (the Library reuses it): `scan_apps(apps_dir)` → the `InstalledApp`s that
@@ -129,7 +133,12 @@ own calls to its device API. Full direction:
   left out, never raising; a duplicate id keeps the first folder. Scanned
   on every request (no restart for a new app); a loaded app is cached until
   its `app.yaml`/`app.py` mtime or size changes, so a broken one logs once per
-  change. `find_app(apps_dir, id)` picks one. `InstalledApp.summary()` is
+  change. `find_app(apps_dir, id)` picks one. `app_present(apps_dir, id)`
+  says whether an app is still on the volume, loading or not — its
+  folder `<apps dir>/<id>` there as anything (a broken link included) or
+  another folder's app loading under the id: `_taken()`, install's rule;
+  an id failing `APP_ID` → False — which decides whether its data is
+  orphaned (`/api/app-sources`). `InstalledApp.summary()` is
   what `GET /api/apps` lists: `{id, name, default_size, sizes, reads,
   config, files}` — `default_size` the first of `sizes`; `config` the
   manifest's fields as written (the schema of a tile's settings form);
@@ -360,6 +369,25 @@ own calls to its device API. Full direction:
   sure?" naming the source and whether its data goes ([Cancel] / [Remove] or
   [Remove & wipe]); confirming `DELETE`s `/api/connectors/<id>` (`?wipe=1` on
   the wipe path), then refreshes the sources card and `loadData()`.
+  An uninstalled app's data (an `orphaned` entry of `GET /api/app-sources`,
+  read into `state.appSources` by `loadAppSources()` — at boot, after an
+  app is uninstalled or installed, after a removal — which repaints the
+  card and any open Your data row) is a `.src.orphan` row after the
+  connected ones: its id, its source under it (`.src-note`), a `.pill.wait`
+  "○ app uninstalled" and a red **Remove data** (`btn sm danger`) — no Sync
+  now, no Settings; a live app's source gets no row. A Your data row's
+  source list (`fillSources()`, metrics and series/sessions alike) ends
+  with `orphanLines()`: for each of its sources an orphan, "`app:<id>` is
+  from an uninstalled app." and the same Remove data. Both open
+  `openRemoveAppData(o)`: a `.modal` titled with the source, one
+  `danger-panel` "Remove data?" — "Remove all data from the uninstalled
+  app '<id>'? <`appDataSummary()`: N readings across M metrics (their
+  names), then any sessions and samples>. This can't be undone." —
+  [Cancel] (focused) / [Remove data]; no `confirm()`. Confirming `DELETE`s
+  `/api/app-sources/<id>` (`api.removeAppSource()`), then closes and
+  re-reads the app sources, `loadData()` and `loadHome()`; a refusal (the
+  app reinstalled meanwhile: 400) stays in the modal, the button back.
+  Every id, source and count is set as text.
   "Your data" groups its rows by `category`, the 8 in `CATEGORIES` display
   order (one outside them would follow, by name; one with no rows at all,
   Women's health today, gets no header), and within a category sorts them
@@ -438,8 +466,9 @@ own calls to its device API. Full direction:
   `danger-panel` ("Uninstall <name>?" / "This deletes its files from
   `/data/apps/`." — [Cancel] / [Uninstall]; no `confirm()`); its confirm
   `DELETE`s `/api/apps/<id>`, then `loadApps()` + `loadHome()` (the row and
-  the tile go) and notes "✓ Uninstalled <name>"; an error stays in the
-  row. Alerts are their own branch. **The Add Application popup** (`openAddApp(prefill,
+  the tile go) and `loadAppSources()` (what it wrote stays, orphaned now:
+  Connected sources' Remove data) and notes "✓ Uninstalled <name>"; an
+  error stays in the row. Alerts are their own branch. **The Add Application popup** (`openAddApp(prefill,
   copyOf)` — ＋ Add Application calls it bare; Duplicate passes the copy's
   `[{name, text}]` and the source's name, and the popup is titled
   "Duplicate application", says it's a copy, and starts with `app.yaml`
@@ -506,7 +535,8 @@ own calls to its device API. Full direction:
   `DELETE /api/connectors/<id>`,
   `/api/sync/<plugin>`), and the app routes (`/api/apps`, `POST /api/apps`,
   `DELETE /api/apps/<id>`, `POST /api/app/<id>/render`, `POST
-  /api/app/<id>/action`, `/api/app/<id>/file`) and Home's layout (`GET`/`PUT /api/home-layout`);
+  /api/app/<id>/action`, `/api/app/<id>/file`, `/api/app-sources`, `DELETE
+  /api/app-sources/<id>`) and Home's layout (`GET`/`PUT /api/home-layout`);
   not `/api/activity` (the last-sync stamp that read it
   is gone). See `docs/architecture/frontend-redesign-and-widget-model.md`.
   **Home** reads `GET /api/apps` and `GET /api/home-layout` together, then
@@ -784,7 +814,36 @@ own calls to its device API. Full direction:
   `app:weight`), competing in the same pick, after the pull plugins
   (unlisted, by name) unless a source role says otherwise; no tier, no
   opt-in, no observed/computed flag. Nothing else writes an `app:` source
-  (the webhook refuses the prefix). Uninstalling an app keeps its rows.
+  (the webhook refuses the prefix). Uninstalling an app keeps its rows —
+  hand-entered data can't be re-synced — until they're removed, a separate
+  explicit step for an app no longer installed (no migration; `app/main.py`):
+  `GET /api/app-sources` → `[{id, source, orphaned, metrics, readings,
+  sessions, samples}]`, one per `app:<id>` source with any row, by id —
+  `orphaned` once its app is gone from the volume (`app_present()` false:
+  no `<apps dir>/<id>`, as anything, and no other folder's app loading
+  under the id) — an app whose folder is there but fails to load is
+  broken, not gone, so isn't, nor is an id failing the scanner's `APP_ID`
+  (no folder to look for) — `metrics` the keys it has readings of
+  (vocabulary order), the rest row counts; the prefix matched as a range
+  (`>= 'app:' AND < 'app;'`, case-sensitive, unlike `LIKE`), so
+  `apple_health` or `APP:x` isn't one. `DELETE /api/app-sources/<id>` →
+  `purge_source(conn, "app:" + id)`, then `{ok: true, removed: {metrics,
+  sessions, samples}}` (rows deleted); 404 for an id failing `APP_ID`
+  (checked first); 400 while `app_present()` — "'<id>' is present — fix
+  or uninstall it first; …": a live or broken app's data is never
+  removed; 404 when `app:<id>` has no rows (checked before anything is
+  written, so a role naming it stays) — nothing changes on any of them,
+  and the listing marks orphaned exactly what this would remove. The id is always read as
+  `app:<id>` (the prefix never stripped), so it can't reach a device, a
+  webhook source or `manual` (deliberately out of scope for now).
+  `purge_source(conn, source, keep_roles=False)` (`app/main.py`, shared
+  with the connector wipe) deletes every `metrics` (`RETURNING date`),
+  `samples` and `sessions` row of the source, clears every source role
+  naming it (`clear_source_roles()`) unless `keep_roles`, and
+  `recompute_derived()`s the min..max of the deleted dates, one
+  transaction with whatever the caller did first (a failure rolls it all
+  back); → `{days, metrics, sessions, samples}`. The metrics stay:
+  `weight_kg` without `app:weight`'s readings is still `weight_kg`.
   **`manual` is frozen**: the hand-entered weigh-ins — migration `006`'s
   and the retired `POST /api/weights`' — stay under source `manual` as
   history (where they came from), read and picked like any source's, but
@@ -1053,8 +1112,11 @@ own calls to its device API. Full direction:
   and `recompute_derived()`s the min..max of those dates — a day only that
   source filled loses its derived row, a day another source filled falls to
   it — in one transaction with the account delete (a failure rolls it all
-  back). Every metric on every day in that span is re-picked under the
-  current source roles. Unknown plugin → 404.
+  back): `purge_source(conn, plugin, keep_roles=True)`, after the account
+  delete. Every metric on every day in that span is re-picked under the
+  current source roles, which a disconnect keeps, wiped or not (as it
+  keeps the cadence: a device added back is primary again where it was).
+  Unknown plugin → 404.
 - Also: `workouts` (orphaned — slated for removal); `settings`;
   `schema_migrations`.
 - Target (in progress — see Direction): the other source roles (sources that
@@ -1197,6 +1259,16 @@ same PR:
   until then), timestamped weigh-ins more than one a day (the instant
   grain), and how apps rank against other unnamed sources
   (`data-consolidation-model.md` §10 — today by name).
+  Data lifecycle (A) landed (no migration): an uninstalled app's data
+  removed on request — `GET /api/app-sources`, `DELETE
+  /api/app-sources/<id>` (refused while the app's folder is there,
+  loading or not — `app_present()`) through
+  `purge_source()`, the connector wipe's delete and re-derive plus
+  clearing the source's stale source roles, and a red Remove data in
+  Connected sources and under a metric's sources. Still to come for the
+  data lifecycle: the same for `manual`'s frozen weigh-ins (a possible
+  later addition), then custom app-defined metrics (B0) and purging an
+  orphaned one (B1) — `docs/architecture/apps-as-source.md`.
   Still to come for multi-tab: richer settings field types
   (select/enum/boolean) and a live preview. Also still to come: the
   grid pass (free cell placement as a second layout

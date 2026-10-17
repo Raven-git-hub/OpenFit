@@ -280,6 +280,8 @@ a.btn{display:inline-block;text-decoration:none;}
 /* ---------- connected sources ---------- */
 .src{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 0;border-bottom:1px solid var(--border);}
 .src-name{font-weight:600;min-width:0;}
+/* an uninstalled app's data: its source id under its name */
+.src-note{display:block;font-family:var(--font-mono);font-size:12px;font-weight:400;color:var(--muted);overflow-wrap:anywhere;}
 .src-r{display:flex;align-items:center;gap:10px;flex:none;}
 .pill{font-size:11px;font-weight:600;padding:4px 9px;border-radius:20px;font-family:var(--font-mono);white-space:nowrap;}
 .pill.ok{color:var(--good);background:color-mix(in srgb,var(--good) 14%,transparent);}
@@ -467,6 +469,10 @@ a.btn{display:inline-block;text-decoration:none;}
 .stile.dragging{border-color:var(--accent);background:var(--surface);box-shadow:var(--shadow);cursor:grabbing;}
 .slist[aria-busy="true"]{opacity:.6;pointer-events:none;}
 .dnote{font-size:12.5px;color:var(--muted);margin:10px 0 0;max-width:340px;}
+/* under a source list: one of its sources is an uninstalled app's */
+.orphan-src{display:flex;align-items:center;flex-wrap:wrap;gap:8px 10px;margin-top:10px;max-width:420px;}
+.orphan-src .dnote{margin:0;}
+.orphan-src code{font-family:var(--font-mono);font-size:12px;}
 h5 + .dnote{margin-top:0;}
 
 /* 5-week grid: 5 rows of 7 days ending today, labelled by each row's first day */
@@ -805,6 +811,13 @@ h5 + .dnote{margin-top:0;}
        a name /api/apps listed; and uninstalling one, folder and all. */
     appFile:      (id, name)     => send('/api/app/'+enc(id)+'/file?name='+enc(name), 'GET'),
     uninstallApp: id             => send('/api/apps/'+enc(id), 'DELETE'),
+    /* What apps have written - each app's source, app:<id> - marked
+       orphaned once its app is uninstalled (which keeps the data); and
+       an orphan's data removed, all of it: its rows deleted, their days
+       re-derived, any primary naming it cleared. Refused while the app
+       is installed. */
+    appSources:      ()          => fetchJSON('/api/app-sources'),
+    removeAppSource: id          => send('/api/app-sources/'+enc(id), 'DELETE'),
   };
 
   /* =========================================================
@@ -838,6 +851,7 @@ h5 + .dnote{margin-top:0;}
      ========================================================= */
   const state = {
     connectors:null,   // [{id, name, fields, add_flow, add_note, connected, configured}]; null until loaded
+    appSources:null,   // /api/app-sources: [{id, source, orphaned, metrics, readings, sessions, samples}]
     status:'loading',  // the data card: loading | ready | error
     stale:false,       // a refresh failed; the last good load is still shown
     data:null,         // {rows, coverage, win}
@@ -1193,6 +1207,7 @@ h5 + .dnote{margin-top:0;}
         }else{
           note(`${srcName(sources[0])} is the only source. Connect another to set a priority.`);
         }
+        orphanLines(sources, box);
       }
     }else{
       let sources = row.grain==='series' ? (row.sources || []) : [];
@@ -1212,6 +1227,7 @@ h5 + .dnote{margin-top:0;}
         note(row.grain==='series'
           ? 'Series are passed through per source - there’s no pick between sources yet, so no priority to set.'
           : 'Sessions are listed per source - there’s no pick between sources yet, so no priority to set.');
+        orphanLines(sources, box);
       }
     }
 
@@ -1236,6 +1252,22 @@ h5 + .dnote{margin-top:0;}
       list.appendChild(t);
     });
     return list;
+  }
+
+  /* Any of a row's sources an uninstalled app left behind: a line under
+     the list naming it, with Remove data - Connected sources' confirm.
+     A live app's source, like a device's, has none. */
+  function orphanLines(sources, box){
+    sources.forEach(src => {
+      const o = orphans().find(x => x.source === src);
+      if(!o) return;
+      const line = el('div','orphan-src', `
+        <span class="dnote"><code></code> is from an uninstalled app.</span>
+        <button class="btn sm danger" type="button" data-act="remove-data" aria-haspopup="dialog">Remove data</button>`);
+      line.querySelector('code').textContent = o.source;
+      line.querySelector('[data-act="remove-data"]').onclick = () => openRemoveAppData(o);
+      box.appendChild(line);
+    });
   }
 
   /* Drag to reorder, with a pointer (mouse, pen or touch) or the arrow
@@ -1482,6 +1514,7 @@ h5 + .dnote{margin-top:0;}
         'No devices connected yet. Add one below - OpenFit pulls from it on a schedule, or when you press Sync now.'));
     }
     connected.forEach(c => card.appendChild(sourceRow(c)));
+    orphans().forEach(o => card.appendChild(orphanRow(o)));
     card.appendChild(addSourceRow());
   }
 
@@ -1679,6 +1712,98 @@ h5 + .dnote{margin-top:0;}
       // So do the presets: with none highlighted, any pick is a change.
       seg.removeAttribute('aria-busy');
     });
+  }
+
+  /* ---- an uninstalled app's data ----
+     Uninstall keeps what an app wrote (hand-entered data can't be
+     re-synced), so it stays a source, app:<id>, with no app behind it.
+     Removing it is its own step: in the source list it has no account
+     to sync or set up - just Remove data, behind one confirm naming
+     what goes. */
+  const orphans = () => (state.appSources || []).filter(o => o.orphaned);
+
+  /* Read at boot, and again whenever what's orphaned may have changed:
+     an app installed or uninstalled, an orphan's data removed. A failed
+     read keeps what was shown - none, the first time: no controls. */
+  async function loadAppSources(){
+    try{
+      const list = await api.appSources();
+      state.appSources = Array.isArray(list) ? list : [];
+    }catch(e){
+      if(!state.appSources) state.appSources = [];
+    }
+    paintSources();
+    // An open Your data row lists its sources: its orphan lines follow.
+    if(state.data) state.data.rows.forEach(r => repaintPanel(r));
+  }
+
+  function orphanRow(o){
+    const row = el('div','src orphan', `
+      <div class="src-name"><span data-f="name"></span><span class="src-note" data-f="source"></span></div>
+      <div class="src-r">
+        <span class="pill wait">○ app uninstalled</span>
+        <button class="btn sm danger" type="button" data-act="remove-data" aria-haspopup="dialog">Remove data</button>
+      </div>`);
+    row.querySelector('[data-f="name"]').textContent = o.id;
+    row.querySelector('[data-f="source"]').textContent = o.source;
+    row.querySelector('[data-act="remove-data"]').onclick = () => openRemoveAppData(o);
+    row.dataset.source = o.source;
+    return row;
+  }
+
+  /* "3 readings across 1 metric (Weight)", then any sessions and samples. */
+  const countOf = (n, what) => `${num(n)} ${what}${n===1 ? '' : 's'}`;
+  function appDataSummary(o){
+    const metrics = Array.isArray(o.metrics) ? o.metrics : [];
+    const parts = [];
+    if(o.readings) parts.push(`${countOf(o.readings, 'reading')} across ${countOf(metrics.length, 'metric')} (${metrics.map(metricName).join(', ')})`);
+    if(o.sessions) parts.push(countOf(o.sessions, 'session'));
+    if(o.samples) parts.push(countOf(o.samples, 'sample'));
+    if(parts.length < 2) return parts[0] || 'Nothing is left';
+    return parts.slice(0, -1).join(', ') + ' and ' + parts[parts.length-1];
+  }
+
+  /* Remove data: the confirm - the source settings' danger panel - then
+     DELETE /api/app-sources/<id>. Everything is set as text. No
+     confirm(): the panel is the gate, its Cancel the way out. */
+  function openRemoveAppData(o){
+    const {box, close} = openModal(`
+      <h4 data-f="title"></h4>
+      <p class="hint">Its app is no longer installed. What it wrote is still in your data.</p>
+      <div class="danger-panel">
+        <h5>Remove data?</h5>
+        <p data-f="what"></p>
+        <div class="modal-actions">
+          <button class="btn sm" data-act="cancel" type="button">Cancel</button>
+          <button class="btn sm danger solid" data-act="confirm" type="button">Remove data</button>
+        </div>
+      </div>
+      <div class="form-msg bad src-msg" data-f="msg"></div>`);
+    const f = key => box.querySelector(`[data-f="${key}"]`);
+    f('title').textContent = o.source;
+    f('what').textContent =
+      `Remove all data from the uninstalled app '${o.id}'? ${appDataSummary(o)}. This can't be undone.`;
+    const msg = f('msg');
+    const cancel = box.querySelector('[data-act="cancel"]');
+    const confirmBtn = box.querySelector('[data-act="confirm"]');
+    cancel.onclick = close;
+    confirmBtn.onclick = async ()=>{
+      confirmBtn.disabled = true; confirmBtn.textContent = 'Removing…';
+      msg.textContent = '';
+      const res = await api.removeAppSource(o.id);
+      if(res.ok){
+        close();
+        // The source goes from the list; the days it covered were
+        // re-derived, so the data card and the tiles drawn from it too.
+        loadAppSources();
+        loadData();
+        loadHome();
+      }else{
+        msg.textContent = res.error || "Couldn't remove this data";
+        confirmBtn.disabled = false; confirmBtn.textContent = 'Remove data';
+      }
+    };
+    cancel.focus();
   }
 
   /* The button at the foot of the card. Every connector the API offers
@@ -2135,6 +2260,7 @@ h5 + .dnote{margin-top:0;}
         appsNote('ok', `✓ Uninstalled ${name}`);
         loadApps();
         loadHome();
+        loadAppSources();   // what it wrote stays - orphaned now
       }else{
         say('bad', res.error || 'Could not uninstall this application');
         confirmBtn.disabled = false; confirmBtn.textContent = 'Uninstall';
@@ -2511,6 +2637,7 @@ h5 + .dnote{margin-top:0;}
      card says so - the list alone wouldn't. */
   async function appInstalled(res){
     loadHome();
+    loadAppSources();   // an app back under its old id owns its data again
     const listed = await loadApps();
     const app = listed && listed.find(a => a.id === res.id);
     if(listed && !app) appsNote('bad', `Installed "${res.id}", but it doesn't load: the server's log says why.`);
@@ -3538,6 +3665,7 @@ h5 + .dnote{margin-top:0;}
   paintHome();
   // In parallel: each part paints as soon as its own reads land.
   refreshConnectors();
+  loadAppSources();
   loadData();
   loadApps();
   loadHome();

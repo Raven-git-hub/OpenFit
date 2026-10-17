@@ -345,6 +345,24 @@ def find_app(apps_dir, app_id):
     return next((a for a in scan_apps(apps_dir) if a.id == app_id), None)
 
 
+def app_present(apps_dir, app_id):
+    """Whether an app with this id is still on the volume, loading or not.
+
+    Its folder, <apps dir>/<id>, exists - as anything, even a broken
+    link, and whether or not what's in it loads - or an app in another
+    folder loads under the id (a hand-placed one named apart from its
+    id): the rule an install's id must be free of (_taken()). Unlike
+    find_app(), an app that fails to load is still present: it's broken,
+    not gone. An id no app could have (APP_ID) has no folder: False.
+
+    What decides whether an app's data is orphaned - removable through
+    DELETE /api/app-sources/<id> - or still its app's.
+    """
+    if not isinstance(app_id, str) or not APP_ID.match(app_id):
+        return False
+    return _taken(apps_dir, app_id)
+
+
 # ---------- installing an app: POST /api/apps ----------
 
 # The one way an app reaches the volume from the browser, and the first
