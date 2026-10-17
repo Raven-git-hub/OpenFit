@@ -282,6 +282,19 @@ a.btn{display:inline-block;text-decoration:none;}
 .src-name{font-weight:600;min-width:0;}
 /* an uninstalled app's data: its source id under its name */
 .src-note{display:block;font-family:var(--font-mono);font-size:12px;font-weight:400;color:var(--muted);overflow-wrap:anywhere;}
+/* ...and its head opens the list of the metrics it left behind, each
+   removable on its own, under its name */
+.src.orphan{align-items:flex-start;}
+.orphan-item{flex:1 1 220px;min-width:0;}
+.orphan-head{
+  display:grid;grid-template-columns:12px minmax(0,1fr);column-gap:8px;align-items:baseline;
+  width:100%;border:none;background:none;padding:0;color:var(--ink);text-align:left;font:inherit;font-weight:600;
+}
+.orphan-item .chev{color:var(--muted);display:inline-block;transition:transform .15s;}
+.orphan-item.open .chev{transform:rotate(90deg);}
+.orphan-metrics{list-style:none;margin:10px 0 0 20px;padding:0;display:flex;flex-direction:column;gap:6px;max-width:320px;}
+.orphan-metric{display:flex;align-items:center;justify-content:space-between;gap:10px;font-size:13.5px;}
+.orphan-item .dnote{margin:10px 0 0 20px;}
 .src-r{display:flex;align-items:center;gap:10px;flex:none;}
 .pill{font-size:11px;font-weight:600;padding:4px 9px;border-radius:20px;font-family:var(--font-mono);white-space:nowrap;}
 .pill.ok{color:var(--good);background:color-mix(in srgb,var(--good) 14%,transparent);}
@@ -821,10 +834,11 @@ h5 + .dnote{margin-top:0;}
     /* What apps have written - each app's source, app:<id> - marked
        orphaned once its app is uninstalled (which keeps the data); and
        an orphan's data removed, all of it: its rows deleted, their days
-       re-derived, any primary naming it cleared. Refused while the app
-       is installed. */
+       re-derived, any primary naming it cleared - or one metric of it,
+       the rest left as it was. Refused while the app is installed. */
     appSources:      ()          => fetchJSON('/api/app-sources'),
     removeAppSource: id          => send('/api/app-sources/'+enc(id), 'DELETE'),
+    removeAppSourceMetric: (id, metric) => send('/api/app-sources/'+enc(id)+'/'+enc(metric), 'DELETE'),
   };
 
   /* =========================================================
@@ -872,6 +886,7 @@ h5 + .dnote{margin-top:0;}
     open:new Set(),    // ids of expanded rows - they stay open across a refresh
     foldOpen:new Set(),// categories whose not-yet-reporting fold is open - likewise
     note:{},           // row id -> {cls, text}: what the last priority change did
+    orphanOpen:new Set(), // sources of the orphan rows open in Connected sources - likewise
   };
 
   /* ---------- dates ----------
@@ -1235,7 +1250,7 @@ h5 + .dnote{margin-top:0;}
         }else{
           note(`${srcName(sources[0])} is the only source. Connect another to set a priority.`);
         }
-        orphanLines(sources, box);
+        orphanLines(row, sources, box);
       }
     }else{
       let sources = row.grain==='series' ? (row.sources || []) : [];
@@ -1255,7 +1270,7 @@ h5 + .dnote{margin-top:0;}
         note(row.grain==='series'
           ? 'Series are passed through per source - there’s no pick between sources yet, so no priority to set.'
           : 'Sessions are listed per source - there’s no pick between sources yet, so no priority to set.');
-        orphanLines(sources, box);
+        orphanLines(row, sources, box);
       }
     }
 
@@ -1283,9 +1298,10 @@ h5 + .dnote{margin-top:0;}
   }
 
   /* Any of a row's sources an uninstalled app left behind: a line under
-     the list naming it, with Remove data - Connected sources' confirm.
-     A live app's source, like a device's, has none. */
-  function orphanLines(sources, box){
+     the list naming it, with Remove data - Connected sources' confirm,
+     for this row's metric only: the app's other data stays. A live
+     app's source, like a device's, has none. */
+  function orphanLines(row, sources, box){
     sources.forEach(src => {
       const o = orphans().find(x => x.source === src);
       if(!o) return;
@@ -1293,7 +1309,7 @@ h5 + .dnote{margin-top:0;}
         <span class="dnote"><code></code> is from an uninstalled app.</span>
         <button class="btn sm danger" type="button" data-act="remove-data" aria-haspopup="dialog">Remove data</button>`);
       line.querySelector('code').textContent = o.source;
-      line.querySelector('[data-act="remove-data"]').onclick = () => openRemoveAppData(o);
+      line.querySelector('[data-act="remove-data"]').onclick = () => openRemoveAppData(o, row.key);
       box.appendChild(line);
     });
   }
@@ -1746,8 +1762,10 @@ h5 + .dnote{margin-top:0;}
      Uninstall keeps what an app wrote (hand-entered data can't be
      re-synced), so it stays a source, app:<id>, with no app behind it.
      Removing it is its own step: in the source list it has no account
-     to sync or set up - just Remove data, behind one confirm naming
-     what goes. */
+     to sync or set up - just Remove all data, and, opened, each metric
+     it left behind with its own Remove data - each behind one confirm
+     naming what goes. Your data's rows reach the same confirm, a
+     metric at a time. */
   const orphans = () => (state.appSources || []).filter(o => o.orphaned);
 
   /* Read at boot, and again whenever what's orphaned may have changed:
@@ -1765,18 +1783,50 @@ h5 + .dnote{margin-top:0;}
     if(state.data) state.data.rows.forEach(r => repaintPanel(r));
   }
 
+  /* An orphan's row: its name, which opens the metrics it left behind
+     (expandable(), as a Your data row opens), and Remove all data. */
   function orphanRow(o){
-    const row = el('div','src orphan', `
-      <div class="src-name"><span data-f="name"></span><span class="src-note" data-f="source"></span></div>
-      <div class="src-r">
-        <span class="pill wait">○ app uninstalled</span>
-        <button class="btn sm danger" type="button" data-act="remove-data" aria-haspopup="dialog">Remove data</button>
-      </div>`);
-    row.querySelector('[data-f="name"]').textContent = o.id;
-    row.querySelector('[data-f="source"]').textContent = o.source;
-    row.querySelector('[data-act="remove-data"]').onclick = () => openRemoveAppData(o);
+    const row = el('div','src orphan');
+    const head = el('button','src-name orphan-head', `
+      <span class="chev" aria-hidden="true">›</span>
+      <span><span data-f="name"></span><span class="src-note" data-f="source"></span></span>`);
+    head.querySelector('[data-f="name"]').textContent = o.id;
+    head.querySelector('[data-f="source"]').textContent = o.source;
+    const id = 'orphan-' + o.source.replace(/[^a-z0-9_-]/gi, '-');
+    row.appendChild(expandable(el('div','orphan-item'), head, {
+      open:state.orphanOpen, id:o.source, panelId:id, panel:() => orphanMetrics(o, id),
+    }));
+    const right = row.appendChild(el('div','src-r', `
+      <span class="pill wait">○ app uninstalled</span>
+      <button class="btn sm danger" type="button" data-act="remove-data" aria-haspopup="dialog">Remove all data</button>`));
+    right.querySelector('[data-act="remove-data"]').onclick = () => openRemoveAppData(o, null);
     row.dataset.source = o.source;
     return row;
+  }
+
+  /* An orphan's metrics, opened: one line each - its name, and Remove
+     data for just that metric. A custom one's app is gone, so it reads
+     by its short key. */
+  function orphanMetrics(o, id){
+    const metrics = Array.isArray(o.metrics) ? o.metrics : [];
+    if(!metrics.length){
+      const none = el('p','dnote');
+      none.id = id;
+      none.textContent = `No readings left - ${appDataSummary(o)}, which Remove all data takes.`;
+      return none;
+    }
+    const list = el('ul','orphan-metrics');
+    list.id = id;
+    metrics.forEach(key => {
+      const line = el('li','orphan-metric', `
+        <span data-f="metric"></span>
+        <button class="btn sm danger" type="button" data-act="remove-metric" aria-haspopup="dialog">Remove data</button>`);
+      line.querySelector('[data-f="metric"]').textContent = metricName(key);
+      line.querySelector('[data-act="remove-metric"]').onclick = () => openRemoveAppData(o, key);
+      line.dataset.metric = key;
+      list.appendChild(line);
+    });
+    return list;
   }
 
   /* "3 readings across 1 metric (Weight)", then any sessions and samples. */
@@ -1792,12 +1842,15 @@ h5 + .dnote{margin-top:0;}
   }
 
   /* Remove data: the confirm - the source settings' danger panel - then
-     DELETE /api/app-sources/<id>. Everything is set as text. No
-     confirm(): the panel is the gate, its Cancel the way out. */
-  function openRemoveAppData(o){
+     DELETE /api/app-sources/<id>, everything the app wrote; or, given a
+     metric, DELETE /api/app-sources/<id>/<metric>, just that metric's
+     readings. Everything is set as text. No confirm(): the panel is the
+     gate, its Cancel the way out. */
+  function openRemoveAppData(o, metric){
+    const whole = metric==null;
     const {box, close} = openModal(`
       <h4 data-f="title"></h4>
-      <p class="hint">Its app is no longer installed. What it wrote is still in your data.</p>
+      <p class="hint" data-f="hint"></p>
       <div class="danger-panel">
         <h5>Remove data?</h5>
         <p data-f="what"></p>
@@ -1808,9 +1861,13 @@ h5 + .dnote{margin-top:0;}
       </div>
       <div class="form-msg bad src-msg" data-f="msg"></div>`);
     const f = key => box.querySelector(`[data-f="${key}"]`);
-    f('title').textContent = o.source;
-    f('what').textContent =
-      `Remove all data from the uninstalled app '${o.id}'? ${appDataSummary(o)}. This can't be undone.`;
+    f('title').textContent = whole ? o.source : metricName(metric);
+    f('hint').textContent = whole
+      ? 'Its app is no longer installed. What it wrote is still in your data.'
+      : `From ${o.source}, whose app is no longer installed. The rest of what it wrote stays.`;
+    f('what').textContent = whole
+      ? `Remove all data from the uninstalled app '${o.id}'? ${appDataSummary(o)}. This can't be undone.`
+      : `Remove ${metricName(metric)} from the uninstalled app '${o.id}'? This can't be undone.`;
     const msg = f('msg');
     const cancel = box.querySelector('[data-act="cancel"]');
     const confirmBtn = box.querySelector('[data-act="confirm"]');
@@ -1818,11 +1875,12 @@ h5 + .dnote{margin-top:0;}
     confirmBtn.onclick = async ()=>{
       confirmBtn.disabled = true; confirmBtn.textContent = 'Removing…';
       msg.textContent = '';
-      const res = await api.removeAppSource(o.id);
+      const res = whole ? await api.removeAppSource(o.id) : await api.removeAppSourceMetric(o.id, metric);
       if(res.ok){
         close();
-        // The source goes from the list; the days it covered were
-        // re-derived, so the data card and the tiles drawn from it too.
+        // The source goes from the list (or the metric from its row);
+        // the days it covered were re-derived, so the data card and the
+        // tiles drawn from it too.
         loadAppSources();
         loadData();
         loadHome();

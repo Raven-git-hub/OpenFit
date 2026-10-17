@@ -311,7 +311,8 @@ def get_activity():
 # full key, app:<id>:<key>, in the unit its app declares. An app's metric
 # is served while its app is installed; uninstalled, it drops out of the
 # catalog and its reads 404, its readings kept under its source until
-# they're removed (DELETE /api/app-sources/<id>).
+# they're removed (DELETE /api/app-sources/<id>, or just that metric's
+# with DELETE /api/app-sources/<id>/app:<id>:<key>).
 
 
 def _date_range(args):
@@ -868,10 +869,11 @@ def act_on_app(app_id):
 # synced, and uninstalling an app keeps what it wrote - hand-entered
 # data can't be re-synced. Removing that is its own explicit step: a
 # device's with DELETE /api/connectors/<id>?wipe=1, an uninstalled app's
-# with DELETE /api/app-sources/<id>. Both are purge_source().
+# with DELETE /api/app-sources/<id> - or one metric of it with DELETE
+# /api/app-sources/<id>/<metric>. All are purge_source().
 
 
-def purge_source(conn, source, keep_roles=False):
+def purge_source(conn, source, metric=None, keep_roles=False):
     """Delete everything `source` wrote, and re-derive what it fed.
 
     Every metric, sample and session filed under `source` goes, and the
@@ -883,23 +885,33 @@ def purge_source(conn, source, keep_roles=False):
     device keeps its roles, as it keeps its sync cadence, for when it's
     added back.
 
+    With `metric`, only that metric's readings and samples from `source`
+    go, and only its role is cleared, if it names `source`: the
+    source's other metrics, and its roles for them, stay. Sessions are
+    keyed by kind, not metric, so none goes.
+
     One transaction with whatever the caller has already done on `conn`:
     recompute_derived() commits it (this does, with no readings to
     re-derive), so a failure part way leaves every row and role as it
     was. Returns {days, metrics, sessions, samples}: how many distinct
     days its readings covered, and the rows deleted from each table.
     """
+    where, args = "source = ?", (source,)
+    if metric is not None:
+        where, args = "source = ? AND metric = ?", (source, metric)
     # RETURNING: the affected range is exactly the readings deleted,
     # even if a sync commits rows between a separate read and this delete.
     dates = [
         row[0]
-        for row in conn.execute("DELETE FROM metrics WHERE source = ? RETURNING date", (source,))
+        for row in conn.execute(f"DELETE FROM metrics WHERE {where} RETURNING date", args)
     ]
-    samples = conn.execute("DELETE FROM samples WHERE source = ?", (source,)).rowcount
-    sessions = conn.execute("DELETE FROM sessions WHERE source = ?", (source,)).rowcount
+    samples = conn.execute(f"DELETE FROM samples WHERE {where}", args).rowcount
+    sessions = 0
+    if metric is None:
+        sessions = conn.execute("DELETE FROM sessions WHERE source = ?", (source,)).rowcount
     if not keep_roles:
         # Inside the transaction the deletes opened, before the re-derive.
-        clear_source_roles(conn, source)
+        clear_source_roles(conn, source, only=metric)
     if dates:
         # One span rather than a day at a time, so the whole removal
         # stays one transaction (recompute_derived() commits it). Every
@@ -924,6 +936,17 @@ def _has_data(conn, source):
     )
 
 
+def _has_metric_data(conn, source, metric):
+    """Whether `source` has a reading or sample of `metric`. Sessions are
+    keyed by kind, not metric, so aren't looked at."""
+    return any(
+        conn.execute(
+            f"SELECT 1 FROM {table} WHERE source = ? AND metric = ? LIMIT 1", (source, metric)
+        ).fetchone()
+        for table in ("metrics", "samples")
+    )
+
+
 @app.route("/api/app-sources", methods=["GET"])
 def list_app_sources():
     """What apps have written: [{id, source, orphaned, metrics, readings,
@@ -936,7 +959,8 @@ def list_app_sources():
     is broken, not gone, so isn't, nor is an id no app could have (no
     folder to look for); the metrics it has readings of, in vocabulary
     order; and how many readings, sessions and samples it holds. An
-    orphan's data can be removed (DELETE /api/app-sources/<id>); no
+    orphan's data can be removed (DELETE /api/app-sources/<id>), all of
+    it or one metric's (DELETE /api/app-sources/<id>/<metric>); no
     other's can. Devices, the webhook's sources and manual aren't apps',
     so aren't listed.
     """
@@ -1023,6 +1047,48 @@ def remove_app_source(app_id):
         if not _has_data(conn, source):
             return jsonify({"ok": False, "error": f"no data from {source} to remove"}), 404
         removed = purge_source(conn, source)
+    finally:
+        conn.close()
+    return jsonify({
+        "ok": True,
+        "removed": {k: removed[k] for k in ("metrics", "sessions", "samples")},
+    })
+
+
+@app.route("/api/app-sources/<app_id>/<metric>", methods=["DELETE"])
+def remove_app_source_metric(app_id, metric):
+    """Remove one metric of an uninstalled app's data: every reading (and
+    sample) of `metric` that app:<app_id> wrote.
+
+    DELETE /api/app-sources/<id>, narrowed to one metric: its readings
+    under app:<app_id> are deleted, the days they covered re-derived -
+    each falls to whatever source is left, or loses its derived row -
+    and its source role cleared if it names the app; the app's other
+    metrics, its sessions and its roles for anything else stay -
+    purge_source(metric=...), one transaction. `metric` is the key as
+    stored: a canonical one stays in the vocabulary, only the readings
+    go; an app's own (app:<id>:<key>) already left it at uninstall. 200
+    {"ok": true, "removed": {metrics, sessions, samples}}, sessions
+    always 0.
+
+    The guards are the whole-app route's: 404 for an id no app could
+    have (APP_ID); 400 while the app is still on the volume
+    (app_present()), loading or not; 404 when app:<id> has no reading or
+    sample of `metric`. None of those changes anything.
+    """
+    if not APP_ID.match(app_id):
+        return jsonify({"ok": False, "error": f"'{app_id}' isn't an app id: no app source to remove"}), 404
+    if app_present(app.config["APPS_DIR"], app_id):
+        return jsonify({
+            "ok": False,
+            "error": f"'{app_id}' is present — fix or uninstall it first; an installed app's data is never removed",
+        }), 400
+    source = app_source(app_id)
+    conn = get_conn()
+    try:
+        if not _has_metric_data(conn, source, metric):
+            return jsonify({"ok": False, "error": f"no {metric} data from {source} to remove"}), 404
+        removed = purge_source(conn, source, metric=metric)
     finally:
         conn.close()
     return jsonify({

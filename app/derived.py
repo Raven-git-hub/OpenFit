@@ -201,7 +201,7 @@ def set_source_role(conn, metric, source):
     conn.commit()
 
 
-def clear_source_roles(conn, source):
+def clear_source_roles(conn, source, only=None):
     """Drop every source role that names `source` as a primary.
 
     For a source whose data has just been deleted (purge_source() in
@@ -210,13 +210,20 @@ def clear_source_roles(conn, source):
     session kind's too, which only /api/settings can write. Other
     entries are kept; no entry naming it, and the row isn't touched.
 
+    With `only`, for one metric's data deleted: just that key's entry,
+    if it names `source` - every other entry naming it stays, its data
+    still there.
+
     Unlike set_source_role(), commits nothing: it's one step of the
     caller's transaction, and is called inside it once the deletes have
     opened it, so the read and the rewrite here can't straddle another
     change. Returns the keys cleared, sorted.
     """
     roles = load_source_roles(conn)
-    cleared = sorted(key for key, primary in roles.items() if primary == source)
+    cleared = sorted(
+        key for key, primary in roles.items()
+        if primary == source and (only is None or key == only)
+    )
     if cleared:
         for key in cleared:
             del roles[key]

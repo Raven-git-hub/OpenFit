@@ -8,7 +8,10 @@ deletes every metric, session and sample the source wrote, re-derives
 the days its readings covered and clears every source role naming it
 (purge_source(), the connector wipe's machinery), in one transaction.
 GET /api/app-sources lists every app source with data, each marked
-orphaned or not, so the page knows which can go.
+orphaned or not, so the page knows which can go. DELETE
+/api/app-sources/<id>/<metric> is the same step for one metric: only its
+readings (and samples) from app:<id> go, the days they covered are
+re-derived and only its role is cleared - the app's other data stays.
 
 It never reaches a live app's data, a device's, a webhook source's or
 manual's: the id is always read as app:<id>.
@@ -470,6 +473,300 @@ def test_uninstall_then_remove_the_weight_apps_data(client, conn, apps_dir):
     assert client.get("/api/app-sources").get_json() == []
 
 
+# ---------- removing one metric: DELETE /api/app-sources/<id>/<metric> ----------
+
+
+def rows_of(conn, source):
+    """(date, metric) of every reading `source` holds."""
+    return [tuple(r) for r in conn.execute(
+        "SELECT date, metric FROM metrics WHERE source = ? ORDER BY date, metric", (source,)
+    )]
+
+
+def test_removing_one_metric_deletes_only_its_rows(client, conn, orphan):
+    before = counts(conn)
+
+    resp = client.delete("/api/app-sources/old/weight_kg")
+
+    assert resp.status_code == 200
+    assert resp.get_json() == {"ok": True, "removed": {"metrics": 2, "sessions": 0, "samples": 0}}
+    # Its weigh-ins go; its steps, sample and session stay...
+    assert rows_of(conn, "app:old") == [("2026-10-02", "steps")]
+    # ...and every other source's rows are just as they were.
+    assert counts(conn) == {**before, ("metrics", "app:old"): 1}
+
+
+def test_removing_a_metric_it_lost_keeps_the_winner(client, conn, orphan):
+    """app:old wrote steps but Garmin won them: its rows go, Garmin's
+    stay, and the re-derived pick is still Garmin's."""
+    assert "app:old" in client.get("/api/source-roles").get_json()["steps"]["sources"]
+
+    resp = client.delete("/api/app-sources/old/steps")
+
+    assert resp.get_json() == {"ok": True, "removed": {"metrics": 1, "sessions": 0, "samples": 0}}
+    assert rows_of(conn, "app:old") == [("2026-10-01", "weight_kg"), ("2026-10-02", "weight_kg")]
+    assert rows_of(conn, "garmin") == [("2026-10-02", "steps"), ("2026-10-02", "weight_kg")]
+    assert picked(conn, "2026-10-02", "steps") == (9000, "garmin")
+    assert client.get("/api/source-roles").get_json()["steps"]["sources"] == ["garmin"]
+    # Its weight, which it wins, is untouched.
+    assert picked(conn, "2026-10-01", "weight_kg") == (80.0, "app:old")
+    assert picked(conn, "2026-10-02", "weight_kg") == (81.0, "app:old")
+
+
+def test_removing_a_metric_re_derives_the_days_it_fed(client, conn, orphan):
+    client.delete("/api/app-sources/old/weight_kg")
+
+    # A day only it filled has nothing left to derive from...
+    assert picked(conn, "2026-10-01", "weight_kg") is None
+    # ...a day Garmin also filled falls to Garmin...
+    assert picked(conn, "2026-10-02", "weight_kg") == (82.0, "garmin")
+    # ...and another metric's pick on those days stays as it was.
+    assert picked(conn, "2026-10-02", "steps") == (9000, "garmin")
+
+
+@pytest.mark.parametrize("metric", ["weight_kg", "steps"])
+def test_removing_a_metric_leaves_days_outside_its_span_alone(client, conn, orphan, metric):
+    """Only the span that metric's readings covered is re-derived."""
+    assert client.delete(f"/api/app-sources/old/{metric}").status_code == 200
+
+    assert picked(conn, "2026-09-15", "steps") == (1234, "google_health")
+    assert picked(conn, "2026-09-01", "weight_kg") == (79.0, "manual")
+    assert picked(conn, "2026-10-03", "weight_kg") == (83.0, "apple_health")
+
+
+def test_removing_a_metric_clears_only_its_own_role(client, conn, orphan):
+    """app:old is primary for two metrics: removing one's data clears that
+    one's role - the kept metric's trust setting survives, as do the
+    session kind's and everyone else's."""
+    set_roles(conn, {**ROLES, "steps": "app:old"})
+
+    assert client.delete("/api/app-sources/old/weight_kg").status_code == 200
+
+    assert stored_roles(conn) == {"sleep": "app:old", "steps": "app:old", "distance_m": "app:steps"}
+
+
+def test_removing_a_metric_whose_role_names_another_source_leaves_the_roles_alone(client, conn, orphan):
+    assert client.delete("/api/app-sources/old/steps").status_code == 200
+
+    assert stored_roles(conn) == ROLES
+
+
+def test_a_metric_stays_when_one_apps_rows_of_it_go(client, conn, apps_dir):
+    """weight_kg without app:weight's readings is still weight_kg - empty,
+    or fed by another source - and the app's other metric is untouched."""
+    seed(conn, "app:weight", metrics=[("2026-10-02", "weight_kg", 80.0), ("2026-10-02", "steps", 10)])
+    seed(conn, "garmin", metrics=[("2026-10-02", "steps", 9000)])
+    recompute_derived(conn)
+
+    assert client.delete("/api/app-sources/weight/weight_kg").status_code == 200
+
+    catalog = {m["metric"]: m for m in client.get("/api/catalog?include_empty=1").get_json()["metrics"]}
+    assert catalog["weight_kg"]["count"] == 0 and catalog["weight_kg"]["sources"] == []
+    assert client.get("/api/metric/weight_kg").get_json()["points"] == []
+    assert client.delete("/api/app-sources/weight/steps").status_code == 200
+    catalog = {m["metric"]: m for m in client.get("/api/catalog?include_empty=1").get_json()["metrics"]}
+    assert (catalog["steps"]["count"], catalog["steps"]["sources"]) == (1, ["garmin"])
+
+
+def test_removing_an_orphaned_custom_metric_end_to_end(client, conn, apps_dir):
+    """Log caffeine, uninstall the app - its metric leaves the catalog (B0),
+    its readings stay - then remove that metric's readings, the full key
+    in the path as the page sends it, encoded."""
+    install(apps_dir, "caffeine")
+    resp = client.post("/api/app/caffeine/action", json={"action": "log", "payload": {"caffeine_mg": 95}})
+    assert resp.get_json()["ok"] is True
+    assert client.delete("/api/apps/caffeine").status_code == 200
+    assert "app:caffeine:caffeine_mg" not in [
+        m["metric"] for m in client.get("/api/catalog?include_empty=1").get_json()["metrics"]
+    ]
+    assert client.get("/api/app-sources").get_json() == [{
+        "id": "caffeine", "source": "app:caffeine", "orphaned": True,
+        "metrics": ["app:caffeine:caffeine_mg"], "readings": 1, "sessions": 0, "samples": 0,
+    }]
+
+    resp = client.delete("/api/app-sources/caffeine/app%3Acaffeine%3Acaffeine_mg")
+
+    assert resp.get_json() == {"ok": True, "removed": {"metrics": 1, "sessions": 0, "samples": 0}}
+    assert counts(conn) == {}
+    assert picked(conn, TODAY, "app:caffeine:caffeine_mg") is None
+    # Its last metric gone, so is the source.
+    assert client.get("/api/app-sources").get_json() == []
+
+
+def test_a_custom_key_reads_the_same_unencoded(client, conn, apps_dir):
+    # seed() takes canonical keys only (its unit from METRICS).
+    conn.execute(
+        "INSERT INTO metrics (date, source, metric, value, unit, synced_at) "
+        "VALUES ('2026-10-02', 'app:coffee', 'app:coffee:caffeine_mg', 95.0, 'mg', 'x')"
+    )
+    conn.commit()
+
+    resp = client.delete("/api/app-sources/coffee/app:coffee:caffeine_mg")
+
+    assert resp.get_json() == {"ok": True, "removed": {"metrics": 1, "sessions": 0, "samples": 0}}
+    assert counts(conn) == {}
+
+
+def test_an_orphan_lists_what_its_left_until_its_last_metric_goes(client, conn, apps_dir):
+    seed(conn, "app:pair", metrics=[
+        ("2026-10-01", "steps", 10), ("2026-10-01", "weight_kg", 80.0), ("2026-10-02", "weight_kg", 81.0),
+    ])
+
+    assert client.delete("/api/app-sources/pair/weight_kg").status_code == 200
+    assert client.get("/api/app-sources").get_json() == [{
+        "id": "pair", "source": "app:pair", "orphaned": True,
+        "metrics": ["steps"], "readings": 1, "sessions": 0, "samples": 0,
+    }]
+
+    assert client.delete("/api/app-sources/pair/steps").status_code == 200
+    assert client.get("/api/app-sources").get_json() == []
+
+
+def test_with_its_metrics_gone_an_orphans_sessions_and_samples_stay_for_remove_all(client, conn, orphan):
+    for metric in ("weight_kg", "steps"):
+        assert client.delete(f"/api/app-sources/old/{metric}").status_code == 200
+
+    [old] = [a for a in client.get("/api/app-sources").get_json() if a["id"] == "old"]
+    assert (old["metrics"], old["readings"], old["sessions"], old["samples"]) == ([], 0, 1, 1)
+    # The whole-app removal takes what's left.
+    resp = client.delete("/api/app-sources/old")
+    assert resp.get_json() == {"ok": True, "removed": {"metrics": 0, "sessions": 1, "samples": 1}}
+
+
+def test_a_series_metric_takes_only_its_samples(client, conn, orphan):
+    """No app writes samples today, but a source that holds some loses
+    just that metric's - never a session, never another source's."""
+    before, picks = counts(conn), derived(conn)
+
+    resp = client.delete("/api/app-sources/old/heart_rate")
+
+    assert resp.get_json() == {"ok": True, "removed": {"metrics": 0, "sessions": 0, "samples": 1}}
+    expected = {k: n for k, n in before.items() if k != ("samples", "app:old")}
+    assert counts(conn) == expected
+    assert derived(conn) == picks
+
+
+def test_a_session_kind_isnt_a_metric(client, conn, orphan):
+    """Sessions are keyed by kind, not metric: the whole-app removal is
+    theirs, so a kind here is nothing to remove."""
+    before = counts(conn)
+
+    resp = client.delete("/api/app-sources/old/sleep")
+
+    assert resp.status_code == 404
+    assert resp.get_json() == {"ok": False, "error": "no sleep data from app:old to remove"}
+    assert counts(conn) == before
+
+
+def test_an_installed_apps_metric_is_never_removed(client, conn, orphan):
+    before, roles, picks = counts(conn), stored_roles(conn), derived(conn)
+
+    resp = client.delete("/api/app-sources/steps/distance_m")
+
+    assert resp.status_code == 400
+    assert resp.get_json() == {
+        "ok": False,
+        "error": "'steps' is present — fix or uninstall it first; an installed app's data is never removed",
+    }
+    assert counts(conn) == before
+    assert stored_roles(conn) == roles
+    assert derived(conn) == picks
+
+
+@pytest.mark.parametrize("broken", [_bad_yaml, _no_size, _import_error, _no_manifest, _broken_link])
+def test_a_metric_of_an_app_present_but_not_loading_is_never_removed(client, conn, orphan, apps_dir, broken):
+    broken(apps_dir / "old")
+    before, roles, picks = counts(conn), stored_roles(conn), derived(conn)
+
+    resp = client.delete("/api/app-sources/old/weight_kg")
+
+    assert resp.status_code == 400
+    assert resp.get_json() == {
+        "ok": False,
+        "error": "'old' is present — fix or uninstall it first; an installed app's data is never removed",
+    }
+    assert counts(conn) == before
+    assert stored_roles(conn) == roles
+    assert derived(conn) == picks
+
+
+@pytest.mark.parametrize("app_id", ["_x", "-x", "x.y", "app:old"])
+def test_a_metric_of_an_id_no_app_could_have_is_a_404(client, conn, orphan, app_id):
+    seed(conn, f"app:{app_id}", metrics=[("2026-10-04", "steps", 7)])
+    before, roles, picks = counts(conn), stored_roles(conn), derived(conn)
+
+    resp = client.delete(f"/api/app-sources/{app_id}/steps")
+
+    assert resp.status_code == 404
+    assert resp.get_json() == {"ok": False, "error": f"'{app_id}' isn't an app id: no app source to remove"}
+    assert counts(conn) == before
+    assert stored_roles(conn) == roles
+    assert derived(conn) == picks
+
+
+@pytest.mark.parametrize("app_id, metric", [
+    # A metric the orphan never wrote, and one no vocabulary has.
+    ("old", "hrv_ms"), ("old", "nonsense"),
+    # Another app's custom key: the id is never stripped from it.
+    ("old", "app:steps:distance_m"),
+    # Devices, the webhook's sources and manual: never app sources.
+    ("garmin", "weight_kg"), ("manual", "weight_kg"), ("apple_health", "weight_kg"),
+    # An app with no data at all.
+    ("nope", "steps"),
+])
+def test_a_metric_the_orphan_has_no_rows_of_is_a_404(client, conn, orphan, app_id, metric):
+    before, roles, picks = counts(conn), stored_roles(conn), derived(conn)
+
+    resp = client.delete(f"/api/app-sources/{app_id}/{metric}")
+
+    assert resp.status_code == 404
+    assert resp.get_json() == {"ok": False, "error": f"no {metric} data from app:{app_id} to remove"}
+    assert counts(conn) == before
+    assert stored_roles(conn) == roles
+    assert derived(conn) == picks
+
+
+def test_a_metric_404_leaves_a_role_naming_the_app_alone(client, conn, apps_dir):
+    set_roles(conn, {"weight_kg": "app:ghost"})
+
+    assert client.delete("/api/app-sources/ghost/weight_kg").status_code == 404
+
+    assert stored_roles(conn) == {"weight_kg": "app:ghost"}
+
+
+def test_a_second_metric_removal_is_a_404(client, conn, orphan):
+    assert client.delete("/api/app-sources/old/weight_kg").status_code == 200
+
+    resp = client.delete("/api/app-sources/old/weight_kg")
+
+    assert resp.status_code == 404
+    assert resp.get_json() == {"ok": False, "error": "no weight_kg data from app:old to remove"}
+
+
+def test_a_metric_removal_is_one_transaction(client, conn, orphan, monkeypatch):
+    """A re-derive that fails takes the removal with it - its role included."""
+    import main
+
+    before, picks = counts(conn), derived(conn)
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("re-derive failed")
+
+    monkeypatch.setattr(main, "recompute_derived", broken)
+
+    with pytest.raises(RuntimeError):
+        client.delete("/api/app-sources/old/weight_kg")
+
+    assert counts(conn) == before
+    assert stored_roles(conn) == ROLES
+    assert derived(conn) == picks
+
+
+def test_removing_a_metric_is_a_delete(client, orphan):
+    for call in (client.get, client.post, client.put, client.patch):
+        assert call("/api/app-sources/old/weight_kg").status_code == 405
+
+
 # ---------- clear_source_roles() ----------
 
 
@@ -492,6 +789,26 @@ def test_clear_source_roles_commits_nothing(db_path):
 
     assert stored_roles(writer) == ROLES
     writer.close()
+
+
+def test_clear_source_roles_only_one_key_drops_just_that_entry(conn):
+    set_roles(conn, {**ROLES, "steps": "app:old"})
+
+    assert clear_source_roles(conn, "app:old", only="weight_kg") == ["weight_kg"]
+    conn.commit()
+
+    assert stored_roles(conn) == {"sleep": "app:old", "steps": "app:old", "distance_m": "app:steps"}
+
+
+@pytest.mark.parametrize("only", ["steps", "hrv_ms"])
+def test_clear_source_roles_only_a_key_not_naming_the_source_changes_nothing(conn, only):
+    """steps names google_health; hrv_ms has no entry at all."""
+    set_roles(conn, ROLES)
+
+    assert clear_source_roles(conn, "app:old", only=only) == []
+    conn.commit()
+
+    assert stored_roles(conn) == ROLES
 
 
 @pytest.mark.parametrize("stored", [None, "not json", "[1, 2]", '{"steps": "garmin"}'])

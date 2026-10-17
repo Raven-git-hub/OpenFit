@@ -214,7 +214,8 @@ What a declaration can't be yet, and why:
   canonical metrics and your own.
 - **Its data outlives the app.** Uninstall the app and its metrics drop out of
   the catalog, but what it wrote stays under `app:<id>` until you remove it
-  (Connected sources → Remove data). Reinstall it and the metric comes back,
+  (Connected sources → the app's row: Remove all data, or open it and remove
+  one metric's). Reinstall it and the metric comes back,
   history and all.
 
 A bad block — an unknown category, a built-in key, a key twice, a misspelt field

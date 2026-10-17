@@ -93,8 +93,9 @@ own calls to its device API. Full direction:
 - `app/derived.py` — the one place a source is picked per `(date, metric)`:
   `recompute_derived()` writes `derived_metrics`. Never pick a source anywhere else.
   Beside it the source roles (`load_source_roles()`, `set_source_role()`,
-  and `clear_source_roles(conn, source)` — every entry naming that source
-  dropped, a session kind's too, committing nothing: a step of
+  and `clear_source_roles(conn, source, only=None)` — every entry naming
+  that source dropped, a session kind's too, or with `only` just that
+  key's if it names the source, committing nothing: a step of
   `purge_source()`'s transaction).
 - `app/crypto.py` — Fernet encrypt/decrypt for stored credentials.
 - `app/apps.py` — the app scanner/loader, the one way the host finds an app
@@ -422,21 +423,33 @@ own calls to its device API. Full direction:
   read into `state.appSources` by `loadAppSources()` — at boot, after an
   app is uninstalled or installed, after a removal — which repaints the
   card and any open Your data row) is a `.src.orphan` row after the
-  connected ones: its id, its source under it (`.src-note`), a `.pill.wait`
-  "○ app uninstalled" and a red **Remove data** (`btn sm danger`) — no Sync
-  now, no Settings; a live app's source gets no row. A Your data row's
+  connected ones: its head (`.orphan-head`, a button: chevron, its id, its
+  source under it, `.src-note`) and a `.pill.wait` "○ app uninstalled"
+  and a red **Remove all data** (`btn sm danger`) — no Sync now, no
+  Settings; a live app's source gets no row. The head opens it
+  (`expandable()`, the open sources in `state.orphanOpen`, so it stays open
+  across a refresh) on `orphanMetrics()`: a line per key in its `metrics`
+  (`.orphan-metric`, `metricName()` — an orphaned custom one by its short
+  key, prettified) with its own red **Remove data**; none left → a note
+  that Remove all data takes its sessions/samples. A Your data row's
   source list (`fillSources()`, metrics and series/sessions alike) ends
-  with `orphanLines()`: for each of its sources an orphan, "`app:<id>` is
-  from an uninstalled app." and the same Remove data. Both open
-  `openRemoveAppData(o)`: a `.modal` titled with the source, one
-  `danger-panel` "Remove data?" — "Remove all data from the uninstalled
-  app '<id>'? <`appDataSummary()`: N readings across M metrics (their
-  names), then any sessions and samples>. This can't be undone." —
-  [Cancel] (focused) / [Remove data]; no `confirm()`. Confirming `DELETE`s
-  `/api/app-sources/<id>` (`api.removeAppSource()`), then closes and
-  re-reads the app sources, `loadData()` and `loadHome()`; a refusal (the
-  app reinstalled meanwhile: 400) stays in the modal, the button back.
-  Every id, source and count is set as text.
+  with `orphanLines(row, …)`: for each of its sources an orphan,
+  "`app:<id>` is from an uninstalled app." and a Remove data for that
+  row's metric (`row.key`). Every one opens `openRemoveAppData(o,
+  metric)` — `metric` null (Remove all data) for the whole app: a
+  `.modal` titled with the source, one `danger-panel` "Remove data?" —
+  "Remove all data from the uninstalled app '<id>'? <`appDataSummary()`:
+  N readings across M metrics (their names), then any sessions and
+  samples>. This can't be undone."; a metric: titled with its name, "From
+  <source>, whose app is no longer installed. The rest of what it wrote
+  stays." over "Remove <name> from the uninstalled app '<id>'? This can't
+  be undone." — [Cancel] (focused) / [Remove data]; no `confirm()`.
+  Confirming `DELETE`s `/api/app-sources/<id>` (`api.removeAppSource()`)
+  or `/api/app-sources/<id>/<metric>` (`api.removeAppSourceMetric()`),
+  then closes and re-reads the app sources, `loadData()` and
+  `loadHome()`; a refusal (the app reinstalled meanwhile: 400) stays in
+  the modal, the button back. Every id, source, metric and count is set
+  as text.
   "Your data" groups its rows by `category`, the 8 in `CATEGORIES` display
   order (one outside them would follow, by name; one with no rows at all,
   Women's health today, gets no header), and within a category sorts them
@@ -595,7 +608,7 @@ own calls to its device API. Full direction:
   `/api/sync/<plugin>`), and the app routes (`/api/apps`, `POST /api/apps`,
   `DELETE /api/apps/<id>`, `POST /api/app/<id>/render`, `POST
   /api/app/<id>/action`, `/api/app/<id>/file`, `/api/app-sources`, `DELETE
-  /api/app-sources/<id>`) and Home's layout (`GET`/`PUT /api/home-layout`);
+  /api/app-sources/<id>`, `DELETE /api/app-sources/<id>/<metric>`) and Home's layout (`GET`/`PUT /api/home-layout`);
   not `/api/activity` (the last-sync stamp that read it
   is gone). See `docs/architecture/frontend-redesign-and-widget-model.md`.
   **Home** reads `GET /api/apps` and `GET /api/home-layout` together, then
@@ -886,10 +899,10 @@ own calls to its device API. Full direction:
   catalog, `/api/coverage` and `/api/metric/<metric>` serve them while the
   app is installed; uninstalled, they drop out (the metric route 404s)
   and their readings stay under the source — the "orphaned custom
-  metric" a purge (B1) is still to come for; `DELETE
-  /api/app-sources/<id>` already takes them with the rest of the
-  source's rows, and a reinstall brings the metric back, history and
-  all. No source role names one (`/api/source-roles` lists canonical
+  metric": `DELETE /api/app-sources/<id>/app:<id>:<key>` (B1) removes
+  just its readings, `DELETE /api/app-sources/<id>` takes them with the
+  rest of the source's rows, and a reinstall before either brings the
+  metric back, history and all. No source role names one (`/api/source-roles` lists canonical
   metrics, and its `PUT` 404s an app's key); the webhook refuses one (a
   canonical key only). Nothing else writes an `app:` source
   (the webhook refuses the prefix). Uninstalling an app keeps its rows —
@@ -914,14 +927,25 @@ own calls to its device API. Full direction:
   and the listing marks orphaned exactly what this would remove. The id is always read as
   `app:<id>` (the prefix never stripped), so it can't reach a device, a
   webhook source or `manual` (deliberately out of scope for now).
-  `purge_source(conn, source, keep_roles=False)` (`app/main.py`, shared
-  with the connector wipe) deletes every `metrics` (`RETURNING date`),
-  `samples` and `sessions` row of the source, clears every source role
-  naming it (`clear_source_roles()`) unless `keep_roles`, and
-  `recompute_derived()`s the min..max of the deleted dates, one
-  transaction with whatever the caller did first (a failure rolls it all
-  back); → `{days, metrics, sessions, samples}`. The metrics stay:
-  `weight_kg` without `app:weight`'s readings is still `weight_kg`.
+  `DELETE /api/app-sources/<id>/<metric>` (B1) is the same for one
+  metric — `<metric>` the key as stored, a canonical one or the full
+  `app:<id>:<key>`: `purge_source(conn, "app:" + id, metric=metric)`,
+  the same reply (`sessions` always 0) and guards in the same order, the
+  last 404 "no <metric> data from app:<id> to remove" when that
+  `(source, metric)` has no reading or sample (`_has_metric_data()`;
+  sessions are kind-keyed, never looked at); DELETE only. The app's other
+  metrics, its sessions and its roles for anything else stay; a metric
+  another source wins keeps its winner.
+  `purge_source(conn, source, metric=None, keep_roles=False)`
+  (`app/main.py`, shared with the connector wipe) deletes every `metrics`
+  (`RETURNING date`), `samples` and `sessions` row of the source, clears
+  every source role naming it (`clear_source_roles()`) unless
+  `keep_roles`, and `recompute_derived()`s the min..max of the deleted
+  dates, one transaction with whatever the caller did first (a failure
+  rolls it all back); → `{days, metrics, sessions, samples}`. With
+  `metric`, only that metric's `metrics` and `samples` rows go (no
+  sessions) and only its role is cleared (`only=metric`). The metrics
+  stay: `weight_kg` without `app:weight`'s readings is still `weight_kg`.
   **`manual` is frozen**: the hand-entered weigh-ins — migration `006`'s
   and the retired `POST /api/weights`' — stay under source `manual` as
   history (where they came from), read and picked like any source's, but
@@ -1362,10 +1386,14 @@ same PR:
   loading or not — `app_present()`) through
   `purge_source()`, the connector wipe's delete and re-derive plus
   clearing the source's stale source roles, and a red Remove data in
-  Connected sources and under a metric's sources. Still to come for the
-  data lifecycle: the same for `manual`'s frozen weigh-ins (a possible
-  later addition), and purging an orphaned custom metric (B1; B0, the
-  custom metrics themselves, landed — above) —
+  Connected sources and under a metric's sources. B1 landed (no
+  migration): per-metric removal — `DELETE /api/app-sources/<id>/<metric>`
+  through `purge_source(metric=…)` and a scoped `clear_source_roles(only=…)`;
+  Your data's per-metric Remove data now takes only that metric (it used to
+  wipe the whole app), and the orphan row expands to a Remove data per
+  metric under its Remove all data — the one path to an orphaned custom
+  metric's readings. Still to come for the data lifecycle: the same for
+  `manual`'s frozen weigh-ins (a possible later addition) —
   `docs/architecture/apps-as-source.md`.
   Still to come for multi-tab: richer settings field types
   (select/enum/boolean) and a live preview. Also still to come: the
