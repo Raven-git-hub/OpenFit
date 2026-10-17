@@ -49,6 +49,10 @@ but never another app's: an app's own keys are namespaced under its id,
 and a ctx knows only its own app's. That's the whole of the scoping: the
 app is trusted code, as its render() is, not sandboxed.
 
+A file input's value in the payload is a FileUpload - the file as the
+browser sent it, which the app reads and parses itself: OpenFit carries
+a file, and never reads one.
+
 The spec vocabulary, built by the ctx's builders (an app may also return
 the dicts directly):
 
@@ -59,13 +63,15 @@ the dicts directly):
         undated point, and title (optional) names it
     {"type": "panel", "children": [spec, ...]}
         its children, stacked in order
-    {"type": "input", "key", "action", "label", "kind", "unit", "options"}
+    {"type": "input", "key", "action", "label", "kind", "unit", "options", "accept"}
         a field and a Save button: Save sends `action` to the app's
         handle(), the payload {key: what was entered} - a number for
         kind "number", text for "text", the option chosen for "select"
         (a dropdown of `options`, a list of strings; null for the other
-        kinds) - then the tile is drawn afresh; label and unit may be
-        null
+        kinds), and for "file" the file picked (a FileUpload; `accept`
+        the picker's hints, such as ".ics,.csv", or null - null for the
+        other kinds) - then the tile is drawn afresh; label and unit may
+        be null
     {"type": "empty", "message"}
     {"type": "error", "message"}
         the host's, when a render fails - never an app's to return
@@ -191,11 +197,12 @@ def panel(*children):
     return {"type": "panel", "children": list(children)}
 
 
-# What an input element's field takes: a number, text, or one of a set
-# of options (a dropdown).
-INPUT_KINDS = ("number", "text", "select")
+# What an input element's field takes: a number, text, one of a set of
+# options (a dropdown), or a file.
+INPUT_KINDS = ("number", "text", "select", "file")
 
 OPTIONS_PROBLEM = "a select's options must be a non-empty list of strings"
+ACCEPT_PROBLEM = "a file input's accept must be non-empty text, such as '.ics,.csv'"
 
 
 def _text_or_none(value, what):
@@ -220,15 +227,34 @@ def _options(kind, options):
     return [str(option) for option in options]
 
 
-def input(key, action, label=None, kind="number", unit=None, options=None):
+def _accept(kind, accept):
+    """A file input's picker hints, as written, or None; None for the other kinds."""
+    if kind != "file":
+        if accept is not None:
+            raise ValueError(f"accept is only for a file, not a {kind}: {accept!r}")
+        return None
+    if accept is None:
+        return None
+    if not isinstance(accept, str):
+        raise TypeError(f"{ACCEPT_PROBLEM}: {accept!r}")
+    if not accept:
+        raise ValueError(f"{ACCEPT_PROBLEM}: {accept!r}")
+    return accept
+
+
+def input(key, action, label=None, kind="number", unit=None, options=None, accept=None):
     """A field and a Save button that sends `action` to the app's handle().
 
     The payload is {key: what was entered}: a number for kind "number",
-    text for "text", and for "select" the option chosen from `options`
+    text for "text", for "select" the option chosen from `options`
     (required for a select, and only for one: a non-empty list of
-    non-empty strings, each shown and sent as written). The host doesn't
-    check the value sent is one of them - handle() does, as it checks a
-    number. `label` names the field, `unit` sits beside it; either may
+    non-empty strings, each shown and sent as written), and for "file"
+    the file picked, a FileUpload. The host doesn't check the value sent
+    is one of the options, nor what a file holds - handle() does, as it
+    checks a number. `accept` is a file picker's hints, only for a file
+    and optional: non-empty text, as an <input type="file"> takes it
+    (".ics,.csv", "text/plain") - the picker's suggestion, never
+    enforced. `label` names the field, `unit` sits beside it; either may
     be None. Once handle() has run, the tile is drawn afresh from
     render().
     """
@@ -245,7 +271,45 @@ def input(key, action, label=None, kind="number", unit=None, options=None):
         "kind": kind,
         "unit": _text_or_none(unit, "unit"),
         "options": _options(kind, options),
+        "accept": _accept(kind, accept),
     }
+
+
+class FileUpload:
+    """A file a tile's file input sent: what handle() finds at payload[key].
+
+    The host carries the file and never reads it - what it is, and how to
+    read it, is the app's: text for a .csv or an .ics, the bytes or a
+    path for a PDF or a SQLite file. It lives in a temp file the host
+    chose, for the length of the action, and is deleted once the action
+    is done, whatever handle() did: nothing of it is kept but what the
+    app writes.
+
+    .name is the file's name as the browser gave it, for display only -
+    never a path; .content_type the type the browser reported ("" for
+    none), informational, so not to be trusted; .bytes the file's
+    content; .text(encoding) that decoded, raising UnicodeDecodeError
+    for a file that isn't text in it - the app's to catch; .path the
+    temp file, for a library that wants one (sqlite3.connect(f.path)).
+    """
+
+    def __init__(self, path, name="", content_type=""):
+        self.path = path
+        self.name = name
+        self.content_type = content_type
+        self._bytes = None
+
+    @property
+    def bytes(self):
+        """The file's content, read from its temp file once, when first asked for."""
+        if self._bytes is None:
+            with open(self.path, "rb") as f:
+                self._bytes = f.read()
+        return self._bytes
+
+    def text(self, encoding="utf-8"):
+        """The file's content decoded: UnicodeDecodeError if it isn't text in `encoding`."""
+        return self.bytes.decode(encoding)
 
 
 def empty(message=None):

@@ -733,26 +733,26 @@ def test_empty_spec():
 def test_input_spec():
     assert host.input("weight_kg", "log", label="Log weight", unit="kg") == {
         "type": "input", "key": "weight_kg", "action": "log",
-        "label": "Log weight", "kind": "number", "unit": "kg", "options": None,
+        "label": "Log weight", "kind": "number", "unit": "kg", "options": None, "accept": None,
     }
     # A number by default; label and unit may be left out. Only a select
-    # has options.
+    # has options, and only a file an accept.
     assert host.input("note", "save", kind="text") == {
         "type": "input", "key": "note", "action": "save", "label": None, "kind": "text", "unit": None,
-        "options": None,
+        "options": None, "accept": None,
     }
 
 
 def test_a_select_input_spec_carries_its_options():
     assert host.input("mood", "log", kind="select", options=["1", "2"]) == {
         "type": "input", "key": "mood", "action": "log",
-        "label": None, "kind": "select", "unit": None, "options": ["1", "2"],
+        "label": None, "kind": "select", "unit": None, "options": ["1", "2"], "accept": None,
     }
     # Label and unit as for any input; options kept in order, as written -
     # a tuple of them a plain list in the spec.
     assert host.input("tag", "add", label="Tag", unit="", kind="select", options=("b", " a ", "b ")) == {
         "type": "input", "key": "tag", "action": "add",
-        "label": "Tag", "kind": "select", "unit": "", "options": ["b", " a ", "b "],
+        "label": "Tag", "kind": "select", "unit": "", "options": ["b", " a ", "b "], "accept": None,
     }
 
 
@@ -780,6 +780,68 @@ def test_options_are_only_for_a_select(kind, options):
         host.input("mood", "log", kind=kind, options=options)
 
 
+def test_a_file_input_spec_carries_its_accept():
+    assert host.input("file", "import", kind="file", accept=".txt,.csv", label="Import weigh-ins") == {
+        "type": "input", "key": "file", "action": "import",
+        "label": "Import weigh-ins", "kind": "file", "unit": None, "options": None, "accept": ".txt,.csv",
+    }
+    # accept is optional - any file, then - and kept as written; label and
+    # unit as for any input.
+    assert host.input("roster", "load", kind="file", unit="ics") == {
+        "type": "input", "key": "roster", "action": "load",
+        "label": None, "kind": "file", "unit": "ics", "options": None, "accept": None,
+    }
+    assert host.input("db", "load", kind="file", accept=" application/x-sqlite3, .db ")["accept"] == (
+        " application/x-sqlite3, .db "
+    )
+
+
+@pytest.mark.parametrize("accept", [3, [".csv"], (".csv",), {".csv"}, b".csv", True])
+def test_a_file_inputs_accept_must_be_text(accept):
+    with pytest.raises(TypeError, match="a file input's accept must be non-empty text"):
+        host.input("file", "import", kind="file", accept=accept)
+
+
+def test_a_file_inputs_accept_cant_be_empty():
+    with pytest.raises(ValueError, match="a file input's accept must be non-empty text"):
+        host.input("file", "import", kind="file", accept="")
+
+
+@pytest.mark.parametrize("kind", ["number", "text", "select"])
+@pytest.mark.parametrize("accept", [".csv", "", 3])
+def test_accept_is_only_for_a_file(kind, accept):
+    options = ["1"] if kind == "select" else None
+    with pytest.raises(ValueError, match="accept is only for a file"):
+        host.input("k", "a", kind=kind, options=options, accept=accept)
+
+
+@pytest.mark.parametrize("options", [["1", "2"], [], ()])
+def test_a_file_takes_no_options(options):
+    with pytest.raises(ValueError, match="options is only for a select, not a file"):
+        host.input("file", "import", kind="file", options=options)
+
+
+def test_a_file_upload_is_the_file_for_the_app_to_read(tmp_path):
+    path = tmp_path / "upload"
+    path.write_bytes("2026-01-03 81,2 €\n".encode("utf-8"))
+    f = host.FileUpload(str(path), "w.txt", "text/plain")
+
+    assert (f.name, f.content_type, f.path) == ("w.txt", "text/plain", str(path))
+    assert f.bytes == "2026-01-03 81,2 €\n".encode("utf-8")
+    assert f.text() == "2026-01-03 81,2 €\n"
+    # Decoded as the app says; one that isn't text in it is the app's to
+    # catch - the host reads nothing into it.
+    assert f.text("latin-1") == "2026-01-03 81,2 â\x82¬\n"
+    with pytest.raises(UnicodeDecodeError):
+        f.text("ascii")
+    # Read once: the bytes are the file as it was when first asked for.
+    path.write_bytes(b"changed")
+    assert f.bytes == "2026-01-03 81,2 €\n".encode("utf-8")
+    # The name and type default to empty: a browser needn't send either.
+    bare = host.FileUpload(str(path))
+    assert (bare.name, bare.content_type, bare.bytes) == ("", "", b"changed")
+
+
 @pytest.mark.parametrize(
     "args, kwargs, error",
     [
@@ -788,6 +850,7 @@ def test_options_are_only_for_a_select(kind, options):
         (("weight_kg", ""), {}, TypeError),
         (("weight_kg", 3), {}, TypeError),
         (("weight_kg", "log"), {"kind": "date"}, ValueError),
+        (("weight_kg", "log"), {"kind": "files"}, ValueError),
         (("weight_kg", "log"), {"label": 3}, TypeError),
         (("weight_kg", "log"), {"unit": ["kg"]}, TypeError),
     ],
@@ -800,6 +863,7 @@ def test_input_spec_rejects_what_it_cant_draw(args, kwargs, error):
 def test_the_ctx_carries_the_builders(conn):
     ctx = host.Ctx(conn)
     assert ctx.panel(ctx.number(1), ctx.line([1]), ctx.input("k", "a"), ctx.empty())["type"] == "panel"
+    assert ctx.input("f", "a", kind="file", accept=".csv")["accept"] == ".csv"
 
 
 def test_render_app_passes_today_and_a_copy_of_cfg(conn, apps_dir):

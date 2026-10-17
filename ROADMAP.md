@@ -114,8 +114,11 @@ short key, stored as `app:<id>:<key>` and listed beside the built-in metrics
 (the Caffeine app the example; purging an uninstalled app's metric is next on
 that path). Then the first input primitive beyond a typed field: a dropdown
 (`kind="select"`, plain-string options, the chosen string sent to `handle()`,
-which owns checking it; the Mood app the example), with file upload and
-date/time the later bricks (`docs/architecture/input-primitives.md`). Next:
+which owns checking it; the Mood app the example), then file upload
+(`kind="file"`: the file posted multipart, at most 25 MB, handed to `handle()`
+as a `FileUpload` and deleted after the action — OpenFit never parses it, the
+app does; the Import weigh-ins app the example), with date/time the next brick
+(`docs/architecture/input-primitives.md`). Next:
 the rest of the Library (the writes ticker, now apps write back; alerts;
 Browse / Build / Create are still placeholders), session write-back, and the
 grid pass (free cell placement, a second layout mode on the same sizes).

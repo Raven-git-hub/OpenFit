@@ -1,0 +1,4 @@
+id: import
+name: Import weigh-ins
+sizes: [{ w: 1, h: 1 }, { w: 2, h: 1 }]
+reads: [weight_kg]

@@ -234,19 +234,26 @@ own calls to its device API. Full direction:
   `None`/non-finite is a gap; anything else `TypeError`; `title` text or
   `None`, else `TypeError`),
   `panel(*children)` (or one list), `input(key, action, label=None,
-  kind="number", unit=None, options=None)` → `{"type": "input", key,
-  action, label, kind, unit, options}` (the one interactive element: a
+  kind="number", unit=None, options=None, accept=None)` → `{"type":
+  "input", key, action, label, kind, unit, options, accept}` (the one
+  interactive element: a
   field and Save, which sends `action` to the app's `handle()` with `{key:
   what was entered}`; `key` and `action` non-empty text, `kind`
-  `"number"`/`"text"`/`"select"` (`INPUT_KINDS`), `label`/`unit` text or
+  `"number"`/`"text"`/`"select"`/`"file"` (`INPUT_KINDS`), `label`/`unit` text or
   `None`, else `TypeError`/`ValueError`; `options` a select's dropdown —
   required for one (missing/`None`/empty → `ValueError`), a list or tuple
   of non-empty strings (else `TypeError`, "a select's options must be a
   non-empty list of strings"), in the spec a plain list as written — and
-  refused for number/text (`ValueError`, "options is only for a select"),
-  whose specs carry `options: None`; the host never checks a select's
+  refused for every other kind (`ValueError`, "options is only for a
+  select"), whose specs carry `options: None`; the host never checks a select's
   submitted value is one of its options — `handle()` does, as it checks a
-  number; `docs/architecture/input-primitives.md`),
+  number; `accept` a file picker's hints (`".ics,.csv"`, `"text/plain"`),
+  optional and only for a file: non-empty text as written (not text →
+  `TypeError`, empty → `ValueError`, "a file input's accept must be
+  non-empty text"), never enforced, and refused for the other kinds
+  (`ValueError`, "accept is only for a file"), whose specs — and a file's
+  without one — carry `accept: None`;
+  `docs/architecture/input-primitives.md`),
   `empty(message)`; the host's own is `{"type": "error", "message"}`. `render_app(app, conn, cfg=None,
   today=None)` calls `render(ctx, dict(cfg or {}))` (the ctx made for
   `app`) — `cfg` the
@@ -277,7 +284,31 @@ own calls to its device API. Full direction:
   nothing; it commits nothing and notes the days written (`ctx.written`,
   sorted) for the route to re-derive. The render
   path's `Ctx` has no writer. The app is trusted code, as its `render()`
-  is: the scoping is the ctx, not a sandbox. Full contract:
+  is: the scoping is the ctx, not a sandbox. **A file input's value**
+  is a `FileUpload(path, name="", content_type="")`: `.name` the file's
+  name as the browser gave it (display only, never a path),
+  `.content_type` the type it reported (`""` for none; informational),
+  `.bytes` its content (read from `path` when first asked, then kept),
+  `.text(encoding="utf-8")` that decoded (a `UnicodeDecodeError`
+  propagates — the app's to catch), `.path` the temp file (for a library
+  that wants one, `sqlite3.connect(f.path)`). OpenFit carries the file
+  and never parses it: the app does. The action route (`act_on_app()`,
+  `app/main.py`) takes it as `multipart/form-data` (`request.mimetype`;
+  any other body is the JSON path, unchanged): `action` a form field,
+  `payload` and `cfg` form fields holding their JSON (`_form_json()`;
+  absent → `{}`; a `payload` that isn't a JSON object the JSON path's
+  400, a `cfg` `{}`), and each of `request.files` written by
+  `_uploaded()` — a context manager — to a temp file it names
+  (`tempfile.mkstemp`, prefix `openfit-upload-`, never the client's
+  name) and set into `payload` under its field as a `FileUpload` (over a
+  `payload` entry of the same key), after the body's checks (a 400
+  writes no file); every temp file is removed in its `finally`, whatever
+  `handle()` did (one already gone is fine; another failure logged) —
+  nothing uploaded is kept. `MAX_UPLOAD_BYTES` = 25 MiB is Flask's
+  `MAX_CONTENT_LENGTH` (set beside `DB_PATH`/`APPS_DIR`), so a body over
+  it, on any route, is turned away unread with a 413, said by an
+  `errorhandler(413)` as `{"ok": false, "error": "Request too large (max
+  25 MB)."}`. Full contract:
   `docs/architecture/app-host.md`.
   The two real apps, `steps` and `steps-metres`, are committed in
   `tests/fixtures/apps/` (as deployed in `/data/apps`) and run against the
@@ -324,7 +355,27 @@ own calls to its device API. Full direction:
   `log` only; `payload["mood"]` one of the five strings, else
   `ValueError("Choose a mood from 1 to 5")` (the app holds the choice to
   its options, not the host), then `ctx.write_metric("mood", int(raw))`
-  for today — one a day, replacing.
+  for today — one a day, replacing. And the first with a file picker:
+  `import` (`tests/fixtures/apps/import/`, run by
+  `tests/test_app_actions.py`, the end-to-end test of an input of kind
+  `"file"` and the multipart route — the proof the app parses, not
+  OpenFit). Its `app.yaml`: id `import`, name "Import weigh-ins", `sizes:
+  [{ w: 1, h: 1 }, { w: 2, h: 1 }]`, `reads: [weight_kg]` — no
+  `metrics:`. `render()`: how many days of derived `weight_kg` there are
+  as a `number` (`unit` days, `caption` "since <the first's date>") over
+  an `input` (`key` `file`, `action` `import`, `kind` `"file"`, `accept`
+  `".txt,.csv"`, "Import weigh-ins"), panelled — `empty("No weigh-ins
+  yet")` before any. `handle()`: `import` only; `payload["file"]` must
+  have a `.text` (else `ValueError("Choose a file of weigh-ins to
+  import")`), decoded with `text("utf-8-sig")` (not text → "<name> isn't a
+  text file: expected 'YYYY-MM-DD <kg>' on each line"), parsed by the app
+  a weigh-in a line — `YYYY-MM-DD <kg>`, apart by spaces or a comma, blank
+  lines skipped; a line that won't → `ValueError("line N: expected
+  'YYYY-MM-DD <kg>'")` before any write, none → "No weigh-ins in <name>:
+  …" — then `ctx.write_metric("weight_kg", kg, date=day)` for each, on
+  its own day, a refusal from the host (the plausible range) said as
+  "line N: <why>" and the earlier lines rolled back by the route: all or
+  nothing; a day replaced, a day twice the file's last line.
 - `app/home_layout.py` — the Home tab's layout, one `settings` row
   (`LAYOUT_KEY` `home_layout`, no migration): `{"tabs": [{id, name,
   mode: "flow", subtitle, items: [{instance_id, app_id, size: {w, h},
@@ -746,16 +797,28 @@ own calls to its device API. Full direction:
   `"text"`, or for `kind` `"select"` a `<select class="input">`: a
   "Choose…" placeholder first (value `""`, selected and disabled), then an
   `<option>` per `options` entry, its text (`textContent`) and value the
-  string; named by its label else its key — the `unit` and a **Save**
-  `btn sm`, then a `.m` message line; Save or Enter: a blank field, or a
+  string; or for `kind` `"file"` an `<input type="file">`, its `accept`
+  property `accept` when given (the browser's button styled as the small
+  buttons, the file's name beside it; Save wraps under them, at the row's
+  end, in a tile too narrow — `.row:has(> input[type="file"])`); named by
+  its label else its key — the `unit` and a **Save**
+  `btn sm`, then a `.m` message line; Save or Enter (Save only for a
+  file: Enter opens a picker): a blank field, or a
   number that isn't one, says so ("Enter a number.") and sends nothing —
-  a select still on its placeholder likewise ("Choose an option.") — else
+  a select still on its placeholder likewise ("Choose an option."), a
+  picker with no file ("Choose a file.") or the first file over
+  `UPLOAD_MAX` (25 MiB, the server's `MAX_UPLOAD_BYTES`; "File too large
+  (max 25 MB).") too — else
   `api.appAction(appId, action, {[key]: value}, tileCfg(appId))` (a
   select's value the chosen string, never `Number()`d) →
-  `POST /api/app/<id>/action` `{action, payload, cfg}` with Save and the
+  `POST /api/app/<id>/action` `{action, payload, cfg}`, or for a file
+  `api.appActionFile(appId, action, key, file, tileCfg(appId))` — a
+  `FormData` of `action`, `cfg` (JSON) and the file under `key`, POSTed
+  multipart by `sendForm()` (no `Content-Type` of its own, so the
+  browser sets the boundary; `send()`'s `{ok, ...}` reply) — with Save and the
   field held meanwhile, then `{ok, spec}` → `repaintTile(appId, spec)`, or
   `{ok: false}` → its `error` in the message line, the field kept as
-  typed; drawn with no app id, Save is off; in Configure the face is
+  typed (a file still picked); drawn with no app id, Save is off; in Configure the face is
   inert, its input with it), `empty`/`error` (muted, centred; error under
   "Couldn't render <name>"), any other type an error tile. A spec is drawn
   for its app — `renderSpec(spec, name, appId)`, the id threaded from the
@@ -1402,11 +1465,21 @@ same PR:
   (no migration, no route change): a dropdown, `ctx.input(...,
   kind="select", options=[...])` of plain-string options, drawn by
   `specInput`'s select branch and sent as the chosen string; the `mood`
-  app is the reference (`docs/architecture/input-primitives.md`).
+  app is the reference (`docs/architecture/input-primitives.md`). Then
+  file upload landed (no migration; the action route also takes
+  multipart): `ctx.input(..., kind="file", accept=...)`, the file posted
+  `multipart/form-data` and handed to `handle()` as a `FileUpload` in a
+  temp file deleted after the action, a 25 MiB `MAX_CONTENT_LENGTH` (413
+  over it) — OpenFit carries the file and never parses it, the app does;
+  the `import` app (past weigh-ins from a text file, each on its own
+  day) is the reference.
   Still to come for write-back: `write_session` (the
-  roster path), an app's own session kinds and series, cross-app reads
-  of a custom metric, the later input bricks (file upload, date/time,
-  auto-recompute) and, for a select, `{value, label}` options,
+  roster path — the `.ics` roster app waits on it), an app's own session
+  kinds and series, cross-app reads
+  of a custom metric, the later input bricks (date/time,
+  auto-recompute), per-app Python dependencies (an app gets the image's
+  Python; a PDF library isn't in it), several files in one input and,
+  for a select, `{value, label}` options,
   host-side option-membership enforcement and multi-select,
   `base_tz` (slice A: an app's write lands on the server's local date
   until then), timestamped weigh-ins more than one a day (the instant

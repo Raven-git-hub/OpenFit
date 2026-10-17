@@ -2,18 +2,20 @@
 
 How an app's tile takes input from the user, and the primitives it can offer.
 Design record for the path dropdown → file upload → date/time, each its own
-brick. Dropdown is built (below, with its worked example); the rest are
-sketched.
+brick. Dropdown and file upload are built (below, each with its worked
+example); the rest are sketched.
 
 ## Today — the `input` element
 
 An app's `render(ctx, cfg)` returns a spec; `ctx.input(key, action, label=None,
-kind="number", unit=None, options=None)` (`app/host.py`) puts a field and a
-**Save** on the tile. `INPUT_KINDS` is `("number", "text", "select")`. The
-browser (`specInput`, `app/templates/index.html`) draws the field; Save (or
-Enter) POSTs `{action, payload: {key: value}, cfg}` to `/api/app/<id>/action`,
-which runs the app's `handle(ctx, action, payload)` and redraws the tile from
-the fresh spec.
+kind="number", unit=None, options=None, accept=None)` (`app/host.py`) puts a
+field and a **Save** on the tile. `INPUT_KINDS` is `("number", "text",
+"select", "file")`. The browser (`specInput`, `app/templates/index.html`) draws
+the field; Save (or Enter) POSTs `{action, payload: {key: value}, cfg}` to
+`/api/app/<id>/action` — a file input's the same, as multipart (below) — which
+runs the app's `handle(ctx, action, payload)` and redraws the tile from the
+fresh spec. Every input spec carries `options` and `accept`, each `null` but
+for its own kind.
 
 The split every primitive keeps: **the host carries the value, the app owns the
 meaning.** `handle()` validates `payload[key]` and decides what to do with it —
@@ -70,11 +72,108 @@ category) rather than typing it.
 - Host-side option-membership enforcement (see Validation).
 - Multi-select. One choice only.
 
+## File upload — kind `"file"` (built)
+
+A file picker, for an app that takes a file — a roster's `.ics`, a `.csv`
+export, a PDF, another app's SQLite database. The principle, settled with the
+owner: **OpenFit facilitates the upload and never parses.** The app brings its
+own parser; the host delivers the file to `handle()` and knows no format, so
+the platform stays open to any file an author brings.
+
+- **Spec.** The kind `"file"` in `INPUT_KINDS`, and
+  `ctx.input(..., kind="file", accept=".ics,.csv")`. `accept` is the picker's
+  hints, as an `<input type="file">` takes them (extensions, MIME types or
+  both, comma-separated), optional and only for a file: non-empty text,
+  checked by the builder as `label`/`unit` are — not text → `TypeError`,
+  empty → `ValueError` ("a file input's accept must be non-empty text"), given
+  for another kind → `ValueError` ("accept is only for a file"), mirroring
+  `options`. It's a suggestion to the picker, never enforced: a user can pick
+  any file, and the app checks what it got. `options` stays select-only (a
+  file's is `null`). The spec carries `"accept"` (the string, or `null`).
+- **Render.** `specInput` has a `file` branch: an `<input type="file"
+  class="input">`, its `accept` set (as a property, never markup) when the
+  spec has one, in the field's place — the label over it, the unit, Save and
+  the message line as for the other kinds. The browser's own button is styled
+  as the page's small buttons, the file's name beside it; in a tile too narrow
+  for both and Save, Save wraps under them, at the row's end. Enter isn't
+  wired (in a file picker it opens the picker): Save sends. With no file
+  picked Save says "Choose a file." and sends nothing; a file over the cap
+  (`UPLOAD_MAX`, the server's 25 MiB) "File too large (max 25 MB)." and
+  nothing. The reply's redraw or refusal behave as for the other kinds: a
+  refusal shows under the picker, the file still picked.
+- **Transport.** Bytes don't fit a JSON payload, so a file input posts
+  `multipart/form-data` to the same action route — the only new transport.
+  The page's `api.appActionFile(id, action, key, file, cfg)` builds a
+  `FormData` of `action`, `cfg` (as JSON) and the file under the input's key,
+  and `sendForm()` POSTs it, leaving the `Content-Type` (and its boundary) to
+  the browser; the reply is `send()`'s `{ok, ...}`. The route reads `action`
+  from the form, `payload` and `cfg` from form fields holding their JSON
+  (either may be left out: `{}`; a `payload` that isn't a JSON object is the
+  JSON path's 400, a `cfg` that isn't is `{}`), and sets each file into
+  `payload` under its field. Number, text and select inputs keep posting JSON,
+  untouched. `WriteCtx` doesn't change: the file rides in `payload`.
+- **Size cap.** `MAX_UPLOAD_BYTES` = 25 MiB (`app/main.py`), set as Flask's
+  `MAX_CONTENT_LENGTH`: a body over it is turned away with a `413` before any
+  of it is read — on every route, a platform-wide backstop, comfortably above
+  anything else any route receives (an app's install is a few small text
+  files). The 413 is said as any refusal is, `{"ok": false, "error": "Request
+  too large (max 25 MB)."}`, so a tile shows why; the page's own check stops a
+  file over the cap before it's sent.
+- **The file object.** `payload[key]` is a `FileUpload` (`app/host.py`):
+  - `.name` — the file's name as the browser gave it, for display only (never
+    used as a path);
+  - `.content_type` — the type the browser reported, `""` for none;
+    informational — the app shouldn't trust it;
+  - `.bytes` — the raw bytes (read from the temp file when first asked for);
+  - `.text(encoding="utf-8")` — `.bytes.decode(encoding)`; a decode error
+    propagates, the app's to catch (a binary file read as text is the app's
+    mistake);
+  - `.path` — the temp file's path, for a library that needs a real file
+    (stdlib `sqlite3.connect(f.path)`).
+- **Lifecycle: nothing is persisted.** Each file is written to a temp file the
+  host names (`tempfile.mkstemp`, never the client's filename) for the life of
+  the action, and deleted after — in a `finally`, whether `handle()`
+  succeeded, refused or raised (one the app removed itself is fine). OpenFit
+  doesn't become a file store: only what the app writes (metrics, through
+  `ctx`) survives. Own-source only is unchanged: a write is `app:<id>`,
+  through the same `WriteCtx`, its rollback-on-raise and per-day re-derive.
+- **Validation.** All the app's. The host checks nothing about a file — not
+  its type, its size beyond the cap, nor its content — and parses nothing,
+  not even an `.ics`.
+- **Worked example.** The `import` app, committed in
+  `tests/fixtures/apps/import/` — a bulk importer, the file equivalent of the
+  Weight and Mood apps. A picker (`accept=".txt,.csv"`, "Import weigh-ins")
+  under how many days of weigh-ins the dataset holds. Its `handle()` decodes
+  the file itself (`f.text("utf-8-sig")`, a spreadsheet's byte-order mark
+  taken; not text → its own refusal), parses a weigh-in a line, `YYYY-MM-DD
+  <kg>` apart by spaces or a comma, blank lines skipped (a line that won't →
+  `ValueError("line N: expected 'YYYY-MM-DD <kg>'")`, nothing written), and
+  files each with `ctx.write_metric("weight_kg", kg, date=day)` — on its own
+  day, not today — under `app:import`; a weight the host's plausible range
+  refuses is said with its line number, the lines before it rolled back. It
+  exercises everything new: a file delivered to the app, app-side parsing,
+  and writing to arbitrary dates. Tests exercise the builder and the
+  `FileUpload` (`tests/test_app_host.py`), the render branch and the
+  multipart sender under the node/DOM harness — the page's own `FormData`,
+  encoded by node, posted to the route (`tests/test_routes.py`) — and the
+  multipart route and install-to-derived round trip, the temp file gone after
+  every outcome and the 413 (`tests/test_app_actions.py`).
+
+### Deferred (not this brick)
+- Any parsing by OpenFit, or format support in core: apps parse.
+- Per-app dependencies: an app gets the host image's Python (`sqlite3` is
+  stdlib; a PDF library isn't there). Enabling an app's own libraries is a
+  separate question; this brick delivers bytes.
+- Persistent file storage or attachments: the file is transient.
+- Binary niceties — thumbnails, type sniffing or enforcement (`.content_type`
+  is informational).
+- Several files in one input, multi-select, drag-and-drop.
+- Session write-back (`write_session`): the roster-to-sessions app waits on
+  it; the `import` app writes metrics only.
+
 ## Later bricks (sketch only)
-- **File upload** — what the fatigue manager needs (the `.ics` roster). The
-  heavy one: size limit, where the bytes live, parsing, privacy — its own
-  design pass.
 - **Date / time** — a day or timestamp for a reading, rather than "today".
 - **Auto-recompute** — re-run an app's computed output when its inputs change.
 
-Each stays a separate brick; none is bundled with the dropdown.
+Each stays a separate brick; none is bundled with the dropdown or the file
+upload.

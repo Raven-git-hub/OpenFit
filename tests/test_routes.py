@@ -204,12 +204,12 @@ def test_index_splits_applications_into_controls_and_a_list(client, monkeypatch)
     import main
 
     # What the list shows: the installed apps, as /api/apps returns them -
-    # the five real apps.
+    # the six real apps.
     fixtures = os.path.join(os.path.dirname(__file__), "fixtures", "apps")
     monkeypatch.setitem(main.app.config, "APPS_DIR", fixtures)
     apps = client.get("/api/apps").get_json()
     assert [(a["id"], a["name"]) for a in apps] == [
-        ("caffeine", "Caffeine"), ("mood", "Mood"), ("steps", "Steps"),
+        ("caffeine", "Caffeine"), ("import", "Import weigh-ins"), ("mood", "Mood"), ("steps", "Steps"),
         ("steps-metres", "Distance (from steps)"), ("weight", "Weight"),
     ]
 
@@ -2515,18 +2515,26 @@ def test_installing_onto_a_chosen_tab_moves_the_new_app_and_saves_once(client, t
 # renderer runs under node over the stand-in DOM, against the replies the
 # server gives.
 
-INPUT_PARTS = ["el", "SPECS", "renderSpec", "specInput", "specMsg"]
+INPUT_PARTS = ["el", "SPECS", "renderSpec", "UPLOAD_MAX", "specInput", "specMsg"]
 
 INPUT_HARNESS = r"""
     // What Save reaches: the action route (each call noted, the reply the
     // test's), the tile's config, and the tile's redraw.
-    const calls = [], repaints = [];
+    // A file input's Save reaches its own sender, noted apart - the file
+    // by its name.
+    const calls = [], fileCalls = [], repaints = [];
     let reply = {ok:true, spec:{type:'empty', message:'fresh'}};
     let release = null;
-    const api = {appAction: (id, action, payload, cfg) => {
-      calls.push([id, action, payload, cfg]);
-      return new Promise(done => { release = () => done(reply); });
-    }};
+    const api = {
+      appAction: (id, action, payload, cfg) => {
+        calls.push([id, action, payload, cfg]);
+        return new Promise(done => { release = () => done(reply); });
+      },
+      appActionFile: (id, action, key, file, cfg) => {
+        fileCalls.push([id, action, key, file.name, cfg]);
+        return new Promise(done => { release = () => done(reply); });
+      },
+    };
     const tileCfg = id => ({for:id});
     const repaintTile = (id, spec) => repaints.push([id, spec]);
     // What the other specs draw with, which these tests don't look at.
@@ -2562,6 +2570,17 @@ INPUT_HARNESS = r"""
       await pending;
       return {busy, after:[!!btn.disabled, !!field.disabled], value:field.value, msg:msg.textContent,
         calls:calls.splice(0), repaints:repaints.splice(0)};
+    }
+    // The same for a file picker, with `files` picked in it: Save only.
+    async function saveFile(box, files){
+      const {field, save:btn, msg} = parts(box);
+      field.files = files;
+      const pending = btn.onclick();
+      const busy = [!!btn.disabled, !!field.disabled];
+      if(release){ release(); release = null; }
+      await pending;
+      return {busy, after:[!!btn.disabled, !!field.disabled], picked:(field.files || []).map(f => f.name),
+        msg:msg.textContent, calls:calls.splice(0), sent:fileCalls.splice(0), repaints:repaints.splice(0)};
     }
     const r = {};
 """
@@ -2817,7 +2836,7 @@ def test_a_selects_dropdown_is_built_as_text_and_keeps_its_arrow(client):
     assert "const field = el(choice ? 'select' : 'input','input');" in spec_input
     assert "o.value = o.textContent = String(v);" in spec_input
     assert "const value = numeric ? Number(typed) : typed;" in spec_input
-    assert "const numeric = !choice && s.kind!=='text';" in spec_input
+    assert "const numeric = !choice && !upload && s.kind!=='text';" in spec_input
     assert "if(choice && !typed){ msg.textContent = 'Choose an option.'; return; }" in spec_input
     # The tile's fields are drawn as plain text boxes; a select keeps its
     # native dropdown arrow, as the page's other selects do.
@@ -2845,6 +2864,257 @@ def test_the_input_reaches_the_action_route_through_the_api_block(client):
     # In Configure a tile's face is inert, its input with it: Configure
     # arranges tiles, it doesn't act on them.
     assert ".tiles.configuring .tile > :not(.tile-cfg){pointer-events:none;}" in page
+
+
+FILE_FIELD = {"type": "input", "key": "file", "action": "import", "label": "Import <b>weigh-ins</b>",
+              "kind": "file", "unit": None, "options": None, "accept": ".txt,.csv"}
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
+def test_a_file_input_draws_a_picker_offering_its_accept(client):
+    page = _page(client)
+    bare = {"type": "input", "key": "roster", "action": "load", "kind": "file", "unit": "ics",
+            "options": None, "accept": None}
+    r = _node(_input_script(page, f"""
+        const panel = renderSpec({{type:'panel', children:[{{type:'empty', message:'No weigh-ins yet'}}, {json.dumps(FILE_FIELD)}]}}, 'Import', 'import');
+        r.panel = panel.children.map(c => c.className);
+        const box = panel.children[1], {{field}} = parts(box);
+        r.look = look(box);
+        r.picker = [field.tag, field.accept, field.children.length, typeof field.onkeydown];
+        const other = renderSpec({json.dumps(bare)}, 'Rota', 'rota');
+        r.other = look(other);
+        r.otherAccept = 'accept' in parts(other).field;
+    """))
+
+    # At the panel's foot, the number field's layout: the label over the
+    # picker and Save, then an empty message line - every part text.
+    assert r["panel"] == ["spec-msg", "spec-input"]
+    assert r["look"] == {
+        "cls": "spec-input", "kids": ["t", "row", "m"], "label": "Import <b>weigh-ins</b>",
+        "field": ["input", "file", None, "Import <b>weigh-ins</b>"], "unit": None,
+        "save": ["btn sm", "button", "Save", False], "msg": ["", "status"], "html": "",
+    }
+    # An <input type="file"> offering the accept hints as written; Enter
+    # opens a picker, so it's Save alone that sends.
+    assert r["picker"] == ["input", ".txt,.csv", 0, "undefined"]
+    # No accept, no hint - any file; named by its key, a unit beside it.
+    assert r["otherAccept"] is False
+    assert r["other"]["field"] == ["input", "file", None, "roster"]
+    assert r["other"]["unit"] == "ics"
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
+def test_a_file_input_sends_the_file_picked_and_redraws_the_tile(client):
+    page = _page(client)
+    r = _node(_input_script(page, f"""
+        const box = () => renderSpec({{type:'panel', children:[{json.dumps(FILE_FIELD)}]}}, 'Import', 'import').children[0];
+        r.picked = await saveFile(box(), [{{name:'w.txt', size:16}}, {{name:'also.txt', size:1}}]);
+        r.atCap = await saveFile(box(), [{{name:'big.db', size:UPLOAD_MAX}}]);
+        const refused = box();
+        reply = {{ok:false, error:"line 2: expected 'YYYY-MM-DD <kg>'"}};
+        r.refused = await saveFile(refused, [{{name:'bad.txt', size:9}}]);
+        r.html = look(refused).html;
+    """))
+
+    fresh = {"type": "empty", "message": "fresh"}
+    # The first file picked, by its own sender - never the JSON one -
+    # under the input's key with the action and the tile's config; Save
+    # and the picker held while it's on its way; the tile redrawn from
+    # the reply.
+    assert r["picked"] == {
+        "busy": [True, True], "after": [False, False], "picked": ["w.txt", "also.txt"], "msg": "",
+        "calls": [], "sent": [["import", "import", "file", "w.txt", {"for": "import"}]],
+        "repaints": [["import", fresh]],
+    }
+    # Up to the cap goes.
+    assert r["atCap"]["sent"] == [["import", "import", "file", "big.db", {"for": "import"}]]
+    # The app's refusal under the picker - the file still picked - and the
+    # tile left as it was.
+    assert r["refused"]["sent"] == [["import", "import", "file", "bad.txt", {"for": "import"}]]
+    assert r["refused"]["msg"] == "line 2: expected 'YYYY-MM-DD <kg>'"
+    assert r["refused"]["picked"] == ["bad.txt"]
+    assert r["refused"]["after"] == [False, False]
+    assert r["refused"]["repaints"] == []
+    assert r["html"] == ""
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
+def test_a_file_input_sends_nothing_with_no_file_or_one_over_the_cap(client):
+    page = _page(client)
+    r = _node(_input_script(page, f"""
+        const box = renderSpec({json.dumps(FILE_FIELD)}, 'Import', 'import');
+        r.none = await saveFile(box, []);
+        r.unset = await saveFile(box, undefined);
+        r.big = await saveFile(box, [{{name:'huge.db', size:UPLOAD_MAX + 1}}]);
+        r.thenPicked = await saveFile(box, [{{name:'w.txt', size:16}}]);
+        const orphan = renderSpec({json.dumps(FILE_FIELD)}, 'Import');
+        r.orphan = look(orphan).save;
+        r.orphanSave = await saveFile(orphan, [{{name:'w.txt', size:16}}]);
+    """))
+
+    # Said on the tile, nothing sent, nothing held.
+    for case in ("none", "unset"):
+        assert r[case]["msg"] == "Choose a file.", case
+    assert r["big"]["msg"] == "File too large (max 25 MB)."
+    for case in ("none", "unset", "big", "orphanSave"):
+        assert r[case]["calls"] == r[case]["sent"] == r[case]["repaints"] == [], case
+    for case in ("none", "unset", "big"):
+        assert r[case]["busy"] == [False, False], case
+    # Once one is picked it goes, and the message clears.
+    assert r["thenPicked"]["sent"] == [["import", "import", "file", "w.txt", {"for": "import"}]]
+    assert r["thenPicked"]["msg"] == ""
+    # Drawn for no app, Save is off and sends nothing, as for any input.
+    assert r["orphan"] == ["btn sm", "button", "Save", True]
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
+def test_number_text_and_select_still_post_json_beside_the_file(client):
+    page = _page(client)
+    text = {"type": "input", "key": "note", "action": "save", "kind": "text", "options": None, "accept": None}
+    r = _node(_input_script(page, f"""
+        r.number = await save(renderSpec({json.dumps(dict(WEIGHT_FIELD, options=None, accept=None))}, 'Weight', 'weight'), '80.5');
+        r.text = await save(renderSpec({json.dumps(text)}, 'Notes', 'notes'), 'hi', 'enter');
+        r.select = await save(renderSpec({json.dumps(dict(MOOD_FIELD, accept=None))}, 'Mood', 'mood'), '3');
+        r.types = [{json.dumps(dict(WEIGHT_FIELD, accept=None))}, {json.dumps(text)}].map(s => parts(renderSpec(s, 'X', 'x')).field.type);
+        r.fileCalls = fileCalls.length;
+    """))
+
+    # Each through the JSON sender, as before; the file sender never.
+    assert r["number"]["calls"] == [["weight", "log", {"weight_kg": 80.5}, {"for": "weight"}]]
+    assert r["text"]["calls"] == [["notes", "save", {"note": "hi"}, {"for": "notes"}]]
+    assert r["select"]["calls"] == [["mood", "log", {"mood": "3"}, {"for": "mood"}]]
+    assert r["types"] == ["number", "text"]
+    assert r["fileCalls"] == 0
+
+
+def test_a_file_input_is_built_as_text_and_capped_as_the_server_caps_it(client):
+    import main
+
+    page = _page(client)
+    spec_input = _js_function(page, "specInput")
+    # The hints set as a property, never markup; the first file picked
+    # sent by the file sender, the cap the server's own.
+    assert "field.type = 'file';" in spec_input
+    assert "if(s.accept!=null && s.accept!=='') field.accept = String(s.accept);" in spec_input
+    assert "const file = field.files && field.files[0];" in spec_input
+    assert "if(!file){ msg.textContent = 'Choose a file.'; return; }" in spec_input
+    assert "if(file.size > UPLOAD_MAX){ msg.textContent = 'File too large (max 25 MB).'; return; }" in spec_input
+    assert "api.appActionFile(appId, s.action, s.key, file, tileCfg(appId));" in spec_input
+    assert "if(!upload) field.onkeydown = e => { if(e.key==='Enter') submit(); };" in spec_input
+    assert _const(page, "UPLOAD_MAX") == "const UPLOAD_MAX = 25 * 1024 * 1024;"
+    assert 25 * 1024 * 1024 == main.MAX_UPLOAD_BYTES
+    # The picker sits in the tile's row as the other fields do.
+    assert '.spec-input input[type="file"].input{' in page
+    assert '.spec-input input[type="file"].input::file-selector-button{' in page
+
+
+# The page's own sender, run under node with fetch stood in for: what it
+# hands fetch, as FormData - and, encoded by node's own Request, the
+# bytes a browser would put on the wire.
+FORM_SCRIPT = r"""
+    const enc = encodeURIComponent;
+    SENDER
+    API
+    const r = {}, sent = [];
+    let answer = async () => ({ok:true, json:async () => ({ok:true, spec:{type:'empty', message:'fresh'}})});
+    globalThis.fetch = async (url, opts) => { sent.push([url, opts]); return answer(); };
+    const entry = ([k, v]) => [k, typeof v==='string' ? v : {name:v.name, type:v.type, size:v.size}];
+    (async () => {
+      const file = new File([CONTENT], 'weigh-ins.txt', {type:'text/plain'});
+      r.reply = await api.appActionFile('import', 'import', 'file', file, {days:3});
+      const [url, opts] = sent[0];
+      r.url = url;
+      r.request = {method:opts.method, headers:opts.headers===undefined ? null : opts.headers,
+                   form:opts.body instanceof FormData, entries:[...opts.body.entries()].map(entry)};
+      const wire = new Request('http://openfit.test' + url, {method:'POST', body:opts.body});
+      r.contentType = wire.headers.get('content-type');
+      r.body = Buffer.from(await wire.arrayBuffer()).toString('base64');
+      // No cfg: an empty one. And the replies as send()'s are handed on.
+      await api.appActionFile('a b', 'go', 'roster', file);
+      r.bare = [sent[1][0], [...sent[1][1].body.entries()].map(entry)];
+      answer = async () => ({ok:false, json:async () => ({ok:false, error:'Request too large (max 25 MB).'})});
+      r.refused = await api.appActionFile('import', 'import', 'file', file, {});
+      answer = async () => ({ok:false, json:async () => { throw new SyntaxError('not JSON'); }});
+      r.unsaid = await api.appActionFile('import', 'import', 'file', file, {});
+      answer = async () => { throw new TypeError('Failed to fetch'); };
+      r.offline = await api.appActionFile('import', 'import', 'file', file, {});
+      console.log(JSON.stringify(r));
+    })().catch(e => { console.error(e); process.exit(1); });
+"""
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
+def test_a_file_input_posts_multipart_the_action_route_takes(client, tmp_path, monkeypatch):
+    import base64
+    import sqlite3
+    import tempfile
+
+    import main
+
+    apps_dir, uploads = tmp_path / "apps", tmp_path / "uploads"
+    apps_dir.mkdir()
+    uploads.mkdir()
+    monkeypatch.setitem(main.app.config, "APPS_DIR", str(apps_dir))
+    monkeypatch.setattr(tempfile, "tempdir", str(uploads))
+    fixture = os.path.join(os.path.dirname(__file__), "fixtures", "apps", "import")
+    files = {name: open(os.path.join(fixture, name), encoding="utf-8").read() for name in ("app.yaml", "app.py")}
+    assert client.post("/api/apps", json={"files": files}).status_code == 201
+
+    page = _page(client)
+    content = "2026-01-03 81.2\n2026-01-05 80.9\n"
+    script = (FORM_SCRIPT.replace("SENDER", _js(page, "sendForm")).replace("API", _js(page, "api"))
+              .replace("CONTENT", json.dumps(content)))
+    r = _node(script)
+
+    # A POST to the action route of FormData - no Content-Type of the
+    # page's own, so the browser sets the multipart one, boundary and all
+    # - holding the action, the tile's config as JSON, and the file under
+    # the input's key, as picked.
+    assert r["url"] == "/api/app/import/action"
+    assert r["request"] == {
+        "method": "POST", "headers": None, "form": True,
+        "entries": [["action", "import"], ["cfg", '{"days":3}'],
+                    ["file", {"name": "weigh-ins.txt", "type": "text/plain", "size": len(content)}]],
+    }
+    assert r["reply"] == {"ok": True, "spec": {"type": "empty", "message": "fresh"}}
+    assert r["bare"] == ["/api/app/a%20b/action", [
+        ["action", "go"], ["cfg", "{}"], ["roster", {"name": "weigh-ins.txt", "type": "text/plain", "size": len(content)}],
+    ]]
+    # A refusal as send() hands one on: the server's reason, or none.
+    assert r["refused"] == {"ok": False, "error": "Request too large (max 25 MB)."}
+    assert r["unsaid"] == {"ok": False}
+    assert r["offline"] == {"ok": False, "error": "network error"}
+
+    # What a browser would send, sent: the route takes it, the app reads
+    # the file, and its weigh-ins are filed on their days.
+    assert r["contentType"].startswith("multipart/form-data; boundary=")
+    resp = client.post("/api/app/import/action", data=base64.b64decode(r["body"]), content_type=r["contentType"])
+    assert resp.status_code == 200, resp.get_json()
+    assert resp.get_json()["spec"]["children"][0]["value"] == 2
+    assert os.listdir(uploads) == []
+    conn = sqlite3.connect(main.app.config["DB_PATH"])
+    assert conn.execute(
+        "SELECT date, source, metric, value FROM metrics ORDER BY date"
+    ).fetchall() == [("2026-01-03", "app:import", "weight_kg", 81.2), ("2026-01-05", "app:import", "weight_kg", 80.9)]
+    conn.close()
+
+
+def test_the_file_sender_reaches_the_action_route_through_the_api_block(client):
+    page = _page(client)
+    # Beside appAction, in the API block - the only place a URL lives.
+    assert (
+        "    appActionFile: (id, action, key, file, cfg) => {\n"
+        "      const form = new FormData();\n"
+        "      form.append('action', action);\n"
+        "      form.append('cfg', JSON.stringify(cfg || {}));\n"
+        "      form.append(key, file);\n"
+        "      return sendForm('/api/app/'+enc(id)+'/action', form);\n"
+        "    },"
+    ) in page
+    send_form = _js(page, "sendForm")
+    assert "fetch(url, {method:'POST', body:form})" in send_form
+    assert "Content-Type" not in send_form
+    assert page.count("sendForm(") == 2
 
 
 # ---------- an uninstalled app's data: Remove data ----------
