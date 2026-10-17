@@ -119,6 +119,18 @@ def insert(conn, day, source, **values):
     conn.commit()
 
 
+# What the ctx says of a key that's neither canonical nor the app's own.
+DECLARE_IT = "declare it in app.yaml's metrics to write it"
+
+
+def an_app(app_id, metrics=()):
+    """An InstalledApp to make a ctx for, declaring `metrics` - no folder."""
+    return apps.InstalledApp(
+        id=app_id, name=app_id, sizes=[{"w": 1, "h": 1}], default_size={"w": 1, "h": 1},
+        reads=[], config=[], path="/nowhere", render=None, metrics=list(metrics),
+    )
+
+
 def assert_refused(resp, status=400):
     assert resp.status_code == status
     body = resp.get_json()
@@ -318,8 +330,8 @@ def test_a_value_error_is_the_apps_refusal_said_as_written(client, conn, apps_di
 @pytest.mark.parametrize(
     "payload, says",
     [
-        ({"metric": "weight_lbs", "value": 180}, "unknown metric: 'weight_lbs'"),
-        ({"metric": "heart_rate", "value": 60}, "unknown metric: 'heart_rate'"),
+        ({"metric": "weight_lbs", "value": 180}, f"unknown metric: 'weight_lbs' - {DECLARE_IT}"),
+        ({"metric": "heart_rate", "value": 60}, f"unknown metric: 'heart_rate' - {DECLARE_IT}"),
         ({"metric": WEIGHT_KG, "value": True}, "value must be a number"),
         ({"metric": WEIGHT_KG, "value": "81.2"}, "value must be a number"),
         ({"metric": WEIGHT_KG, "value": None}, "value must be a number"),
@@ -329,8 +341,9 @@ def test_a_value_error_is_the_apps_refusal_said_as_written(client, conn, apps_di
     ],
 )
 def test_the_ctx_refuses_a_reading_that_wont_do(client, conn, apps_dir, payload, says):
-    # The webhook's rule: a canonical key, a finite number within its
-    # plausible range, a YYYY-MM-DD date.
+    # The webhook's rule: a canonical key (or one the app declares - this
+    # one declares none), a finite number within its plausible range, a
+    # YYYY-MM-DD date.
     make_app(apps_dir, "scale", WRITER)
 
     assert assert_refused(act(client, "scale", payload=payload)) == says
@@ -455,7 +468,7 @@ def test_uninstalling_an_app_keeps_what_it_wrote(client, conn, apps_dir):
 
 
 def test_a_write_ctx_writes_under_app_and_its_id(conn):
-    ctx = host.WriteCtx(conn, "scale", today=date(2026, 1, 5))
+    ctx = host.WriteCtx(conn, an_app("scale"), today=date(2026, 1, 5))
 
     assert ctx.source == "app:scale" == host.app_source("scale")
     ctx.write_metric(WEIGHT_KG, 81)
@@ -474,7 +487,7 @@ def test_a_write_ctx_writes_under_app_and_its_id(conn):
 
 
 def test_a_write_ctx_takes_a_day_as_a_date_or_iso_text(conn):
-    ctx = host.WriteCtx(conn, "scale")
+    ctx = host.WriteCtx(conn, an_app("scale"))
     ctx.write_metric(WEIGHT_KG, 81, date="2026-1-5")   # as the webhook does: normalised
 
     assert ctx.written == ["2026-01-05"]
@@ -490,7 +503,7 @@ def test_a_write_ctx_takes_a_day_as_a_date_or_iso_text(conn):
 @pytest.mark.parametrize("metric", sorted(PLAUSIBLE_RANGES))
 def test_a_write_ctx_holds_each_metric_to_its_plausible_range(conn, metric):
     low, high = PLAUSIBLE_RANGES[metric]
-    ctx = host.WriteCtx(conn, "scale", today=date(2026, 1, 5))
+    ctx = host.WriteCtx(conn, an_app("scale"), today=date(2026, 1, 5))
 
     for value in (low - 0.01, high + 0.01, float("nan"), float("inf")):
         with pytest.raises(ValueError):
@@ -553,7 +566,7 @@ def test_the_weight_app_loads_as_written(client, apps_dir):
 
     assert client.get("/api/apps").get_json() == [
         {"id": "weight", "name": "Weight", "default_size": {"w": 1, "h": 1},
-         "sizes": [{"w": 1, "h": 1}, {"w": 2, "h": 1}], "reads": ["weight_kg"], "config": [],
+         "sizes": [{"w": 1, "h": 1}, {"w": 2, "h": 1}], "reads": ["weight_kg"], "config": [], "metrics": [],
          "files": ["app.py", "app.yaml"]},
     ]
 

@@ -204,12 +204,13 @@ def test_index_splits_applications_into_controls_and_a_list(client, monkeypatch)
     import main
 
     # What the list shows: the installed apps, as /api/apps returns them -
-    # the three real apps.
+    # the four real apps.
     fixtures = os.path.join(os.path.dirname(__file__), "fixtures", "apps")
     monkeypatch.setitem(main.app.config, "APPS_DIR", fixtures)
     apps = client.get("/api/apps").get_json()
     assert [(a["id"], a["name"]) for a in apps] == [
-        ("steps", "Steps"), ("steps-metres", "Distance (from steps)"), ("weight", "Weight"),
+        ("caffeine", "Caffeine"), ("steps", "Steps"), ("steps-metres", "Distance (from steps)"),
+        ("weight", "Weight"),
     ]
 
     resp = client.get("/")
@@ -500,9 +501,11 @@ def test_an_open_app_row_shows_reads_files_and_a_writes_slot(client):
     page = resp.get_data(as_text=True)
     resp.close()
     panel = _js_function(page, "appPanel")
-    # Reads: the manifest's keys, escaped - or a muted note.
+    # Reads: the manifest's keys, escaped - or a muted note. A key the app
+    # invents is named by its declared label, any other by metricName().
     assert "<h5>Reads</h5>" in panel
-    assert '`<li class="akey" data-tip="${esc(metricName(k))}">${esc(k)}</li>`' in panel
+    assert '`<li class="akey" data-tip="${esc(readName(k))}">${esc(k)}</li>`' in panel
+    assert "const readName = k => (own.find(m => m.key===k) || {}).label || metricName(k);" in panel
     assert "'<p class=\"dnote\">No declared reads</p>'" in panel
     # Files: each a button opening the viewer on that file.
     assert "<h5>Files</h5>" in panel
@@ -2944,6 +2947,75 @@ def test_the_summary_counts_every_kind_of_row(client):
         "1,200 readings across 2 metrics (Steps, Weight), 1 session and 3 samples",
         "2 sessions",
     ]
+
+
+# ---------- an app's own metric in Your data ----------
+#
+# The catalog lists an installed app's own metrics after the canonical
+# ones, each under app:<id>:<key> and marked with its `app` and `label`.
+# Your data names one by its label, marks it as the app's, and - with no
+# source role for it (/api/source-roles lists the canonical metrics) -
+# lists its source from the catalog, not as a priority to drag.
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
+def test_your_data_names_an_apps_own_metric_and_lists_its_source(client, tmp_path, monkeypatch):
+    import main
+
+    path = tmp_path / "apps"
+    shutil.copytree(
+        os.path.join(os.path.dirname(__file__), "fixtures", "apps", "caffeine"), path / "caffeine",
+        ignore=shutil.ignore_patterns("__pycache__"),
+    )
+    monkeypatch.setitem(main.app.config, "APPS_DIR", str(path))
+    declared = client.get("/api/catalog?include_empty=1").get_json()
+    resp = client.post("/api/app/caffeine/action", json={"action": "log", "payload": {"caffeine_mg": 95}})
+    assert resp.status_code == 200
+    logged = client.get("/api/catalog?include_empty=1").get_json()
+    roles = client.get("/api/source-roles").get_json()
+    assert "app:caffeine:caffeine_mg" not in roles
+
+    page = _page(client)
+    esc = re.search(r"\n  (const esc = .*?\);)\n", page, re.S).group(1)
+    multiline = [re.search(rf"\n  (const {n} = .*?;)\n", page, re.S).group(1) for n in ("titleCase", "metricName")]
+    parts = [_js(page, n) for n in ("$", "el", "METRIC_NAMES", "CUSTOM_LABELS", "buildRows",
+                                    "orphans", "orphanLines", "fillSources", "sourceList")]
+    script = PARSING_DOM + esc + "\n" + "\n".join(parts[:4] + multiline + parts[4:]) + f"""
+        const srcName = id => id;
+        const makeSortable = () => {{ throw new Error('an app metric is not sortable'); }};
+        const state = {{appSources:[], roles:{json.dumps(roles)}, note:{{}}}};
+        const look = catalog => {{
+          const row = buildRows(catalog).find(r => r.key === 'app:caffeine:caffeine_mg');
+          const box = mk('div');
+          fillSources(row, box);
+          return {{
+            name:metricName(row.key), app:row.app, category:row.category, grain:row.grain,
+            tiles:box.querySelectorAll('.stile').map(t => [t.dataset.src, t.textContent]),
+            notes:box.querySelectorAll('.dnote').map(n => n.textContent),
+          }};
+        }};
+        console.log(JSON.stringify({{
+          declared:look({json.dumps(declared)}), logged:look({json.dumps(logged)}),
+          // Its app gone, an orphan's metric still reads: by its short key.
+          gone:metricName('app:old:theanine_mg'), canonical:metricName('weight_kg'),
+        }}));
+    """
+    result = _node(script)
+
+    assert result["declared"] == {
+        "name": "Caffeine", "app": "caffeine", "category": "Nutrition & hydration", "grain": "daily",
+        "tiles": [], "notes": ["Defined by the app 'caffeine'. Nothing logged yet."],
+    }
+    assert result["logged"] == {
+        "name": "Caffeine", "app": "caffeine", "category": "Nutrition & hydration", "grain": "daily",
+        "tiles": [["app:caffeine", "app:caffeinePRIMARY"]],
+        "notes": ["Defined by the app 'caffeine': only it writes this metric."],
+    }
+    assert (result["gone"], result["canonical"]) == ("Theanine Mg", "Weight")
+    # The row marks it as the app's beside its name, all as escaped text.
+    row = _js_function(page, "rowItem")
+    assert '<span class="d-app">app</span>' in row
+    assert "${esc(metricName(row.key))}" in row and "data-tip=\"${esc(tip)}\"" in row
 
 
 def test_remove_data_reaches_the_route_through_the_api_block(client):

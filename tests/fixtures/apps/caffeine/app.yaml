@@ -1,0 +1,11 @@
+id: caffeine
+name: Caffeine
+sizes: [{ w: 1, h: 1 }, { w: 2, h: 1 }]
+reads: [caffeine_mg]
+metrics:
+  - key: caffeine_mg
+    label: Caffeine
+    unit: mg
+    category: Nutrition & hydration
+    grain: daily
+    range: [0, 2000]

@@ -5,10 +5,11 @@ An app is a folder in the apps directory (APPS_DIR, /data/apps by
 default) holding its manifest and, usually, its engine:
 
     <apps dir>/steps/
-        app.yaml    the manifest: id, name, sizes, reads, config
+        app.yaml    the manifest: id, name, sizes, reads, config, metrics
                     (sizes the tile's allowed sizes in cells, the default
                     first; config an ordered list of fields:
-                    {key, label, type, default})
+                    {key, label, type, default}; metrics the ones the
+                    app invents: {key, label, unit, category, grain, range})
         app.py      def render(ctx, cfg): -> a display spec (see host.py)
                     and, optionally, def handle(ctx, action, payload):
                     what its tile's input sends (POST /api/app/<id>/action)
@@ -51,6 +52,18 @@ from dataclasses import dataclass, field
 
 import yaml
 
+from metrics import (
+    CATEGORIES,
+    DAILY,
+    INSTANT,
+    METRICS,
+    SERIES,
+    SERIES_METRICS,
+    SESSION,
+    SESSION_KINDS,
+    finite_number,
+)
+
 MANIFEST = "app.yaml"
 MODULE = "app.py"
 
@@ -79,12 +92,14 @@ class InstalledApp:
     # handle(ctx, action, payload), or None: an app without one can't be
     # actioned, only drawn.
     handle: object = field(default=None, repr=False)
+    # The metrics it invents (_metrics()), in its manifest's order.
+    metrics: list = field(default_factory=list)
 
     def summary(self):
         """What GET /api/apps lists for it: the manifest's id, name, sizes
-        (default_size their first), reads and config fields - the schema
-        a tile's settings form is built from - and the names of the files
-        in its folder."""
+        (default_size their first), reads, config fields - the schema a
+        tile's settings form is built from - and the metrics it invents,
+        and the names of the files in its folder."""
         return {
             "id": self.id,
             "name": self.name,
@@ -92,6 +107,10 @@ class InstalledApp:
             "sizes": [dict(size) for size in self.sizes],
             "reads": list(self.reads),
             "config": [dict(field) for field in self.config],
+            "metrics": [
+                {**metric, "range": None if metric["range"] is None else list(metric["range"])}
+                for metric in self.metrics
+            ],
             "files": app_files(self.path),
         }
 
@@ -200,6 +219,111 @@ def _config(raw):
     return fields
 
 
+# Every key OpenFit's own vocabulary has: a metric, a series metric or a
+# session kind. None is an app's to declare: it would shadow the built-in
+# one wherever the app's code names it.
+RESERVED_KEYS = frozenset(METRICS) | frozenset(SERIES_METRICS) | frozenset(SESSION_KINDS)
+
+# What an app's own metric may be: one figure a day, or a timestamped
+# point. A session kind or a series of an app's own is a later job.
+APP_METRIC_GRAINS = (DAILY, INSTANT)
+
+# The fields of a metric an app declares; range is optional.
+METRIC_FIELDS = ("key", "label", "unit", "category", "grain", "range")
+
+
+def _metric_range(raw, key):
+    """A declared metric's range, [low, high], or None for none."""
+    if raw is None:
+        return None
+    if isinstance(raw, list) and len(raw) == 2:
+        try:
+            low, high = (finite_number(bound) for bound in raw)
+        except ValueError:
+            pass
+        else:
+            if low > high:
+                raise AppError(f"metric {key!r}: range is [low, high], low first: {raw!r}")
+            return list(raw)
+    raise AppError(f"metric {key!r}: range must be [low, high], two numbers, such as [0, 1000]: {raw!r}")
+
+
+def _metrics(raw):
+    """The metrics the app invents, in order: [{key, label, unit, category, grain, range}, ...].
+
+    Declare what you invent, write what exists: an app lists here only
+    a metric OpenFit doesn't have. A built-in one (calories_in) it just
+    writes, so a key the vocabulary already has - a metric, series
+    metric or session kind - is refused: it would shadow the built-in.
+    Each metric is a mapping of METRIC_FIELDS and nothing else, so a
+    misspelt `range` can't quietly mean no range:
+
+    - key: the short key the app's code says, shaped as an app id (it's
+      part of a URL too: /api/metric/app:<id>:<key>), once per app. It's
+      stored as app:<id>:<key> (host.py), so two apps' keys never meet.
+    - label: its name, as the console shows it. Text.
+    - unit: what its readings are in - the app's own, text.
+    - category: one of CATEGORIES, Other the catch-all.
+    - grain: daily or instant (APP_METRIC_GRAINS).
+    - range: optional [low, high], finite numbers, both ends included: a
+      write outside it is refused. Left out, or null, any finite number
+      will do.
+
+    A list, as config is, so the order is the manifest's: the order the
+    catalog lists them in.
+    """
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise AppError("metrics must be a list of the metrics the app invents, each {key, label, unit, category, grain}")
+    metrics, keys = [], set()
+    for entry in raw:
+        if not isinstance(entry, dict):
+            raise AppError(f"each metric must be a mapping of {', '.join(METRIC_FIELDS)}: {entry!r}")
+        key = entry.get("key")
+        if not isinstance(key, str) or not APP_ID.match(key):
+            raise AppError(
+                "each metric needs a key: letters, digits, '-' and '_', "
+                f"starting with a letter or digit: {key!r}"
+            )
+        if key in RESERVED_KEYS:
+            raise AppError(
+                f"metric {key!r} is one of OpenFit's own keys: declare only a metric the app "
+                "invents (a built-in metric is written without declaring it)"
+            )
+        if key in keys:
+            raise AppError(f"metric {key!r} is listed twice")
+        unknown = sorted(str(name) for name in entry if name not in METRIC_FIELDS)
+        if unknown:
+            raise AppError(
+                f"metric {key!r} has a field a metric doesn't: {', '.join(map(repr, unknown))} "
+                f"- a metric is {{{', '.join(METRIC_FIELDS)}}}"
+            )
+        texts = {}
+        for name in ("label", "unit"):
+            value = entry.get(name)
+            if not isinstance(value, str) or not value.strip():
+                raise AppError(f"metric {key!r} needs a {name}, as text")
+            texts[name] = value.strip()
+        category = entry.get("category")
+        if category not in CATEGORIES:
+            raise AppError(f"metric {key!r}: category must be one of {', '.join(CATEGORIES)}: {category!r}")
+        grain = entry.get("grain")
+        if grain in (SESSION, SERIES):
+            raise AppError(f"metric {key!r}: an app's own metric is daily or instant, not {grain}")
+        if grain not in APP_METRIC_GRAINS:
+            raise AppError(f"metric {key!r}: grain must be daily or instant: {grain!r}")
+        keys.add(key)
+        metrics.append({
+            "key": key,
+            **texts,
+            "category": category,
+            "grain": grain,
+            "range": _metric_range(entry.get("range"), key),
+        })
+    return metrics
+
+
 def _manifest(folder):
     """The folder's manifest, checked and with defaults filled in."""
     try:
@@ -234,6 +358,7 @@ def _manifest(folder):
         "default_size": dict(sizes[0]),
         "reads": list(reads),
         "config": _config(raw.get("config")),
+        "metrics": _metrics(raw.get("metrics")),
     }
 
 

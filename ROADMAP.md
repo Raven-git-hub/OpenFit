@@ -107,7 +107,12 @@ the app is moved by hand like any tile. Then apps as sources: an app's
 through `POST /api/app/<id>/action`, writes under its own source, `app:<id>`,
 fixed by the host so it can only ever write its own rows; the Weight app is
 the first writer, and `/api/weights` is retired (its `manual` weigh-ins kept as
-history). Next: the rest of the Library (the writes ticker, now apps write
+history). Then an uninstalled app's data removed on request, and then
+app-defined metrics: an app declares the metrics it invents in its manifest
+(daily or instant, a unit, a category, an optional range) and writes them by
+short key, stored as `app:<id>:<key>` and listed beside the built-in metrics
+(the Caffeine app the example; purging an uninstalled app's metric is next on
+that path). Next: the rest of the Library (the writes ticker, now apps write
 back; alerts; Browse / Build / Create are still placeholders), session
 write-back, and the grid pass (free cell placement, a second layout mode on
 the same sizes).

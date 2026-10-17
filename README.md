@@ -378,6 +378,27 @@ fresh `render()`. An app's data competes in the same per-metric pick as any
 source's, after Garmin and Google Health unless you make it a metric's primary
 (`PUT /api/source-roles/<metric>`), and stays when the app is uninstalled.
 
+An app isn't limited to OpenFit's metrics: it can **invent its own**. Declare
+what you invent, write what exists — a built-in metric is just written, while a
+new one is declared in the app's `app.yaml`:
+
+```yaml
+metrics:
+  - {key: caffeine_mg, label: Caffeine, unit: mg, category: "Nutrition & hydration", grain: daily, range: [0, 2000]}
+```
+
+The app's code then reads and writes it by that short key
+(`ctx.write_metric("caffeine_mg", 95)`, `ctx.metric("caffeine_mg")`), and the
+host stores it as `app:<id>:caffeine_mg`, so two apps' keys never collide and no
+app can write another's. Each is `daily` or `instant`, files under one of the
+eight categories, and is held to its `range` if it gives one; a key OpenFit
+already has can't be declared. While the app is installed its metrics are part of
+your data like any other: listed in the catalog (marked with the app that defines
+them), shown in Your data under their category, and served by
+`GET /api/metric/app:<id>:<key>`. Uninstall the app and they drop out, though
+what it wrote stays until you remove it (below). The **Caffeine** app
+(`tests/fixtures/apps/caffeine/`) is the example.
+
 Removing that data is its own, explicit step, once the app is gone. An
 uninstalled app's source shows in **Connected sources** (and under any metric
 it fed, in Your data) with a red **Remove data**; after a confirm naming what

@@ -44,6 +44,8 @@ sizes: [{w: 1, h: 1}, {w: 2, h: 2}]   # REQUIRED: the tile sizes, in cells; the 
 reads: [steps]                # optional: the metric keys it reads (declared, not enforced yet)
 config:                       # optional: the app's settings, an ordered list of fields
   - {key: stride_m, label: Stride length (m), type: number, default: 0.75}
+metrics:                      # optional: the metrics the app invents, an ordered list
+  - {key: caffeine_mg, label: Caffeine, unit: mg, category: "Nutrition & hydration", grain: daily, range: [0, 2000]}
 ```
 
 The id is part of the app's URL, so it's letters, digits, `-` and `_`,
@@ -79,6 +81,31 @@ sends the fields to the page as written, so one that isn't would fail the
 whole listing. Quote a date. The fields are the schema; the values are each
 placement's own (its instance's `config`, set from the tile's gear in
 Configure), and reach `render()` as `cfg` (below).
+
+**`metrics`** is an **ordered list** of the metrics the app **invents**: a key
+OpenFit's vocabulary doesn't have. Declare what you invent, write what exists: a
+built-in metric the app writes (`calories_in`) isn't listed here. Each is a
+mapping of exactly these fields (`_metrics()` in `app/apps.py`):
+
+- **`key`**: the short key the app's code says, shaped as an app id (letters,
+  digits, `-` and `_`, starting with a letter or digit), used once per app, and
+  never a key OpenFit already has (a metric, a series metric or a session kind,
+  so a custom key can't shadow a built-in one). It's stored as
+  `app:<id>:<key>`, so two apps' keys never meet.
+- **`label`**: its name in the data console. Text, not blank.
+- **`unit`**: what its readings are in, the app's own. Text, not blank.
+- **`category`**: one of the eight categories (`CATEGORIES` in
+  `app/metrics.py`), as written; `Other` is the catch-all.
+- **`grain`**: `daily` or `instant`. An app's own `session` or `series` isn't
+  open yet.
+- **`range`** (optional): `[low, high]`, two finite numbers, low first, both
+  ends included. A write outside it is refused; with none (or `null`), any
+  finite number goes.
+
+Anything else in an entry (a misspelt `ragne`), a block that isn't a list, or
+any rule above broken, and the app doesn't load: logged and skipped, as a bad
+`config` is. See [Writing](#writing-apps-as-sources) for how they're read and
+written, and [Routes](#routes) for where they're served.
 
 **`app.py`**, when there is one, defines `render(ctx, cfg)`, which returns a
 display spec. This is the real `steps` app:
@@ -120,7 +147,9 @@ deployed copies still have `default_size: { w: 2, h: 2 }`: the tests check
 that form keeps loading too, and moving a deployed app to one cell is a
 one-line manifest edit and a reinstall. The third, `weight`, is the first app
 that writes, and the write path's end-to-end test (`test_app_actions.py`; see
-[The weight app](#the-weight-app), below).
+[The weight app](#the-weight-app), below). The fourth, `caffeine`, is the first
+to invent a metric (`test_app_custom_metrics.py`; see
+[The caffeine app](#the-caffeine-app), below).
 
 ### Loading: `app/apps.py`
 
@@ -132,7 +161,8 @@ reuse it.
   log line. So are dot-folders and loose files.
 - A folder with an `app.yaml` that doesn't load is **logged and skipped**:
   `[apps] skipping <folder>: <why>`. That covers bad YAML, a field of the wrong
-  type, no size (or one outside 1-6), an `app.py` that fails to import (its
+  type, no size (or one outside 1-6), a `metrics` block that won't do (above),
+  an `app.py` that fails to import (its
   traceback is printed too), a missing or non-callable `render`, and a
   `handle` that's there but not callable. One broken app never stops the others, and
   never takes the server down. A folder with no `app.py` isn't broken: it
@@ -159,16 +189,23 @@ that request's database connection.
   `Point` is a named tuple (`host.Point`) with three attributes:
   - `.date`: the day, a `YYYY-MM-DD` string.
   - `.value`: a float, in the metric's canonical unit (`METRICS` in
-    `app/metrics.py`).
+    `app/metrics.py`), or for a metric the app invents, its declared unit.
   - `.source`: the source the value was picked from, such as `garmin`.
+
+  `key` is a canonical metric, or one the app declares in its manifest's
+  `metrics`, by its short key: the ctx is made for the app (`Ctx(conn,
+  today=None, app=None)`, the `InstalledApp`), so `ctx.metric("caffeine_mg")`
+  reads `app:<id>:caffeine_mg`. Another app's metric, by either key, isn't
+  readable.
 
   These are the metric's **derived** points, the same ones
   `GET /api/metric/<key>` serves, so an app never sees raw per-source
   readings. There's one point per day that has a value; a day with no value
   is missing from the list, never a zero. `days` keeps the trailing N days:
-  today and the N − 1 days before it. `None` returns the whole history. An
-  unknown key, or a `days` that isn't a whole number ≥ 1, raises
-  `ValueError`, which the app's tile shows as an error.
+  today and the N − 1 days before it. `None` returns the whole history. A
+  key that's neither canonical nor the app's own, or a `days` that isn't a
+  whole number ≥ 1, raises `ValueError`, which the app's tile shows as an
+  error.
 - **`ctx.today()`** returns today as `YYYY-MM-DD`, the format points' dates
   use. It's the server's local date until a `base_tz` setting lands.
 - **The spec builders**, also importable from `host`, are described in the
@@ -241,8 +278,9 @@ input's action, a non-empty string; `payload` a mapping, `{key: what was
 typed}` from an input; the app interprets both. An app without a `handle()`
 can be drawn but not actioned.
 
-**The writing ctx.** `handle()` gets a `WriteCtx`: a `Ctx` (so
-`ctx.metric()` and `ctx.today()` read as in `render()`), plus
+**The writing ctx.** `handle()` gets a `WriteCtx(conn, app, today=None)`, made
+for the app: a `Ctx` (so `ctx.metric()` and `ctx.today()` read as in
+`render()`), plus
 
 ```python
 ctx.write_metric(metric, value, date=None)   # files one reading, under ctx.source
@@ -253,13 +291,19 @@ ctx.write_metric(metric, value, date=None)   # files one reading, under ctx.sour
   or overwrite its own rows: an app installed with the id `garmin` writes
   `app:garmin`, beside Garmin's rows, never over them. Structural scoping, not
   a sandbox: the app is trusted code, as its `render()` is.
-- **`metric`** is a canonical key (`METRICS`; anything else is a
-  `ValueError`). The source carries "app", not the key: a weight-entry app
-  files `weight_kg`. Invented `app:<id>:<key>` metrics need a declared unit,
-  and come later.
-- **`value`** is in the metric's canonical unit and held to the webhook's
-  rule (`plausible_value()` in `app/metrics.py`): a finite number, never a
-  bool, within the metric's plausible range, both ends included.
+- **`metric`** is a canonical key (`METRICS`) or a key the app declares in its
+  manifest's `metrics`. Declare what you invent, write what exists: the
+  source carries "app", not the key, so a weight-entry app files `weight_kg`,
+  undeclared; a caffeine app declares `caffeine_mg` and writes it by that
+  short key, filed as `app:<id>:caffeine_mg` (`custom_metric_key()`) in its
+  declared unit. Anything else (an undeclared key, another app's, by either
+  form) is `ValueError("unknown metric: '<key>' - declare it in app.yaml's
+  metrics to write it")`. So an app writes only canonical keys and its own.
+- **`value`** for a canonical metric is in its canonical unit and held to the
+  webhook's rule (`plausible_value()` in `app/metrics.py`): a finite number,
+  never a bool, within the metric's plausible range, both ends included. For
+  the app's own: a finite number, never a bool (`finite_number()`), within its
+  declared `range` if it has one.
 - **`date`** is `YYYY-MM-DD` (or a `date`), today (`ctx.today()`, the server's
   local date until `base_tz` lands) by default. One reading per
   `(date, source, metric)`: writing a day again replaces it.
@@ -298,6 +342,19 @@ write: that, and how apps should rank against other unnamed sources, waits
 for a second weight source (the open item in `data-consolidation-model.md`
 §10).
 
+**An app's own metrics in the dataset.** They take part in everything a
+canonical metric does — the derived pick (their one source wins every day), the
+re-derive after a write — and the contract serves them while the app is
+installed: the catalog lists them after the canonical metrics, each with `app`
+(the id of the app that defines it) and `label`, `/api/coverage` covers them,
+and `GET /api/metric/app:<id>:<key>` serves their points in the declared unit.
+That's the effective vocabulary, canonical plus every installed app's
+declarations, enumerated in one place (`custom_metric_defs(apps_dir)` in
+`app/host.py`, over `scan_apps()`); `app/metrics.py` stays canonical-only.
+Uninstalled, an app's metrics drop out of all three (the metric route 404s);
+their readings stay under `app:<id>` (below). The webhook takes canonical keys
+only, so nothing else can write one.
+
 **Nothing else writes an app's source**: the webhook refuses a source that
 starts `app:`. Uninstalling an app keeps what it wrote, as a disconnected
 device's data stays, and an app installed again under the same id carries
@@ -333,6 +390,37 @@ an app can only write its own source, so it can't relabel `manual`'s rows,
 and a core migration can't know an app's id. Per day there's no contention,
 so the derived weight timeline runs on seamlessly, old days from `manual`,
 new ones from `app:weight`.
+
+### The caffeine app
+
+The first app to invent a metric, committed in `tests/fixtures/apps/caffeine/`
+and run by `test_app_custom_metrics.py`.
+
+```yaml
+id: caffeine
+name: Caffeine
+sizes: [{ w: 1, h: 1 }, { w: 2, h: 1 }]
+reads: [caffeine_mg]
+metrics:
+  - key: caffeine_mg
+    label: Caffeine
+    unit: mg
+    category: Nutrition & hydration
+    grain: daily
+    range: [0, 2000]
+```
+
+OpenFit has no caffeine metric, so it declares `caffeine_mg`, and the host
+keeps it as `app:caffeine:caffeine_mg`. `render()` shows the latest day's figure
+as a `number` (mg, captioned "today" or its date) over an `input` (`key:
+caffeine_mg`, `action: log`, "Caffeine today", mg) — `empty("No caffeine logged
+yet")` before the first. `handle()` takes `log` only: it coerces
+`payload["caffeine_mg"]` to a finite number, not negative (junk → `ValueError("Enter
+today's caffeine in mg, as a number")`), and files it for today with
+`ctx.write_metric("caffeine_mg", mg)`; the declared range is the host's to hold
+it to (5000 → "caffeine_mg must be between 0 and 2000 mg, got 5000.0"). One
+figure a day: logging again replaces it. Its metric shows in Your data under
+Nutrition & hydration, marked `app`.
 
 ## Installing an app
 
@@ -542,14 +630,16 @@ source `app:<id>`, as a disconnected device's data does.
 ## Routes
 
 - `GET /api/apps` → `[{id, name, default_size: {w, h}, sizes: [{w, h}],
-  reads: [key], config: [{key, label, type, default}], files: [name]}]`, the
-  apps that load, in folder order. `sizes` are the tile sizes the manifest
-  declares, in its order, and `default_size` the first of them (for a
-  manifest with the older `default_size` alone, `sizes` is that one). `reads`
-  is the manifest's (`[]` if none); `config` its config fields, in order and
-  as written (`[]` if none), the schema a tile's settings form is built from;
-  `files` names the plain files in the app's folder, sorted, each one the
-  file route serves.
+  reads: [key], config: [{key, label, type, default}], metrics: [{key, label,
+  unit, category, grain, range}], files: [name]}]`, the apps that load, in
+  folder order. `sizes` are the tile sizes the manifest declares, in its
+  order, and `default_size` the first of them (for a manifest with the older
+  `default_size` alone, `sizes` is that one). `reads` is the manifest's (`[]`
+  if none); `config` its config fields, in order and as written (`[]` if
+  none), the schema a tile's settings form is built from; `metrics` the
+  metrics it invents, in order, by short key (`range` `[low, high]` or null;
+  `[]` if none); `files` names the plain files in the app's folder, sorted,
+  each one the file route serves.
 - `POST /api/apps` → installs an app from `{"files": {name: text}}`; `201
   {"ok": true, "id", "has_app_py"}`, or a refusal that writes nothing. See
   [Installing an app](#installing-an-app).
@@ -579,6 +669,11 @@ source `app:<id>`, as a disconnected device's data does.
   items: [{instance_id, app_id, size: {w, h}, config}]}], "default_tab"}`,
   Home's layout squared with the apps installed now; `PUT /api/home-layout`
   saves one. See [The layout](#the-layout-tabs-of-instances).
+
+The access contract's metric reads cover the installed apps' own metrics too:
+`GET /api/catalog` lists them after the canonical ones (`metric` the full key,
+`app:<id>:<key>`, plus `app` and `label`), `GET /api/coverage` covers them, and
+`GET /api/metric/app:<id>:<key>` serves one (404 once its app is uninstalled).
 
 The access contract's reads also take **`?days=N`**: the trailing N days, as
 `ctx.metric()` counts them. It can't be combined with `from`/`to`, and a value
@@ -854,11 +949,13 @@ saved positions and gives `paintTiles` start cells. The sizes, the CSS grid,
   text, a live preview as a setting is typed, and a custom `app.js` for an
   app that draws its own face.
 - **More write-back**: `ctx.write_session()` (an app contributing sessions:
-  a roster, a custom sleep detector), metrics an app invents
-  (`app:<id>:<key>`, with a declared unit), timestamped weigh-ins more than
-  one a day, and a `base_tz` setting for the day a write lands on.
-- **Enforcing `reads`:** it's recorded, but `ctx.metric()` serves any key in
-  the vocabulary.
+  a roster, a custom sleep detector), an app's own session kinds and series
+  (its own metrics are `daily`/`instant` only), reading another app's
+  metrics, purging an uninstalled app's metric (B1 in
+  `apps-as-source.md`), timestamped weigh-ins more than one a day, and a
+  `base_tz` setting for the day a write lands on.
+- **Enforcing `reads`:** it's recorded, but `ctx.metric()` serves any
+  canonical key, and the app's own.
 - **A sandbox:** an app is trusted Python running in the server's process.
   The sandboxed host (no network beyond the contract) is Phase 4 of
   `ROADMAP.md`.

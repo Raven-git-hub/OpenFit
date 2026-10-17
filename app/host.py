@@ -19,7 +19,10 @@ fresh Ctx built over that request's connection:
 ctx.metric() is the only data an app gets: one metric's derived points,
 the ones GET /api/metric/<metric> serves, as a list of Points (.date,
 .value, .source), oldest first - so an app never sees raw per-source
-readings. ctx.today() is the server's local date.
+readings. ctx.today() is the server's local date. The ctx is made for
+the app (its InstalledApp), so it reads OpenFit's metrics and the ones
+the app invents - declared in its manifest's `metrics`, said by their
+short key, stored as app:<id>:<key> (custom_metric_key()).
 
 An app may also write, from an optional handle(ctx, action, payload)
 beside render() - what a tile's input element sends when its Save is
@@ -32,8 +35,19 @@ pressed (POST /api/app/<id>/action):
 handle() is given a WriteCtx: the same reads, plus ctx.write_metric().
 Its source is fixed to the app's own, app:<id>, when it's made - no
 writer takes a source - so an app can only ever create or overwrite its
-own rows, never a device's. That's the whole of the scoping: the app is
-trusted code, as its render() is, not sandboxed.
+own rows, never a device's. It writes OpenFit's metrics, and the ones
+it invents - declare what you invent, write what exists:
+
+    # app.yaml
+    metrics:
+      - {key: caffeine_mg, label: Caffeine, unit: mg,
+         category: "Nutrition & hydration", grain: daily}
+
+    ctx.write_metric("caffeine_mg", 95)   # stored as app:<id>:caffeine_mg
+
+but never another app's: an app's own keys are namespaced under its id,
+and a ctx knows only its own app's. That's the whole of the scoping: the
+app is trusted code, as its render() is, not sandboxed.
 
 The spec vocabulary, built by the ctx's builders (an app may also return
 the dicts directly):
@@ -65,9 +79,10 @@ import traceback
 from datetime import date, datetime, timedelta
 from typing import NamedTuple
 
+from apps import scan_apps
 from derived import derived_points
-from metrics import METRICS, plausible_value
-from plugins.base import write_metric as file_reading
+from metrics import METRICS, finite_number, plausible_value
+from plugins.base import write_reading
 
 
 class Point(NamedTuple):
@@ -217,7 +232,12 @@ def error(message):
 
 
 class Ctx:
-    """What render(ctx, cfg) is given. One per render call."""
+    """What render(ctx, cfg) is given. One per render call.
+
+    Made for one app, `app` (an InstalledApp): it reads OpenFit's metrics
+    and the ones that app declares. A ctx for no app reads only the
+    former.
+    """
 
     number = staticmethod(number)
     line = staticmethod(line)
@@ -225,9 +245,25 @@ class Ctx:
     input = staticmethod(input)
     empty = staticmethod(empty)
 
-    def __init__(self, conn, today=None):
+    def __init__(self, conn, today=None, app=None):
         self._conn = conn
         self._today = today or date.today()
+        self._app_id = None
+        # Short key -> its CustomMetric: the only app metrics this ctx knows.
+        self._own = {}
+        if app is not None:
+            self._app_id = app.id
+            self._own = {declared.key: declared for declared in app_metric_defs(app).values()}
+
+    def _resolve(self, key):
+        """(the key `key` is stored under, its CustomMetric or None for a
+        canonical metric), or (None, None) for a key this app can't use."""
+        if key in METRICS:
+            return key, None
+        own = self._own.get(key) if isinstance(key, str) else None
+        if own is None:
+            return None, None
+        return custom_metric_key(self._app_id, key), own
 
     def today(self):
         """The server's local date, as YYYY-MM-DD - the format points' dates are in."""
@@ -239,20 +275,25 @@ class Ctx:
         Oldest first, so data[-1] is the latest day; one point per day
         that has a value - a day with none is missing, not a zero - and []
         when there are none. Each value is in the metric's canonical unit
-        (METRICS in metrics.py). `days` keeps the trailing days: today and
-        the days - 1 before it, as GET /api/metric/<key>?days= does; None
-        is the whole history.
+        (METRICS in metrics.py), or for one the app invents the unit it
+        declares. `days` keeps the trailing days: today and the days - 1
+        before it, as GET /api/metric/<key>?days= does; None is the whole
+        history.
 
-        Raises ValueError for a key outside the vocabulary.
+        `key` is a canonical metric, or one this ctx's app declares, by
+        its short key (caffeine_mg, read from app:<id>:caffeine_mg).
+        Raises ValueError for anything else - another app's key among
+        them.
         """
-        if key not in METRICS:
+        stored, _ = self._resolve(key)
+        if stored is None:
             raise ValueError(f"unknown metric: {key!r}")
         since = until = None
         if days is not None:
             since, until = trailing_window(_positive_days(days), self._today)
         return [
             Point(p["date"], p["value"], p["source"])
-            for p in derived_points(self._conn, key, since, until)
+            for p in derived_points(self._conn, stored, since, until)
         ]
 
 
@@ -264,6 +305,67 @@ APP_SOURCE_PREFIX = "app:"
 def app_source(app_id):
     """The source an app's writes are filed under: app:<its id>."""
     return APP_SOURCE_PREFIX + app_id
+
+
+def custom_metric_key(app_id, key):
+    """Where a metric an app invents is stored: app:<its id>:<the key it declares>.
+
+    The app's code says the short key (caffeine_mg); the host stores and
+    serves the full one, so two apps declaring the same short key keep
+    two metrics, and no app key can meet a canonical one (those have no
+    colon). The source it's filed under is still app:<id>.
+    """
+    return f"{app_source(app_id)}:{key}"
+
+
+class CustomMetric(NamedTuple):
+    """A metric an installed app invents (its manifest's `metrics`, apps.py)."""
+
+    unit: str
+    category: str      # one of CATEGORIES
+    grain: str         # daily or instant
+    range: object      # [low, high], both ends included, or None: any finite number
+    app_id: str        # the app that declares it
+    key: str           # the short key the app's code says
+    label: str
+
+
+def app_metric_defs(installed):
+    """One app's own metrics: {app:<id>:<key>: CustomMetric}, in its manifest's order."""
+    return {
+        custom_metric_key(installed.id, m["key"]): CustomMetric(
+            m["unit"], m["category"], m["grain"], m["range"], installed.id, m["key"], m["label"],
+        )
+        for m in installed.metrics
+    }
+
+
+def custom_metric_defs(apps_dir):
+    """Every installed app's own metrics: {app:<id>:<key>: CustomMetric}.
+
+    The one place they're enumerated. With METRICS (metrics.py, canonical
+    only) they make the effective vocabulary the catalog, /api/coverage
+    and /api/metric/<key> serve. Folder order, then each manifest's.
+    Only apps that load count (scan_apps()): an uninstalled app's metric,
+    or a broken one's, drops out - its readings stay, under its source,
+    until they're removed (DELETE /api/app-sources/<id>).
+    """
+    defs = {}
+    for installed in scan_apps(apps_dir):
+        defs.update(app_metric_defs(installed))
+    return defs
+
+
+def _declared_value(key, declared, raw):
+    """`raw` as a reading of an app's own metric, `declared` (a CustomMetric):
+    a finite number, never a bool, as a canonical reading is - within the
+    range its app declares, if any. Else ValueError."""
+    value = finite_number(raw)
+    if declared.range is not None:
+        low, high = declared.range
+        if not low <= value <= high:
+            raise ValueError(f"{key} must be between {low} and {high} {declared.unit}, got {raw}")
+    return value
 
 
 def _iso_day(raw):
@@ -283,16 +385,16 @@ def _iso_day(raw):
 class WriteCtx(Ctx):
     """What handle(ctx, action, payload) is given: a Ctx that can also write.
 
-    One per action. Its source is the app's own, app:<id>, fixed here -
-    none of its writers takes one - so whatever the app does, it can only
-    create or overwrite its own rows. It notes the days it wrote to, for
-    the action route to re-derive once the action has succeeded; nothing
-    is committed here.
+    One per action, for the app `app` (an InstalledApp). Its source is
+    the app's own, app:<id>, fixed here - none of its writers takes one -
+    so whatever the app does, it can only create or overwrite its own
+    rows. It notes the days it wrote to, for the action route to
+    re-derive once the action has succeeded; nothing is committed here.
     """
 
-    def __init__(self, conn, app_id, today=None):
-        super().__init__(conn, today=today)
-        self._source = app_source(app_id)
+    def __init__(self, conn, app, today=None):
+        super().__init__(conn, today=today, app=app)
+        self._source = app_source(app.id)
         self._written = set()
 
     @property
@@ -306,22 +408,33 @@ class WriteCtx(Ctx):
         return sorted(self._written)
 
     def write_metric(self, metric, value, date=None):
-        """File one reading of a canonical metric under the app's source.
+        """File one reading under the app's source: of a canonical metric, or one it invents.
 
-        `value` is in the metric's canonical unit (METRICS in metrics.py)
-        and held to the webhook's rule: a finite number, never a bool,
-        within the metric's plausible range. `date` is the day it's for,
-        YYYY-MM-DD (or a date), today by default. One reading per (date,
-        source, metric): writing a day again replaces it.
+        A canonical metric (METRICS in metrics.py) is filed under its
+        key, `value` in its canonical unit and held to the webhook's
+        rule: a finite number, never a bool, within the metric's
+        plausible range. A metric the app declares in its manifest's
+        `metrics` is named by its short key and filed as
+        app:<id>:<key>, in the unit it declares, `value` a finite number
+        within its declared range, if it gives one. `date` is the day
+        it's for, YYYY-MM-DD (or a date), today by default. One reading
+        per (date, source, metric): writing a day again replaces it.
 
-        Raises ValueError, writing nothing, for a key outside the
-        vocabulary, a value that won't do, or a date that isn't one.
+        Raises ValueError, writing nothing, for a key that's neither - an
+        undeclared one, another app's - a value that won't do, or a date
+        that isn't one.
         """
-        if metric not in METRICS:
-            raise ValueError(f"unknown metric: {metric!r}")
-        reading = plausible_value(metric, value)
+        stored, declared = self._resolve(metric)
+        if stored is None:
+            raise ValueError(f"unknown metric: {metric!r} - declare it in app.yaml's metrics to write it")
+        if declared is None:
+            reading, unit = plausible_value(metric, value), METRICS[metric]
+        else:
+            reading, unit = _declared_value(metric, declared, value), declared.unit
         day = self.today() if date is None else _iso_day(date)
-        file_reading(self._conn, day, self._source, metric, reading)
+        # write_metric()'s upsert, the unit the vocabulary's - OpenFit's,
+        # or the app's.
+        write_reading(self._conn, day, self._source, stored, reading, unit)
         self._written.add(day)
 
 
@@ -332,7 +445,7 @@ def render_app(installed, conn, cfg=None, today=None):
     (a dict with a string `type`) that is plain JSON, is logged with its
     traceback and becomes {"type": "error", "message": ...}.
     """
-    ctx = Ctx(conn, today=today)
+    ctx = Ctx(conn, today=today, app=installed)
     try:
         spec = installed.render(ctx, dict(cfg or {}))
     except Exception as e:

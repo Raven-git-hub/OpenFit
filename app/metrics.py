@@ -174,15 +174,14 @@ def unit_for(metric):
 PLAUSIBLE_RANGES = {metric: bounds for metric, (_, _, _, bounds) in METRIC_DEFS.items()}
 
 
-def plausible_value(metric, raw):
-    """`raw` as a pushed reading of `metric`: a float, or ValueError saying why not.
+def finite_number(raw):
+    """`raw` as a reading's value: a float, or ValueError if it isn't a finite number.
 
-    The rule both push paths hold a reading to - the webhook's body and
-    an app's ctx.write_metric() (host.py): a finite number, never a bool,
-    within the metric's PLAUSIBLE_RANGES, both ends included. bool is an
-    int to Python, but true is not a reading; float() can't hold an
-    integer too big to store; and the JSON parser lets NaN and Infinity
-    through. `metric` must already be a canonical key.
+    Never a bool: bool is an int to Python, but true is not a reading.
+    float() can't hold an integer too big to store, and the JSON parser
+    lets NaN and Infinity through. No range: plausible_value() adds a
+    canonical metric's, and an app's own metric is held to the range its
+    manifest declares (host.py).
     """
     value = None
     if not isinstance(raw, bool) and isinstance(raw, (int, float)):
@@ -192,6 +191,18 @@ def plausible_value(metric, raw):
             pass
     if value is None or not math.isfinite(value):
         raise ValueError("value must be a number")
+    return value
+
+
+def plausible_value(metric, raw):
+    """`raw` as a pushed reading of `metric`: a float, or ValueError saying why not.
+
+    The rule both push paths hold a reading to - the webhook's body and
+    an app's ctx.write_metric() (host.py): a finite number, never a bool
+    (finite_number()), within the metric's PLAUSIBLE_RANGES, both ends
+    included. `metric` must already be a canonical key.
+    """
+    value = finite_number(raw)
     low, high = PLAUSIBLE_RANGES.get(metric, (-math.inf, math.inf))
     if not low <= value <= high:
         raise ValueError(f"{metric} must be between {low} and {high} {METRICS[metric]}, got {raw}")
