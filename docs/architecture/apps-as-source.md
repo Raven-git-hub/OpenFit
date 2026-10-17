@@ -68,9 +68,10 @@ built-in/default metrics themselves are never purgeable.
   also lets the leftover `manual` weigh-ins be cleared).
   - **Built, for `app:<id>` sources:** `GET /api/app-sources` lists every app
     source with data, each marked `orphaned`; `DELETE /api/app-sources/<id>`
-    removes an orphan's data (400 while the app is installed, 404 with no
-    rows) through `purge_source()` in `app/main.py` — the disconnect wipe's
-    delete + re-derive, now shared, plus `clear_source_roles()`. The page shows
+    removes an orphan's data (400 while the app's folder is still on the
+    volume, even if it fails to load - broken isn't gone; 404 with no rows)
+    through `purge_source()` in `app/main.py` — the disconnect wipe's delete +
+    re-derive, now shared, plus `clear_source_roles()`. The page shows
     an orphan in Connected sources and under a metric's sources with a red
     Remove data behind one confirm.
   - Decided: per-source (everything that orphaned source wrote, like

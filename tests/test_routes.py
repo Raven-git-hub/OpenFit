@@ -2912,7 +2912,7 @@ def test_a_refused_removal_says_why_and_keeps_the_source(client, orphaned_app):
     old.mkdir()
     (old / "app.yaml").write_text("id: old\nname: Old\nsizes: [{w: 1, h: 1}]\n")
     reply = _sent(client.delete("/api/app-sources/old"))
-    assert reply["ok"] is False and "is installed" in reply["error"]
+    assert reply["ok"] is False and "is present" in reply["error"]
 
     script = _orphan_script(_page(client), before, before, reply, """
         await loadAppSources();

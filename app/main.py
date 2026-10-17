@@ -20,7 +20,16 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from migrations import connect, run_migrations
 from plugins import PLUGINS
 from plugins.base import OAUTH_REDIRECT_URI, write_metric
-from apps import LibraryError, find_app, install_app, read_app_file, scan_apps, uninstall_app
+from apps import (
+    APP_ID,
+    LibraryError,
+    app_present,
+    find_app,
+    install_app,
+    read_app_file,
+    scan_apps,
+    uninstall_app,
+)
 from crypto import encrypt
 from home_layout import LayoutError, load_layout, parse_layout, save_layout
 from derived import (
@@ -874,13 +883,15 @@ def list_app_sources():
     sessions, samples}].
 
     One entry per app source - app:<id> - that has any rows, by id: the
-    app's id and its source; `orphaned` when no installed app has that
-    id (it was uninstalled - or doesn't load, which as far as the
-    Library knows is the same); the metrics it has readings of, in
-    vocabulary order; and how many readings, sessions and samples it
-    holds. An orphan's data can be removed (DELETE
-    /api/app-sources/<id>); a live app's can't. Devices, the webhook's
-    sources and manual aren't apps', so aren't listed.
+    app's id and its source; `orphaned` once its app is gone from the
+    volume (app_present(): its folder is gone, and no other folder's app
+    loads under the id) - an app whose folder is there but fails to load
+    is broken, not gone, so isn't, nor is an id no app could have (no
+    folder to look for); the metrics it has readings of, in vocabulary
+    order; and how many readings, sessions and samples it holds. An
+    orphan's data can be removed (DELETE /api/app-sources/<id>); no
+    other's can. Devices, the webhook's sources and manual aren't apps',
+    so aren't listed.
     """
     # Every source from "app:" up to "app;" - the prefix, compared as
     # stored (LIKE would ignore case), and a range the samples table's
@@ -914,7 +925,7 @@ def list_app_sources():
     finally:
         conn.close()
 
-    installed = {a.id for a in scan_apps(app.config["APPS_DIR"])}
+    apps_dir = app.config["APPS_DIR"]
     order = {metric: i for i, metric in enumerate(METRICS)}
     out = []
     for source in sorted(found):
@@ -923,7 +934,7 @@ def list_app_sources():
         out.append({
             "id": app_id,
             "source": source,
-            "orphaned": app_id not in installed,
+            "orphaned": bool(APP_ID.match(app_id)) and not app_present(apps_dir, app_id),
             "metrics": sorted(got["metrics"], key=lambda m: (order.get(m, len(order)), m)),
             "readings": got["readings"],
             "sessions": got["sessions"],
@@ -946,14 +957,18 @@ def remove_app_source(app_id):
 
     Only ever an app's source: the id is always read as app:<id>, so
     this can't reach a device's data (DELETE /api/connectors/<id>?wipe=1
-    is that), a webhook source's, or manual's. 400 while an installed
-    app has the id - a live app's data is never removed - and 404 when
-    app:<id> has no rows; either way nothing changes.
+    is that), a webhook source's, or manual's. 404 for an id no app
+    could have (the scanner's APP_ID); 400 while the app is still on the
+    volume (app_present()) - its folder there, even if what's in it
+    fails to load: a live or broken app's data is never removed - and
+    404 when app:<id> has no rows. None of those changes anything.
     """
-    if find_app(app.config["APPS_DIR"], app_id) is not None:
+    if not APP_ID.match(app_id):
+        return jsonify({"ok": False, "error": f"'{app_id}' isn't an app id: no app source to remove"}), 404
+    if app_present(app.config["APPS_DIR"], app_id):
         return jsonify({
             "ok": False,
-            "error": f"'{app_id}' is installed — uninstall it first; an installed app's data is never removed",
+            "error": f"'{app_id}' is present — fix or uninstall it first; an installed app's data is never removed",
         }), 400
     source = app_source(app_id)
     conn = get_conn()

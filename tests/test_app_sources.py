@@ -288,8 +288,96 @@ def test_an_installed_apps_data_is_never_removed(client, conn, orphan):
     assert resp.status_code == 400
     assert resp.get_json() == {
         "ok": False,
-        "error": "'steps' is installed — uninstall it first; an installed app's data is never removed",
+        "error": "'steps' is present — fix or uninstall it first; an installed app's data is never removed",
     }
+    assert counts(conn) == before
+    assert stored_roles(conn) == roles
+    assert derived(conn) == picks
+
+
+# Ways an app's folder can be there and still not load - so the scanner
+# skips it, but it's broken, not gone. Each is what <apps dir>/old holds.
+def _bad_yaml(folder):
+    folder.mkdir()
+    (folder / "app.yaml").write_text("id: old\nsizes: [{w: 1, h: 1}\n")
+
+
+def _no_size(folder):
+    folder.mkdir()
+    (folder / "app.yaml").write_text("id: old\nname: Old\n")
+
+
+def _import_error(folder):
+    folder.mkdir()
+    (folder / "app.yaml").write_text("id: old\nsizes: [{w: 1, h: 1}]\n")
+    (folder / "app.py").write_text("import not_a_module_anywhere\n")
+
+
+def _no_manifest(folder):
+    folder.mkdir()
+    (folder / "app.py").write_text("def render(ctx, cfg):\n    return ctx.empty()\n")
+
+
+def _broken_link(folder):
+    folder.symlink_to(folder.parent / "nowhere")
+
+
+@pytest.mark.parametrize("broken", [_bad_yaml, _no_size, _import_error, _no_manifest, _broken_link])
+def test_an_app_present_but_not_loading_isnt_orphaned(client, conn, orphan, apps_dir, broken):
+    """Its folder is there, so it's broken, not gone: listed live, and its
+    data refused - nothing removed."""
+    broken(apps_dir / "old")
+    assert "old" not in [a["id"] for a in client.get("/api/apps").get_json()]
+    before, roles, picks = counts(conn), stored_roles(conn), derived(conn)
+
+    listed = {a["id"]: a["orphaned"] for a in client.get("/api/app-sources").get_json()}
+    resp = client.delete("/api/app-sources/old")
+
+    assert listed == {"old": False, "steps": False}
+    assert resp.status_code == 400
+    assert resp.get_json() == {
+        "ok": False,
+        "error": "'old' is present — fix or uninstall it first; an installed app's data is never removed",
+    }
+    assert counts(conn) == before
+    assert stored_roles(conn) == roles
+    assert derived(conn) == picks
+
+
+def test_an_app_loading_from_a_folder_named_apart_from_its_id_isnt_orphaned(client, conn, orphan, apps_dir):
+    """A hand-placed app's folder needn't be named after its id: no
+    <apps dir>/old, but the app in scale-v2 is old - live."""
+    shutil.copytree(REAL_APPS / "steps", apps_dir / "scale-v2", ignore=shutil.ignore_patterns("__pycache__"))
+    manifest = apps_dir / "scale-v2" / "app.yaml"
+    manifest.write_text(manifest.read_text().replace("id: steps", "id: old"))
+    assert "old" in [a["id"] for a in client.get("/api/apps").get_json()]
+    before = counts(conn)
+
+    listed = {a["id"]: a["orphaned"] for a in client.get("/api/app-sources").get_json()}
+    resp = client.delete("/api/app-sources/old")
+
+    assert listed["old"] is False
+    assert resp.status_code == 400
+    assert counts(conn) == before
+
+
+@pytest.mark.parametrize("app_id", [
+    # Not the scanner's id rule (APP_ID), so no folder to look for -
+    # even with rows under it.
+    "_x", "-x", "x.y",
+    # The prefix isn't stripped: this would be app:app:old.
+    "app:old",
+])
+def test_an_id_no_app_could_have_is_never_orphaned(client, conn, orphan, app_id):
+    seed(conn, f"app:{app_id}", metrics=[("2026-10-04", "steps", 7)])
+    before, roles, picks = counts(conn), stored_roles(conn), derived(conn)
+
+    listed = {a["source"]: a["orphaned"] for a in client.get("/api/app-sources").get_json()}
+    resp = client.delete(f"/api/app-sources/{app_id}")
+
+    assert listed[f"app:{app_id}"] is False
+    assert resp.status_code == 404
+    assert resp.get_json() == {"ok": False, "error": f"'{app_id}' isn't an app id: no app source to remove"}
     assert counts(conn) == before
     assert stored_roles(conn) == roles
     assert derived(conn) == picks
@@ -298,8 +386,6 @@ def test_an_installed_apps_data_is_never_removed(client, conn, orphan):
 @pytest.mark.parametrize("app_id", [
     # Devices, the webhook's sources and manual: never app sources.
     "garmin", "google_health", "webhook", "apple_health", "manual",
-    # The prefix isn't stripped: this is app:app:old, which has no rows.
-    "app:old",
     # An app with no data at all.
     "nope",
 ])

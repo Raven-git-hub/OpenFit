@@ -133,7 +133,12 @@ own calls to its device API. Full direction:
   left out, never raising; a duplicate id keeps the first folder. Scanned
   on every request (no restart for a new app); a loaded app is cached until
   its `app.yaml`/`app.py` mtime or size changes, so a broken one logs once per
-  change. `find_app(apps_dir, id)` picks one. `InstalledApp.summary()` is
+  change. `find_app(apps_dir, id)` picks one. `app_present(apps_dir, id)`
+  says whether an app is still on the volume, loading or not — its
+  folder `<apps dir>/<id>` there as anything (a broken link included) or
+  another folder's app loading under the id: `_taken()`, install's rule;
+  an id failing `APP_ID` → False — which decides whether its data is
+  orphaned (`/api/app-sources`). `InstalledApp.summary()` is
   what `GET /api/apps` lists: `{id, name, default_size, sizes, reads,
   config, files}` — `default_size` the first of `sizes`; `config` the
   manifest's fields as written (the schema of a tile's settings form);
@@ -814,16 +819,21 @@ own calls to its device API. Full direction:
   explicit step for an app no longer installed (no migration; `app/main.py`):
   `GET /api/app-sources` → `[{id, source, orphaned, metrics, readings,
   sessions, samples}]`, one per `app:<id>` source with any row, by id —
-  `orphaned` when no app `scan_apps()` loads has the id (uninstalled, or
-  not loading: the Library's view), `metrics` the keys it has readings of
+  `orphaned` once its app is gone from the volume (`app_present()` false:
+  no `<apps dir>/<id>`, as anything, and no other folder's app loading
+  under the id) — an app whose folder is there but fails to load is
+  broken, not gone, so isn't, nor is an id failing the scanner's `APP_ID`
+  (no folder to look for) — `metrics` the keys it has readings of
   (vocabulary order), the rest row counts; the prefix matched as a range
   (`>= 'app:' AND < 'app;'`, case-sensitive, unlike `LIKE`), so
   `apple_health` or `APP:x` isn't one. `DELETE /api/app-sources/<id>` →
   `purge_source(conn, "app:" + id)`, then `{ok: true, removed: {metrics,
-  sessions, samples}}` (rows deleted); 400 while an installed app has the
-  id (a live app's data is never removed — checked first), 404 when
-  `app:<id>` has no rows (checked before anything is written, so a role
-  naming it stays) — nothing changes either way. The id is always read as
+  sessions, samples}}` (rows deleted); 404 for an id failing `APP_ID`
+  (checked first); 400 while `app_present()` — "'<id>' is present — fix
+  or uninstall it first; …": a live or broken app's data is never
+  removed; 404 when `app:<id>` has no rows (checked before anything is
+  written, so a role naming it stays) — nothing changes on any of them,
+  and the listing marks orphaned exactly what this would remove. The id is always read as
   `app:<id>` (the prefix never stripped), so it can't reach a device, a
   webhook source or `manual` (deliberately out of scope for now).
   `purge_source(conn, source, keep_roles=False)` (`app/main.py`, shared
@@ -1251,7 +1261,8 @@ same PR:
   (`data-consolidation-model.md` §10 — today by name).
   Data lifecycle (A) landed (no migration): an uninstalled app's data
   removed on request — `GET /api/app-sources`, `DELETE
-  /api/app-sources/<id>` (refused while the app is installed) through
+  /api/app-sources/<id>` (refused while the app's folder is there,
+  loading or not — `app_present()`) through
   `purge_source()`, the connector wipe's delete and re-derive plus
   clearing the source's stale source roles, and a red Remove data in
   Connected sources and under a metric's sources. Still to come for the

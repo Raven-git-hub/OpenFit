@@ -385,10 +385,12 @@ goes, it deletes every reading, session and sample the app wrote, re-derives
 the days they covered (each falls to another source, or is left empty), and
 clears any metric's primary that named it. The metrics themselves stay:
 `weight_kg` without the weight app's readings is still `weight_kg`. That's
-`DELETE /api/app-sources/<id>`, which refuses an installed app (`400`) — a
-live app's data is never removed — and only ever reaches `app:<id>`, never a
-device's, a webhook's or `manual`'s. `GET /api/app-sources` lists every app
-source with data, each marked `orphaned` or not.
+`DELETE /api/app-sources/<id>`, which refuses (`400`) while the app's folder
+is still in `/data/apps/` — even if the app in it fails to load: a broken app
+isn't a gone one, so fix or uninstall it first — and only ever reaches
+`app:<id>`, never a device's, a webhook's or `manual`'s. `GET
+/api/app-sources` lists every app source with data, each marked `orphaned`
+(its app gone from the volume) or not.
 
 The **Weight** app above (in full in `tests/fixtures/apps/weight/`) is the one
 way to log a weigh-in by hand: install it from its two files and its tile goes
