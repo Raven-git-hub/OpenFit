@@ -59,11 +59,13 @@ the dicts directly):
         undated point, and title (optional) names it
     {"type": "panel", "children": [spec, ...]}
         its children, stacked in order
-    {"type": "input", "key", "action", "label", "kind", "unit"}
+    {"type": "input", "key", "action", "label", "kind", "unit", "options"}
         a field and a Save button: Save sends `action` to the app's
-        handle(), the payload {key: what was typed} - a number for kind
-        "number", text for "text" - then the tile is drawn afresh;
-        label and unit may be null
+        handle(), the payload {key: what was entered} - a number for
+        kind "number", text for "text", the option chosen for "select"
+        (a dropdown of `options`, a list of strings; null for the other
+        kinds) - then the tile is drawn afresh; label and unit may be
+        null
     {"type": "empty", "message"}
     {"type": "error", "message"}
         the host's, when a render fails - never an app's to return
@@ -189,8 +191,11 @@ def panel(*children):
     return {"type": "panel", "children": list(children)}
 
 
-# What an input element's field takes: a number, or text.
-INPUT_KINDS = ("number", "text")
+# What an input element's field takes: a number, text, or one of a set
+# of options (a dropdown).
+INPUT_KINDS = ("number", "text", "select")
+
+OPTIONS_PROBLEM = "a select's options must be a non-empty list of strings"
 
 
 def _text_or_none(value, what):
@@ -199,13 +204,33 @@ def _text_or_none(value, what):
     return value
 
 
-def input(key, action, label=None, kind="number", unit=None):
+def _options(kind, options):
+    """A select's options as a plain list of strings; None for the other kinds."""
+    if kind != "select":
+        if options is not None:
+            raise ValueError(f"options is only for a select, not a {kind}: {options!r}")
+        return None
+    if options is None or (isinstance(options, (list, tuple)) and not options):
+        raise ValueError(f"{OPTIONS_PROBLEM}: {options!r}")
+    if not isinstance(options, (list, tuple)):
+        raise TypeError(f"{OPTIONS_PROBLEM}: {options!r}")
+    for option in options:
+        if not isinstance(option, str) or not option:
+            raise TypeError(f"{OPTIONS_PROBLEM}: {option!r}")
+    return [str(option) for option in options]
+
+
+def input(key, action, label=None, kind="number", unit=None, options=None):
     """A field and a Save button that sends `action` to the app's handle().
 
-    The payload is {key: what was typed}: a number for kind "number",
-    text for "text". `label` names the field, `unit` sits beside it;
-    either may be None. Once handle() has run, the tile is drawn afresh
-    from render().
+    The payload is {key: what was entered}: a number for kind "number",
+    text for "text", and for "select" the option chosen from `options`
+    (required for a select, and only for one: a non-empty list of
+    non-empty strings, each shown and sent as written). The host doesn't
+    check the value sent is one of them - handle() does, as it checks a
+    number. `label` names the field, `unit` sits beside it; either may
+    be None. Once handle() has run, the tile is drawn afresh from
+    render().
     """
     for what, value in (("key", key), ("action", action)):
         if not isinstance(value, str) or not value:
@@ -219,6 +244,7 @@ def input(key, action, label=None, kind="number", unit=None):
         "label": _text_or_none(label, "label"),
         "kind": kind,
         "unit": _text_or_none(unit, "unit"),
+        "options": _options(kind, options),
     }
 
 

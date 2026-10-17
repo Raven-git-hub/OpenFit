@@ -378,6 +378,12 @@ fresh `render()`. An app's data competes in the same per-metric pick as any
 source's, after Garmin and Google Health unless you make it a metric's primary
 (`PUT /api/source-roles/<metric>`), and stays when the app is uninstalled.
 
+The input needn't be a number: `kind="text"` takes text, and `kind="select"`
+with `options=["1", "2", ...]` (a list of strings) draws a dropdown whose Save
+sends the chosen string. The host doesn't check it's one of the options — the
+app's `handle()` does, as it checks a number (the Mood app, a select of 1–5
+filed as the built-in `mood`, is the example).
+
 An app isn't limited to OpenFit's metrics: it can **invent its own**. Declare
 what you invent, write what exists — a built-in metric is just written, while a
 new one is declared in the app's `app.yaml`:

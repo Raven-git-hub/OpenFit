@@ -234,11 +234,19 @@ own calls to its device API. Full direction:
   `None`/non-finite is a gap; anything else `TypeError`; `title` text or
   `None`, else `TypeError`),
   `panel(*children)` (or one list), `input(key, action, label=None,
-  kind="number", unit=None)` → `{"type": "input", key, action, label,
-  kind, unit}` (the one interactive element: a field and Save, which sends
-  `action` to the app's `handle()` with `{key: what was typed}`; `key` and
-  `action` non-empty text, `kind` `"number"`/`"text"` (`INPUT_KINDS`),
-  `label`/`unit` text or `None`, else `TypeError`/`ValueError`),
+  kind="number", unit=None, options=None)` → `{"type": "input", key,
+  action, label, kind, unit, options}` (the one interactive element: a
+  field and Save, which sends `action` to the app's `handle()` with `{key:
+  what was entered}`; `key` and `action` non-empty text, `kind`
+  `"number"`/`"text"`/`"select"` (`INPUT_KINDS`), `label`/`unit` text or
+  `None`, else `TypeError`/`ValueError`; `options` a select's dropdown —
+  required for one (missing/`None`/empty → `ValueError`), a list or tuple
+  of non-empty strings (else `TypeError`, "a select's options must be a
+  non-empty list of strings"), in the spec a plain list as written — and
+  refused for number/text (`ValueError`, "options is only for a select"),
+  whose specs carry `options: None`; the host never checks a select's
+  submitted value is one of its options — `handle()` does, as it checks a
+  number; `docs/architecture/input-primitives.md`),
   `empty(message)`; the host's own is `{"type": "error", "message"}`. `render_app(app, conn, cfg=None,
   today=None)` calls `render(ctx, dict(cfg or {}))` (the ctx made for
   `app`) — `cfg` the
@@ -304,7 +312,19 @@ own calls to its device API. Full direction:
   only; `payload["caffeine_mg"]` coerced to a finite float ≥ 0 (a bool,
   junk, a negative → `ValueError("Enter today's caffeine in mg, as a
   number")`), then `ctx.write_metric("caffeine_mg", mg)` for today, the
-  declared range the host's to hold it to — one a day, replacing.
+  declared range the host's to hold it to — one a day, replacing. And
+  the first with a dropdown: `mood` (`tests/fixtures/apps/mood/`, run by
+  `tests/test_app_actions.py`, the end-to-end test of an input of kind
+  `"select"`). Its `app.yaml`: id `mood`, name "Mood", `sizes: [{ w: 1,
+  h: 1 }, { w: 2, h: 1 }]`, `reads: [mood]` — no `metrics:` (`mood` is
+  canonical). `render()`: the latest day's `mood` as a `number`
+  (`caption` "today" or its date) over an `input` (`key` `mood`, `action`
+  `log`, `kind` `"select"`, `options` `"1"`–`"5"`, "Mood today"),
+  panelled — `empty("No mood logged yet")` before the first. `handle()`:
+  `log` only; `payload["mood"]` one of the five strings, else
+  `ValueError("Choose a mood from 1 to 5")` (the app holds the choice to
+  its options, not the host), then `ctx.write_metric("mood", int(raw))`
+  for today — one a day, replacing.
 - `app/home_layout.py` — the Home tab's layout, one `settings` row
   (`LAYOUT_KEY` `home_layout`, no migration): `{"tabs": [{id, name,
   mode: "flow", subtitle, items: [{instance_id, app_id, size: {w, h},
@@ -723,10 +743,15 @@ own calls to its device API. Full direction:
   `panel` (children stacked; the line takes the rest, an input sits at the
   foot), `input` (`specInput(s, appId)`: the `label` small and uppercase
   over a row of the field — `type="number" step="any"` unless `kind` is
-  `"text"`, named by its label else its key — the `unit` and a **Save**
+  `"text"`, or for `kind` `"select"` a `<select class="input">`: a
+  "Choose…" placeholder first (value `""`, selected and disabled), then an
+  `<option>` per `options` entry, its text (`textContent`) and value the
+  string; named by its label else its key — the `unit` and a **Save**
   `btn sm`, then a `.m` message line; Save or Enter: a blank field, or a
-  number that isn't one, says so ("Enter a number.") and sends nothing,
-  else `api.appAction(appId, action, {[key]: value}, tileCfg(appId))` →
+  number that isn't one, says so ("Enter a number.") and sends nothing —
+  a select still on its placeholder likewise ("Choose an option.") — else
+  `api.appAction(appId, action, {[key]: value}, tileCfg(appId))` (a
+  select's value the chosen string, never `Number()`d) →
   `POST /api/app/<id>/action` `{action, payload, cfg}` with Save and the
   field held meanwhile, then `{ok, spec}` → `repaintTile(appId, spec)`, or
   `{ok: false}` → its `error` in the message line, the field kept as
@@ -1373,9 +1398,16 @@ same PR:
   (canonical + installed apps' own, `custom_metric_defs()`) feeds the
   catalog (entries marked `app`/`label`), coverage and the metric route;
   the console names them by label with an `app` mark; the `caffeine` app
-  is the reference. Still to come for write-back: `write_session` (the
+  is the reference. The first input primitive beyond a typed field landed
+  (no migration, no route change): a dropdown, `ctx.input(...,
+  kind="select", options=[...])` of plain-string options, drawn by
+  `specInput`'s select branch and sent as the chosen string; the `mood`
+  app is the reference (`docs/architecture/input-primitives.md`).
+  Still to come for write-back: `write_session` (the
   roster path), an app's own session kinds and series, cross-app reads
-  of a custom metric, new input types,
+  of a custom metric, the later input bricks (file upload, date/time,
+  auto-recompute) and, for a select, `{value, label}` options,
+  host-side option-membership enforcement and multi-select,
   `base_tz` (slice A: an app's write lands on the server's local date
   until then), timestamped weigh-ins more than one a day (the instant
   grain), and how apps rank against other unnamed sources

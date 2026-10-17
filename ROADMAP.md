@@ -112,10 +112,13 @@ app-defined metrics: an app declares the metrics it invents in its manifest
 (daily or instant, a unit, a category, an optional range) and writes them by
 short key, stored as `app:<id>:<key>` and listed beside the built-in metrics
 (the Caffeine app the example; purging an uninstalled app's metric is next on
-that path). Next: the rest of the Library (the writes ticker, now apps write
-back; alerts; Browse / Build / Create are still placeholders), session
-write-back, and the grid pass (free cell placement, a second layout mode on
-the same sizes).
+that path). Then the first input primitive beyond a typed field: a dropdown
+(`kind="select"`, plain-string options, the chosen string sent to `handle()`,
+which owns checking it; the Mood app the example), with file upload and
+date/time the later bricks (`docs/architecture/input-primitives.md`). Next:
+the rest of the Library (the writes ticker, now apps write back; alerts;
+Browse / Build / Create are still placeholders), session write-back, and the
+grid pass (free cell placement, a second layout mode on the same sizes).
 
 ## Phase 5 — OpenFit Host (per-user provisioning)
 

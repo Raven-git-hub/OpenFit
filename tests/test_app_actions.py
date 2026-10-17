@@ -557,7 +557,7 @@ def log(client, weight):
 
 LOG_FIELD = {
     "type": "input", "key": "weight_kg", "action": "log",
-    "label": "Log weight", "kind": "number", "unit": "kg",
+    "label": "Log weight", "kind": "number", "unit": "kg", "options": None,
 }
 
 
@@ -651,6 +651,109 @@ def test_the_weight_app_has_one_action(client, conn, apps_dir):
     install_weight(apps_dir)
 
     assert assert_refused(act(client, "weight", "clear", {})) == "unknown action: 'clear'"
+
+
+# ---------- the mood app: a select ----------
+#
+# The weight app's shape with a dropdown in place of a number field:
+# committed in tests/fixtures/apps/mood/, it offers the canonical mood
+# scale as the options "1"-"5", and its handle() - not the host - checks
+# the choice sent is one of them before filing it as a number.
+
+
+MOOD_FIELD = {
+    "type": "input", "key": "mood", "action": "log", "label": "Mood today",
+    "kind": "select", "unit": None, "options": ["1", "2", "3", "4", "5"],
+}
+
+
+def install_mood(client):
+    """Install the mood app through the Library, from its committed files."""
+    folder = REAL_APPS / "mood"
+    files = {name: (folder / name).read_text() for name in ("app.yaml", "app.py")}
+    resp = client.post("/api/apps", json={"files": files})
+    assert resp.status_code == 201, resp.get_json()
+
+
+def log_mood(client, mood):
+    return act(client, "mood", "log", {"mood": mood})
+
+
+def test_the_mood_app_installs_and_is_listed(client, apps_dir):
+    install_mood(client)
+
+    assert client.get("/api/apps").get_json() == [
+        {"id": "mood", "name": "Mood", "default_size": {"w": 1, "h": 1},
+         "sizes": [{"w": 1, "h": 1}, {"w": 2, "h": 1}], "reads": ["mood"], "config": [], "metrics": [],
+         "files": ["app.py", "app.yaml"]},
+    ]
+
+
+def test_the_mood_app_with_no_mood_says_so_over_its_dropdown(client, apps_dir):
+    install_mood(client)
+
+    assert client.post("/api/app/mood/render").get_json() == {
+        "type": "panel", "children": [{"type": "empty", "message": "No mood logged yet"}, MOOD_FIELD],
+    }
+
+
+def test_logging_a_mood_files_the_choice_as_a_number_and_redraws_the_tile(client, conn, apps_dir):
+    install_mood(client)
+
+    resp = log_mood(client, "3")
+
+    assert resp.status_code == 200
+    assert resp.get_json() == {"ok": True, "spec": {
+        "type": "panel", "children": [
+            {"type": "number", "value": 3, "label": None, "caption": "today", "unit": None},
+            MOOD_FIELD,
+        ],
+    }}
+    # The canonical key, under the app's own source, and derived for today.
+    assert rows(conn) == [(TODAY, "app:mood", "mood", 3.0)]
+    assert picked(conn, TODAY, "mood") == (3.0, "app:mood")
+    assert client.get("/api/metric/mood").get_json() == {
+        "metric": "mood", "unit": "scale",
+        "points": [{"date": TODAY, "value": 3.0, "source": "app:mood"}],
+    }
+
+
+def test_a_second_mood_the_same_day_replaces_the_first(client, conn, apps_dir):
+    install_mood(client)
+
+    log_mood(client, "2")
+    log_mood(client, "5")
+
+    assert rows(conn) == [(TODAY, "app:mood", "mood", 5.0)]
+
+
+def test_the_mood_app_shows_an_earlier_days_date(client, conn, apps_dir):
+    install_mood(client)
+    insert(conn, "2026-01-03", "webhook", mood=4)
+    recompute_derived(conn)
+
+    spec = client.post("/api/app/mood/render").get_json()
+
+    assert spec["children"][0] == {"type": "number", "value": 4, "label": None, "caption": "2026-01-03", "unit": None}
+
+
+@pytest.mark.parametrize("choice", ["", "0", "6", "3.0", " 3", "three", 3, None, True])
+def test_the_mood_app_refuses_a_choice_it_didnt_offer(client, conn, apps_dir, choice):
+    # The host doesn't hold a select's value to its options - the action
+    # route keeps no memory of a render - so handle() does, and its
+    # refusal is the action's error. Nothing is written.
+    install_mood(client)
+
+    assert assert_refused(log_mood(client, choice)) == "Choose a mood from 1 to 5"
+    assert rows(conn) == []
+    assert picked(conn, TODAY, "mood") is None
+
+
+def test_the_mood_app_has_one_action(client, conn, apps_dir):
+    install_mood(client)
+
+    assert assert_refused(act(client, "mood", "clear", {"mood": "3"})) == "unknown action: 'clear'"
+    assert rows(conn) == []
 
 
 # ---------- /api/weights retired; 'manual' kept as history ----------

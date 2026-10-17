@@ -733,12 +733,51 @@ def test_empty_spec():
 def test_input_spec():
     assert host.input("weight_kg", "log", label="Log weight", unit="kg") == {
         "type": "input", "key": "weight_kg", "action": "log",
-        "label": "Log weight", "kind": "number", "unit": "kg",
+        "label": "Log weight", "kind": "number", "unit": "kg", "options": None,
     }
-    # A number by default; label and unit may be left out.
+    # A number by default; label and unit may be left out. Only a select
+    # has options.
     assert host.input("note", "save", kind="text") == {
         "type": "input", "key": "note", "action": "save", "label": None, "kind": "text", "unit": None,
+        "options": None,
     }
+
+
+def test_a_select_input_spec_carries_its_options():
+    assert host.input("mood", "log", kind="select", options=["1", "2"]) == {
+        "type": "input", "key": "mood", "action": "log",
+        "label": None, "kind": "select", "unit": None, "options": ["1", "2"],
+    }
+    # Label and unit as for any input; options kept in order, as written -
+    # a tuple of them a plain list in the spec.
+    assert host.input("tag", "add", label="Tag", unit="", kind="select", options=("b", " a ", "b ")) == {
+        "type": "input", "key": "tag", "action": "add",
+        "label": "Tag", "kind": "select", "unit": "", "options": ["b", " a ", "b "],
+    }
+
+
+@pytest.mark.parametrize("options", [None, [], ()])
+def test_a_select_needs_options(options):
+    with pytest.raises(ValueError, match="a select's options must be a non-empty list of strings"):
+        host.input("mood", "log", kind="select", options=options)
+    if options is None:
+        with pytest.raises(ValueError):
+            host.input("mood", "log", kind="select")
+
+
+@pytest.mark.parametrize(
+    "options", ["12345", {"1": "one"}, {"1", "2"}, 3, ["1", 2], ["1", None], ["1", ""], [["1"]], [b"1"]],
+)
+def test_a_selects_options_must_be_a_list_of_non_empty_strings(options):
+    with pytest.raises(TypeError, match="a select's options must be a non-empty list of strings"):
+        host.input("mood", "log", kind="select", options=options)
+
+
+@pytest.mark.parametrize("kind", ["number", "text"])
+@pytest.mark.parametrize("options", [["1", "2"], [], ()])
+def test_options_are_only_for_a_select(kind, options):
+    with pytest.raises(ValueError, match="options is only for a select"):
+        host.input("mood", "log", kind=kind, options=options)
 
 
 @pytest.mark.parametrize(
