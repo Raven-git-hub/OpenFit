@@ -400,18 +400,26 @@ what it wrote stays until you remove it (below). The **Caffeine** app
 (`tests/fixtures/apps/caffeine/`) is the example.
 
 Removing that data is its own, explicit step, once the app is gone. An
-uninstalled app's source shows in **Connected sources** (and under any metric
-it fed, in Your data) with a red **Remove data**; after a confirm naming what
-goes, it deletes every reading, session and sample the app wrote, re-derives
-the days they covered (each falls to another source, or is left empty), and
-clears any metric's primary that named it. The metrics themselves stay:
-`weight_kg` without the weight app's readings is still `weight_kg`. That's
-`DELETE /api/app-sources/<id>`, which refuses (`400`) while the app's folder
-is still in `/data/apps/` — even if the app in it fails to load: a broken app
-isn't a gone one, so fix or uninstall it first — and only ever reaches
-`app:<id>`, never a device's, a webhook's or `manual`'s. `GET
-/api/app-sources` lists every app source with data, each marked `orphaned`
-(its app gone from the volume) or not.
+uninstalled app's source shows in **Connected sources** with a red **Remove
+all data**; after a confirm naming what goes, it deletes every reading,
+session and sample the app wrote, re-derives the days they covered (each falls
+to another source, or is left empty), and clears any metric's primary that
+named it. The metrics themselves stay: `weight_kg` without the weight app's
+readings is still `weight_kg`. That's `DELETE /api/app-sources/<id>`, which
+refuses (`400`) while the app's folder is still in `/data/apps/` — even if the
+app in it fails to load: a broken app isn't a gone one, so fix or uninstall it
+first — and only ever reaches `app:<id>`, never a device's, a webhook's or
+`manual`'s. `GET /api/app-sources` lists every app source with data, each
+marked `orphaned` (its app gone from the volume) or not.
+
+Or one metric at a time: open the app's row in Connected sources for a line
+per metric it left behind (its own metrics among them, by their short key —
+uninstalled, they've already left the catalog), or open a metric in Your data,
+where the uninstalled app is listed under its sources; either way **Remove
+data** takes only that metric's readings from that app, re-derives their days
+(a metric another source wins keeps its winner) and clears that metric's
+primary if it named the app — the app's other data stays. That's `DELETE
+/api/app-sources/<id>/<metric>`, with the same guards.
 
 The **Weight** app above (in full in `tests/fixtures/apps/weight/`) is the one
 way to log a weigh-in by hand: install it from its two files and its tile goes

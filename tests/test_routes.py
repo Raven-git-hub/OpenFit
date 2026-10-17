@@ -2702,16 +2702,19 @@ def test_the_input_reaches_the_action_route_through_the_api_block(client):
 # ---------- an uninstalled app's data: Remove data ----------
 #
 # Uninstall keeps what an app wrote; GET /api/app-sources lists every
-# app source, orphaned or not, and DELETE /api/app-sources/<id> removes
-# an orphan's data. The page shows an orphan in Connected sources, and
-# under a Your data row's source list, with a red Remove data behind one
-# confirm; a live app's source gets no control. The page's own functions
-# run under node over the stand-in DOM, against the listings and the
-# reply the server gives.
+# app source, orphaned or not, DELETE /api/app-sources/<id> removes an
+# orphan's data and DELETE /api/app-sources/<id>/<metric> one metric of
+# it. The page shows an orphan in Connected sources - a red Remove all
+# data, and, opened, a Remove data per metric it left behind - and under
+# a Your data row's source list, a Remove data for that row's metric;
+# each behind one confirm. A live app's source gets no control. The
+# page's own functions run under node over the stand-in DOM, against the
+# listings and the reply the server gives.
 
 ORPHAN_PARTS = [
-    "$", "el", "num", "orphans", "loadAppSources", "orphanRow", "countOf", "appDataSummary",
-    "openRemoveAppData", "openModal", "paintSources", "orphanLines", "fillSources", "sourceList",
+    "$", "el", "num", "orphans", "loadAppSources", "orphanRow", "orphanMetrics", "countOf",
+    "appDataSummary", "openRemoveAppData", "openModal", "paintSources", "orphanLines", "fillSources",
+    "sourceList", "expandable",
 ]
 
 ORPHAN_HARNESS = r"""
@@ -2724,6 +2727,9 @@ ORPHAN_HARNESS = r"""
     const api = {
       appSources: async () => copy(listing),
       removeAppSource: async id => { calls.push(id); listing = AFTER_; return copy(REPLY_); },
+      removeAppSourceMetric: async (id, metric) => {
+        calls.push([id, metric]); listing = AFTER_; return copy(REPLY_);
+      },
     };
     const loadData = () => loads.push('data'), loadHome = () => loads.push('home');
     // The rest of the card, which these tests don't look at.
@@ -2734,7 +2740,7 @@ ORPHAN_HARNESS = r"""
     const metricName = k => ({weight_kg:'Weight', steps:'Steps'})[k] || k;
     const srcName = id => id, makeSortable = () => {};
     const state = {connectors:[{id:'garmin', name:'Garmin', connected:true}], appSources:null,
-                   data:null, roles:{}, note:{}, open:new Set()};
+                   data:null, roles:{}, note:{}, open:new Set(), orphanOpen:new Set()};
     const card = document.body.appendChild(mk('section'));
     card.id = 'sourcesCard';
     const r = {};
@@ -2752,7 +2758,8 @@ ORPHAN_HARNESS = r"""
     const lookModal = bg => {
       const box = bg.children[0];
       return {
-        title:box.querySelector('h4').textContent, what:box.querySelector('[data-f="what"]').textContent,
+        title:box.querySelector('h4').textContent, hint:box.querySelector('[data-f="hint"]').textContent,
+        what:box.querySelector('[data-f="what"]').textContent,
         buttons:box.querySelectorAll('button').map(b => [b.dataset.act, b.textContent, b.className]),
         msg:box.querySelector('[data-f="msg"]').textContent,
       };
@@ -2774,6 +2781,11 @@ ORPHAN_HARNESS = r"""
       out.card = look();
       return out;
     }
+    // An orphan row's metrics, opened: each line's metric, name and button.
+    const metricLines = () => card.querySelectorAll('.orphan-metric').map(l => [
+      l.dataset.metric, l.querySelector('[data-f="metric"]').textContent,
+      l.querySelector('button').textContent, l.querySelector('button').className]);
+    const openOrphan = () => card.querySelector('.src.orphan .orphan-head').onclick();
 """
 
 
@@ -2793,8 +2805,9 @@ def _orphan_script(page, before, after, reply, scenario):
 
 @pytest.fixture
 def orphaned_app(client, db_path, tmp_path, monkeypatch):
-    """app:old, whose app is uninstalled, with two weigh-ins; app:steps,
-    the installed steps app's, with a reading; Garmin beside them."""
+    """app:old, whose app is uninstalled, with two weigh-ins and a day's
+    steps; app:steps, the installed steps app's, with a reading; Garmin
+    beside them."""
     import sqlite3
 
     import main
@@ -2812,6 +2825,7 @@ def orphaned_app(client, db_path, tmp_path, monkeypatch):
         [
             ("2026-10-01", "app:old", "weight_kg", 80.0, "kg"),
             ("2026-10-02", "app:old", "weight_kg", 81.0, "kg"),
+            ("2026-10-02", "app:old", "steps", 400, "count"),
             ("2026-10-01", "app:steps", "steps", 500, "count"),
             ("2026-10-02", "garmin", "weight_kg", 82.0, "kg"),
         ],
@@ -2848,24 +2862,42 @@ def test_an_orphan_shows_remove_data_and_a_live_app_doesnt(client, orphaned_app)
         fillSources({id:'series:heart_rate', key:'heart_rate', cov:'series', grain:'series',
                      sources:['garmin', 'app:steps']}, seriesBox);
         r.series = lines(seriesBox);
-        // Its button opens the same confirm.
+        // Its button opens the same confirm, for that metric.
         metricBox.querySelector('.orphan-src button').onclick();
         r.fromRow = lookModal(modal());
+        // The orphan's row opens on the metrics it left behind, and shuts.
+        const head = card.querySelector('.src.orphan .orphan-head');
+        openOrphan();
+        r.opened = {expanded:head.getAttribute('aria-expanded'), controls:head.getAttribute('aria-controls'),
+                    panel:card.querySelector('.orphan-metrics').id, lines:metricLines()};
+        openOrphan();
+        r.shut = {expanded:head.getAttribute('aria-expanded'), lines:metricLines()};
     """)
     result = _node(script)
 
     # Connected sources: the device's row, then the orphan's - name, its
-    # source, status and a red Remove data - and nothing for steps, live.
+    # source, status and a red Remove all data, its head a button that
+    # opens it - and nothing for steps, live.
     assert result["card"] == [
         {"cls": "src", "id": "garmin", "source": None, "text": "", "buttons": []},
-        {"cls": "src orphan", "id": None, "source": "app:old", "text": "oldapp:old○ app uninstalledRemove data",
-         "buttons": [["Remove data", "btn sm danger"]]},
+        {"cls": "src orphan", "id": None, "source": "app:old",
+         "text": "›oldapp:old○ app uninstalledRemove all data",
+         "buttons": [["›oldapp:old", "src-name orphan-head"], ["Remove all data", "btn sm danger"]]},
     ]
     assert result["metric"] == [
         ["app:old is from an uninstalled app.", "Remove data", "btn sm danger"],
     ]
     assert result["series"] == []
-    assert result["fromRow"]["title"] == "app:old"
+    assert result["fromRow"]["title"] == "Weight"
+    assert result["fromRow"]["what"] == "Remove Weight from the uninstalled app 'old'? This can't be undone."
+    # Opened: a line per metric, in the listing's order, each named and
+    # removable on its own.
+    assert result["opened"] == {
+        "expanded": "true", "controls": "orphan-app-old", "panel": "orphan-app-old",
+        "lines": [["steps", "Steps", "Remove data", "btn sm danger"],
+                  ["weight_kg", "Weight", "Remove data", "btn sm danger"]],
+    }
+    assert result["shut"] == {"expanded": "false", "lines": []}
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
@@ -2879,7 +2911,7 @@ def test_remove_data_confirms_what_goes_then_calls_the_route_and_refreshes(clien
     # the listing it refreshes to is the server's own.
     reply = _sent(client.delete("/api/app-sources/old"))
     after = client.get("/api/app-sources").get_json()
-    assert reply == {"ok": True, "removed": {"metrics": 2, "sessions": 0, "samples": 0}}
+    assert reply == {"ok": True, "removed": {"metrics": 3, "sessions": 0, "samples": 0}}
     assert [a["id"] for a in after] == ["steps"]
     conn = sqlite3.connect(main.app.config["DB_PATH"])
     assert conn.execute("SELECT COUNT(*) FROM metrics WHERE source = 'app:old'").fetchone()[0] == 0
@@ -2894,7 +2926,8 @@ def test_remove_data_confirms_what_goes_then_calls_the_route_and_refreshes(clien
     # The confirm names what goes, as text.
     assert result["modal"] == {
         "title": "app:old",
-        "what": "Remove all data from the uninstalled app 'old'? 2 readings across 1 metric (Weight). "
+        "hint": "Its app is no longer installed. What it wrote is still in your data.",
+        "what": "Remove all data from the uninstalled app 'old'? 3 readings across 2 metrics (Steps, Weight). "
                 "This can't be undone.",
         "buttons": [["cancel", "Cancel", "btn sm"], ["confirm", "Remove data", "btn sm danger solid"]],
         "msg": "",
@@ -2908,27 +2941,134 @@ def test_remove_data_confirms_what_goes_then_calls_the_route_and_refreshes(clien
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
-def test_a_refused_removal_says_why_and_keeps_the_source(client, orphaned_app):
+@pytest.mark.parametrize("url, click, call", [
+    # Remove all data, and one metric's Remove data in the opened row.
+    ("/api/app-sources/old", "card.querySelector('.src.orphan [data-act=\"remove-data\"]')", "old"),
+    ("/api/app-sources/old/steps",
+     "(openOrphan(), card.querySelector('.orphan-metric [data-act=\"remove-metric\"]'))", ["old", "steps"]),
+], ids=["all", "metric"])
+def test_a_refused_removal_says_why_and_keeps_the_source(client, orphaned_app, url, click, call):
     before = client.get("/api/app-sources").get_json()
     # Reinstalled since the page read the listing: the server refuses.
     old = orphaned_app / "old"
     old.mkdir()
     (old / "app.yaml").write_text("id: old\nname: Old\nsizes: [{w: 1, h: 1}]\n")
-    reply = _sent(client.delete("/api/app-sources/old"))
+    reply = _sent(client.delete(url))
     assert reply["ok"] is False and "is present" in reply["error"]
 
-    script = _orphan_script(_page(client), before, before, reply, """
+    script = _orphan_script(_page(client), before, before, reply, f"""
         await loadAppSources();
-        Object.assign(r, await removeVia(card.querySelector('.src.orphan [data-act="remove-data"]')));
+        Object.assign(r, await removeVia({click}));
     """)
     result = _node(script)
 
-    assert result["calls"] == ["old"]
+    assert result["calls"] == [call]
     assert result["closed"] is False
     assert result["after"]["msg"] == reply["error"]
     assert result["confirm"] == ["Remove data", False]
     assert result["loads"] == []
     assert [row["source"] for row in result["card"]] == [None, "app:old"]
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
+def test_a_metrics_remove_data_in_the_orphan_row_takes_only_that_metric(client, orphaned_app):
+    import sqlite3
+
+    import main
+
+    before = client.get("/api/app-sources").get_json()
+    reply = _sent(client.delete("/api/app-sources/old/steps"))
+    after = client.get("/api/app-sources").get_json()
+    assert reply == {"ok": True, "removed": {"metrics": 1, "sessions": 0, "samples": 0}}
+    assert [(a["id"], a["metrics"]) for a in after] == [("old", ["weight_kg"]), ("steps", ["steps"])]
+    conn = sqlite3.connect(main.app.config["DB_PATH"])
+    assert conn.execute(
+        "SELECT metric, COUNT(*) FROM metrics WHERE source = 'app:old' GROUP BY metric"
+    ).fetchall() == [("weight_kg", 2)]
+    conn.close()
+
+    script = _orphan_script(_page(client), before, after, reply, """
+        await loadAppSources();
+        openOrphan();
+        const steps = card.querySelectorAll('.orphan-metric').find(l => l.dataset.metric==='steps');
+        Object.assign(r, await removeVia(steps.querySelector('[data-act="remove-metric"]')));
+        r.lines = metricLines();
+    """)
+    result = _node(script)
+
+    # The confirm names the metric and the app, as text.
+    assert result["modal"] == {
+        "title": "Steps",
+        "hint": "From app:old, whose app is no longer installed. The rest of what it wrote stays.",
+        "what": "Remove Steps from the uninstalled app 'old'? This can't be undone.",
+        "buttons": [["cancel", "Cancel", "btn sm"], ["confirm", "Remove data", "btn sm danger solid"]],
+        "msg": "",
+    }
+    # The metric route, once, for old's steps; the same refresh as Remove
+    # all data - and the orphan stays, still open, on what's left.
+    assert result["calls"] == [["old", "steps"]]
+    assert result["closed"] is True
+    assert result["loads"] == ["data", "home"]
+    assert [row["source"] for row in result["card"]] == [None, "app:old"]
+    assert result["lines"] == [["weight_kg", "Weight", "Remove data", "btn sm danger"]]
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
+def test_your_datas_remove_data_takes_only_that_rows_metric(client, orphaned_app):
+    before = client.get("/api/app-sources").get_json()
+    roles = client.get("/api/source-roles").get_json()
+    assert "app:old" in roles["weight_kg"]["sources"]
+    reply = _sent(client.delete("/api/app-sources/old/weight_kg"))
+    after = client.get("/api/app-sources").get_json()
+    assert reply == {"ok": True, "removed": {"metrics": 2, "sessions": 0, "samples": 0}}
+    # Garmin's weigh-in, and old's steps, are still there.
+    assert client.get("/api/source-roles").get_json()["weight_kg"]["sources"] == ["garmin"]
+    assert [(a["id"], a["metrics"]) for a in after] == [("old", ["steps"]), ("steps", ["steps"])]
+
+    script = _orphan_script(_page(client), before, after, reply, f"""
+        await loadAppSources();
+        state.roles = {json.dumps(roles)};
+        const box = mk('div');
+        fillSources({{id:'metric:weight_kg', key:'weight_kg', cov:'metrics'}}, box);
+        Object.assign(r, await removeVia(box.querySelector('.orphan-src [data-act="remove-data"]')));
+    """)
+    result = _node(script)
+
+    assert result["modal"]["title"] == "Weight"
+    assert result["modal"]["what"] == "Remove Weight from the uninstalled app 'old'? This can't be undone."
+    assert result["calls"] == [["old", "weight_kg"]]
+    assert result["closed"] is True
+    assert result["loads"] == ["data", "home"]
+    # The app's steps are left, so its row stays.
+    assert [row["source"] for row in result["card"]] == [None, "app:old"]
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
+def test_an_orphan_with_no_readings_left_says_remove_all_data_takes_the_rest(client, orphaned_app):
+    import sqlite3
+
+    import main
+
+    conn = sqlite3.connect(main.app.config["DB_PATH"])
+    conn.execute(
+        "INSERT INTO samples (source, metric, ts, value, unit, synced_at) "
+        "VALUES ('app:z', 'spo2', '2026-10-02T03:00:00Z', 96, '%', 'x')"
+    )
+    conn.commit()
+    conn.close()
+    listing = [a for a in client.get("/api/app-sources").get_json() if a["id"] == "z"]
+    assert listing[0]["metrics"] == [] and listing[0]["samples"] == 1
+
+    script = _orphan_script(_page(client), listing, listing, {"ok": True}, """
+        await loadAppSources();
+        openOrphan();
+        r.note = card.querySelector('.orphan-item .dnote').textContent;
+        r.lines = metricLines();
+    """)
+    result = _node(script)
+
+    assert result["note"] == "No readings left - 1 sample, which Remove all data takes."
+    assert result["lines"] == []
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
@@ -3023,13 +3163,29 @@ def test_remove_data_reaches_the_route_through_the_api_block(client):
     # The only place the URLs live.
     assert "    appSources:      ()          => fetchJSON('/api/app-sources')," in page
     assert "    removeAppSource: id          => send('/api/app-sources/'+enc(id), 'DELETE')," in page
+    assert ("    removeAppSourceMetric: (id, metric) => "
+            "send('/api/app-sources/'+enc(id)+'/'+enc(metric), 'DELETE'),") in page
     confirm = _js_function(page, "openRemoveAppData")
-    assert "api.removeAppSource(o.id)" in confirm
+    # One confirm, two routes: no metric is the whole app; a metric, just it.
+    assert "const whole = metric==null;" in confirm
+    assert "whole ? await api.removeAppSource(o.id) : await api.removeAppSourceMetric(o.id, metric)" in confirm
+    # Either way, the same refresh: the sources, the data card and Home.
+    assert confirm.count("loadAppSources();") == 1 and "if(res.ok){" in confirm
+    ok = confirm[confirm.index("if(res.ok){"):confirm.index("}else{")]
+    assert all(call in ok for call in ("loadAppSources();", "loadData();", "loadHome();"))
     for value in ("fetch(", "'/api/"):
         assert value not in confirm, value
-    # Every id, source and count is set as text: the markup itself is
-    # fixed, nothing interpolated into it.
-    for name, call in (("openRemoveAppData", "openModal("), ("orphanRow", "el('div','src orphan', "),
+    # Each entry point hands the confirm what it's for: the whole app, the
+    # opened row's metric, Your data's row's.
+    assert "openRemoveAppData(o, null)" in _js_function(page, "orphanRow")
+    assert "openRemoveAppData(o, key)" in _js_function(page, "orphanMetrics")
+    assert "openRemoveAppData(o, row.key)" in _js_function(page, "orphanLines")
+    assert "orphanLines(row, sources, box);" in _js_function(page, "fillSources")
+    # Every id, source, metric and count is set as text: the markup itself
+    # is fixed, nothing interpolated into it.
+    for name, call in (("openRemoveAppData", "openModal("), ("orphanRow", "el('div','src-r', "),
+                       ("orphanRow", "el('button','src-name orphan-head', "),
+                       ("orphanMetrics", "el('li','orphan-metric', "),
                        ("orphanLines", "el('div','orphan-src', ")):
         body = _js_function(page, name)
         markup = re.search(re.escape(call) + r"`(.*?)`", body, re.S)

@@ -951,8 +951,7 @@ saved positions and gives `paintTiles` start cells. The sizes, the CSS grid,
 - **More write-back**: `ctx.write_session()` (an app contributing sessions:
   a roster, a custom sleep detector), an app's own session kinds and series
   (its own metrics are `daily`/`instant` only), reading another app's
-  metrics, purging an uninstalled app's metric (B1 in
-  `apps-as-source.md`), timestamped weigh-ins more than one a day, and a
+  metrics, timestamped weigh-ins more than one a day, and a
   `base_tz` setting for the day a write lands on.
 - **Enforcing `reads`:** it's recorded, but `ctx.metric()` serves any
   canonical key, and the app's own.

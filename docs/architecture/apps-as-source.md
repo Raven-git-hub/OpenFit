@@ -102,7 +102,7 @@ Out of B0: custom session kinds and series, new input types, cross-app custom
 reads through the ctx, autonomous/background compute, and purging a custom
 metric (B1, below).
 
-## Data lifecycle — removing app data (settled Oct 16; A and B0 built, B1 not yet)
+## Data lifecycle — removing app data (settled Oct 16; A, B0 and B1 built)
 
 Two distinct cleanups, both wanted. Guardrails for both: only ever for a source
 **with no live app behind it** (never a live app's data); a guarded confirm
@@ -125,8 +125,9 @@ built-in/default metrics themselves are never purgeable.
     re-derive, now shared, plus `clear_source_roles()`. The page shows
     an orphan in Connected sources and under a metric's sources with a red
     Remove data behind one confirm.
-  - Decided: per-source (everything that orphaned source wrote, like
-    disconnect), not per-(source, metric).
+  - Decided for (A): per-source (everything that orphaned source wrote, like
+    disconnect). B1 (below) adds per-(source, metric) beside it, on the same
+    `purge_source()`.
   - Not yet: the legacy `manual` source — left alone for now, a possible later
     addition on the same `purge_source()`.
 - **(B) Purge a whole CUSTOM metric** (`app:<id>:<key>`) once no installed app
@@ -135,13 +136,47 @@ built-in/default metrics themselves are never purgeable.
   - **B0 — app-defined custom metrics: built** (above). An app declares a new
     key's label/unit/category/grain/range, the write path accepts it, the catalog
     lists it.
-  - **B1 — purge an orphaned one: not yet.** After an uninstall a custom metric's
-    readings (and their derived picks) persist under `app:<id>:<key>` but it
-    drops out of the catalog — it's no longer in the effective vocabulary, and
-    `/api/metric/app:<id>:<key>` 404s. That's the "orphaned custom metric" state
-    B1 handles. Meanwhile (A) already removes it with everything else its source
-    wrote (`DELETE /api/app-sources/<id>`), and reinstalling the app brings the
-    metric back with its history.
+  - **B1 — per-metric removal of an orphaned source's data: built.** After an
+    uninstall a custom metric's readings (and their derived picks) persist under
+    `app:<id>:<key>` but it drops out of the catalog — it's no longer in the
+    effective vocabulary, and `/api/metric/app:<id>:<key>` 404s (B0: that part
+    needs nothing new). B1 removes those lingering readings — and, the same
+    way, one built-in metric's readings from a dead app — without wiping the
+    rest of what the app wrote. (Before B1, the per-metric Remove data under a
+    Your data row called the whole-app route, so removing one metric's leftovers
+    wiped the dead app's every metric.) Reinstalling the app before then still
+    brings the metric back with its history.
+    - **The route:** `DELETE /api/app-sources/<id>/<metric>` — `<metric>` the key
+      as stored (a canonical key, or the full `app:<id>:<key>`; colons are fine
+      in the path, encoded or not). Guards as the whole-app route's, in the same
+      order: 404 for an id failing `APP_ID`, 400 while `app_present()`, 404
+      `"no <metric> data from app:<id> to remove"` when that `(source, metric)`
+      has no reading or sample (`_has_metric_data()`; sessions are kind-keyed,
+      so a kind is never found here). 200 `{ok, removed: {metrics, sessions,
+      samples}}`, `sessions` always 0. DELETE only (405 otherwise).
+      `GET /api/app-sources`' shape is unchanged — no per-metric counts.
+    - **The factoring:** `purge_source(conn, source, metric=None,
+      keep_roles=False)` — with `metric`, deletes that metric's `metrics` rows
+      (`RETURNING date`) and `samples` rows from the source, never `sessions`,
+      clears only that metric's role (`clear_source_roles(conn, source,
+      only=metric)`: the entry under that key, iff it names the source) and
+      re-derives the deleted span, one transaction as before. Without
+      `metric`, unchanged. A built-in metric stays in the vocabulary — only
+      the readings go; a dead app's metric that another source wins (the
+      lost-pick case) loses only the app's rows, and the re-derive leaves the
+      winner.
+    - **Two entry points, one confirm:** Your data is by metric — a row's
+      source list shows an orphan line for each dead app that wrote that
+      metric (`/api/source-roles`' `sources` is every source that wrote it,
+      winning or not), its Remove data for that metric only. Connected sources
+      is by app — the orphan row expands (`expandable()`, as a Your data row
+      does) to a line per metric the app left behind, each with its own
+      Remove data, under a header keeping **Remove all data** (the whole-app
+      route). An orphaned custom metric has no Your data row (it's out of the
+      catalog), so the expanded orphan row is its only entry point. Every
+      button opens `openRemoveAppData(o, metric)` — `metric` null for the
+      whole app — which picks the route and wording and, on success, re-reads
+      the app sources, Your data and Home.
   - Note: custom keys are namespaced per app (`app:<id>:<key>`), so two apps can't
     feed one shared custom metric. "Multiple app sources for one metric" only
     happens for canonical keys. A *shared* custom namespace would be a further
@@ -157,7 +192,9 @@ built-in/default metrics themselves are never purgeable.
   sources; reuses the disconnect path and clears the stale `source_roles` entry.
 - **Custom metrics (B0):** done — app-declared `daily`/`instant` metrics stored
   as `app:<id>:<key>` (above).
-- **Purge (B1):** an orphaned custom metric; next on this path.
+- **Purge (B1):** done — per-metric removal of an orphaned app source's data
+  (`DELETE /api/app-sources/<id>/<metric>`), which also clears an orphaned
+  custom metric's lingering readings (above).
 - **(later) fatigue / roster path**, unblocked by the scope reversal.
 
 ## Minor / noted
