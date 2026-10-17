@@ -595,7 +595,7 @@ def test_the_webhook_cant_write_an_apps_metric(client, conn, apps_dir):
 
 CAFFEINE_FIELD = {
     "type": "input", "key": "caffeine_mg", "action": "log",
-    "label": "Caffeine today", "kind": "number", "unit": "mg",
+    "label": "Caffeine today", "kind": "number", "unit": "mg", "options": None,
 }
 
 

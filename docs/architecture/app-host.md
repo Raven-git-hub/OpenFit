@@ -221,7 +221,7 @@ the dicts itself.
 | `ctx.number(value, label=None, caption=None, unit=None)` | `{"type": "number", "value", "label", "caption", "unit"}` | A large value in tabular figures, `unit` small beside it, `label` beneath, and `caption` smaller and muted. A null value reads `—`, and a null label, caption or unit is left out. A number is shown with thousands separators; a string is shown as given. The caption is cut to two lines, or one in a short tile (a 2×2 on a phone), with the full text on hover. |
 | `ctx.line(points, title=None)` | `{"type": "line", "points": [[date, value], ...], "title"}` | A sparkline with its title above it. See [the line builder](#the-line-builder), below. |
 | `ctx.panel(*children)` or `ctx.panel([children])` | `{"type": "panel", "children": [...]}` | Its children stacked in order. A number keeps its height and a line takes the rest. |
-| `ctx.input(key, action, label=None, kind="number", unit=None)` | `{"type": "input", "key", "action", "label", "kind", "unit"}` | A field under its label (small, uppercase), its unit and a **Save** button beside it. Save, or Enter, sends `action` to the app's `handle()` with the payload `{key: what was typed}` (a number for kind `"number"`, text as typed for `"text"`), and the tile is redrawn from the fresh spec the reply carries; a refusal shows under the field, which keeps what was typed. A blank field, or a number that isn't one, says so and sends nothing. In a panel it sits at the foot. In Configure it's inert, like the rest of the face. See [Writing](#writing-apps-as-sources). |
+| `ctx.input(key, action, label=None, kind="number", unit=None, options=None)` | `{"type": "input", "key", "action", "label", "kind", "unit", "options"}` | A field under its label (small, uppercase), its unit and a **Save** button beside it. `kind` is one of `INPUT_KINDS`: `"number"` (the default), `"text"`, or `"select"` — a dropdown of `options`, a non-empty list of non-empty strings, required for a select and refused for the other kinds (`options` is `null` in their specs). Save, or Enter, sends `action` to the app's `handle()` with the payload `{key: what was entered}` (a number for kind `"number"`, text as typed for `"text"`, the chosen option's string as written for `"select"`), and the tile is redrawn from the fresh spec the reply carries; a refusal shows under the field, which keeps what was entered. A blank field, or a number that isn't one, says so and sends nothing; so does a select still on its "Choose…" placeholder. The host doesn't check a select's value is one of its options (the action route remembers no render): `handle()` does. In a panel it sits at the foot. In Configure it's inert, like the rest of the face. See [Writing](#writing-apps-as-sources) and `docs/architecture/input-primitives.md`. |
 | `ctx.empty(message=None)` | `{"type": "empty", "message"}` | Muted, centred text (default "No data yet"). |
 | (the host's) | `{"type": "error", "message"}` | Muted, centred: "Couldn't render <app name>" over the message. |
 
@@ -275,8 +275,9 @@ contract. Its source is `app:<id>`, its installed id (`app_source()` in
 app's write entry point, and the only place an app writes. It's what a tile's
 input element sends (`POST /api/app/<id>/action`, below). `action` is the
 input's action, a non-empty string; `payload` a mapping, `{key: what was
-typed}` from an input; the app interprets both. An app without a `handle()`
-can be drawn but not actioned.
+entered}` from an input (a select's value the chosen option's string); the app
+interprets both, and checks a value is one it expects. An app without a
+`handle()` can be drawn but not actioned.
 
 **The writing ctx.** `handle()` gets a `WriteCtx(conn, app, today=None)`, made
 for the app: a `Ctx` (so `ctx.metric()` and `ctx.today()` read as in
@@ -421,6 +422,28 @@ today's caffeine in mg, as a number")`), and files it for today with
 it to (5000 → "caffeine_mg must be between 0 and 2000 mg, got 5000.0"). One
 figure a day: logging again replaces it. Its metric shows in Your data under
 Nutrition & hydration, marked `app`.
+
+### The mood app
+
+The first app with a dropdown (an input of kind `"select"`), committed in
+`tests/fixtures/apps/mood/` and run by `test_app_actions.py`.
+
+```yaml
+id: mood
+name: Mood
+sizes: [{ w: 1, h: 1 }, { w: 2, h: 1 }]
+reads: [mood]
+```
+
+`mood` is canonical (Other, a 1–5 scale), so there's no `metrics:` block: the
+app just writes the built-in key. `render()` shows the latest day's mood as a
+`number` (captioned "today" or its date) over an `input` (`key: mood`,
+`action: log`, `kind: "select"`, `options: ["1", "2", "3", "4", "5"]`, "Mood
+today") — `empty("No mood logged yet")` before the first. `handle()` takes
+`log` only: a value that isn't one of its five strings → `ValueError("Choose a
+mood from 1 to 5")`, nothing written — the host doesn't hold a select to its
+options, the app does — else `ctx.write_metric("mood", int(raw))` for today,
+under `app:mood`. One mood a day: logging again replaces it.
 
 ## Installing an app
 

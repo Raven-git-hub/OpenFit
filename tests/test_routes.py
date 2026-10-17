@@ -204,13 +204,13 @@ def test_index_splits_applications_into_controls_and_a_list(client, monkeypatch)
     import main
 
     # What the list shows: the installed apps, as /api/apps returns them -
-    # the four real apps.
+    # the five real apps.
     fixtures = os.path.join(os.path.dirname(__file__), "fixtures", "apps")
     monkeypatch.setitem(main.app.config, "APPS_DIR", fixtures)
     apps = client.get("/api/apps").get_json()
     assert [(a["id"], a["name"]) for a in apps] == [
-        ("caffeine", "Caffeine"), ("steps", "Steps"), ("steps-metres", "Distance (from steps)"),
-        ("weight", "Weight"),
+        ("caffeine", "Caffeine"), ("mood", "Mood"), ("steps", "Steps"),
+        ("steps-metres", "Distance (from steps)"), ("weight", "Weight"),
     ]
 
     resp = client.get("/")
@@ -2537,7 +2537,7 @@ INPUT_HARNESS = r"""
     const parts = box => {
       const label = box.children.find(c => c.className==='t');
       const row = box.children.find(c => c.className==='row');
-      const field = row.children.find(c => c.tag==='input');
+      const field = row.children.find(c => c.tag==='input' || c.tag==='select');
       const unit = row.children.find(c => c.className==='u');
       const save = row.children.find(c => c.tag==='button');
       const msg = box.children.find(c => c.className==='m');
@@ -2674,6 +2674,154 @@ def test_nothing_is_sent_for_a_blank_field_or_a_tile_drawn_for_no_app(client):
     for case in ("blank", "junk", "text", "orphanSave"):
         assert r[case]["calls"] == [] and r[case]["repaints"] == [], case
     assert r["orphan"] == ["btn sm", "button", "Save", True]
+
+
+MOOD_FIELD = {"type": "input", "key": "mood", "action": "log", "label": "Mood today",
+              "kind": "select", "unit": None, "options": ["1", "2", "3", "4", "5"]}
+
+# What a dropdown holds, in order: each option's value, its text, and
+# whether it's disabled or selected.
+CHOICES = r"""
+    const choices = field => field.children.map(o => [o.tag, o.value, o.textContent, !!o.disabled, !!o.selected]);
+"""
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
+def test_a_select_draws_a_dropdown_of_its_options_after_a_placeholder(client):
+    page = _page(client)
+    tagged = {"type": "input", "key": "tag", "action": "add", "kind": "select", "unit": "mg",
+              "options": ["<b>bold</b>", "007", " a "]}
+    r = _node(_input_script(page, CHOICES + f"""
+        const panel = renderSpec({{type:'panel', children:[{{type:'empty', message:'No mood logged yet'}}, {json.dumps(MOOD_FIELD)}]}}, 'Mood', 'mood');
+        r.panel = panel.children.map(c => c.className);
+        const box = panel.children[1], {{field}} = parts(box);
+        r.mood = look(box);
+        r.tag = field.tag;
+        r.choices = choices(field);
+        const other = renderSpec({json.dumps(tagged)}, 'Tags', 'tags');
+        r.other = look(other);
+        r.otherChoices = choices(parts(other).field);
+    """))
+
+    # In a panel, at its foot: the label over the dropdown and Save, and
+    # an empty message line - the number field's layout, the field a
+    # <select> named by the label.
+    assert r["panel"] == ["spec-msg", "spec-input"]
+    assert r["tag"] == "select"
+    assert r["mood"]["kids"] == ["t", "row", "m"]
+    assert r["mood"]["label"] == "Mood today"
+    assert r["mood"]["field"] == ["input", None, None, "Mood today"]
+    assert r["mood"]["unit"] is None
+    assert r["mood"]["save"] == ["btn sm", "button", "Save", False]
+    # A placeholder first - chosen, but disabled so it can't be chosen
+    # back - then one option per entry, in order, value and text alike.
+    assert r["choices"] == [
+        ["option", "", "Choose…", True, True],
+        *[["option", v, v, False, False] for v in ["1", "2", "3", "4", "5"]],
+    ]
+    # Options are text, as written - markup and spaces included; no label
+    # means it's named by its key, and a unit sits beside it as ever.
+    assert r["otherChoices"][1:] == [["option", v, v, False, False] for v in ["<b>bold</b>", "007", " a "]]
+    assert r["other"]["field"][3] == "tag"
+    assert r["other"]["unit"] == "mg"
+    assert r["mood"]["html"] == r["other"]["html"] == ""
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
+def test_a_select_sends_the_chosen_option_as_written(client):
+    page = _page(client)
+    zeros = {"type": "input", "key": "code", "action": "pick", "kind": "select", "options": ["007", "1e3"]}
+    r = _node(_input_script(page, f"""
+        const box = () => renderSpec({{type:'panel', children:[{json.dumps(MOOD_FIELD)}]}}, 'Mood', 'mood').children[0];
+        r.clicked = await save(box(), '3');
+        r.entered = await save(box(), '5', 'enter');
+        r.zeros = await save(renderSpec({json.dumps(zeros)}, 'Codes', 'codes'), '007');
+        r.e = await save(renderSpec({json.dumps(zeros)}, 'Codes', 'codes'), '1e3');
+        const refused = box();
+        reply = {{ok:false, error:'Choose a mood from 1 to 5'}};
+        r.refused = await save(refused, '9');
+    """))
+
+    fresh = {"type": "empty", "message": "fresh"}
+    # The app's action, {key: the option chosen} - the string, never
+    # coerced to a number - with the tile's config; Save and the dropdown
+    # held while it's on its way; the tile redrawn from the reply.
+    assert r["clicked"] == {
+        "busy": [True, True], "after": [False, False], "value": "3", "msg": "",
+        "calls": [["mood", "log", {"mood": "3"}, {"for": "mood"}]],
+        "repaints": [["mood", fresh]],
+    }
+    assert r["entered"]["calls"] == [["mood", "log", {"mood": "5"}, {"for": "mood"}]]
+    assert r["zeros"]["calls"] == [["codes", "pick", {"code": "007"}, {"for": "codes"}]]
+    assert r["e"]["calls"] == [["codes", "pick", {"code": "1e3"}, {"for": "codes"}]]
+    # The app's refusal - its handle() holds the choice to its options,
+    # not the host - under the dropdown, the tile left as it was.
+    assert r["refused"]["calls"] == [["mood", "log", {"mood": "9"}, {"for": "mood"}]]
+    assert r["refused"]["msg"] == "Choose a mood from 1 to 5"
+    assert r["refused"]["repaints"] == []
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
+def test_an_unmade_choice_does_not_post(client):
+    page = _page(client)
+    r = _node(_input_script(page, f"""
+        const box = renderSpec({json.dumps(MOOD_FIELD)}, 'Mood', 'mood');
+        // The placeholder still chosen: a <select>'s value is its value, ''.
+        r.unmade = await save(box, '');
+        r.thenChosen = await save(box, '2');
+        const orphan = renderSpec({json.dumps(MOOD_FIELD)}, 'Mood');
+        r.orphan = look(orphan).save;
+        r.orphanSave = await save(orphan, '2');
+    """))
+
+    # Said on the tile, nothing sent - a log is always deliberate.
+    assert r["unmade"]["msg"] == "Choose an option."
+    assert r["unmade"]["calls"] == [] and r["unmade"]["repaints"] == []
+    assert r["unmade"]["busy"] == [False, False]
+    # Once one is chosen it goes, and the message clears.
+    assert r["thenChosen"]["calls"] == [["mood", "log", {"mood": "2"}, {"for": "mood"}]]
+    assert r["thenChosen"]["msg"] == ""
+    # Drawn for no app, Save is off and sends nothing, as for any input.
+    assert r["orphan"] == ["btn sm", "button", "Save", True]
+    assert r["orphanSave"]["calls"] == []
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
+def test_number_and_text_inputs_are_still_fields_beside_the_select(client):
+    page = _page(client)
+    text = {"type": "input", "key": "note", "action": "save", "kind": "text", "options": None}
+    r = _node(_input_script(page, f"""
+        const weight = renderSpec({json.dumps(dict(WEIGHT_FIELD, options=None))}, 'Weight', 'weight');
+        const note = renderSpec({json.dumps(text)}, 'Notes', 'notes');
+        r.tags = [parts(weight).field.tag, parts(note).field.tag];
+        r.kids = [parts(weight).field.children.length, parts(note).field.children.length];
+        r.number = await save(weight, ' 80.5 ');
+        r.junk = await save(weight, 'abc');
+        r.text = await save(note, ' 3 ');
+    """))
+
+    # An <input>, no options in it, and a number still sent as a number,
+    # text as typed - the select branch leaves them as they were.
+    assert r["tags"] == ["input", "input"]
+    assert r["kids"] == [0, 0]
+    assert r["number"]["calls"] == [["weight", "log", {"weight_kg": 80.5}, {"for": "weight"}]]
+    assert r["junk"]["msg"] == "Enter a number." and r["junk"]["calls"] == []
+    assert r["text"]["calls"] == [["notes", "save", {"note": " 3 "}, {"for": "notes"}]]
+
+
+def test_a_selects_dropdown_is_built_as_text_and_keeps_its_arrow(client):
+    page = _page(client)
+    spec_input = _js_function(page, "specInput")
+    # Option text set as text, never markup, and the choice sent as it
+    # is - Number() only for a number field.
+    assert "const field = el(choice ? 'select' : 'input','input');" in spec_input
+    assert "o.value = o.textContent = String(v);" in spec_input
+    assert "const value = numeric ? Number(typed) : typed;" in spec_input
+    assert "const numeric = !choice && s.kind!=='text';" in spec_input
+    assert "if(choice && !typed){ msg.textContent = 'Choose an option.'; return; }" in spec_input
+    # The tile's fields are drawn as plain text boxes; a select keeps its
+    # native dropdown arrow, as the page's other selects do.
+    assert ".spec-input select.input{appearance:auto;-moz-appearance:auto;}" in page
 
 
 def test_the_input_reaches_the_action_route_through_the_api_block(client):

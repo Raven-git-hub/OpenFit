@@ -646,6 +646,8 @@ h5 + .dnote{margin-top:0;}
   appearance:textfield;-moz-appearance:textfield;
 }
 .spec-input .input::-webkit-inner-spin-button, .spec-input .input::-webkit-outer-spin-button{-webkit-appearance:none;margin:0;}
+/* a select keeps its dropdown arrow, as the page's other selects do */
+.spec-input select.input{appearance:auto;-moz-appearance:auto;}
 .spec-input .u{font-size:12px;font-weight:600;color:var(--ink-2);}
 .spec-input .btn{flex:none;padding:5px 9px;}
 .spec-input .m{font-size:11px;font-family:var(--font-mono);color:var(--crit);overflow-wrap:anywhere;}
@@ -3518,18 +3520,36 @@ h5 + .dnote{margin-top:0;}
     : String(v);
   /* input: a field under its label, its unit and Save beside it. Save
      (or Enter) sends the app its action, the payload {key: what was
-     typed} - a number, for kind "number" - with the tile's config; the
-     app's fresh spec redraws the tile, and a refusal shows under the
-     field, kept as typed. Nothing is sent from a tile drawn for no app. */
+     entered} - a number, for kind "number"; for "select", the option
+     chosen from a dropdown of s.options, as written - with the tile's
+     config; the app's fresh spec redraws the tile, and a refusal shows
+     under the field, kept as entered. Nothing is sent from a tile drawn
+     for no app, or for a select with no option chosen yet. */
   function specInput(s, appId){
     const box = el('div','spec-input');
     const label = s.label!=null && s.label!=='' ? String(s.label) : '';
     if(label){ const l = el('div','t'); l.textContent = label; box.appendChild(l); }
     const row = el('div','row');
-    const field = el('input','input');
-    const numeric = s.kind!=='text';
-    field.type = numeric ? 'number' : 'text';
-    if(numeric){ field.step = 'any'; field.inputMode = 'decimal'; }
+    const choice = s.kind==='select';
+    const field = el(choice ? 'select' : 'input','input');
+    const numeric = !choice && s.kind!=='text';
+    if(choice){
+      // A placeholder first, which can't be chosen back: nothing is
+      // picked until the user picks it, so a log is always deliberate.
+      const none = el('option');
+      none.value = '';
+      none.textContent = 'Choose…';
+      none.disabled = none.selected = true;
+      field.appendChild(none);
+      (Array.isArray(s.options) ? s.options : []).forEach(v => {
+        const o = el('option');
+        o.value = o.textContent = String(v);
+        field.appendChild(o);
+      });
+    }else{
+      field.type = numeric ? 'number' : 'text';
+      if(numeric){ field.step = 'any'; field.inputMode = 'decimal'; }
+    }
     field.setAttribute('aria-label', label || String(s.key));
     row.appendChild(field);
     if(s.unit!=null && s.unit!==''){ const u = el('span','u'); u.textContent = s.unit; row.appendChild(u); }
@@ -3546,7 +3566,8 @@ h5 + .dnote{margin-top:0;}
       if(save.disabled) return;
       const typed = String(field.value);
       const value = numeric ? Number(typed) : typed;
-      if(!typed.trim() || (numeric && !Number.isFinite(value))){
+      if(choice && !typed){ msg.textContent = 'Choose an option.'; return; }
+      if(!choice && (!typed.trim() || (numeric && !Number.isFinite(value)))){
         msg.textContent = numeric ? 'Enter a number.' : 'Enter something to save.';
         return;
       }
