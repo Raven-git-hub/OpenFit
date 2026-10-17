@@ -13,13 +13,22 @@ The weight app, committed in tests/fixtures/apps/weight/ as deployed in
 /api/weights, whose 'manual' weigh-ins are kept as history: still read,
 never written to again.
 
+A file input's action comes multipart, the file handed to handle() as a
+FileUpload in a temp file that's gone once the action is: the import
+app, which parses a file of past weigh-ins itself, is its end-to-end
+test.
+
 Every test gets its own temp apps folder; nothing reads /data/apps.
 """
 
+import json
+import os
 import shutil
 import sqlite3
+import tempfile
 import textwrap
 from datetime import date, timedelta
+from io import BytesIO
 from pathlib import Path
 
 import pytest
@@ -557,7 +566,7 @@ def log(client, weight):
 
 LOG_FIELD = {
     "type": "input", "key": "weight_kg", "action": "log",
-    "label": "Log weight", "kind": "number", "unit": "kg", "options": None,
+    "label": "Log weight", "kind": "number", "unit": "kg", "options": None, "accept": None,
 }
 
 
@@ -663,7 +672,7 @@ def test_the_weight_app_has_one_action(client, conn, apps_dir):
 
 MOOD_FIELD = {
     "type": "input", "key": "mood", "action": "log", "label": "Mood today",
-    "kind": "select", "unit": None, "options": ["1", "2", "3", "4", "5"],
+    "kind": "select", "unit": None, "options": ["1", "2", "3", "4", "5"], "accept": None,
 }
 
 
@@ -753,6 +762,373 @@ def test_the_mood_app_has_one_action(client, conn, apps_dir):
     install_mood(client)
 
     assert assert_refused(act(client, "mood", "clear", {"mood": "3"})) == "unknown action: 'clear'"
+    assert rows(conn) == []
+
+
+# ---------- a file input: multipart ----------
+#
+# A file input's Save posts multipart/form-data to the same route: the
+# action and cfg (and, if it likes, payload) as form fields, each file
+# under its input's key. The file reaches handle() as a FileUpload in
+# payload, in a temp file the host named, deleted once the action is
+# done - whatever handle() did. The host never reads it.
+
+
+@pytest.fixture
+def upload_dir(tmp_path, monkeypatch):
+    """Where the host puts an upload while its action runs: an empty folder,
+    which every test checks is empty again after."""
+    path = tmp_path / "uploads"
+    path.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(path))
+    return path
+
+
+# An app that notes what handle() was given - a file as the app sees it:
+# its name, type, bytes (as latin-1, so any byte reads back), its path
+# and whether the file is there - and renders that note with its cfg.
+# Told to, it refuses with the note, or crashes after it.
+PEEK = """
+    import json, os
+
+    SEEN = {}
+
+    def render(ctx, cfg):
+        return ctx.empty(json.dumps({"cfg": cfg, "seen": SEEN}, sort_keys=True))
+
+    def handle(ctx, action, payload):
+        SEEN.clear()
+        for key, value in payload.items():
+            if hasattr(value, "path"):
+                value = {"name": value.name, "content_type": value.content_type,
+                         "bytes": value.bytes.decode("latin-1"), "text": value.text("latin-1"),
+                         "path": value.path, "there": os.path.isfile(value.path)}
+            SEEN[key] = value
+        if action == "refuse":
+            raise ValueError(json.dumps(SEEN, sort_keys=True))
+        if action == "crash":
+            raise RuntimeError("it broke")
+"""
+
+
+def post_form(client, app_id, fields=None, files=None):
+    """A multipart action: `fields` as form fields, `files` {key: (bytes, name[, type])}."""
+    data = dict(fields or {})
+    for key, (content, *rest) in (files or {}).items():
+        data[key] = (BytesIO(content), *rest)
+    return client.post(f"/api/app/{app_id}/action", data=data, content_type="multipart/form-data")
+
+
+def seen(resp):
+    """What PEEK's handle() was given, from its reply - rendered, or refused with."""
+    body = resp.get_json()
+    return json.loads(body["spec"]["message"])["seen"] if body["ok"] else json.loads(body["error"])
+
+
+def test_a_file_reaches_handle_as_a_file_upload_and_is_gone_after(client, apps_dir, upload_dir):
+    make_app(apps_dir, "peek", PEEK)
+
+    resp = post_form(client, "peek", {"action": "keep"},
+                     {"roster": (b"BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n", "rota.ics", "text/calendar")})
+
+    assert resp.status_code == 200
+    got = seen(resp)["roster"]
+    path = got.pop("path")
+    assert got == {
+        "name": "rota.ics", "content_type": "text/calendar",
+        "bytes": "BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n", "text": "BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n",
+        "there": True,
+    }
+    # In a temp file the host chose - never named after the file - and
+    # deleted once the action was done: nothing uploaded is kept.
+    assert os.path.dirname(path) == str(upload_dir)
+    assert "rota" not in os.path.basename(path)
+    assert not os.path.exists(path)
+    assert os.listdir(upload_dir) == []
+
+
+def test_a_file_is_carried_byte_for_byte_whatever_it_holds(client, apps_dir, upload_dir):
+    # The host reads nothing into a file: a binary one - a SQLite
+    # database, say - comes through as sent, its type as the browser said.
+    make_app(apps_dir, "peek", PEEK)
+    blob = b"SQLite format 3\x00" + bytes(range(256)) * 4
+
+    got = seen(post_form(client, "peek", {"action": "keep"},
+                         {"db": (blob, "export.db", "application/vnd.sqlite3")}))["db"]
+
+    assert got["bytes"].encode("latin-1") == blob
+    assert (got["name"], got["content_type"]) == ("export.db", "application/vnd.sqlite3")
+    assert os.listdir(upload_dir) == []
+
+
+def test_a_multipart_action_carries_its_payload_and_cfg_as_form_fields(client, apps_dir, upload_dir):
+    make_app(apps_dir, "peek", PEEK)
+
+    resp = post_form(
+        client, "peek",
+        {"action": "keep", "payload": json.dumps({"note": "hi", "file": "a name"}), "cfg": json.dumps({"days": 7})},
+        {"file": (b"x", "x.txt")},
+    )
+
+    # The payload's own entries beside the file - which, under the same
+    # key, is the input's value - and the tile rendered with its cfg.
+    body = json.loads(resp.get_json()["spec"]["message"])
+    assert body["cfg"] == {"days": 7}
+    assert body["seen"]["note"] == "hi"
+    assert body["seen"]["file"]["bytes"] == "x"
+
+
+def test_a_multipart_action_needs_no_file(client, apps_dir, upload_dir):
+    make_app(apps_dir, "peek", PEEK)
+
+    resp = post_form(client, "peek", {"action": "keep", "cfg": "not json"})
+
+    assert resp.get_json() == {"ok": True, "spec": {"type": "empty", "message": json.dumps({"cfg": {}, "seen": {}})}}
+
+
+def test_two_files_reach_handle_under_their_keys(client, apps_dir, upload_dir):
+    make_app(apps_dir, "peek", PEEK)
+
+    got = seen(post_form(client, "peek", {"action": "keep"}, {"a": (b"one", "a.txt"), "b": (b"two", "b.csv")}))
+
+    assert (got["a"]["bytes"], got["b"]["bytes"]) == ("one", "two")
+    assert got["a"]["path"] != got["b"]["path"]
+    assert os.listdir(upload_dir) == []
+
+
+@pytest.mark.parametrize("action", ["refuse", "crash"])
+def test_the_upload_is_gone_after_a_refused_or_failed_action(client, conn, apps_dir, upload_dir, action):
+    make_app(apps_dir, "peek", PEEK)
+
+    resp = post_form(client, "peek", {"action": action}, {"file": (b"1,2,3", "w.csv")})
+
+    assert_refused(resp)
+    if action == "refuse":
+        # It was there while handle() ran ...
+        got = seen(resp)["file"]
+        assert got["there"] is True and got["bytes"] == "1,2,3"
+        assert not os.path.exists(got["path"])
+    # ... and isn't now.
+    assert os.listdir(upload_dir) == []
+    assert rows(conn) == []
+
+
+def test_an_upload_the_app_removed_itself_is_fine(client, apps_dir, upload_dir):
+    make_app(apps_dir, "tidy", """
+        import os
+
+        def render(ctx, cfg):
+            return ctx.empty("tidied")
+
+        def handle(ctx, action, payload):
+            os.remove(payload["file"].path)
+    """)
+
+    resp = post_form(client, "tidy", {"action": "go"}, {"file": (b"x", "x.txt")})
+
+    assert resp.get_json() == {"ok": True, "spec": {"type": "empty", "message": "tidied"}}
+    assert os.listdir(upload_dir) == []
+
+
+@pytest.mark.parametrize(
+    "fields, says",
+    [
+        ({}, "action must name one, as text"),
+        ({"action": ""}, "action must name one, as text"),
+        ({"action": "keep", "payload": "[81.2]"}, 'payload must be a mapping, such as {"weight_kg": 81.2}'),
+        ({"action": "keep", "payload": "81.2"}, 'payload must be a mapping, such as {"weight_kg": 81.2}'),
+        ({"action": "keep", "payload": "{not json"}, 'payload must be a mapping, such as {"weight_kg": 81.2}'),
+    ],
+)
+def test_a_multipart_body_that_isnt_an_action_runs_nothing(client, apps_dir, upload_dir, fields, says):
+    # The JSON body's checks, on the form fields - before any file is
+    # written anywhere.
+    make_app(apps_dir, "peek", PEEK)
+
+    assert assert_refused(post_form(client, "peek", fields, {"file": (b"x", "x.txt")})) == says
+    assert os.listdir(upload_dir) == []
+
+
+def test_the_cap_on_a_request_is_25_mb():
+    import main
+
+    assert main.MAX_UPLOAD_BYTES == 25 * 1024 * 1024
+    assert main.app.config["MAX_CONTENT_LENGTH"] == main.MAX_UPLOAD_BYTES
+
+
+def test_a_file_over_the_cap_is_turned_away_unread(client, conn, apps_dir, upload_dir, monkeypatch):
+    import main
+
+    install_import(client)
+    # A cap of 1 KiB here, so the test needn't send 25 MiB to pass it.
+    monkeypatch.setitem(main.app.config, "MAX_CONTENT_LENGTH", 1024)
+
+    resp = post_form(client, "import", {"action": "import"}, {"file": (b"2026-01-03 81.2\n" * 100, "w.txt")})
+
+    # 413, said as any refusal is; handle() never ran, nothing was kept.
+    assert resp.status_code == 413
+    assert resp.get_json() == {"ok": False, "error": "Request too large (max 25 MB)."}
+    assert rows(conn) == []
+    assert os.listdir(upload_dir) == []
+    # Under the cap, the same file goes through.
+    assert post_form(client, "import", {"action": "import"}, {"file": (b"2026-01-03 81.2\n", "w.txt")}).status_code == 200
+
+
+def test_the_cap_holds_for_a_json_body_too(client, conn, apps_dir, monkeypatch):
+    import main
+
+    monkeypatch.setitem(main.app.config, "MAX_CONTENT_LENGTH", 1024)
+    make_app(apps_dir, "scale", WRITER)
+
+    resp = act(client, "scale", payload={"metric": WEIGHT_KG, "value": 81.2, "pad": "x" * 2000})
+
+    assert resp.status_code == 413
+    assert rows(conn) == []
+
+
+# ---------- the import app: a file, parsed by the app ----------
+#
+# Committed in tests/fixtures/apps/import/: a file picker for a
+# plain-text file of past weigh-ins, a 'YYYY-MM-DD <kg>' a line. The
+# host delivers the file; the app decodes and parses it, and files each
+# weigh-in on its own day - not just today - under app:import.
+
+
+FILE_FIELD = {
+    "type": "input", "key": "file", "action": "import", "label": "Import weigh-ins",
+    "kind": "file", "unit": None, "options": None, "accept": ".txt,.csv",
+}
+
+
+def install_import(client):
+    """Install the import app through the Library, from its committed files."""
+    folder = REAL_APPS / "import"
+    files = {name: (folder / name).read_text() for name in ("app.yaml", "app.py")}
+    resp = client.post("/api/apps", json={"files": files})
+    assert resp.status_code == 201, resp.get_json()
+
+
+def import_file(client, content, name="weigh-ins.txt"):
+    return post_form(client, "import", {"action": "import", "cfg": "{}"}, {"file": (content, name, "text/plain")})
+
+
+def test_the_import_app_installs_and_is_listed(client, apps_dir):
+    install_import(client)
+
+    assert client.get("/api/apps").get_json() == [
+        {"id": "import", "name": "Import weigh-ins", "default_size": {"w": 1, "h": 1},
+         "sizes": [{"w": 1, "h": 1}, {"w": 2, "h": 1}], "reads": ["weight_kg"], "config": [], "metrics": [],
+         "files": ["app.py", "app.yaml"]},
+    ]
+
+
+def test_the_import_app_with_no_weigh_ins_says_so_over_its_picker(client, apps_dir):
+    install_import(client)
+
+    assert client.post("/api/app/import/render").get_json() == {
+        "type": "panel", "children": [{"type": "empty", "message": "No weigh-ins yet"}, FILE_FIELD],
+    }
+
+
+def test_importing_a_file_files_each_weigh_in_on_its_day(client, conn, apps_dir, upload_dir):
+    install_import(client)
+
+    resp = import_file(client, b"2026-01-03 81.2\n2026-01-05 80.9\n")
+
+    assert resp.status_code == 200
+    assert resp.get_json() == {"ok": True, "spec": {
+        "type": "panel", "children": [
+            {"type": "number", "value": 2, "label": None, "caption": "since 2026-01-03", "unit": "days"},
+            FILE_FIELD,
+        ],
+    }}
+    # Each on the day it names, under the app's own source, and derived.
+    assert rows(conn) == [
+        ("2026-01-03", "app:import", WEIGHT_KG, 81.2),
+        ("2026-01-05", "app:import", WEIGHT_KG, 80.9),
+    ]
+    assert picked(conn, "2026-01-03", WEIGHT_KG) == (81.2, "app:import")
+    assert picked(conn, "2026-01-05", WEIGHT_KG) == (80.9, "app:import")
+    assert picked(conn, "2026-01-04", WEIGHT_KG) is None
+    assert os.listdir(upload_dir) == []
+
+
+def test_the_import_app_reads_a_spreadsheets_export(client, conn, apps_dir, upload_dir):
+    # Its own parser, its own choices: commas or spaces between, blank
+    # lines skipped, CRLF line ends and a leading byte-order mark taken.
+    install_import(client)
+
+    resp = import_file(client, "\ufeff2026-01-03,81.2\r\n\r\n  2026-01-04 , 80.9 \r\n2026-01-06\t80\r\n".encode("utf-8"),
+                       "export.csv")
+
+    assert resp.status_code == 200, resp.get_json()
+    assert rows(conn) == [
+        ("2026-01-03", "app:import", WEIGHT_KG, 81.2),
+        ("2026-01-04", "app:import", WEIGHT_KG, 80.9),
+        ("2026-01-06", "app:import", WEIGHT_KG, 80.0),
+    ]
+
+
+def test_an_imported_day_competes_in_the_pick_and_replaces_its_own(client, conn, apps_dir, upload_dir):
+    install_import(client)
+    insert(conn, "2026-01-03", "garmin", weight_kg=82.0)
+    recompute_derived(conn)
+
+    import_file(client, b"2026-01-03 81.2\n2026-01-04 81.0\n")
+    import_file(client, b"2026-01-04 80.5\n2026-01-04 80.4\n")
+
+    # Garmin keeps the day it measured; the app's day replaced - the
+    # file's last line for a day twice in it.
+    assert rows(conn) == [
+        ("2026-01-03", "app:import", WEIGHT_KG, 81.2),
+        ("2026-01-03", "garmin", WEIGHT_KG, 82.0),
+        ("2026-01-04", "app:import", WEIGHT_KG, 80.4),
+    ]
+    assert picked(conn, "2026-01-03", WEIGHT_KG) == (82.0, "garmin")
+    assert picked(conn, "2026-01-04", WEIGHT_KG) == (80.4, "app:import")
+
+
+@pytest.mark.parametrize(
+    "content, says",
+    [
+        (b"2026-01-03 81.2\n2026-01-04\n", "line 2: expected 'YYYY-MM-DD <kg>'"),
+        (b"2026-01-03 81.2\n2026-01-04 80.9 kg\n", "line 2: expected 'YYYY-MM-DD <kg>'"),
+        (b"2026-01-03 81.2\n\n04/01/2026 80.9\n", "line 3: expected 'YYYY-MM-DD <kg>'"),
+        (b"date,weight\n2026-01-03,81.2\n", "line 1: expected 'YYYY-MM-DD <kg>'"),
+        (b"2026-01-03 heavy\n", "line 1: expected 'YYYY-MM-DD <kg>'"),
+        # A line that parses, but no weight: the host's range, said with
+        # the app's line number - after line 1 was filed, and rolled back.
+        (b"2026-01-03 81.2\n2026-01-04 8000\n", "line 2: weight_kg must be between 20 and 400 kg, got 8000.0"),
+        (b"2026-01-03 nan\n", "line 1: value must be a number"),
+        (b"\n  \n", "No weigh-ins in w.txt: expected 'YYYY-MM-DD <kg>' on each line"),
+        (b"\x89PNG\r\n\x1a\n\x00\xff", "w.txt isn't a text file: expected 'YYYY-MM-DD <kg>' on each line"),
+    ],
+)
+def test_the_import_app_refuses_a_file_that_wont_do_and_writes_nothing(client, conn, apps_dir, upload_dir,
+                                                                       content, says):
+    install_import(client)
+
+    assert assert_refused(import_file(client, content, "w.txt")) == says
+    assert rows(conn) == []
+    assert conn.execute("SELECT COUNT(*) FROM derived_metrics").fetchone()[0] == 0
+    assert os.listdir(upload_dir) == []
+
+
+def test_the_import_app_needs_a_file(client, conn, apps_dir):
+    install_import(client)
+
+    # No file, or a name where a file should be: nothing to read.
+    for resp in (act(client, "import", "import", {}), act(client, "import", "import", {"file": "w.txt"})):
+        assert assert_refused(resp) == "Choose a file of weigh-ins to import"
+    assert rows(conn) == []
+
+
+def test_the_import_app_has_one_action(client, conn, apps_dir, upload_dir):
+    install_import(client)
+
+    resp = post_form(client, "import", {"action": "clear"}, {"file": (b"2026-01-03 81.2\n", "w.txt")})
+
+    assert assert_refused(resp) == "unknown action: 'clear'"
     assert rows(conn) == []
 
 

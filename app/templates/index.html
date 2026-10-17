@@ -648,6 +648,17 @@ h5 + .dnote{margin-top:0;}
 .spec-input .input::-webkit-inner-spin-button, .spec-input .input::-webkit-outer-spin-button{-webkit-appearance:none;margin:0;}
 /* a select keeps its dropdown arrow, as the page's other selects do */
 .spec-input select.input{appearance:auto;-moz-appearance:auto;}
+/* a file picker: the browser's button, in the small buttons' style, and
+   the file's name beside it - with Save wrapping under them, at the
+   row's end, in a tile too narrow for all three */
+.spec-input .row:has(> input[type="file"]){flex-wrap:wrap;}
+.spec-input .row:has(> input[type="file"]) > .btn{margin-left:auto;}
+.spec-input input[type="file"].input{flex:1 1 120px;padding:3px;font-size:12px;color:var(--ink-2);cursor:pointer;}
+.spec-input input[type="file"].input::file-selector-button{
+  margin-right:6px;padding:3px 8px;border:1px solid var(--border-strong);border-radius:var(--radius-sm);
+  background:var(--surface);color:var(--ink);font:600 12px var(--font-body);cursor:pointer;
+}
+.spec-input input[type="file"].input:hover::file-selector-button{border-color:var(--accent);color:var(--accent);}
 .spec-input .u{font-size:12px;font-weight:600;color:var(--ink-2);}
 .spec-input .btn{flex:none;padding:5px 9px;}
 .spec-input .m{font-size:11px;font-family:var(--font-mono);color:var(--crit);overflow-wrap:anywhere;}
@@ -782,6 +793,16 @@ h5 + .dnote{margin-top:0;}
       return r.ok ? Object.assign({ok:true}, data) : Object.assign({ok:false}, data);
     }catch(e){ return {ok:false, error:'network error'}; }
   }
+  /* send()'s POST for a body of form fields and files (FormData): sent
+     as multipart, its Content-Type - and the boundary in it - left to
+     the browser to set. The same {ok, ...} reply. */
+  async function sendForm(url, form){
+    try{
+      const r = await fetch(url, {method:'POST', body:form});
+      const data = await r.json().catch(()=>({}));
+      return r.ok ? Object.assign({ok:true}, data) : Object.assign({ok:false}, data);
+    }catch(e){ return {ok:false, error:'network error'}; }
+  }
 
   const api = {
     /* The access contract: what there is, which days hold it, and who
@@ -820,6 +841,17 @@ h5 + .dnote{margin-top:0;}
        error}), nothing written. */
     appAction:    (id, action, payload, cfg) =>
       send('/api/app/'+enc(id)+'/action', 'POST', {action, payload, cfg: cfg || {}}),
+    /* The same for a file input: the action and the tile's config as
+       form fields, and the file itself under the input's key - bytes
+       don't fit JSON, so it goes multipart. The server keeps nothing of
+       it: the app's handle() reads it, and what that writes stays. */
+    appActionFile: (id, action, key, file, cfg) => {
+      const form = new FormData();
+      form.append('action', action);
+      form.append('cfg', JSON.stringify(cfg || {}));
+      form.append(key, file);
+      return sendForm('/api/app/'+enc(id)+'/action', form);
+    },
     /* Home's layout - its tabs, and on each the tiles' order and sizes
        and the subtitle over them - read reconciled with the apps
        installed now, and saved whole as Configure is switched off - or
@@ -3518,21 +3550,25 @@ h5 + .dnote{margin-top:0;}
   const fmtSpecValue = v => v==null ? '—'
     : typeof v==='number' ? (Number.isFinite(v) ? v.toLocaleString() : '—')
     : String(v);
+  const UPLOAD_MAX = 25 * 1024 * 1024;   // the server's MAX_UPLOAD_BYTES (main.py)
   /* input: a field under its label, its unit and Save beside it. Save
      (or Enter) sends the app its action, the payload {key: what was
      entered} - a number, for kind "number"; for "select", the option
-     chosen from a dropdown of s.options, as written - with the tile's
-     config; the app's fresh spec redraws the tile, and a refusal shows
-     under the field, kept as entered. Nothing is sent from a tile drawn
-     for no app, or for a select with no option chosen yet. */
+     chosen from a dropdown of s.options, as written; for "file", the
+     file picked (Save only), offered by s.accept's hints - with the
+     tile's config; the app's fresh spec redraws the tile, and a refusal
+     shows under the field, kept as entered. Nothing is sent from a tile
+     drawn for no app, for a select with no option chosen yet, or for a
+     file picker with no file picked, or one over UPLOAD_MAX. */
   function specInput(s, appId){
     const box = el('div','spec-input');
     const label = s.label!=null && s.label!=='' ? String(s.label) : '';
     if(label){ const l = el('div','t'); l.textContent = label; box.appendChild(l); }
     const row = el('div','row');
     const choice = s.kind==='select';
+    const upload = s.kind==='file';
     const field = el(choice ? 'select' : 'input','input');
-    const numeric = !choice && s.kind!=='text';
+    const numeric = !choice && !upload && s.kind!=='text';
     if(choice){
       // A placeholder first, which can't be chosen back: nothing is
       // picked until the user picks it, so a log is always deliberate.
@@ -3546,6 +3582,10 @@ h5 + .dnote{margin-top:0;}
         o.value = o.textContent = String(v);
         field.appendChild(o);
       });
+    }else if(upload){
+      // The browser's own picker; the hints, if any, only steer it.
+      field.type = 'file';
+      if(s.accept!=null && s.accept!=='') field.accept = String(s.accept);
     }else{
       field.type = numeric ? 'number' : 'text';
       if(numeric){ field.step = 'any'; field.inputMode = 'decimal'; }
@@ -3564,22 +3604,32 @@ h5 + .dnote{margin-top:0;}
     box.appendChild(msg);
     const submit = async () => {
       if(save.disabled) return;
-      const typed = String(field.value);
-      const value = numeric ? Number(typed) : typed;
-      if(choice && !typed){ msg.textContent = 'Choose an option.'; return; }
-      if(!choice && (!typed.trim() || (numeric && !Number.isFinite(value)))){
-        msg.textContent = numeric ? 'Enter a number.' : 'Enter something to save.';
-        return;
+      let sending;
+      if(upload){
+        const file = field.files && field.files[0];
+        if(!file){ msg.textContent = 'Choose a file.'; return; }
+        if(file.size > UPLOAD_MAX){ msg.textContent = 'File too large (max 25 MB).'; return; }
+        sending = () => api.appActionFile(appId, s.action, s.key, file, tileCfg(appId));
+      }else{
+        const typed = String(field.value);
+        const value = numeric ? Number(typed) : typed;
+        if(choice && !typed){ msg.textContent = 'Choose an option.'; return; }
+        if(!choice && (!typed.trim() || (numeric && !Number.isFinite(value)))){
+          msg.textContent = numeric ? 'Enter a number.' : 'Enter something to save.';
+          return;
+        }
+        sending = () => api.appAction(appId, s.action, {[s.key]: value}, tileCfg(appId));
       }
       msg.textContent = '';
       save.disabled = field.disabled = true;
-      const res = await api.appAction(appId, s.action, {[s.key]: value}, tileCfg(appId));
+      const res = await sending();
       save.disabled = field.disabled = false;
       if(res.ok && res.spec) repaintTile(appId, res.spec);
       else msg.textContent = res.error || "Couldn't save.";
     };
     save.onclick = submit;
-    field.onkeydown = e => { if(e.key==='Enter') submit(); };
+    // Enter in a file picker opens it: it's Save that sends.
+    if(!upload) field.onkeydown = e => { if(e.key==='Enter') submit(); };
     return box;
   }
   function specMsg(title, text){

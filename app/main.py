@@ -6,10 +6,12 @@ import os
 import re
 import secrets
 import sqlite3
+import tempfile
 import threading
 import time
 import traceback
 import urllib.parse
+from contextlib import contextmanager
 from datetime import date, datetime, timedelta, timezone
 
 from flask import Flask, jsonify, request, send_from_directory
@@ -53,6 +55,7 @@ from metrics import (
 )
 from host import (
     APP_SOURCE_PREFIX,
+    FileUpload,
     WriteCtx,
     app_source,
     custom_metric_defs,
@@ -64,6 +67,10 @@ DB_PATH = os.getenv("DB_PATH", "/data/tracker.db")
 AUDIO_DIR = os.getenv("AUDIO_DIR", "/app/audio")
 APPS_DIR = os.getenv("APPS_DIR", "/data/apps")
 SYNC_INTERVAL_HOURS = int(os.getenv("SYNC_INTERVAL_HOURS", "6"))
+# The most a request may carry: a tile's file input sends its file in
+# one, and nothing else comes near it - an app's install is a few small
+# text files.
+MAX_UPLOAD_BYTES = 25 * 1024 * 1024
 
 app = Flask(__name__, static_folder=None)
 
@@ -74,6 +81,8 @@ app.config["DB_PATH"] = DB_PATH
 # Likewise the console's voice clips, and the installed apps.
 app.config["AUDIO_DIR"] = AUDIO_DIR
 app.config["APPS_DIR"] = APPS_DIR
+# Flask turns a body over it away with a 413 before reading any of it.
+app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD_BYTES
 
 
 def get_conn():
@@ -107,6 +116,12 @@ def backfill():
             print("[derived] backfilled derived_metrics from the existing readings")
     finally:
         conn.close()
+
+
+@app.errorhandler(413)
+def too_large(e):
+    # Said as every other refusal is, so the page can show why.
+    return jsonify({"ok": False, "error": f"Request too large (max {MAX_UPLOAD_BYTES // (1024 * 1024)} MB)."}), 413
 
 
 # ---------- static ----------
@@ -784,6 +799,43 @@ def render_installed_app(app_id):
     return jsonify(spec)
 
 
+def _form_json(raw):
+    """A multipart form field that holds JSON, parsed - or, if it isn't
+    JSON, the text as sent, which is no mapping."""
+    try:
+        return json.loads(raw)
+    except ValueError:
+        return raw
+
+
+@contextmanager
+def _uploaded(files):
+    """A request's files as FileUploads, {field: FileUpload}, for an action.
+
+    Each is written to a temp file the host names (never after the
+    file's own name), and every one is deleted on the way out - whatever
+    happened in between: nothing uploaded is kept.
+    """
+    paths = []
+    try:
+        uploads = {}
+        for field, storage in files.items():
+            fd, path = tempfile.mkstemp(prefix="openfit-upload-")
+            paths.append(path)
+            with os.fdopen(fd, "wb") as f:
+                storage.save(f)
+            uploads[field] = FileUpload(path, storage.filename or "", storage.content_type or "")
+        yield uploads
+    finally:
+        for path in paths:
+            try:
+                os.remove(path)
+            except FileNotFoundError:
+                pass  # the app removed it itself
+            except OSError as e:
+                print(f"[apps] couldn't delete the upload {path}: {e}")
+
+
 @app.route("/api/app/<app_id>/action", methods=["POST"])
 def act_on_app(app_id):
     """Act on an app: {"action", "payload", "cfg"} -> {"ok": true, "spec"}.
@@ -798,6 +850,15 @@ def act_on_app(app_id):
     interpret: a mapping, {key: value}
     from the input, {} if absent. cfg is the instance's config, for the
     render after; one that isn't a mapping is {}.
+
+    A file input's action comes as multipart/form-data instead: action
+    as a form field, payload and cfg as form fields holding their JSON
+    (either may be left out), and each file under the input's key. A
+    file is put in payload under its field as a FileUpload (host.py) -
+    in a temp file the host names, deleted once the action is done,
+    whatever handle() did. The host carries the file and never reads
+    it: handle() decides what it is. A body over MAX_UPLOAD_BYTES is
+    turned away with a 413 before any of it is read.
 
     One transaction. If handle() raises - input it refused, a write the
     ctx refused, a bug - everything it wrote is rolled back and the reply
@@ -819,7 +880,16 @@ def act_on_app(app_id):
             "ok": False,
             "error": f"{app_id} takes no actions: its app.py has no handle(ctx, action, payload)",
         }), 400
-    body = request.get_json(force=True, silent=True)
+    files = {}
+    if request.mimetype == "multipart/form-data":
+        # A file input's: the same body, as form fields beside the files.
+        body = {"action": request.form.get("action")}
+        for field in ("payload", "cfg"):
+            if field in request.form:
+                body[field] = _form_json(request.form[field])
+        files = request.files
+    else:
+        body = request.get_json(force=True, silent=True)
     if not isinstance(body, dict):
         return jsonify({"ok": False, "error": 'expected {"action": "<name>", "payload": {...}}'}), 400
     action = body.get("action")
@@ -834,32 +904,34 @@ def act_on_app(app_id):
     if not isinstance(cfg, dict):
         cfg = {}
 
-    conn = get_conn()
-    try:
-        ctx = WriteCtx(conn, installed)
+    with _uploaded(files) as uploads:
+        payload.update(uploads)
+        conn = get_conn()
         try:
-            installed.handle(ctx, action, payload)
-        except Exception as e:
-            conn.rollback()
-            if isinstance(e, ValueError) and str(e):
-                # A refusal - the app's, or the ctx's: said as it was put.
-                print(f"[apps] {installed.id}: action {action!r} refused: {e}")
-                error = str(e)
-            else:
-                print(f"[apps] {installed.id}: action {action!r} failed")
-                traceback.print_exc()
-                error = f"{type(e).__name__}: {e}"
-            return jsonify({"ok": False, "error": error}), 400
-        # Each day re-derived on its own, never one span over them all,
-        # which would re-pick every other metric in between under the
-        # current source roles (forward-only). The first commits the
-        # writes along with its day's pick.
-        for day in ctx.written:
-            recompute_derived(conn, since=day, until=day)
-        conn.commit()
-        spec = render_app(installed, conn, cfg)
-    finally:
-        conn.close()
+            ctx = WriteCtx(conn, installed)
+            try:
+                installed.handle(ctx, action, payload)
+            except Exception as e:
+                conn.rollback()
+                if isinstance(e, ValueError) and str(e):
+                    # A refusal - the app's, or the ctx's: said as it was put.
+                    print(f"[apps] {installed.id}: action {action!r} refused: {e}")
+                    error = str(e)
+                else:
+                    print(f"[apps] {installed.id}: action {action!r} failed")
+                    traceback.print_exc()
+                    error = f"{type(e).__name__}: {e}"
+                return jsonify({"ok": False, "error": error}), 400
+            # Each day re-derived on its own, never one span over them all,
+            # which would re-pick every other metric in between under the
+            # current source roles (forward-only). The first commits the
+            # writes along with its day's pick.
+            for day in ctx.written:
+                recompute_derived(conn, since=day, until=day)
+            conn.commit()
+            spec = render_app(installed, conn, cfg)
+        finally:
+            conn.close()
     return jsonify({"ok": True, "spec": spec})
 
 

@@ -384,6 +384,16 @@ sends the chosen string. The host doesn't check it's one of the options — the
 app's `handle()` does, as it checks a number (the Mood app, a select of 1–5
 filed as the built-in `mood`, is the example).
 
+An input can also take a **file**: `kind="file"` draws a file picker
+(`accept=".ics,.csv"` hints at what to pick), and its Save posts the file —
+multipart, at most 25 MB — to the same action route. `handle()` gets it as a
+`FileUpload` (`.name`, `.content_type`, `.bytes`, `.text()`, and `.path` for a
+library that wants a real file). OpenFit carries the file and never parses it:
+the app reads whatever format it expects, and the file itself isn't kept — it's
+deleted once the action is done, so only what the app writes stays. The Import
+weigh-ins app, which reads past weigh-ins from a text file (`YYYY-MM-DD <kg>`
+a line) and files each on its own day, is the example.
+
 An app isn't limited to OpenFit's metrics: it can **invent its own**. Declare
 what you invent, write what exists — a built-in metric is just written, while a
 new one is declared in the app's `app.yaml`:

@@ -221,7 +221,7 @@ the dicts itself.
 | `ctx.number(value, label=None, caption=None, unit=None)` | `{"type": "number", "value", "label", "caption", "unit"}` | A large value in tabular figures, `unit` small beside it, `label` beneath, and `caption` smaller and muted. A null value reads `—`, and a null label, caption or unit is left out. A number is shown with thousands separators; a string is shown as given. The caption is cut to two lines, or one in a short tile (a 2×2 on a phone), with the full text on hover. |
 | `ctx.line(points, title=None)` | `{"type": "line", "points": [[date, value], ...], "title"}` | A sparkline with its title above it. See [the line builder](#the-line-builder), below. |
 | `ctx.panel(*children)` or `ctx.panel([children])` | `{"type": "panel", "children": [...]}` | Its children stacked in order. A number keeps its height and a line takes the rest. |
-| `ctx.input(key, action, label=None, kind="number", unit=None, options=None)` | `{"type": "input", "key", "action", "label", "kind", "unit", "options"}` | A field under its label (small, uppercase), its unit and a **Save** button beside it. `kind` is one of `INPUT_KINDS`: `"number"` (the default), `"text"`, or `"select"` — a dropdown of `options`, a non-empty list of non-empty strings, required for a select and refused for the other kinds (`options` is `null` in their specs). Save, or Enter, sends `action` to the app's `handle()` with the payload `{key: what was entered}` (a number for kind `"number"`, text as typed for `"text"`, the chosen option's string as written for `"select"`), and the tile is redrawn from the fresh spec the reply carries; a refusal shows under the field, which keeps what was entered. A blank field, or a number that isn't one, says so and sends nothing; so does a select still on its "Choose…" placeholder. The host doesn't check a select's value is one of its options (the action route remembers no render): `handle()` does. In a panel it sits at the foot. In Configure it's inert, like the rest of the face. See [Writing](#writing-apps-as-sources) and `docs/architecture/input-primitives.md`. |
+| `ctx.input(key, action, label=None, kind="number", unit=None, options=None, accept=None)` | `{"type": "input", "key", "action", "label", "kind", "unit", "options", "accept"}` | A field under its label (small, uppercase), its unit and a **Save** button beside it. `kind` is one of `INPUT_KINDS`: `"number"` (the default), `"text"`, `"select"` — a dropdown of `options`, a non-empty list of non-empty strings, required for a select and refused for the other kinds (`options` is `null` in their specs) — or `"file"`, a file picker offering `accept`'s hints (`".txt,.csv"`, `"text/plain"`: optional non-empty text, refused for the other kinds — `accept` is `null` in their specs, and in a file's without one). Save, or Enter, sends `action` to the app's `handle()` with the payload `{key: what was entered}` (a number for kind `"number"`, text as typed for `"text"`, the chosen option's string as written for `"select"`, and for `"file"` the file picked, a `FileUpload` — Save only, sent multipart), and the tile is redrawn from the fresh spec the reply carries; a refusal shows under the field, which keeps what was entered. A blank field, or a number that isn't one, says so and sends nothing; so does a select still on its "Choose…" placeholder, a picker with no file picked ("Choose a file.") or one over 25 MB ("File too large (max 25 MB)."). The host doesn't check a select's value is one of its options (the action route remembers no render), nor what a file holds: `handle()` does. In a panel it sits at the foot. In Configure it's inert, like the rest of the face. See [Writing](#writing-apps-as-sources) and `docs/architecture/input-primitives.md`. |
 | `ctx.empty(message=None)` | `{"type": "empty", "message"}` | Muted, centred text (default "No data yet"). |
 | (the host's) | `{"type": "error", "message"}` | Muted, centred: "Couldn't render <app name>" over the message. |
 
@@ -275,9 +275,21 @@ contract. Its source is `app:<id>`, its installed id (`app_source()` in
 app's write entry point, and the only place an app writes. It's what a tile's
 input element sends (`POST /api/app/<id>/action`, below). `action` is the
 input's action, a non-empty string; `payload` a mapping, `{key: what was
-entered}` from an input (a select's value the chosen option's string); the app
-interprets both, and checks a value is one it expects. An app without a
-`handle()` can be drawn but not actioned.
+entered}` from an input (a select's value the chosen option's string; a file
+input's a `FileUpload`, below); the app interprets both, and checks a value is
+one it expects. An app without a `handle()` can be drawn but not actioned.
+
+**A file is the app's to read.** A file input's value is a `FileUpload`
+(`app/host.py`): `.name` (the file's name as the browser gave it — for
+display, never a path), `.content_type` (the type the browser reported, `""`
+for none — informational, not to be trusted), `.bytes` (its content),
+`.text(encoding="utf-8")` (that decoded; a `UnicodeDecodeError` for a file
+that isn't text in it is the app's to catch) and `.path` (a temp file holding
+it, for a library that wants one: `sqlite3.connect(f.path)`). OpenFit carries
+the file and never parses it — not even an `.ics` or a `.csv`: what it is and
+how to read it is the app's. Nothing of it is kept: it lives for the action,
+in a temp file the host named, deleted once the action is done whatever
+`handle()` did, so only what the app writes survives.
 
 **The writing ctx.** `handle()` gets a `WriteCtx(conn, app, today=None)`, made
 for the app: a `Ctx` (so `ctx.metric()` and `ctx.today()` read as in
@@ -314,11 +326,18 @@ ctx.write_metric(metric, value, date=None)   # files one reading, under ctx.sour
 `render()`'s plain `Ctx` has no writer, so a render can't write.
 
 **The action route, `POST /api/app/<id>/action`,** body `{"action",
-"payload", "cfg"}`:
+"payload", "cfg"}` — or, from a file input, the same as `multipart/form-data`:
+`action` a form field, `payload` and `cfg` form fields holding their JSON
+(either may be left out; a `cfg` that isn't a JSON object is `{}`), and each
+file under its input's key, set into `payload` under that key as a
+`FileUpload` (a file and a `payload` entry of one key: the file). A body over
+`MAX_UPLOAD_BYTES` (25 MiB, Flask's `MAX_CONTENT_LENGTH`, on every route) is
+turned away before any of it is read: `413 {"ok": false, "error": "Request
+too large (max 25 MB)."}`.
 
 1. `404` for an id no app loads under; `400` for an app with no `handle()`,
    or a body whose `action` isn't non-empty text or whose `payload` (absent:
-   `{}`) isn't a mapping. Nothing is run.
+   `{}`) isn't a mapping. Nothing is run, and no file written anywhere.
 2. `handle()` runs with a `WriteCtx` for the app, in one transaction.
 3. **If it raises**, everything it wrote is rolled back, and the reply is
    `400 {"ok": false, "error"}`: unlike a render, a write fails visibly, and
@@ -333,6 +352,8 @@ ctx.write_metric(metric, value, date=None)   # files one reading, under ctx.sour
    instance's config; not a mapping, `{}`), and the reply is `200 {"ok":
    true, "spec"}`, which the page redraws the tile from. A render that fails
    then is an error spec, as ever: the write stands.
+5. **Either way**, every uploaded file's temp file is deleted (in a
+   `finally`, so a crash or a refusal too).
 
 **Precedence.** An app's readings take part in the derived pick like any
 source's. `DEFAULT_PRIORITY` names the pull plugins, so an app ranks after
@@ -444,6 +465,39 @@ today") — `empty("No mood logged yet")` before the first. `handle()` takes
 mood from 1 to 5")`, nothing written — the host doesn't hold a select to its
 options, the app does — else `ctx.write_metric("mood", int(raw))` for today,
 under `app:mood`. One mood a day: logging again replaces it.
+
+### The import app
+
+The first app with a file picker (an input of kind `"file"`), committed in
+`tests/fixtures/apps/import/` and run by `test_app_actions.py`: it loads past
+weigh-ins from a plain-text file, and is the proof that the app parses, not
+OpenFit.
+
+```yaml
+id: import
+name: Import weigh-ins
+sizes: [{ w: 1, h: 1 }, { w: 2, h: 1 }]
+reads: [weight_kg]
+```
+
+`render()` shows how many days of `weight_kg` the dataset holds as a `number`
+(`unit` days, `caption` "since <the first one's date>") over an `input`
+(`key: file`, `action: import`, `kind: "file"`, `accept: ".txt,.csv"`,
+"Import weigh-ins") — `empty("No weigh-ins yet")` before there are any.
+`handle()` takes `import` only, and reads the `FileUpload` itself: no file →
+`ValueError("Choose a file of weigh-ins to import")`; `f.text("utf-8-sig")`
+(a spreadsheet's byte-order mark taken), and a file that isn't text →
+"<name> isn't a text file: …"; then a weigh-in a line, `YYYY-MM-DD <kg>`,
+apart by spaces or a comma, blank lines skipped — a line that won't parse →
+`ValueError("line N: expected 'YYYY-MM-DD <kg>'")` before anything is
+written, none at all → "No weigh-ins in <name>: …". Each is filed with
+`ctx.write_metric("weight_kg", kg, date=day)` — on the day it names, not
+today — under `app:import`; a weight the host won't take (outside
+`weight_kg`'s plausible range) is refused with its line number, `"line N:
+weight_kg must be between 20 and 400 kg, got …"`, and the route rolls back
+the lines already filed. All or nothing, then; a day already there is
+replaced, and a day twice in the file is its last line. It competes in the
+pick like the weight app: a day Garmin weighed is still Garmin's.
 
 ## Installing an app
 
@@ -682,7 +736,9 @@ source `app:<id>`, as a disconnected device's data does.
   "spec"}` (the app rendered afresh) once its writes are committed and their
   days re-derived, or `400 {"ok": false, "error"}` with everything rolled back.
   404 for an unknown app, 400 for one with no `handle()` or a body that isn't
-  an action. See [Writing](#writing-apps-as-sources).
+  an action. A file input's comes as `multipart/form-data`, each file handed
+  to `handle()` as a `FileUpload` and deleted after; 413 for a body over 25
+  MiB. See [Writing](#writing-apps-as-sources).
 - `GET /api/app/<id>/file?name=<file>` → `{id, name, text}`, one of the app's
   files as text, for the read-only viewer. 400 for a name that isn't plain,
   404 for an unknown app or file, 413 for a file too big to show, 415 for one
