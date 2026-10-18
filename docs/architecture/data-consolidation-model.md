@@ -51,7 +51,8 @@ extensible, since other sources carry types Google doesn't.)
 
 1. **Daily** — one value per `(date, source, metric)`. Table: `metrics`. **Built.**
 2. **Session** — an interval (`start`/`end`) plus a vendor summary, keyed by
-   *kind*, source as an attribute. Table: `sessions`. **Built** (sleep, workout).
+   *kind*, source as an attribute. Table: `sessions`. **Built** (sleep, workout,
+   and the roster's `duties_rostered` / `duties_complete`).
 3. **Series** — timestamped samples (HR, SpO2, …), one row per sample per source.
    Table: `samples`. **Storage and read built** (Garmin intraday HR,
    respiration and SpO2; Google Health intraday HR and SpO2 at one value a
@@ -203,10 +204,10 @@ equals, each tagged. The Oura night and the Google nap are both "sleep sessions.
   (source `app:<id>`), queryable alongside vendor sessions, filterable by
   source. Vendor detection stays the gold standard; custom detectors coexist,
   they don't replace. **App session write-back is built**: an app's `handle()`
-  files a session of an existing kind (`sleep`, `workout`) with
-  `ctx.write_session()`, under its own source only, as its readings are
-  (`app-host.md`). Still to come: an app's own session kinds, and pushing
-  sessions through the webhook (it's metrics-only today).
+  files a session of an existing kind (`sleep`, `workout`, and the duty
+  kinds) with `ctx.write_session()`, under its own source only, as its
+  readings are (`app-host.md`). Still to come: an app's own session kinds, and
+  pushing sessions through the webhook (it's metrics-only today).
 - **Preferred-source-per-session-kind** selection reuses the same priority
   config. *Designed.*
 
@@ -272,7 +273,9 @@ canonical key competing in the default per-metric pick.
 - `metrics` (daily) + canonical vocabulary; `derived_metrics` with per-metric
   source roles and fixed default precedence; forward-only re-derive over the sync
   window.
-- `sessions` (sleep, workout), source-agnostic querying by kind.
+- `sessions` (sleep, workout, and two duty kinds — `duties_rostered` /
+  `duties_complete`, category Roster — filed by the Roster app from a
+  roster's `.ics`), source-agnostic querying by kind.
 - `samples` (series grain) storage; Garmin intraday heart rate, respiration and
   SpO2 ingested into it (respiration and SpO2 from the vitals responses already
   fetched — no extra request).
@@ -301,9 +304,15 @@ canonical key competing in the default per-metric pick.
 - **Wide expansion** — more daily/session/series types, each a fetcher + a
   canonical key/kind (a new metric is data, not a migration).
 - **Per-event session dedup** + preferred-source-per-kind selection view.
-- **App-declared session kinds** (a roster's duties, a custom detector's own
-  kind) and session push through the webhook — apps already write sessions of
-  the existing kinds.
+- **App-declared session kinds** (a custom detector's own kind) and session
+  push through the webhook — apps already write sessions of the existing
+  kinds. A roster's duties didn't wait for these: they're two core kinds,
+  `duties_rostered` (to come or under way when filed) and `duties_complete`
+  (ended), so plan and actual sit side by side under the app's source.
+- **An app replacing its own sessions/metrics over a date range** — so a
+  re-planned roster's dropped or moved future duties don't linger (the Roster
+  app is upsert-only today) — and the rostered↔flown per-duty matching, which
+  needs session read-back and a derived duty key (the feed has no `UID`).
 - **Additive-type single-source** handling (no fall-through).
 - **User-local day-boundary** bucketing (requires a timezone setting).
 

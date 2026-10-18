@@ -255,7 +255,7 @@ returns them in (vocabulary order). Each row has fixed, aligned columns:
 - **Grouping.** Rows are grouped by the catalog's `category`, in the
   `CATEGORIES` display order: **Activity**, **Vitals**, **Body composition**,
   **Fitness**, **Sleep**, **Nutrition & hydration**, **Women's health**,
-  **Other**. A category outside those would follow, by name, not be dropped;
+  **Roster**, **Other**. A category outside those would follow, by name, not be dropped;
   a category with no rows at all (Women's health, which has no keys yet) gets
   no header. Within a category, rows sort by grain — daily, instant, session,
   series — a stable sort, so ties keep the catalog order. Each category gets

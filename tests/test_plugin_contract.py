@@ -13,6 +13,8 @@ import pytest
 from plugins.base import SyncPlugin, iso_utc, write_metric, write_sample, write_session
 from crypto import encrypt
 from metrics import (
+    DUTIES_COMPLETE,
+    DUTIES_ROSTERED,
     HEART_RATE,
     METRICS,
     RESTING_HR_BPM,
@@ -212,11 +214,13 @@ def test_sessions_are_keyed_by_source_kind_and_start(conn):
     assert [s[4] for s in sessions_for(conn, "google_health")] == [{"asleep_minutes": 421}]
 
 
-def test_the_session_kinds_are_sleep_and_workout():
-    assert SESSION_KINDS == {SLEEP, WORKOUT} == {"sleep", "workout"}
+def test_the_session_kinds_are_sleep_workout_and_the_two_duty_kinds():
+    assert SESSION_KINDS == {SLEEP, WORKOUT, DUTIES_ROSTERED, DUTIES_COMPLETE} == {
+        "sleep", "workout", "duties_rostered", "duties_complete",
+    }
 
 
-@pytest.mark.parametrize("kind", [SLEEP, WORKOUT])
+@pytest.mark.parametrize("kind", [SLEEP, WORKOUT, DUTIES_ROSTERED, DUTIES_COMPLETE])
 def test_write_session_accepts_each_session_kind(conn, kind):
     start = "2026-01-01T22:30:00Z"
     assert write_session(conn, "fake", kind, start, None, {}) is True

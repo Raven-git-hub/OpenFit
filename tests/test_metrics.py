@@ -12,6 +12,8 @@ from metrics import (
     BLOOD_GLUCOSE,
     BODY_TEMPERATURE,
     CATEGORIES,
+    DUTIES_COMPLETE,
+    DUTIES_ROSTERED,
     GRAINS,
     HEART_RATE,
     HYDRATION_ML,
@@ -109,6 +111,7 @@ def test_the_categories_in_display_order():
         "Sleep",
         "Nutrition & hydration",
         "Women's health",
+        "Roster",
         "Other",
     )
 
@@ -159,6 +162,8 @@ def test_sleep_lives_in_the_sleep_category_as_a_session():
         (SPO2, "series", "Vitals"),
         (SLEEP, "session", "Sleep"),
         (WORKOUT, "session", "Activity"),
+        (DUTIES_ROSTERED, "session", "Roster"),
+        (DUTIES_COMPLETE, "session", "Roster"),
     ],
 )
 def test_grain_and_category_for(key, grain, category):

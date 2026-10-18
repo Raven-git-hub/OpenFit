@@ -173,7 +173,7 @@ Every entry is labelled with its `grain` — `daily` (one value per day),
 `instant` (a single timestamped point, like a weigh-in or a blood-pressure
 reading; still one value per day for now), `session` (intervals) or `series`
 (intraday samples) — and its `category`: Activity, Vitals, Body composition,
-Fitness, Sleep, Nutrition & hydration, Women's health or Other. (The pre-v2
+Fitness, Sleep, Nutrition & hydration, Women's health, Roster or Other. (The pre-v2
 `cadence` label is gone: build on `grain` and `category`, as the built-in
 console does.) Add `?include_empty=1` to list every metric, session kind and
 series OpenFit knows, including those with no data yet — `"count": 0`, `"sources": []` and null
@@ -396,8 +396,8 @@ a line) and files each on its own day, is the example.
 
 An app can file a **session** too — an interval, as a night's sleep or a
 workout is — with `ctx.write_session(kind, start, end=None, summary=None)`:
-`kind` one of OpenFit's session kinds (`sleep` or `workout`; an app can't
-invent one yet), `start` and `end` each a `datetime` or ISO-8601 text, stored
+`kind` one of OpenFit's session kinds (`sleep`, `workout`, `duties_rostered`
+or `duties_complete`; an app can't invent one yet), `start` and `end` each a `datetime` or ISO-8601 text, stored
 in UTC to the second (`end` may be left out, and can't be before `start`),
 and `summary` a dict of plain JSON, the kind's breakdown
 (`{"type": "manual", "duration_minutes": 30}`). It goes under the app's own
@@ -406,6 +406,24 @@ and it's read back through `GET /api/sessions/<kind>` beside every device's.
 Nothing is derived from a session, so no day is re-derived for it. The
 **Workout log** app (`tests/fixtures/apps/workout-log/`), which files a workout
 just finished from how many minutes it lasted, is the example.
+
+The **Roster** app (`tests/fixtures/apps/roster/`) puts the two together: you
+upload a duty roster's `.ics` export, and the app — not OpenFit — reads it.
+Every event with real times is a work duty (an all-day one is a day off or
+leave, whatever its code, and is skipped), filed as a session from its start to
+its end as the calendar gives them in UTC: `duties_complete` if it had ended
+when you uploaded, else `duties_rostered`, so a roster uploaded before and after
+a duty holds the plan and what was flown side by side. Each duty's summary
+carries its code and a best-effort label (`flight`, `reserve`, `sim`, or
+`other` for a code the app doesn't know — still filed), a flight's number and
+route, and the roster's description verbatim. The app also files each day's
+duty hours as its own metrics, `duty_hours_complete` and `duty_hours_rostered`
+(summed by the UTC day a duty starts), and its tile shows the flown hours
+against the rostered. Uploading again replaces a duty with the same start and
+the same day's hours, but removes nothing: a duty dropped from a later roster
+keeps its row for now. Both kinds and both metrics file under the Roster
+category: OpenFit keeps operational context like this because you do — it
+doesn't decide what counts as health data.
 
 An app isn't limited to OpenFit's metrics: it can **invent its own**. Declare
 what you invent, write what exists — a built-in metric is just written, while a
@@ -420,7 +438,7 @@ The app's code then reads and writes it by that short key
 (`ctx.write_metric("caffeine_mg", 95)`, `ctx.metric("caffeine_mg")`), and the
 host stores it as `app:<id>:caffeine_mg`, so two apps' keys never collide and no
 app can write another's. Each is `daily` or `instant`, files under one of the
-eight categories, and is held to its `range` if it gives one; a key OpenFit
+nine categories, and is held to its `range` if it gives one; a key OpenFit
 already has can't be declared. While the app is installed its metrics are part of
 your data like any other: listed in the catalog (marked with the app that defines
 them), shown in Your data under their category, and served by
@@ -565,7 +583,9 @@ daily total beside it (schema v2 retired the old `sleep_minutes` metric). A
 its `type` (the device's activity type, lowercased), `duration_minutes`,
 `distance_m`, `avg_hr_bpm` and `calories_kcal`, whichever the device reports.
 An app can file sessions of these kinds too, under its own source
-(`ctx.write_session()`, above).
+(`ctx.write_session()`, above). Two more kinds, `duties_rostered` and
+`duties_complete`, hold work duties off a roster — each the duty's report to
+release, in UTC — filed by a roster app (the Roster app, above), never a device.
 A third table, `samples`, is the series (intraday) grain: one row per
 `(source, metric, timestamp)` for readings like heart rate every couple of
 minutes, filed under its own series vocabulary (`heart_rate` in bpm,

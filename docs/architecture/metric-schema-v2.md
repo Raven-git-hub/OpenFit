@@ -98,13 +98,16 @@ The primary axis for grouping, in display order (`CATEGORIES`):
 5. Sleep
 6. Nutrition & hydration
 7. Women's health — declared, no keys yet (see *Deferred*)
-8. Other
+8. Roster — operational context, not a body measurement: the session kinds
+   `duties_rostered` / `duties_complete` and a roster app's own duty hours
+   (added after v2, with the roster path)
+9. Other
 
 A category is metadata the key carries, independent of its source: steps are
 Activity whichever device counted them. A metric an app computes and pushes
 back files under the category it fits, with **Other** the catch-all.
 `category_for(key)` answers for any key; series metrics are Vitals, the `sleep`
-session kind is Sleep and `workout` is Activity.
+session kind is Sleep, `workout` is Activity and the two duty kinds are Roster.
 
 ## The canonical metrics
 

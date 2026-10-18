@@ -63,7 +63,7 @@ invents in its `app.yaml`'s `metrics:` block, an ordered list mirroring
   can't silently mean no range). `key` is an app-id-shaped slug, unique in the
   app, and never a key OpenFit's vocabulary already has — metric, series metric
   or session kind — so a custom key can't shadow a built-in one. `label` and
-  `unit` are non-empty text; `category` one of the 8 `CATEGORIES`; `grain`
+  `unit` are non-empty text; `category` one of the 9 `CATEGORIES`; `grain`
   `daily` or `instant` (`session`/`series` fail: not B0's). `range` is
   enforced like a canonical one when given; without it any finite number goes.
   Parsed by `_metrics()` in `app/apps.py`, carried on `InstalledApp.metrics` and
@@ -199,8 +199,31 @@ built-in/default metrics themselves are never purgeable.
   on the `WriteCtx`, sessions of the existing kinds (`sleep`, `workout`) under
   the app's own source, nothing derived from them (`app-host.md`; the
   `workout-log` app is the reference).
-- **(later) fatigue / roster path**, unblocked by the scope reversal and built
-  on session write-back: the session kinds it files, and its `.ics` app.
+- **Roster path:** done — two session kinds in core, `duties_rostered` and
+  `duties_complete`, in a new `Roster` category (operational context, kept
+  per decision 1), and the `roster` app (`tests/fixtures/apps/roster/`),
+  which parses a roster's `.ics` itself (stdlib) and files it. Decided:
+  - **Duty-ness is structural**, never a code allow-list: a timed `VEVENT` is a
+    duty and is filed; an all-day one (`O`, `G`, `U`, `L`, any future code) is
+    a day off and skipped. A code the classifier doesn't know is filed as
+    `type: "other"`, its code kept — the label never decides whether to write.
+  - **The envelope is `DTSTART`/`DTEND`, in UTC** (for reserve/sim they equal
+    the roster's stated `TOTAL` exactly); the description is kept verbatim as
+    `raw`, never parsed for times. A `TZID`/floating time refuses the upload.
+  - **Two kinds by the clock**: `duties_complete` once a duty has ended at
+    upload, else `duties_rostered` — so uploads before and after a duty leave
+    the plan and the actual side by side. Every summary says `capture: "live"`,
+    so a later "upload a saved plan" override is additive.
+  - **Daily hours** (`duty_hours_complete`/`duty_hours_rostered`, the app's own
+    metrics, `h`, 0–24) are summed per kind by `DTSTART`'s UTC date, a duty past
+    midnight whole on its start day — home-local bucketing waits on `base_tz`.
+  - **Upsert-only**: a re-upload replaces a duty of the same kind and start
+    and a day's figure, but removes nothing; `U` (unfit) and leave aren't
+    captured. Next on the path: an app replacing its own sessions/metrics over
+    a date range (the stale-duty cleanup), and the rostered↔flown matching
+    (session read-back + a derived duty key — the feed has no `UID`).
+- **(later) fatigue tracker**, reading the duties (and sleep) the roster path
+  now files.
 
 ## Minor / noted
 

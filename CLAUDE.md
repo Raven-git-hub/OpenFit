@@ -76,17 +76,20 @@ own calls to its device API. Full direction:
   each metric its unit, category, grain and plausible range
   (`key → (unit, category, grain, (low, high))`); `METRICS` (key → unit, in
   the order the API lists metrics) and `PLAUSIBLE_RANGES` are built from it.
-  Beside it the session kinds (`SLEEP`, `WORKOUT` in `SESSION_KINDS`) and the
+  Beside it the session kinds (`SLEEP`, `WORKOUT`, `DUTIES_ROSTERED`,
+  `DUTIES_COMPLETE` in `SESSION_KINDS`) and the
   series metrics (`HEART_RATE`, `RESPIRATION`, `SPO2` in `SERIES_METRICS`).
   Import keys and kinds from here; never spell metric or kind strings out in
-  plugins or the API. `CATEGORIES` is the 8 labels in display order —
+  plugins or the API. `CATEGORIES` is the 9 labels in display order —
   Activity, Vitals, Body composition, Fitness, Sleep, Nutrition & hydration,
-  Women's health (no keys yet), Other — and `GRAINS` the 4: `daily`,
+  Women's health (no keys yet), Roster (operational context: the duty
+  kinds and the roster app's hours), Other — and `GRAINS` the 4: `daily`,
   `instant` (a timestamped point like a weigh-in; a label for now, still
   filed one per day in `metrics`), `session`, `series`. `grain_for(key)` →
   `"series"` (in `SERIES_METRICS`), `"session"` (in `SESSION_KINDS`), else
   the metric's declared `"daily"`/`"instant"`; `category_for(key)` → its
-  category (series metrics Vitals, `sleep` Sleep, `workout` Activity); both
+  category (series metrics Vitals, `sleep` Sleep, `workout` Activity, the
+  two duty kinds Roster); both
   raise `ValueError` on any other key. There is no `manual` grain: hand
   entry is a source. Grain and category are labels: nothing is stored or
   picked by them.
@@ -410,7 +413,49 @@ own calls to its device API. Full direction:
   number")`), then `ctx.write_session("workout", start, end, {"type":
   "manual", "duration_minutes": minutes})`, `end` now
   (`datetime.now(timezone.utc)`) and `start` that many minutes before —
-  each log its own session.
+  each log its own session. And the first to file duties: `roster`
+  (`tests/fixtures/apps/roster/`; its pure functions run by
+  `tests/test_roster_app.py`, loaded by path as the host loads it, and
+  the round trip by `tests/test_app_actions.py`, against the synthetic
+  `tests/fixtures/rosters/sample.ics` — fake flights and ports). Its
+  `app.yaml`: id `roster`, name "Roster", `sizes: [{ w: 2, h: 1 }, { w: 2,
+  h: 2 }]`, `reads: [duty_hours_rostered, duty_hours_complete]`, and
+  `metrics:` those two — "Rostered duty hours"/"Flown duty hours", `h`,
+  Roster, daily, `range: [0, 24]`. One `app.py`, stdlib only (no
+  `icalendar` in the image), its logic module functions:
+  `parse_events(text)` (unfold — a CRLF/LF then a space or tab removed —
+  then each `VEVENT`'s `SUMMARY`/`DESCRIPTION` (RFC 5545-unescaped) and
+  `DTSTART`/`DTEND`: `VALUE=DATE` (or bare `YYYYMMDD`) a date, all-day;
+  `…Z` an aware UTC `datetime`; a `TZID=` or floating time →
+  `ValueError("roster has a non-UTC time, which isn't supported yet:
+  <the line>")`; an event that won't read skipped with a `print`; a
+  nested component, an alarm, lends nothing), `duties(events)` (every
+  timed event with both ends, in file order — duty-ness structural,
+  never a list of codes: all-day `O`/`G`/`U`/`L`/anything skipped; no
+  end, or an end before the start, skipped and logged), `classify(title)`
+  (labels only, never filters: after a leading `DD-Mon`, `CX` and digits
+  — apart or together — `flight` with `flight_no`, `dep`/`arr` from an
+  `XXX-XXX` token, `position` a trailing 2–3-letter code; `A<digit>…`
+  `sim`; `R…` `reserve`; else `other`, `code` the first token kept),
+  `bucket_for(end, now)` (`end <= now` → `duties_complete`, else
+  `duties_rostered`) and `daily_hours(duties, now)` (each kind's hours
+  by `DTSTART`'s UTC date, a duty past midnight whole on its start day;
+  a kind+start twice counted once). `handle()`: `upload` only;
+  `payload["file"]` decoded `utf-8-sig` (not text → "<name> isn't a text
+  roster"); no duty (a file of days off, not iCalendar, empty) → "No
+  duties found in <name>"; `now` taken once; each duty
+  `ctx.write_session(kind, start, end, summary)` with `start`/`end` the
+  `DTSTART`/`DTEND` datetimes and the summary `{capture: "live", type,
+  code, label, raw, [flight_no, dep, arr, position]}`; then each
+  `(metric, day)` total once, `ctx.write_metric(…, date=day)` — a day
+  over the declared 24 h refused as "<day>: <why>". All or nothing (the
+  route rolls back). `render()`: `empty("Upload your roster .ics")` over
+  the picker (`input` `file`/`upload`, kind `"file"`, `accept` `.ics`,
+  "Upload roster") before any data; else the flown hours (all
+  `duty_hours_complete`, summed, to a tenth) as a `number` (unit `h`, no
+  label) captioned "flown · N days · rostered X h · M days" over the
+  picker — one line of text and no sparkline, so a 2×1 tile has room for
+  the picker (`render()` isn't told its size).
 - `app/home_layout.py` — the Home tab's layout, one `settings` row
   (`LAYOUT_KEY` `home_layout`, no migration): `{"tabs": [{id, name,
   mode: "flow", subtitle, items: [{instance_id, app_id, size: {w, h},
@@ -556,7 +601,7 @@ own calls to its device API. Full direction:
   `loadHome()`; a refusal (the app reinstalled meanwhile: 400) stays in
   the modal, the button back. Every id, source, metric and count is set
   as text.
-  "Your data" groups its rows by `category`, the 8 in `CATEGORIES` display
+  "Your data" groups its rows by `category`, the 9 in `CATEGORIES` display
   order (one outside them would follow, by name; one with no rows at all,
   Women's health today, gets no header), and within a category sorts them
   by `grain` — daily, instant, session, series (a stable sort, so ties keep
@@ -1087,9 +1132,10 @@ own calls to its device API. Full direction:
   breakdown as JSON. Quote `"start"`/`"end"` in SQL (`end` is a keyword).
   Written via `write_session()`, which raises on a `kind` outside
   `SESSION_KINDS` (`app/metrics.py`, where each kind's summary keys are listed).
-  Two kinds, both from Garmin and Google (and from an app, through
-  `ctx.write_session()`, under `app:<id>`); a summary holds only what the
-  source gives:
+  Four kinds: `sleep` and `workout`, both from Garmin and Google (and from
+  an app, through `ctx.write_session()`, under `app:<id>`), and the two
+  duty kinds, from a roster app (the `roster` fixture, under
+  `app:roster`); a summary holds only what the source gives:
   - `sleep` — one session per night/nap, summary in minutes: `asleep_minutes`
     plus `light_minutes`/`deep_minutes`/`rem_minutes`/`awake_minutes`. Sleep is
     sessions only: there is no daily sleep metric (v2 retired `sleep_minutes`
@@ -1098,6 +1144,15 @@ own calls to its device API. Full direction:
   - `workout` — one session per activity, and no daily metric: `type` (the
     source's activity type, lowercased — not yet mapped across sources),
     `duration_minutes`, `distance_m`, `avg_hr_bpm`, `calories_kcal`.
+  - `duties_rostered` / `duties_complete` (category Roster) — one session
+    per work duty off a roster, its `start`/`end` the duty's envelope
+    (report to release, UTC); `duties_complete` if it had ended when filed,
+    else `duties_rostered` (to come or under way), so a duty filed before
+    and after it ends is one of each — plan and actual side by side. The
+    same summary keys for both: `capture` (`"live"`), `type`
+    (`flight`/`reserve`/`sim`/`other`), `code`, `label` (the roster's
+    title), `raw` (its description, verbatim), and for a flight, when
+    given, `flight_no`, `dep`, `arr`, `position`.
   Read through the access contract (`GET /api/sessions/<kind>`, below).
 - `samples(source, metric, ts, value, unit, synced_at)` keyed
   `(source, metric, ts)` (migration `009`, purely additive): the series
@@ -1516,8 +1571,17 @@ same PR:
   summary)` on the `WriteCtx`, reusing `write_session()`/`iso_utc()`,
   existing kinds only, under the app's own source, deriving nothing; the
   `workout-log` app is the reference.
-  Still to come for write-back: the roster path (the session kinds it
-  files, and its `.ics` app — the next brick), an app's own session
+  Then the roster path landed (no migration, no route or ctx change): two
+  session kinds in core, `duties_rostered`/`duties_complete`, under a new
+  Roster category, and the `roster` app, which parses a roster's `.ics`
+  itself and files each timed event as a duty — `duties_complete` once
+  ended, else `duties_rostered` — with its own daily
+  `duty_hours_complete`/`duty_hours_rostered`. Upsert-only: a re-upload
+  replaces a duty of the same kind and start, never removes one.
+  Still to come for write-back: an app replacing its own sessions and
+  metrics over a date range (so a re-planned roster's dropped duties go),
+  the rostered↔flown per-duty matching (needs session read-back and a
+  derived duty key — the feed has no `UID`), an app's own session
   kinds and series, reading sessions back (`ctx.session()`), cross-app reads
   of a custom metric, the later input bricks (date/time,
   auto-recompute), per-app Python dependencies (an app gets the image's

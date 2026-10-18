@@ -170,7 +170,8 @@ the platform stays open to any file an author brings.
 - Several files in one input, multi-select, drag-and-drop.
 - Session write-back (`write_session`): the roster-to-sessions app waits on
   it; the `import` app writes metrics only. (Since landed, separately:
-  `ctx.write_session()`, existing kinds only — `app-host.md`.)
+  `ctx.write_session()`, existing kinds only — `app-host.md`; and the roster
+  app on it, `tests/fixtures/apps/roster/`.)
 
 ## Later bricks (sketch only)
 - **Date / time** — a day or timestamp for a reading, rather than "today".

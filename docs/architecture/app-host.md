@@ -94,7 +94,7 @@ mapping of exactly these fields (`_metrics()` in `app/apps.py`):
   `app:<id>:<key>`, so two apps' keys never meet.
 - **`label`**: its name in the data console. Text, not blank.
 - **`unit`**: what its readings are in, the app's own. Text, not blank.
-- **`category`**: one of the eight categories (`CATEGORIES` in
+- **`category`**: one of the nine categories (`CATEGORIES` in
   `app/metrics.py`), as written; `Other` is the catch-all.
 - **`grain`**: `daily` or `instant`. An app's own `session` or `series` isn't
   open yet.
@@ -332,7 +332,8 @@ workout — under the same `ctx.source`, through `write_session()`
 returns nothing:
 
 - **`kind`** is one of OpenFit's session kinds, `SESSION_KINDS` in
-  `app/metrics.py`: `sleep` or `workout`. An app can't invent one yet: it
+  `app/metrics.py`: `sleep`, `workout`, `duties_rostered` or
+  `duties_complete`. An app can't invent one yet: it
   writes what exists, and declares nothing for it. Anything else (a
   misspelling, a metric key, a non-string) is `ValueError("unknown session
   kind: '<kind>'")`, checked before anything else.
@@ -573,6 +574,39 @@ and started that many minutes before, and files it with
 "duration_minutes": minutes})`, under `app:workout-log`. Each log is its own
 session (its own start); it shows in `GET /api/sessions/workout` beside a
 watch's, and nothing is derived from it.
+
+### The roster app
+
+The first app to file duties, committed in `tests/fixtures/apps/roster/` and
+run by `test_roster_app.py` (its parsing on its own, the module loaded by
+path as the host loads it) and `test_app_actions.py` (the round trip), against
+a synthetic roster, `tests/fixtures/rosters/sample.ics`. It takes a duty
+roster's `.ics` through a file input and parses it itself, with the standard
+library alone: the host only carries the file.
+
+```yaml
+id: roster
+name: Roster
+sizes: [{ w: 2, h: 1 }, { w: 2, h: 2 }]
+reads: [duty_hours_rostered, duty_hours_complete]
+metrics:
+  - { key: duty_hours_rostered, label: Rostered duty hours, unit: h, category: Roster, grain: daily, range: [0, 24] }
+  - { key: duty_hours_complete, label: Flown duty hours,    unit: h, category: Roster, grain: daily, range: [0, 24] }
+```
+
+Every timed event (a `DTSTART`/`DTEND` in UTC) is a duty and an all-day one
+a day off, whatever its code, so a duty code never seen before is still filed
+(labelled `other`). Each is written with `ctx.write_session(kind, start, end,
+summary)`: `kind` `duties_complete` if it had ended at upload, else
+`duties_rostered`; `start`/`end` the `DTSTART`/`DTEND` datetimes; `summary`
+`{capture, type, code, label, raw}` plus a flight's `flight_no`/`dep`/`arr`/
+`position`. Then each kind's hours a day (by the UTC date a duty starts,
+summed first, then one `ctx.write_metric(…, date=day)` a day), held to the
+declared 0–24. A time with a `TZID` or none (floating) refuses the upload, as
+does a file with no duty; the route rolls back whatever was filed. Its tile
+is the flown hours with one line of caption — the days flown, the rostered
+hours and days — over the picker, and no sparkline: the two fit a 2×1 tile,
+a line beside them wouldn't, and `render()` isn't told its tile's size.
 
 ## Installing an app
 
@@ -1102,8 +1136,8 @@ saved positions and gives `paintTiles` start cells. The sizes, the CSS grid,
 - **Richer settings fields** (a select or enum, a toggle) beyond number and
   text, a live preview as a setting is typed, and a custom `app.js` for an
   app that draws its own face.
-- **More write-back**: an app's own session kinds (a roster's duties, a
-  custom sleep detector's kind) and series — it writes sessions of
+- **More write-back**: an app's own session kinds (a custom sleep
+  detector's kind) and series — it writes sessions of
   OpenFit's kinds only (`ctx.write_session()`), and its own metrics are
   `daily`/`instant` only — reading sessions back (`ctx.session()`), reading
   another app's metrics, timestamped weigh-ins more than one a day, and a
