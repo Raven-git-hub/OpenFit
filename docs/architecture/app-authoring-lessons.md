@@ -62,7 +62,8 @@ When an app stores or reads a value, decide which of three it is:
   old — the old was true on its date.
 - **Session** — a time interval with internal structure (sleep, a flight duty).
   Lives in `sessions`. An app files one with `ctx.write_session()` — of a kind
-  OpenFit has (`sleep`, `workout`); its own kinds are a later job.
+  OpenFit has (`sleep`, `workout`, a roster's `duties_rostered` /
+  `duties_complete`); its own kinds are a later job.
 
 Two tests settle almost every case:
 
@@ -180,7 +181,7 @@ exists**:
     - key: caffeine_mg            # letters, digits, - and _; once per app
       label: Caffeine             # what the data console calls it
       unit: mg                    # your unit: every reading is in it
-      category: Nutrition & hydration   # one of the 8 categories; Other is the catch-all
+      category: Nutrition & hydration   # one of the 9 categories; Other is the catch-all
       grain: daily                # daily or instant
       range: [0, 2000]            # optional: a write outside it is refused
   ```
@@ -209,11 +210,13 @@ the grain.
 
 What a declaration can't be yet, and why:
 
-- **Only `daily` or `instant`.** An app's own session kind (a roster) or series
-  is a later job; `session`/`series` fail to load. Writing a session of a kind
-  OpenFit already has (`sleep`, `workout`) is supported now: no declaration,
-  just `ctx.write_session(kind, start, end, summary)` — write what exists. The
-  reference app is `tests/fixtures/apps/workout-log/`.
+- **Only `daily` or `instant`.** An app's own session kind or series is a
+  later job; `session`/`series` fail to load. Writing a session of a kind
+  OpenFit already has (`sleep`, `workout`, `duties_rostered`,
+  `duties_complete`) is supported now: no declaration, just
+  `ctx.write_session(kind, start, end, summary)` — write what exists. The
+  reference apps are `tests/fixtures/apps/workout-log/` and, from a file,
+  `tests/fixtures/apps/roster/`.
 - **Only your own.** Reading another app's custom metric isn't offered — read the
   canonical metrics and your own.
 - **Its data outlives the app.** Uninstall the app and its metrics drop out of

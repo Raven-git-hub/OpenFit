@@ -27,6 +27,7 @@ Every test gets its own temp apps folder; nothing reads /data/apps.
 
 import json
 import os
+import re
 import shutil
 import sqlite3
 import tempfile
@@ -1267,6 +1268,293 @@ def test_the_workout_log_app_has_one_action(client, conn, apps_dir):
 
     assert assert_refused(act(client, "workout-log", "clear", {"minutes": 30})) == "unknown action: 'clear'"
     assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
+
+
+# ---------- the roster app: an .ics, filed as duty sessions ----------
+#
+# Committed in tests/fixtures/apps/roster/: a file picker for a duty
+# roster's .ics, which the app parses itself. Every timed event is a
+# duty, filed as a session - duties_complete if it had ended when the
+# roster was uploaded, else duties_rostered - and each kind's hours a
+# day as the app's own metrics, duty_hours_complete and
+# duty_hours_rostered. The parsing, labelling and routing on their own
+# are test_roster_app.py's; here, what lands.
+
+ROSTERS = Path(__file__).parent / "fixtures" / "rosters"
+
+ROSTER_PICKER = {
+    "type": "input", "key": "file", "action": "upload", "label": "Upload roster",
+    "kind": "file", "unit": None, "options": None, "accept": ".ics",
+}
+
+FLOWN = "app:roster:duty_hours_complete"
+ROSTERED_HOURS = "app:roster:duty_hours_rostered"
+
+
+def install_roster(client):
+    """Install the roster app through the Library, from its committed files."""
+    folder = REAL_APPS / "roster"
+    files = {name: (folder / name).read_text() for name in ("app.yaml", "app.py")}
+    resp = client.post("/api/apps", json={"files": files})
+    assert resp.status_code == 201, resp.get_json()
+
+
+def upload_roster(client, content, name="roster.ics"):
+    if isinstance(content, str):
+        content = content.encode()
+    return post_form(client, "roster", {"action": "upload", "cfg": "{}"}, {"file": (content, name, "text/calendar")})
+
+
+def sample_roster(year=2025):
+    """The synthetic roster (fake flights and ports): its duties in 2025,
+    long over - or moved to `year`, 2099 still to come."""
+    return (ROSTERS / "sample.ics").read_bytes().replace(b"2025", str(year).encode())
+
+
+def roster_ics(*events):
+    """An .ics of `events`, each (summary, DTSTART, DTEND) - UTC times - or
+    (summary, day) for an all-day one."""
+    lines = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//OpenFit tests//EN"]
+    for summary, *when in events:
+        if len(when) == 1:
+            times = [f"DTSTART;VALUE=DATE:{when[0]}"]
+        else:
+            times = [f"DTSTART:{when[0]}", f"DTEND:{when[1]}"]
+        lines += ["BEGIN:VEVENT", *times, f"SUMMARY:{summary}", "END:VEVENT"]
+    lines.append("END:VCALENDAR")
+    return "\r\n".join(lines) + "\r\n"
+
+
+def ics_stamp(stamp):
+    """A stored session timestamp as an .ics UTC time: 20251105T151000Z."""
+    return instant(stamp).strftime("%Y%m%dT%H%M%SZ")
+
+
+def duty_rows(conn):
+    """(kind, start, end, summary) of every session, by kind then start."""
+    return [
+        (r[0], r[1], r[2], json.loads(r[3]))
+        for r in conn.execute('SELECT kind, "start", "end", summary_json FROM sessions ORDER BY kind, "start"')
+    ]
+
+
+def test_the_roster_app_installs_and_is_listed(client, apps_dir):
+    install_roster(client)
+
+    assert client.get("/api/apps").get_json() == [
+        {"id": "roster", "name": "Roster", "default_size": {"w": 2, "h": 1},
+         "sizes": [{"w": 2, "h": 1}, {"w": 2, "h": 2}],
+         "reads": ["duty_hours_rostered", "duty_hours_complete"], "config": [],
+         "metrics": [
+             {"key": "duty_hours_rostered", "label": "Rostered duty hours", "unit": "h",
+              "category": "Roster", "grain": "daily", "range": [0, 24]},
+             {"key": "duty_hours_complete", "label": "Flown duty hours", "unit": "h",
+              "category": "Roster", "grain": "daily", "range": [0, 24]},
+         ],
+         "files": ["app.py", "app.yaml"]},
+    ]
+    # Nothing yet: it says so, over its picker.
+    assert client.post("/api/app/roster/render").get_json() == {
+        "type": "panel", "children": [{"type": "empty", "message": "Upload your roster .ics"}, ROSTER_PICKER],
+    }
+
+
+def test_upload_files_sessions_under_the_two_kinds(client, conn, apps_dir, upload_dir):
+    install_roster(client)
+
+    # Long over: every duty is complete ...
+    assert upload_roster(client, sample_roster(2025)).status_code == 200
+    # ... and still to come, rostered.
+    assert upload_roster(client, sample_roster(2099)).status_code == 200
+
+    got = duty_rows(conn)
+    assert [(kind, start, s["code"]) for kind, start, _, s in got] == [
+        ("duties_complete", "2025-11-05T15:10:00Z", "CX9101"),
+        ("duties_complete", "2025-11-08T02:00:00Z", "CX9102"),
+        ("duties_complete", "2025-11-09T22:00:00Z", "R1E"),
+        ("duties_complete", "2025-11-12T01:00:00Z", "A1534"),
+        ("duties_rostered", "2099-11-05T15:10:00Z", "CX9101"),
+        ("duties_rostered", "2099-11-08T02:00:00Z", "CX9102"),
+        ("duties_rostered", "2099-11-09T22:00:00Z", "R1E"),
+        ("duties_rostered", "2099-11-12T01:00:00Z", "A1534"),
+    ]
+    # Every one under the app's own source, its id its kind and start;
+    # the O and G days off nowhere.
+    assert {source for (source,) in conn.execute("SELECT DISTINCT source FROM sessions")} == {"app:roster"}
+    assert [r[0] for r in conn.execute("SELECT id FROM sessions ORDER BY kind, \"start\"")][:1] == [
+        "app:roster:duties_complete:2025-11-05T15:10:00Z",
+    ]
+    # Read back through the contract, as any source's sessions are.
+    assert [(s["start"], s["source"], s["summary"]["type"]) for s in client.get("/api/sessions/duties_rostered").get_json()] == [
+        ("2099-11-05T15:10:00Z", "app:roster", "flight"),
+        ("2099-11-08T02:00:00Z", "app:roster", "flight"),
+        ("2099-11-09T22:00:00Z", "app:roster", "reserve"),
+        ("2099-11-12T01:00:00Z", "app:roster", "sim"),
+    ]
+    assert os.listdir(upload_dir) == []
+
+
+def test_duty_envelope_is_dtstart_dtend_utc(client, conn, apps_dir, upload_dir):
+    install_roster(client)
+    text = sample_roster(2025).decode()
+
+    upload_roster(client, text)
+
+    for kind, start, end, summary in duty_rows(conn):
+        # The session is DTSTART..DTEND, as the file has them in UTC ...
+        assert f"DTSTART:{ics_stamp(start)}\r\nDTEND:{ics_stamp(end)}\r\nSUMMARY:{summary['label']}" in text
+        # ... the length the roster states, TOTAL hh:mm in its description.
+        hours, minutes = re.search(r"TOTAL (\d\d):(\d\d)", summary["raw"]).groups()
+        assert instant(end) - instant(start) == timedelta(hours=int(hours), minutes=int(minutes))
+    [reserve] = [r for r in duty_rows(conn) if r[3]["type"] == "reserve"]
+    assert reserve[1:3] == ("2025-11-09T22:00:00Z", "2025-11-10T10:00:00Z")
+
+
+def test_unknown_timed_code_is_still_written(client, conn, apps_dir, upload_dir):
+    # Capture first: a code the app has never seen, timed, is a duty.
+    install_roster(client)
+
+    resp = upload_roster(client, roster_ics(("20-Nov ZQX9 ZZA", "20251120T010000Z", "20251120T070000Z")))
+
+    assert resp.status_code == 200, resp.get_json()
+    assert duty_rows(conn) == [(
+        "duties_complete", "2025-11-20T01:00:00Z", "2025-11-20T07:00:00Z",
+        {"capture": "live", "type": "other", "code": "ZQX9", "label": "20-Nov ZQX9 ZZA", "raw": ""},
+    )]
+    assert rows(conn) == [("2025-11-20", "app:roster", FLOWN, 6.0)]
+
+
+def test_companion_hours_sum_per_day_per_stream(client, conn, apps_dir, upload_dir):
+    install_roster(client)
+
+    resp = upload_roster(client, roster_ics(
+        ("19-Nov R1E", "20251119T010000Z", "20251119T050000Z"),            # 4h, over
+        ("19-Nov A1534", "20251119T080000Z", "20251119T113000Z"),          # 3.5h, over, same day
+        ("21-Nov R2E", "20251121T010000Z", "20251121T030000Z"),            # 2h, over
+        ("19-Nov CX9101 ZZA-ZZB", "20991119T100000Z", "20991120T000000Z"),  # 14h, to come
+        ("19-Nov R3E", "20991119T020000Z", "20991119T040000Z"),            # 2h, to come, same day
+    ))
+
+    assert resp.status_code == 200, resp.get_json()
+    # Summed per day, each kind its own metric, under the app's source.
+    assert rows(conn) == [
+        ("2025-11-19", "app:roster", FLOWN, 7.5),
+        ("2025-11-21", "app:roster", FLOWN, 2.0),
+        ("2099-11-19", "app:roster", ROSTERED_HOURS, 16.0),
+    ]
+    # Derived, and read back by their full keys, in the declared unit.
+    flown = client.get(f"/api/metric/{FLOWN}").get_json()
+    assert (flown["unit"], [(p["date"], p["value"]) for p in flown["points"]]) == (
+        "h", [("2025-11-19", 7.5), ("2025-11-21", 2.0)],
+    )
+    assert [(p["date"], p["value"], p["source"]) for p in client.get(f"/api/metric/{ROSTERED_HOURS}").get_json()["points"]] == [
+        ("2099-11-19", 16.0, "app:roster"),
+    ]
+
+
+def test_reupload_replaces_same_duty(client, conn, apps_dir, upload_dir):
+    install_roster(client)
+    upload_roster(client, sample_roster(2025))
+    before = duty_rows(conn)
+
+    # The same roster again, one description changed.
+    again = sample_roster(2025).replace(b"R1E - Home reserve", b"R1E - Airport reserve")
+    assert upload_roster(client, again).status_code == 200
+
+    # Not doubled: the same start, the same session, its summary replaced.
+    after = duty_rows(conn)
+    assert len(after) == len(before) == 4
+    assert [r[:3] for r in after] == [r[:3] for r in before]
+    [reserve] = [r[3] for r in after if r[3]["code"] == "R1E"]
+    assert reserve["raw"].startswith("R1E - Airport reserve")
+    assert len(rows(conn)) == 4
+
+
+def test_the_roster_app_shows_flown_against_rostered(client, conn, apps_dir, upload_dir):
+    install_roster(client)
+
+    resp = upload_roster(client, sample_roster(2025))
+    # The upload's reply is the tile, drawn afresh: the flown hours, and
+    # under them their days and the rostered hours and theirs, over the
+    # picker. One line of text, so it fits a 2x1 tile.
+    flown = {"type": "number", "value": 40.5, "label": None, "unit": "h",
+             "caption": "flown · 4 days · rostered 0 h · 0 days"}
+    assert resp.get_json() == {"ok": True, "spec": {"type": "panel", "children": [flown, ROSTER_PICKER]}}
+
+    assert upload_roster(client, roster_ics(("05-Dec R1E", "20991205T000000Z", "20991205T100000Z"))).status_code == 200
+    flown["caption"] = "flown · 4 days · rostered 10 h · 1 day"
+    assert client.post("/api/app/roster/render").get_json() == {"type": "panel", "children": [flown, ROSTER_PICKER]}
+
+
+def test_the_roster_app_with_only_a_roster_to_come_has_flown_nothing(client, conn, apps_dir, upload_dir):
+    install_roster(client)
+
+    resp = upload_roster(client, sample_roster(2099))
+
+    assert resp.get_json()["spec"] == {"type": "panel", "children": [
+        {"type": "number", "value": 0, "label": None, "unit": "h",
+         "caption": "flown · 0 days · rostered 40.5 h · 4 days"},
+        ROSTER_PICKER,
+    ]}
+
+
+@pytest.mark.parametrize(
+    "content, says",
+    [
+        # Only days off: nothing timed, so no duties.
+        (roster_ics(("03-Nov O", "20251103"), ("04-Nov G", "20251104")), "No duties found in roster.ics"),
+        (b"2026-01-03 81.2\n2026-01-04 80.9\n", "No duties found in roster.ics"),
+        (b"", "No duties found in roster.ics"),
+        (b"\x89PNG\r\n\x1a\n\x00\xff", "roster.ics isn't a text roster"),
+        # A time not in UTC refuses the whole file - the duty before it too.
+        (roster_ics(("19-Nov R1E", "20251119T010000Z", "20251119T050000Z"))
+         .replace("END:VCALENDAR", "BEGIN:VEVENT\r\nDTSTART;TZID=Asia/Hong_Kong:20251120T090000\r\n"
+                                   "DTEND;TZID=Asia/Hong_Kong:20251120T170000\r\nSUMMARY:20-Nov R2E\r\n"
+                                   "END:VEVENT\r\nEND:VCALENDAR"),
+         "roster has a non-UTC time, which isn't supported yet: DTSTART;TZID=Asia/Hong_Kong:20251120T090000"),
+        # A day over the declared 24 hours: refused with its day, and the
+        # sessions already filed rolled back with it.
+        (roster_ics(("19-Nov R1E", "20251119T000000Z", "20251119T120000Z"),
+                    ("19-Nov CX9101 ZZA-ZZB", "20251119T120000Z", "20251120T010000Z")),
+         "2025-11-19: duty_hours_complete must be between 0 and 24 h, got 25.0"),
+    ],
+)
+def test_a_file_with_no_duties_is_refused(client, conn, apps_dir, upload_dir, content, says):
+    install_roster(client)
+
+    assert assert_refused(upload_roster(client, content)) == says
+    assert duty_rows(conn) == []
+    assert rows(conn) == []
+    assert conn.execute("SELECT COUNT(*) FROM derived_metrics").fetchone()[0] == 0
+    assert os.listdir(upload_dir) == []
+
+
+def test_the_roster_app_needs_a_file_and_has_one_action(client, conn, apps_dir, upload_dir):
+    install_roster(client)
+
+    for resp in (act(client, "roster", "upload", {}), act(client, "roster", "upload", {"file": "roster.ics"})):
+        assert assert_refused(resp) == "Choose a roster .ics to upload"
+    resp = post_form(client, "roster", {"action": "clear"}, {"file": (sample_roster(), "roster.ics")})
+    assert assert_refused(resp) == "unknown action: 'clear'"
+    assert duty_rows(conn) == []
+
+
+def test_the_duties_and_their_hours_are_listed_under_roster(client, conn, apps_dir, upload_dir):
+    install_roster(client)
+    upload_roster(client, sample_roster(2025))
+
+    catalog = client.get("/api/catalog?include_empty=1").get_json()
+    sessions_listed = {s["kind"]: s for s in catalog["sessions"]}
+    assert (sessions_listed["duties_complete"]["count"], sessions_listed["duties_rostered"]["count"]) == (4, 0)
+    assert {sessions_listed[k]["category"] for k in ("duties_complete", "duties_rostered")} == {"Roster"}
+    metrics_listed = {m["metric"]: m for m in catalog["metrics"]}
+    for key in (FLOWN, ROSTERED_HOURS):
+        assert (metrics_listed[key]["category"], metrics_listed[key]["grain"], metrics_listed[key]["app"]) == (
+            "Roster", "daily", "roster",
+        )
+    assert client.get("/api/coverage").get_json()["sessions"]["duties_complete"] == [
+        "2025-11-05", "2025-11-08", "2025-11-09", "2025-11-12",
+    ]
 
 
 # ---------- /api/weights retired; 'manual' kept as history ----------

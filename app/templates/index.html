@@ -889,6 +889,7 @@ h5 + .dnote{margin-top:0;}
     vo2_max:'VO₂ max', body_fat_pct:'Body fat', bmi:'BMI', hydration_ml:'Hydration', weight_kg:'Weight',
     heart_rate:'Heart rate', respiration:'Respiration', spo2:'SpO₂',
     sleep:'Sleep', workout:'Workouts',
+    duties_rostered:'Rostered duties', duties_complete:'Completed duties',
   };
   /* An app's own metric, app:<id>:<key>, is named by the label its app
      declares - the catalog's `label`, noted here as its rows are built
@@ -1080,7 +1081,7 @@ h5 + .dnote{margin-top:0;}
      by grain in GRAIN_ORDER; ties keep the catalog's vocabulary order. */
   const CATEGORY_ORDER = [
     'Activity', 'Vitals', 'Body composition', 'Fitness', 'Sleep',
-    'Nutrition & hydration', "Women's health", 'Other',
+    'Nutrition & hydration', "Women's health", 'Roster', 'Other',
   ];
   const GRAIN_ORDER = {daily:0, instant:1, session:2, series:3};
   // An unknown grain sorts last. (daily is 0, so not `||`.)

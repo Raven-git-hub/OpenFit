@@ -44,8 +44,10 @@ GRAINS = (DAILY, INSTANT, SESSION, SERIES)
 #
 # The semantic groups, in display order. A category is metadata a key
 # carries, independent of its source; one with no keys yet (Women's
-# health) is still listed. An app's own metric files under whichever
-# fits, with Other the catch-all.
+# health) is still listed. Roster is operational context, not a body
+# measurement - a roster app's duties and its hours - kept because the
+# user keeps it (OpenFit doesn't judge what is health data). An app's own
+# metric files under whichever fits, with Other the catch-all.
 CATEGORIES = (
     "Activity",
     "Vitals",
@@ -54,6 +56,7 @@ CATEGORIES = (
     "Sleep",
     "Nutrition & hydration",
     "Women's health",
+    "Roster",
     "Other",
 )
 
@@ -260,16 +263,36 @@ def series_unit_for(metric):
 #            "running"), duration_minutes (int, excluding pauses),
 #            distance_m (float, metres), avg_hr_bpm (int),
 #            calories_kcal (int)
+#
+# A work duty off a roster is a session too, its start and end the duty's
+# envelope (report to release, UTC). Two kinds, by whether the duty had
+# ended when it was filed: duties_rostered (still to come, or under way -
+# the plan) and duties_complete (over - what was flown). The same duty
+# filed before and after it ends is one of each, so plan and actual sit
+# side by side. Both kinds take the same summary keys:
+#
+#   duties_rostered,  capture ("live": filed from a roster as it stood),
+#   duties_complete   type ("flight", "reserve", "sim" or "other"),
+#                     code (the duty's code as the roster gives it, e.g.
+#                     "CX105", "R1E", "A1534"), label (the roster's whole
+#                     title for it), raw (the roster's description of it,
+#                     verbatim); and for a flight, when given: flight_no
+#                     ("CX105"), dep and arr (airport codes, "HKG"),
+#                     position (the crew position, "RP")
 
 SLEEP = "sleep"
 WORKOUT = "workout"
+DUTIES_ROSTERED = "duties_rostered"
+DUTIES_COMPLETE = "duties_complete"
 
-SESSION_KINDS = {SLEEP, WORKOUT}
+SESSION_KINDS = {SLEEP, WORKOUT, DUTIES_ROSTERED, DUTIES_COMPLETE}
 
 # Session kind -> its category.
 SESSION_CATEGORIES = {
     SLEEP: "Sleep",
     WORKOUT: "Activity",
+    DUTIES_ROSTERED: "Roster",
+    DUTIES_COMPLETE: "Roster",
 }
 
 

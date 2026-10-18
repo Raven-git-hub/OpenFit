@@ -106,7 +106,7 @@ def write_session(conn, source, kind, start, end, summary):
     A session is an interval with a shape - a night's sleep and its stage
     breakdown, a workout and its distance and heart rate - where a metric
     is one number per day. `kind` is a session kind from metrics.py
-    (SLEEP, WORKOUT); `start` and `end` are timestamps from iso_utc();
+    (SLEEP, WORKOUT, DUTIES_ROSTERED, DUTIES_COMPLETE); `start` and `end` are timestamps from iso_utc();
     `summary` is a dict, stored as JSON, whose keys belong to the kind
     (listed beside SESSION_KINDS in metrics.py).
 

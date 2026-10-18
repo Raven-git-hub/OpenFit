@@ -186,6 +186,21 @@ def test_index_lays_the_data_tab_out_in_two_columns(client):
     assert int(floor.group(1)) > 860
 
 
+def test_your_data_groups_in_the_vocabularys_category_order(client):
+    # The page's own copy of CATEGORIES (app/metrics.py), Roster included:
+    # a category it left out would still be listed, but after the rest.
+    from metrics import CATEGORIES
+
+    resp = client.get("/")
+    page = resp.get_data(as_text=True)
+    resp.close()
+    order = re.search(r"const CATEGORY_ORDER = \[(.*?)\];", page, re.S)
+    assert order, "CATEGORY_ORDER"
+    # Each a JS string, in single quotes or - Women's health - double.
+    names = [single or double for single, double in re.findall(r"'([^']*)'|\"([^\"]*)\"", order.group(1))]
+    assert names == list(CATEGORIES)
+
+
 def _js_function(page, name):
     """The body of a top-level function in the page's script."""
     return _js_source(page, name, body=True)
@@ -204,13 +219,14 @@ def test_index_splits_applications_into_controls_and_a_list(client, monkeypatch)
     import main
 
     # What the list shows: the installed apps, as /api/apps returns them -
-    # the seven real apps.
+    # the eight real apps.
     fixtures = os.path.join(os.path.dirname(__file__), "fixtures", "apps")
     monkeypatch.setitem(main.app.config, "APPS_DIR", fixtures)
     apps = client.get("/api/apps").get_json()
     assert [(a["id"], a["name"]) for a in apps] == [
-        ("caffeine", "Caffeine"), ("import", "Import weigh-ins"), ("mood", "Mood"), ("steps", "Steps"),
-        ("steps-metres", "Distance (from steps)"), ("weight", "Weight"), ("workout-log", "Workout log"),
+        ("caffeine", "Caffeine"), ("import", "Import weigh-ins"), ("mood", "Mood"), ("roster", "Roster"),
+        ("steps", "Steps"), ("steps-metres", "Distance (from steps)"), ("weight", "Weight"),
+        ("workout-log", "Workout log"),
     ]
 
     resp = client.get("/")

@@ -52,8 +52,8 @@ and a ctx knows only its own app's.
 handle() can write a session too - an interval, as a night's sleep or a
 workout is - with ctx.write_session(kind, start, end=None, summary=None),
 under the same source: `kind` one of OpenFit's session kinds
-(SESSION_KINDS in metrics.py: sleep, workout - an app can't invent one
-yet), `start` and `end` each a datetime or ISO-8601 text, stored as UTC
+(SESSION_KINDS in metrics.py: sleep, workout, duties_rostered,
+duties_complete - an app can't invent one yet), `start` and `end` each a datetime or ISO-8601 text, stored as UTC
 to the second (end may be None: open-ended; never before start), and
 `summary` a dict of plain JSON, or None:
 
@@ -565,7 +565,8 @@ class WriteCtx(Ctx):
         """File one session under the app's own source (app:<id>).
 
         `kind` is one of OpenFit's session kinds (SESSION_KINDS in
-        metrics.py: sleep, workout); an app can't invent one yet.
+        metrics.py: sleep, workout, duties_rostered, duties_complete); an
+        app can't invent one yet.
         `start` is when it began, a datetime or ISO-8601 text
         ("2026-01-05T07:30:00+01:00", "...Z"), stored as iso_utc() has
         every session's: UTC, whole seconds, a naive time taken to be

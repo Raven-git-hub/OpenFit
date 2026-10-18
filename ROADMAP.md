@@ -122,8 +122,14 @@ app does; the Import weigh-ins app the example), with date/time the next brick
 `handle()` files a session of an existing kind (`sleep`, `workout`) with
 `ctx.write_session()`, under its own source, read back through
 `/api/sessions/<kind>` beside every device's (the Workout log app the
-example). Next: the roster path (the session kinds it files, and its `.ics`
-app), the rest of the Library (the writes ticker, now apps write back; alerts;
+example). Then the roster path: two session kinds in core,
+`duties_rostered` and `duties_complete`, under a new Roster category, and the
+Roster app, which reads a roster's `.ics` itself and files every timed event
+as a duty — complete once it has ended, else rostered — with its own daily
+duty hours beside them (upsert-only: replacing an app's own sessions over a
+date range, so a re-planned roster's dropped duties go, is a later host brick,
+as is matching each rostered duty to its flown one). Next: the rest of the
+Library (the writes ticker, now apps write back; alerts;
 Browse / Build / Create are still placeholders), and the grid pass (free cell
 placement, a second layout mode on the same sizes).
 

@@ -21,6 +21,8 @@ from derived import SOURCE_ROLES_KEY, recompute_derived, set_source_role
 from metrics import (
     BLOOD_GLUCOSE,
     BODY_FAT_PCT,
+    DUTIES_COMPLETE,
+    DUTIES_ROSTERED,
     HEART_RATE,
     METRICS,
     RESPIRATION,
@@ -308,6 +310,10 @@ def test_catalog_with_include_empty_lists_the_whole_vocabulary(client, conn):
         "last_date": None,
     }
     assert catalog["sessions"] == [
+        {"kind": DUTIES_COMPLETE, "grain": "session", "category": "Roster",
+         "count": 0, "first": None, "last": None},
+        {"kind": DUTIES_ROSTERED, "grain": "session", "category": "Roster",
+         "count": 0, "first": None, "last": None},
         {"kind": SLEEP, "grain": "session", "category": "Sleep",
          "count": 0, "first": None, "last": None},
         {"kind": WORKOUT, "grain": "session", "category": "Activity",
