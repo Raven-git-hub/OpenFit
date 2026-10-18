@@ -181,9 +181,14 @@ reuse it.
 ## The ctx: `app/host.py`
 
 `render()` runs server-side, once per render request, with a fresh `Ctx` over
-that request's database connection.
+that request's database connection. The ctx is the app's only data path, and
+it has two reads: `ctx.metric()` for a metric's daily values and
+`ctx.sessions()` for a session kind's intervals. Each gives the same answer
+as its access-contract route (`GET /api/metric/<key>`, `GET
+/api/sessions/<kind>`), because each route and its read call one shared
+function in `app/derived.py` (`derived_points()`, `session_rows()`).
 
-- **`ctx.metric(key, days=None)`** is the app's only data path. It
+- **`ctx.metric(key, days=None)`** reads one metric. It
   **returns a list of points**: `list[Point]`, in ascending date order. So
   `data[-1]` is the latest day, and an empty list `[]` means no data. Each
   `Point` is a named tuple (`host.Point`) with three attributes:
@@ -206,6 +211,52 @@ that request's database connection.
   key that's neither canonical nor the app's own, or a `days` that isn't a
   whole number ≥ 1, raises `ValueError`, which the app's tile shows as an
   error.
+- **`ctx.sessions(kind, since=None, until=None)`** reads one session kind:
+  intervals such as a night's sleep, a workout or a roster's duties. It
+  **returns a list of sessions**, `list[Session]`, or `[]` when there are
+  none. Each `Session` is a named tuple (`host.Session`) with the four fields
+  of `GET /api/sessions/<kind>`, in the same order:
+  - `.start`: when it began, as stored: ISO 8601 UTC text,
+    `YYYY-MM-DDTHH:MM:SSZ`, so starts sort and compare as plain strings.
+  - `.end`: when it finished, in the same form, or `None` if it has no end.
+  - `.source`: the source it was filed under, such as `garmin`,
+    `google_health` or `app:roster`.
+  - `.summary`: the kind's breakdown, a `dict` parsed from the stored JSON.
+    Its keys belong to the kind and are listed beside `SESSION_KINDS`. It's
+    `{}` when the source gave no summary. Each call returns a fresh copy, so
+    the app can change it without affecting anything stored.
+
+  It returns **every source's** sessions, exactly as `GET
+  /api/sessions/<kind>` lists them, because both read `session_rows()`. This
+  is a priority-ordered passthrough, not a pick: nothing is chosen, filtered
+  or merged, so a night that two devices both tracked appears twice, once per
+  source. Sources are ordered the way the derived pick ranks them: the kind's
+  primary in the source roles if one is set, then `DEFAULT_PRIORITY`
+  (`garmin`, then `google_health`), then every other source by name (an app's
+  `app:<id>` among them). Within a source, sessions are in start order. So
+  the list as a whole isn't in time order. For a single timeline, re-sort it
+  (`sorted(data, key=lambda s: s.start)`). For only the app's own sessions,
+  filter on `.source`.
+
+  `kind` is one of OpenFit's session kinds, `SESSION_KINDS` in
+  `app/metrics.py`: `sleep`, `workout`, `duties_rostered` or
+  `duties_complete`. Any app can read any of them: every kind is shared, and
+  an app can't declare its own yet. Anything else raises
+  `ValueError("unknown session kind: '<kind>'")`.
+
+  `since` and `until` are days, as `YYYY-MM-DD` text or a `date`, and both
+  are inclusive. They're matched against the UTC date a session starts on,
+  as the route's `?from=` and `?to=` are, so a night that starts at 23:30 UTC
+  belongs to that date. `None`, the default, leaves that end of the range
+  open. A day that isn't one raises `ValueError("since must be YYYY-MM-DD:
+  <repr>")` (or `until`), and a `since` later than `until` raises
+  `ValueError("since must not be after until: <since> > <until>")`. There's
+  no `days=` option: session reads such as a roster timeline want explicit
+  ranges.
+
+  It only reads, in `render()` and `handle()` alike. In `handle()` it also
+  sees sessions written earlier in the same action, which aren't committed
+  yet.
 - **`ctx.today()`** returns today as `YYYY-MM-DD`, the format points' dates
   use. It's the server's local date until a `base_tz` setting lands.
 - **The spec builders**, also importable from `host`, are described in the
@@ -292,8 +343,8 @@ in a temp file the host named, deleted once the action is done whatever
 `handle()` did, so only what the app writes survives.
 
 **The writing ctx.** `handle()` gets a `WriteCtx(conn, app, today=None)`, made
-for the app: a `Ctx` (so `ctx.metric()` and `ctx.today()` read as in
-`render()`), plus
+for the app: a `Ctx` (so `ctx.metric()`, `ctx.sessions()` and `ctx.today()`
+read as in `render()`), plus
 
 ```python
 ctx.write_metric(metric, value, date=None)                  # files one reading, under ctx.source
@@ -367,9 +418,9 @@ returns nothing:
 - **Nothing is derived from a session**: `derived_metrics` holds metrics only,
   so `write_session()` notes no day in `ctx.written`, and an action that
   writes only sessions re-derives nothing (it's still committed). A session
-  is read back through `GET /api/sessions/<kind>`, beside every other
-  source's and tagged `app:<id>`: a passthrough, no pick. An app can't read
-  sessions itself yet (there's no `ctx.session()`).
+  is read back with `ctx.sessions(kind)`, or through `GET
+  /api/sessions/<kind>`, alongside every other source's and tagged
+  `app:<id>`: a passthrough, no pick.
 
 `render()`'s plain `Ctx` has no writer, so a render can't write.
 
@@ -565,7 +616,8 @@ reads: []
 No `metrics:` block: `workout` is one of OpenFit's session kinds, so the app
 just writes it. `render()` is deliberately dull — `empty("Log a workout with
 Save")` over an `input` (`key: minutes`, `action: log`, "Workout", min) — and
-doesn't read its workouts back (an app can't read sessions yet). `handle()`
+doesn't read its workouts back (it was written before `ctx.sessions()`
+existed, and stays as it is). `handle()`
 takes `log` only: it coerces `payload["minutes"]` to a finite positive number
 (junk, a bool, `0` → `ValueError("Enter the workout in minutes, as a positive
 number")`), takes the workout to have ended now (`datetime.now(timezone.utc)`)
@@ -1139,11 +1191,12 @@ saved positions and gives `paintTiles` start cells. The sizes, the CSS grid,
 - **More write-back**: an app's own session kinds (a custom sleep
   detector's kind) and series — it writes sessions of
   OpenFit's kinds only (`ctx.write_session()`), and its own metrics are
-  `daily`/`instant` only — reading sessions back (`ctx.session()`), reading
-  another app's metrics, timestamped weigh-ins more than one a day, and a
+  `daily`/`instant` only — a trailing `days=` window on `ctx.sessions()`,
+  reading another app's metrics, timestamped weigh-ins more than one a day, and a
   `base_tz` setting for the day a write lands on.
 - **Enforcing `reads`:** it's recorded, but `ctx.metric()` serves any
-  canonical key, and the app's own.
+  canonical key, and the app's own, and `ctx.sessions()` serves any session
+  kind.
 - **A sandbox:** an app is trusted Python running in the server's process.
   The sandboxed host (no network beyond the contract) is Phase 4 of
   `ROADMAP.md`.

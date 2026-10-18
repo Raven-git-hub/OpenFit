@@ -258,6 +258,16 @@ canonical key competing in the default per-metric pick.
 `GET /api/series/<metric>` (intraday samples; a per-source passthrough for now,
 §5) — read-only, no auth, provenance included, stable and additive-only.
 
+An app installed in the host reads the same contract in process, through its
+ctx rather than over HTTP: `ctx.metric()` is `GET /api/metric/<metric>` and
+`ctx.sessions()` is `GET /api/sessions/<kind>` (`app-host.md`). Each read and
+its route call the same function in `app/derived.py` (`derived_points()`,
+`session_rows()`), so they return the same data in the same order and can't
+drift apart. An app inside the host and a page outside it get the same
+answers, and a later change to the read rules reaches both. So
+`ctx.sessions()` is the same priority-ordered passthrough as the route, every
+source's sessions with no pick, until the preferred-source view below lands.
+
 **Designed additions:**
 - The stitch in `GET /api/series/<metric>` — the intraday timeline picked by
   priority, provenance per segment (§5). Deferred, though the second series
@@ -284,6 +294,9 @@ canonical key competing in the default per-metric pick.
 - App write-back, own-source (`app:<id>`): readings (`ctx.write_metric()`,
   canonical keys and the app's own) and sessions of the existing kinds
   (`ctx.write_session()`), from an app's `handle()`.
+- App session read-back: `ctx.sessions(kind, since, until)`, in `render()`
+  and `handle()` alike — every source's sessions of a kind, as `GET
+  /api/sessions/<kind>` serves them, from the same `session_rows()`.
 - Access contract (catalog, metric range, sessions, intraday series as a
   per-source passthrough).
 - Google Health's daily metrics (daily roll-ups and daily summaries), sleep
@@ -312,7 +325,8 @@ canonical key competing in the default per-metric pick.
 - **An app replacing its own sessions/metrics over a date range** — so a
   re-planned roster's dropped or moved future duties don't linger (the Roster
   app is upsert-only today) — and the rostered↔flown per-duty matching, which
-  needs session read-back and a derived duty key (the feed has no `UID`).
+  needs a derived duty key (the feed has no `UID`); the session read-back it
+  also needed has landed (`ctx.sessions()`).
 - **Additive-type single-source** handling (no fall-through).
 - **User-local day-boundary** bucketing (requires a timezone setting).
 

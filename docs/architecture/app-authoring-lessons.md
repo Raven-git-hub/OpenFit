@@ -12,8 +12,11 @@ before briefing a session to build one.
 
 ### 1. An app reads only through the contract — never the raw tables or a vendor API.
 
-An app's single data path is `ctx.metric()` (and the other `ctx` reads). It never
-touches the `metrics` / `sessions` tables or Google / Garmin directly.
+An app reads only through the ctx: `ctx.metric()` for a metric's daily values,
+and `ctx.sessions()` for a session kind's intervals (a night's sleep, a workout,
+a roster's duties). Each returns what its contract route serves
+(`/api/metric/<key>`, `/api/sessions/<kind>`), computed by the same function. An
+app never touches the `metrics` / `sessions` tables or Google / Garmin directly.
 
 Why it matters, concretely: steps on 2026-10-12 had two raw rows —
 `google_health` 5973 and `garmin` 3773 — and the contract returned one resolved
@@ -22,6 +25,16 @@ have had to dedupe and pick, and could double-count. Reading through the contrac
 means the app is automatically correct about source precedence, dedup, and units,
 and stays correct when those rules change. The app shows what the contract picked,
 and surfaces `via <source>` so the pick is visible rather than mysterious.
+
+Sessions are not picked yet. `ctx.sessions(kind)` returns every source's sessions,
+each tagged with its `.source`, so a night two devices both tracked appears twice.
+The list is in source-priority order (the source the pick would trust first
+leads), and each source's sessions are in start order, so the list as a whole is
+not in time order. An app that wants one timeline sorts it by `.start`, and an
+app that wants only its own sessions filters on `.source == ctx.source` in
+`handle()`, or on `"app:<its id>"` in `render()`. Overlap and dedup logic, such
+as treating two devices' views of one night as one event, belongs to the app,
+from these tagged sessions.
 
 ### 2. The host↔app contract is a written spec, not an example to infer from.
 
@@ -63,7 +76,8 @@ When an app stores or reads a value, decide which of three it is:
 - **Session** — a time interval with internal structure (sleep, a flight duty).
   Lives in `sessions`. An app files one with `ctx.write_session()` — of a kind
   OpenFit has (`sleep`, `workout`, a roster's `duties_rostered` /
-  `duties_complete`); its own kinds are a later job.
+  `duties_complete`); its own kinds are a later job — and reads them back,
+  every source's, with `ctx.sessions(kind, since, until)`.
 
 Two tests settle almost every case:
 

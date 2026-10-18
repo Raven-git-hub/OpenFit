@@ -99,7 +99,14 @@ own calls to its device API. Full direction:
   and `clear_source_roles(conn, source, only=None)` — every entry naming
   that source dropped, a session kind's too, or with `only` just that
   key's if it names the source, committing nothing: a step of
-  `purge_source()`'s transaction).
+  `purge_source()`'s transaction). And the two contract reads an app's ctx
+  shares with its route, so the two can't drift: `derived_points(conn,
+  metric, since, until)` (`/api/metric/<key>` and `ctx.metric()`) and
+  `session_rows(conn, kind, since=None, until=None)` (`/api/sessions/<kind>`
+  and `ctx.sessions()`) — `[{start, end, source, summary}]`, the query,
+  range (`substr("start", 1, 10)`, inclusive, built inline: `main` imports
+  `derived`, never the reverse) and `source_rank()` order once; the caller
+  checks `kind`.
 - `app/crypto.py` — Fernet encrypt/decrypt for stored credentials.
 - `app/apps.py` — the app scanner/loader, the one way the host finds an app
   (the Library reuses it): `scan_apps(apps_dir)` → the `InstalledApp`s that
@@ -208,7 +215,9 @@ own calls to its device API. Full direction:
   `InstallError`'s siblings, all `LibraryError(message, status)`.
 - `app/host.py` — the app host: `Ctx(conn, today=None, app=None)`, built
   per render call for the app (`app` its `InstalledApp`; None, a ctx for no
-  app, reads canonical keys only), is all an app's `render()` gets.
+  app, reads canonical keys only), is all an app's `render()` gets — its
+  two reads, `ctx.metric()` and `ctx.sessions()`, each its contract
+  route's answer from the same `app/derived.py` function.
   `ctx.metric(key, days=None)` → a
   list of `Point(date, value, source)` (a `NamedTuple`: `.date` a
   `YYYY-MM-DD` str, `.value` a float in the canonical unit — or an app
@@ -227,7 +236,24 @@ own calls to its device API. Full direction:
   (over `scan_apps()`, folder then manifest order) — the one place they're
   enumerated: with `METRICS` the effective vocabulary the catalog,
   `/api/coverage` and `/api/metric/<key>` serve (`app/metrics.py` stays
-  canonical-only). `ctx.today()` → the server's
+  canonical-only). `ctx.sessions(kind, since=None, until=None)` → a list
+  of `Session(start, end, source, summary)` (a `NamedTuple`: `.start` ISO
+  8601 UTC text as stored, `YYYY-MM-DDTHH:MM:SSZ`; `.end` the same or
+  `None`; `.source`; `.summary` a dict parsed from `summary_json`, `{}` for
+  none, a fresh copy each call), exactly what `GET /api/sessions/<kind>`
+  serves, field for field and in its order (`session_rows()`, shared by
+  both): every source's — a priority-ordered passthrough, no pick — the
+  kind's role primary, then `DEFAULT_PRIORITY`, then by name, each source's
+  by start; `[]` for none. `kind` in `SESSION_KINDS` (any kind, any source:
+  all are shared — no per-app scoping until app-declared kinds), else
+  `ValueError("unknown session kind: <repr>")`; `since`/`until` inclusive
+  days matched on the start's UTC date (`?from=`/`?to=`'s rule), `None`
+  open, each `YYYY-MM-DD` text or a `date` (`_iso_day()`, else
+  `ValueError("since must be YYYY-MM-DD: <repr>")`/`until`), a `since`
+  after the `until` → `ValueError("since must not be after until: <since>
+  > <until>")`; no `days=`. On the base `Ctx`, so `render()` and
+  `handle()` both have it (in `handle()` it sees the action's own
+  uncommitted sessions); reads only. `ctx.today()` → the server's
   local date as `YYYY-MM-DD`. The spec builders (also module functions):
   `number(value, label, caption, unit)`, `line(points, title=None)` →
   `{"type": "line", "points": [[date, value], ...], "title"}` (points
@@ -304,8 +330,9 @@ own calls to its device API. Full direction:
   `ValueError("a session's summary must be a mapping or None")`) that
   `json.dumps(allow_nan=False)` takes (else `ValueError("a session's
   summary must be JSON")`). It commits nothing and notes no day in
-  `ctx.written` — nothing derives from a session (read back through `GET
-  /api/sessions/<kind>`), so a session-only action re-derives nothing and
+  `ctx.written` — nothing derives from a session (read back through
+  `ctx.sessions()` or `GET /api/sessions/<kind>`), so a session-only
+  action re-derives nothing and
   is still committed. The render
   path's `Ctx` has no writer. The app is trusted code, as its `render()`
   is: the scoping is the ctx, not a sandbox. **A file input's value**
@@ -407,7 +434,7 @@ own calls to its device API. Full direction:
   1 }]`, `reads: []` — no `metrics:` (`workout` is an existing kind).
   `render()`: `empty("Log a workout with Save")` over an `input` (`key`
   `minutes`, `action` `log`, "Workout", min), panelled — it doesn't read
-  sessions back (apps can't yet). `handle()`: `log` only;
+  sessions back (it predates `ctx.sessions()`). `handle()`: `log` only;
   `payload["minutes"]` coerced to a finite positive float (a bool, junk,
   `0` → `ValueError("Enter the workout in minutes, as a positive
   number")`), then `ctx.write_session("workout", start, end, {"type":
@@ -1153,7 +1180,8 @@ own calls to its device API. Full direction:
     (`flight`/`reserve`/`sim`/`other`), `code`, `label` (the roster's
     title), `raw` (its description, verbatim), and for a flight, when
     given, `flight_no`, `dep`, `arr`, `position`.
-  Read through the access contract (`GET /api/sessions/<kind>`, below).
+  Read through the access contract (`GET /api/sessions/<kind>`, below) — or,
+  by an installed app, `ctx.sessions(kind)`, the same rows.
 - `samples(source, metric, ts, value, unit, synced_at)` keyed
   `(source, metric, ts)` (migration `009`, purely additive): the series
   (intraday) grain, the third beside daily `metrics` and interval `sessions` —
@@ -1339,7 +1367,8 @@ own calls to its device API. Full direction:
     is stored, then `DEFAULT_PRIORITY`, then by name), each source's
     ascending by start. `summary` parsed from `summary_json` (`{}` if none),
     `end` may be null. `from`/`to` match the start's UTC date. Unknown kind
-    404.
+    404. Served by `session_rows()` (`app/derived.py`), which an app's
+    `ctx.sessions()` reads too, so the two agree.
   - `GET /api/series/<metric>?from=&to=` → `{metric, unit, points: [{ts, value,
     source}]}` from `samples`, ascending by `ts` then source; `value` a whole
     number as an int (`_whole()`: 77.0 reads as 77). A per-source passthrough,
@@ -1578,11 +1607,19 @@ same PR:
   ended, else `duties_rostered` — with its own daily
   `duty_hours_complete`/`duty_hours_rostered`. Upsert-only: a re-upload
   replaces a duty of the same kind and start, never removes one.
+  Then session read-back landed (no migration, no route or app change):
+  `ctx.sessions(kind, since=None, until=None)` on the base `Ctx` — every
+  source's sessions of a kind as `Session` tuples, the in-process mirror
+  of `GET /api/sessions/<kind>`, whose query moved into
+  `derived.session_rows()` so the route and the ctx share it (the route's
+  output byte-for-byte unchanged); the data the roster timeline and
+  sleep analysis build on.
   Still to come for write-back: an app replacing its own sessions and
   metrics over a date range (so a re-planned roster's dropped duties go),
-  the rostered↔flown per-duty matching (needs session read-back and a
-  derived duty key — the feed has no `UID`), an app's own session
-  kinds and series, reading sessions back (`ctx.session()`), cross-app reads
+  the rostered↔flown per-duty matching (needs a derived duty key — the
+  feed has no `UID`), an app's own session
+  kinds and series (and, with them, own-only scoping of a kind's read),
+  a trailing `days=` on `ctx.sessions()`, cross-app reads
   of a custom metric, the later input bricks (date/time,
   auto-recompute), per-app Python dependencies (an app gets the image's
   Python; a PDF library isn't in it), several files in one input and,

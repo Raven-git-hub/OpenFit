@@ -144,6 +144,45 @@ def derived_points(conn, metric, since=None, until=None):
     ]
 
 
+def session_rows(conn, kind, since=None, until=None):
+    """One kind's sessions, every source's: [{start, end, source, summary}].
+
+    `since` and `until` are inclusive ISO dates, None leaving that end
+    open, matched against the start's UTC date. What GET
+    /api/sessions/<kind> serves and an app's ctx.sessions() returns - a
+    priority-ordered passthrough, nothing picked, filtered or merged: the
+    sessions of the source the pick would rank first lead, then the
+    rest's (source_rank(), with the kind's configured primary in the
+    source roles), each source's by start. start/end are as stored, ISO
+    8601 UTC (end may be None), and `summary` the kind's breakdown parsed
+    from its JSON - {} when the source gave none. `kind` is the caller's
+    to check.
+    """
+    # start is YYYY-MM-DDTHH:MM:SSZ (iso_utc()), so its first ten
+    # characters are its UTC date.
+    started = 'substr("start", 1, 10)'
+    bounds = [(f"{started} >= ?", since), (f"{started} <= ?", until)]
+    in_range = " AND ".join(clause for clause, d in bounds if d is not None) or "1"
+    params = tuple(d for _, d in bounds if d is not None)
+    primary = load_source_roles(conn).get(kind)
+    rows = conn.execute(
+        'SELECT "start", "end", source, summary_json FROM sessions '
+        f'WHERE kind = ? AND {in_range} ORDER BY "start", source',
+        (kind, *params),
+    ).fetchall()
+    # A stable sort, so each source's sessions stay in start order.
+    rows.sort(key=lambda row: source_rank(row[2], primary))
+    return [
+        {
+            "start": row[0],
+            "end": row[1],
+            "source": row[2],
+            "summary": json.loads(row[3]) if row[3] else {},
+        }
+        for row in rows
+    ]
+
+
 def load_source_roles(conn):
     """The configured primary source per metric: {metric: source}.
 

@@ -128,7 +128,11 @@ Roster app, which reads a roster's `.ics` itself and files every timed event
 as a duty — complete once it has ended, else rostered — with its own daily
 duty hours beside them (upsert-only: replacing an app's own sessions over a
 date range, so a re-planned roster's dropped duties go, is a later host brick,
-as is matching each rostered duty to its flown one). Next: the rest of the
+as is matching each rostered duty to its flown one). Then session read-back:
+`ctx.sessions(kind, since, until)`, in `render()` and `handle()` alike, every
+source's sessions of a kind as `/api/sessions/<kind>` serves them (one shared
+query, so the two can't drift) — the data the roster timeline and sleep
+analysis build on. Next: the rest of the
 Library (the writes ticker, now apps write back; alerts;
 Browse / Build / Create are still placeholders), and the grid pass (free cell
 placement, a second layout mode on the same sizes).
