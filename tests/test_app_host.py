@@ -6,9 +6,11 @@ usually, app.py (its render(ctx, cfg)). scan_apps() lists the ones that
 load and logs and skips the rest; GET /api/apps lists them, and POST
 /api/app/<id>/render runs one's render() against a fresh ctx and the
 cfg it's sent, and returns its display spec - or an error spec, never a
-500. ctx.metric() is an
-app's one data path: a metric's derived points as a list of Points,
-trailing `days` days. An app's handle() writes through a WriteCtx; its
+500. The ctx is an
+app's one data path: ctx.metric() a metric's derived points as a list of
+Points, trailing `days` days, and ctx.sessions() a session kind's
+sessions, as GET /api/sessions/<kind> serves them. An app's handle()
+writes through a WriteCtx; its
 write_session() - a session under the app's own source - is tested here,
 its route round trip in test_app_actions.py.
 Every test gets its own temp apps folder; nothing reads /data/apps.
@@ -27,7 +29,8 @@ import pytest
 import apps
 import host
 from derived import recompute_derived, set_source_role
-from metrics import DISTANCE_M, METRICS, SLEEP, STEPS, WORKOUT
+from metrics import DISTANCE_M, DUTIES_COMPLETE, METRICS, SLEEP, STEPS, WORKOUT
+from plugins.base import write_session
 
 
 # The two real apps Home was built for, steps and steps-metres, committed
@@ -1106,6 +1109,280 @@ def test_write_session_does_not_rederive(client, conn, apps_dir):
     assert [s[1:] for s in sessions(conn, "app:rest", SLEEP)] == [
         (f"{today}T01:00:00Z", f"{today}T07:00:00Z", {"asleep_minutes": 330}),
     ]
+
+
+# ---------- the ctx: reading sessions ----------
+#
+# ctx.sessions(kind, since, until) is GET /api/sessions/<kind> in
+# process: every source's sessions of one kind, as Sessions (start, end,
+# source, summary), the source the pick would rank first leading, each
+# source's by start. Both read derived.session_rows(), so they can't
+# drift - test_ctx_sessions_matches_the_http_endpoint holds them to it.
+
+
+def filed(conn, source, kind, start, end=None, summary=None):
+    """One session, filed as a sync files it, committed."""
+    write_session(conn, source, kind, start, end, summary)
+    conn.commit()
+
+
+def starts(found):
+    return [(s.source, s.start) for s in found]
+
+
+def kind_primary(conn, kind, source):
+    # set_source_role() takes metrics only: a kind's role is written
+    # through /api/settings, as this does.
+    conn.execute(
+        "INSERT OR REPLACE INTO settings (key, value) VALUES ('source_roles', ?)",
+        (json.dumps({kind: source}),),
+    )
+    conn.commit()
+
+
+def test_ctx_sessions_reads_a_kinds_sessions(conn):
+    run = {"type": "running", "duration_minutes": 45, "distance_m": 8012.5}
+    filed(conn, "garmin", WORKOUT, "2026-10-14T07:00:00Z", "2026-10-14T07:45:00Z", run)
+    filed(conn, "app:log", WORKOUT, "2026-10-14T18:00:00Z", None, None)
+    # Another kind's isn't this kind's.
+    filed(conn, "garmin", SLEEP, "2026-10-13T22:00:00Z", "2026-10-14T06:00:00Z", {"asleep_minutes": 420})
+
+    data = host.Ctx(conn, today=TODAY).sessions(WORKOUT)
+
+    assert isinstance(data, list)
+    assert data == [
+        host.Session("2026-10-14T07:00:00Z", "2026-10-14T07:45:00Z", "garmin", run),
+        host.Session("2026-10-14T18:00:00Z", None, "app:log", {}),
+    ]
+    first, second = data
+    assert (first.start, first.end, first.source) == ("2026-10-14T07:00:00Z", "2026-10-14T07:45:00Z", "garmin")
+    assert isinstance(first.summary, dict) and first.summary["distance_m"] == 8012.5
+    # No end yet stays no end - None, never a made-up time.
+    assert second.end is None
+    # A ctx made for an app, and handle()'s WriteCtx, read the same: any
+    # source's sessions, not only the app's own.
+    assert host.Ctx(conn, app=an_app("log")).sessions(WORKOUT) == data
+    assert host.WriteCtx(conn, an_app("log")).sessions(WORKOUT) == data
+
+
+def test_ctx_sessions_in_handle_sees_what_the_action_has_written(conn):
+    # One connection, one transaction: a session handle() has just filed
+    # is read back before the route commits - and gone if it rolls back.
+    ctx = host.WriteCtx(conn, an_app("log"), today=TODAY)
+    ctx.write_session(WORKOUT, utc(2026, 10, 14, 7, 0), utc(2026, 10, 14, 7, 45), {"type": "running"})
+
+    assert ctx.sessions(WORKOUT) == [
+        host.Session("2026-10-14T07:00:00Z", "2026-10-14T07:45:00Z", "app:log", {"type": "running"}),
+    ]
+    conn.rollback()
+    assert ctx.sessions(WORKOUT) == []
+
+
+def test_ctx_sessions_rejects_an_unknown_kind(conn):
+    filed(conn, "garmin", WORKOUT, "2026-10-14T07:00:00Z")
+    ctx = host.Ctx(conn, today=TODAY)
+
+    # A metric, a series metric, a misspelling, a key in another case:
+    # none is a session kind.
+    for kind in ("nap", "Workout", "steps", "heart_rate", "sleep_minutes", "", None, 3, ["workout"]):
+        with pytest.raises(ValueError) as refused:
+            ctx.sessions(kind)
+        assert str(refused.value) == f"unknown session kind: {kind!r}"
+
+
+def test_ctx_sessions_is_empty_for_a_kind_with_none(conn):
+    filed(conn, "garmin", SLEEP, "2026-10-13T22:00:00Z", "2026-10-14T06:00:00Z")
+    ctx = host.Ctx(conn, today=TODAY)
+
+    assert ctx.sessions(WORKOUT) == []
+    assert ctx.sessions(DUTIES_COMPLETE) == []
+    # And a kind with sessions, none of them in range.
+    assert ctx.sessions(SLEEP, since="2026-10-14") == []
+
+
+def test_ctx_sessions_filters_by_start_date_range(conn):
+    # Matched on the day each starts, in UTC: a night that starts on the
+    # 12th and ends on the 13th is the 12th's.
+    for start in ("2026-10-12T23:30:00Z", "2026-10-13T00:00:00Z", "2026-10-14T23:59:59Z",
+                  "2026-10-15T06:00:00Z"):
+        filed(conn, "garmin", SLEEP, start, "2026-10-16T00:00:00Z")
+    ctx = host.Ctx(conn, today=TODAY)
+
+    def days(since=None, until=None):
+        return [s.start for s in ctx.sessions(SLEEP, since, until)]
+
+    # Both ends included.
+    assert days("2026-10-13", "2026-10-14") == ["2026-10-13T00:00:00Z", "2026-10-14T23:59:59Z"]
+    assert days("2026-10-14", "2026-10-14") == ["2026-10-14T23:59:59Z"]
+    # Either end left open, or both.
+    assert days(since="2026-10-14") == ["2026-10-14T23:59:59Z", "2026-10-15T06:00:00Z"]
+    assert days(until="2026-10-12") == ["2026-10-12T23:30:00Z"]
+    assert len(days()) == 4
+    # By keyword too, and a date will do for a day.
+    assert ctx.sessions(SLEEP, until=date(2026, 10, 13), since=date(2026, 10, 13)) == ctx.sessions(
+        SLEEP, "2026-10-13", "2026-10-13"
+    )
+
+
+def test_ctx_sessions_rejects_a_range_that_isnt_one(conn):
+    # As ?from=/?to= are refused with a 400: a day that isn't YYYY-MM-DD,
+    # or a since after the until.
+    ctx = host.Ctx(conn, today=TODAY)
+
+    for bad in ("2026-10-32", "yesterday", "", "20261014", 20261014, True, datetime(2026, 10, 14, 7, 0)):
+        with pytest.raises(ValueError) as refused:
+            ctx.sessions(SLEEP, since=bad)
+        assert str(refused.value) == f"since must be YYYY-MM-DD: {bad!r}"
+        with pytest.raises(ValueError) as refused:
+            ctx.sessions(SLEEP, until=bad)
+        assert str(refused.value) == f"until must be YYYY-MM-DD: {bad!r}"
+    with pytest.raises(ValueError) as refused:
+        ctx.sessions(SLEEP, "2026-10-15", "2026-10-14")
+    assert str(refused.value) == "since must not be after until: 2026-10-15 > 2026-10-14"
+
+
+def test_ctx_sessions_orders_by_source_priority_then_start(conn):
+    # Filed out of order: by start alone, app:x's (the 10th) would lead.
+    for source, start in (
+        ("zepp", "2026-10-11T06:00:00Z"),
+        ("google_health", "2026-10-12T06:00:00Z"),
+        ("garmin", "2026-10-14T06:00:00Z"),
+        ("app:x", "2026-10-10T06:00:00Z"),
+        ("garmin", "2026-10-13T06:00:00Z"),
+        ("app:a", "2026-10-15T06:00:00Z"),
+        ("app:x", "2026-10-09T06:00:00Z"),
+        ("google_health", "2026-10-11T06:00:00Z"),
+    ):
+        filed(conn, source, WORKOUT, start)
+    ctx = host.Ctx(conn, today=TODAY)
+
+    # The default precedence, garmin then google_health, then the rest by
+    # name; each source's by start.
+    assert starts(ctx.sessions(WORKOUT)) == [
+        ("garmin", "2026-10-13T06:00:00Z"),
+        ("garmin", "2026-10-14T06:00:00Z"),
+        ("google_health", "2026-10-11T06:00:00Z"),
+        ("google_health", "2026-10-12T06:00:00Z"),
+        ("app:a", "2026-10-15T06:00:00Z"),
+        ("app:x", "2026-10-09T06:00:00Z"),
+        ("app:x", "2026-10-10T06:00:00Z"),
+        ("zepp", "2026-10-11T06:00:00Z"),
+    ]
+
+    # The kind's configured primary leads, the rest keep their order.
+    kind_primary(conn, WORKOUT, "app:x")
+    assert starts(ctx.sessions(WORKOUT))[:4] == [
+        ("app:x", "2026-10-09T06:00:00Z"),
+        ("app:x", "2026-10-10T06:00:00Z"),
+        ("garmin", "2026-10-13T06:00:00Z"),
+        ("garmin", "2026-10-14T06:00:00Z"),
+    ]
+    # Only this kind's: another kind's primary changes nothing here.
+    kind_primary(conn, SLEEP, "zepp")
+    assert starts(ctx.sessions(WORKOUT))[0] == ("garmin", "2026-10-13T06:00:00Z")
+
+
+def test_ctx_sessions_summary_is_a_parsed_dict(conn):
+    nested = {"type": "flight", "legs": [{"dep": "AAA", "arr": "BBB"}], "duration_minutes": 95.5}
+    filed(conn, "app:roster", DUTIES_COMPLETE, "2026-10-14T05:00:00Z", "2026-10-14T07:00:00Z", nested)
+    filed(conn, "app:roster", DUTIES_COMPLETE, "2026-10-15T05:00:00Z", "2026-10-15T07:00:00Z", None)
+    filed(conn, "app:roster", DUTIES_COMPLETE, "2026-10-16T05:00:00Z", "2026-10-16T07:00:00Z", {})
+    ctx = host.Ctx(conn, today=TODAY)
+
+    with_summary, without, emptied = ctx.sessions(DUTIES_COMPLETE)
+    # Parsed, never the JSON text it's stored as.
+    assert with_summary.summary == nested
+    assert with_summary.summary["legs"][0]["arr"] == "BBB"
+    # NULL in summary_json reads as {}, as an empty one does.
+    assert conn.execute(
+        "SELECT summary_json FROM sessions WHERE \"start\" = '2026-10-15T05:00:00Z'"
+    ).fetchone()[0] is None
+    assert without.summary == {} and emptied.summary == {}
+    assert all(isinstance(s.summary, dict) for s in (with_summary, without, emptied))
+    # Each read is the app's own copy: changing it changes nothing stored.
+    with_summary.summary["legs"].clear()
+    assert ctx.sessions(DUTIES_COMPLETE)[0].summary == nested
+
+
+def test_ctx_sessions_matches_the_http_endpoint(client, conn):
+    filed(conn, "zepp", SLEEP, "2026-10-12T23:30:00Z", "2026-10-13T06:00:00Z", {"asleep_minutes": 300})
+    filed(conn, "garmin", SLEEP, "2026-10-13T22:00:00Z", None, None)
+    filed(conn, "app:rest", SLEEP, "2026-10-11T01:00:00Z", "2026-10-11T02:00:00Z", {"stages": [1, {"deep": 2.5}]})
+    filed(conn, "google_health", SLEEP, "2026-10-13T22:00:00Z", "2026-10-14T06:00:00Z", {})
+    filed(conn, "garmin", SLEEP, "2026-10-10T22:00:00Z", "2026-10-11T06:00:00Z", {"deep_minutes": 60})
+    kind_primary(conn, SLEEP, "zepp")
+    ctx = host.Ctx(conn, today=TODAY)
+
+    for since, until in ((None, None), ("2026-10-11", None), (None, "2026-10-12"),
+                         ("2026-10-11", "2026-10-13"), ("2026-10-13", "2026-10-13"),
+                         ("2026-10-20", None)):
+        query = "&".join(f"{name}={day}" for name, day in (("from", since), ("to", until)) if day)
+        resp = client.get(f"/api/sessions/{SLEEP}?{query}")
+        assert resp.status_code == 200
+        # The same sessions, field for field, in the same order.
+        assert [s._asdict() for s in ctx.sessions(SLEEP, since, until)] == resp.get_json()
+
+    # And that shared answer is the documented order: the kind's primary
+    # first, then garmin, google_health, the rest by name; each by start.
+    assert starts(ctx.sessions(SLEEP)) == [
+        ("zepp", "2026-10-12T23:30:00Z"),
+        ("garmin", "2026-10-10T22:00:00Z"),
+        ("garmin", "2026-10-13T22:00:00Z"),
+        ("google_health", "2026-10-13T22:00:00Z"),
+        ("app:rest", "2026-10-11T01:00:00Z"),
+    ]
+
+
+def test_a_render_can_read_back_the_sessions_an_app_wrote(client, conn, apps_dir):
+    # A watch's workout, there before the app's: ctx.sessions() is every
+    # source's.
+    filed(conn, "garmin", WORKOUT, "2026-10-13T17:00:00Z", "2026-10-13T18:00:00Z", {"duration_minutes": 60})
+    make_app(apps_dir, "gym", SIZE, """
+        def render(ctx, cfg):
+            workouts = ctx.sessions("workout")
+            if not workouts:
+                return ctx.empty("No workouts yet")
+            latest = max(workouts, key=lambda s: s.start)
+            return ctx.number(
+                len(workouts), label="workouts",
+                caption=f"{latest.start} · {latest.summary['duration_minutes']} min · via {latest.source}",
+            )
+
+        def handle(ctx, action, payload):
+            # handle() reads too - its own app's sessions, by day.
+            day = payload["start"][:10]
+            if any(s.source == ctx.source for s in ctx.sessions("workout", day, day)):
+                raise ValueError(f"Already logged a workout on {day}")
+            ctx.write_session("workout", payload["start"], payload["end"],
+                              {"type": "manual", "duration_minutes": payload["minutes"]})
+    """)
+
+    resp = client.post("/api/app/gym/action", json={"action": "log", "payload": {
+        "start": "2026-10-14T07:00:00Z", "end": "2026-10-14T07:45:00Z", "minutes": 45,
+    }})
+
+    # The render after the write reads back what the action wrote.
+    drawn = {
+        "type": "number", "value": 2, "label": "workouts", "unit": None,
+        "caption": "2026-10-14T07:00:00Z · 45 min · via app:gym",
+    }
+    assert resp.get_json() == {"ok": True, "spec": drawn}
+    assert starts(host.Ctx(conn).sessions(WORKOUT)) == [
+        ("garmin", "2026-10-13T17:00:00Z"),
+        ("app:gym", "2026-10-14T07:00:00Z"),
+    ]
+
+    # handle() sees the app's own session from that day, and refuses a
+    # second - writing nothing.
+    resp = client.post("/api/app/gym/action", json={"action": "log", "payload": {
+        "start": "2026-10-14T18:00:00Z", "end": "2026-10-14T18:30:00Z", "minutes": 30,
+    }})
+    assert resp.status_code == 400
+    assert resp.get_json() == {"ok": False, "error": "Already logged a workout on 2026-10-14"}
+    assert len(host.Ctx(conn).sessions(WORKOUT)) == 2
+
+    # And a later render, a request of its own, reads the same back.
+    assert client.post("/api/app/gym/render", json={}).get_json() == drawn
 
 
 # ---------- ?days= on the access contract ----------

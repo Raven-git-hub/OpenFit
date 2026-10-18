@@ -40,6 +40,7 @@ from derived import (
     derived_points,
     load_source_roles,
     recompute_derived,
+    session_rows,
     set_source_role,
     source_rank,
 )
@@ -603,28 +604,12 @@ def get_sessions(kind):
     if error:
         return jsonify({"ok": False, "error": error}), 400
 
-    # start is YYYY-MM-DDTHH:MM:SSZ (iso_utc()), so its first ten
-    # characters are its UTC date.
-    in_range, params = _in_range('substr("start", 1, 10)', *bounds)
     conn = get_conn()
-    primary = load_source_roles(conn).get(kind)
-    rows = conn.execute(
-        'SELECT "start", "end", source, summary_json FROM sessions '
-        f'WHERE kind = ? AND {in_range} ORDER BY "start", source',
-        (kind, *params),
-    ).fetchall()
+    # The query and its order are derived.session_rows()'s, shared with an
+    # app's ctx.sessions(), so the two can't drift apart.
+    rows = session_rows(conn, kind, *bounds)
     conn.close()
-    # A stable sort, so each source's sessions stay in start order.
-    rows.sort(key=lambda row: source_rank(row["source"], primary))
-    return jsonify([
-        {
-            "start": row["start"],
-            "end": row["end"],
-            "source": row["source"],
-            "summary": json.loads(row["summary_json"]) if row["summary_json"] else {},
-        }
-        for row in rows
-    ])
+    return jsonify(rows)
 
 
 @app.route("/api/series/<metric>", methods=["GET"])

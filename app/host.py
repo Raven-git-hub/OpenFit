@@ -16,13 +16,26 @@ fresh Ctx built over that request's connection:
             ctx.line([(p.date, p.value) for p in data]),
         )
 
-ctx.metric() is the only data an app gets: one metric's derived points,
-the ones GET /api/metric/<metric> serves, as a list of Points (.date,
-.value, .source), oldest first - so an app never sees raw per-source
-readings. ctx.today() is the server's local date. The ctx is made for
-the app (its InstalledApp), so it reads OpenFit's metrics and the ones
-the app invents - declared in its manifest's `metrics`, said by their
-short key, stored as app:<id>:<key> (custom_metric_key()).
+An app reads through the ctx, and only through it - the same answers
+the access contract's routes give:
+
+ctx.metric() is one metric's derived points, the ones GET
+/api/metric/<metric> serves, as a list of Points (.date, .value,
+.source), oldest first - so an app never sees raw per-source readings.
+The ctx is made for the app (its InstalledApp), so it reads OpenFit's
+metrics and the ones the app invents - declared in its manifest's
+`metrics`, said by their short key, stored as app:<id>:<key>
+(custom_metric_key()).
+
+ctx.sessions() is one session kind's sessions, the ones GET
+/api/sessions/<kind> serves, as a list of Sessions (.start, .end,
+.source, .summary) - every source's, the one the pick would rank first
+leading, a night two devices both tracked there twice - so an app can
+read a roster's duties, or a night's sleep, back:
+
+    duties = ctx.sessions("duties_complete", since="2026-10-01")
+
+ctx.today() is the server's local date.
 
 An app may also write, from an optional handle(ctx, action, payload)
 beside render() - what a tile's input element sends when its Save is
@@ -60,9 +73,9 @@ to the second (end may be None: open-ended; never before start), and
     ctx.write_session("workout", start, end, {"duration_minutes": 30})
 
 A session is filed whole, as a sync files one - nothing is derived from
-it - and read back through GET /api/sessions/<kind>, beside every other
-source's. That's the whole of the scoping: the app is trusted code, as
-its render() is, not sandboxed.
+it - and read back with ctx.sessions(kind), or GET /api/sessions/<kind>,
+beside every other source's. That's the whole of the scoping: the app is
+trusted code, as its render() is, not sandboxed.
 
 A file input's value in the payload is a FileUpload - the file as the
 browser sent it, which the app reads and parses itself: OpenFit carries
@@ -103,7 +116,7 @@ from datetime import date, datetime, timedelta
 from typing import NamedTuple
 
 from apps import scan_apps
-from derived import derived_points
+from derived import derived_points, session_rows
 from metrics import METRICS, SESSION_KINDS, finite_number, plausible_value
 from plugins.base import iso_utc, write_reading, write_session as _write_session
 
@@ -114,6 +127,15 @@ class Point(NamedTuple):
     date: str      # YYYY-MM-DD
     value: float   # in the metric's canonical unit (metrics.py)
     source: str    # the source it was picked from
+
+
+class Session(NamedTuple):
+    """One session, as ctx.sessions() lists them: GET /api/sessions/<kind>'s fields."""
+
+    start: str      # ISO 8601 UTC, YYYY-MM-DDTHH:MM:SSZ, as stored
+    end: object     # the same, or None: no end yet
+    source: str     # the source it was filed under: garmin, app:roster, ...
+    summary: dict   # the kind's breakdown (beside SESSION_KINDS); {} for none
 
 
 def trailing_window(days, today=None):
@@ -340,8 +362,9 @@ class Ctx:
     """What render(ctx, cfg) is given. One per render call.
 
     Made for one app, `app` (an InstalledApp): it reads OpenFit's metrics
-    and the ones that app declares. A ctx for no app reads only the
-    former.
+    and the ones that app declares (metric()), and every source's
+    sessions of OpenFit's kinds (sessions()). A ctx for no app reads the
+    same, less the app's own metrics.
     """
 
     number = staticmethod(number)
@@ -399,6 +422,46 @@ class Ctx:
         return [
             Point(p["date"], p["value"], p["source"])
             for p in derived_points(self._conn, stored, since, until)
+        ]
+
+    def sessions(self, kind, since=None, until=None):
+        """Every source's sessions of `kind` in the range, as the read contract serves them.
+
+        A list of Session(start, end, source, summary): the sessions GET
+        /api/sessions/<kind> serves, field for field and in its order - a
+        priority-ordered passthrough, nothing picked, filtered or merged,
+        so a night two devices both tracked is there twice, each with its
+        source. The sessions of the source the derived pick would rank
+        first lead (the kind's primary in the source roles, if one is
+        set, then garmin, google_health, then the rest by name - an app's
+        app:<id> among them), each source's by start; [] for none. Re-sort
+        for one timeline: sorted(data, key=lambda s: s.start).
+
+        .start is when it began and .end when it finished, ISO 8601 UTC
+        text as stored (YYYY-MM-DDTHH:MM:SSZ, so they sort and compare as
+        text), .end None for one with no end; .source is where it came
+        from (garmin, app:roster); .summary is the kind's breakdown, a
+        dict ({} when the source gave none), the app's own copy.
+
+        `kind` is one of OpenFit's session kinds (SESSION_KINDS in
+        metrics.py: sleep, workout, duties_rostered, duties_complete);
+        anything else raises ValueError. `since` and `until` are days,
+        YYYY-MM-DD (or dates), both included, matched against the day a
+        session starts in UTC, as ?from= and ?to= are; None leaves that
+        end open. A day that isn't one, or a since after the until,
+        raises ValueError.
+        """
+        if not isinstance(kind, str) or kind not in SESSION_KINDS:
+            raise ValueError(f"unknown session kind: {kind!r}")
+        if since is not None:
+            since = _iso_day(since, "since")
+        if until is not None:
+            until = _iso_day(until, "until")
+        if since is not None and until is not None and since > until:
+            raise ValueError(f"since must not be after until: {since} > {until}")
+        return [
+            Session(s["start"], s["end"], s["source"], s["summary"])
+            for s in session_rows(self._conn, kind, since, until)
         ]
 
 
@@ -473,8 +536,8 @@ def _declared_value(key, declared, raw):
     return value
 
 
-def _iso_day(raw):
-    """`raw` - a date, or YYYY-MM-DD text - as YYYY-MM-DD, or ValueError."""
+def _iso_day(raw, field="date"):
+    """`raw` - a date, or YYYY-MM-DD text - as YYYY-MM-DD, or ValueError naming `field`."""
     if isinstance(raw, date) and not isinstance(raw, datetime):
         return raw.isoformat()
     if isinstance(raw, str):
@@ -484,7 +547,7 @@ def _iso_day(raw):
             return datetime.strptime(raw, "%Y-%m-%d").date().isoformat()
         except ValueError:
             pass
-    raise ValueError(f"date must be YYYY-MM-DD: {raw!r}")
+    raise ValueError(f"{field} must be YYYY-MM-DD: {raw!r}")
 
 
 def _session_instant(raw, field):
@@ -579,8 +642,8 @@ class WriteCtx(Ctx):
 
         A session goes into no day's pick (derived_metrics is metrics
         only), so it notes no day for the route to re-derive; it's read
-        back through GET /api/sessions/<kind>, beside every other
-        source's.
+        back with sessions(kind), or GET /api/sessions/<kind>, beside
+        every other source's.
 
         Raises ValueError, writing nothing, for a kind that isn't one, a
         start that's missing or isn't a time, an end that isn't one or

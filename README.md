@@ -212,7 +212,7 @@ Oldest first, one point per day, in the metric's canonical unit
 `"points": []`.
 
 **Sessions — `GET /api/sessions/<kind>?from=YYYY-MM-DD&to=YYYY-MM-DD`**
-(`sleep` or `workout`).
+(`sleep`, `workout`, `duties_rostered` or `duties_complete`).
 
 ```json
 [{"start": "2026-10-07T22:41:00Z", "end": "2026-10-08T06:12:00Z",
@@ -227,7 +227,8 @@ both devices tracked appears once per device — but they're listed by source
 priority: the source OpenFit would pick first (Garmin, then Google Health, then
 any other, by default), then the rest, each source's oldest start first. Sleep
 is sessions only — there is no daily sleep total; sum `asleep_minutes` the way
-your app wants. An unknown kind is a 404.
+your app wants. An unknown kind is a 404. An installed app reads the same list
+with `ctx.sessions(kind, since, until)` (below).
 
 **Intraday series — `GET /api/series/<metric>?from=YYYY-MM-DD&to=YYYY-MM-DD`**
 (`heart_rate` in bpm, `respiration` in breaths/min, `spo2` in %).
@@ -286,9 +287,13 @@ def render(ctx, cfg):
 
 `render()` runs on the server each time Home loads, with `cfg` holding the
 tile's settings, its `config` fields' values (`{}` until you set any, so an
-app reads each with a fallback: `cfg.get("days", 7)`). `ctx.metric()` is its
-one data path — a metric's derived points, as `/api/metric` serves them, as a
-list of points with `.date`, `.value` and `.source` — and it
+app reads each with a fallback: `cfg.get("days", 7)`). The ctx is its one data
+path. `ctx.metric()` returns a metric's derived points, as `/api/metric` serves
+them: a list of points with `.date`, `.value` and `.source`.
+`ctx.sessions(kind, since=None, until=None)` returns a session kind's sessions,
+as `/api/sessions` serves them: every source's, each with `.start`, `.end`,
+`.source` and `.summary`, by source priority and then start, with `since`/`until`
+(`YYYY-MM-DD`, inclusive) matched against the start's UTC date. `render()`
 returns a display spec built from `number`, `line` (a sparkline, with an
 optional title), `panel` and `empty`. An app that fails to load is logged and
 left out, and one whose `render()` fails shows as an error tile, never a
@@ -402,7 +407,8 @@ in UTC to the second (`end` may be left out, and can't be before `start`),
 and `summary` a dict of plain JSON, the kind's breakdown
 (`{"type": "manual", "duration_minutes": 30}`). It goes under the app's own
 source like its readings, writing the same kind and start again replaces it,
-and it's read back through `GET /api/sessions/<kind>` beside every device's.
+and it's read back alongside every device's: by any app with
+`ctx.sessions(kind)`, or through `GET /api/sessions/<kind>`.
 Nothing is derived from a session, so no day is re-derived for it. The
 **Workout log** app (`tests/fixtures/apps/workout-log/`), which files a workout
 just finished from how many minutes it lasted, is the example.
