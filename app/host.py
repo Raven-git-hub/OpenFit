@@ -32,7 +32,8 @@ pressed (POST /api/app/<id>/action):
         if action == "log":
             ctx.write_metric("weight_kg", float(payload["weight_kg"]))
 
-handle() is given a WriteCtx: the same reads, plus ctx.write_metric().
+handle() is given a WriteCtx: the same reads, plus ctx.write_metric()
+and ctx.write_session() (below).
 Its source is fixed to the app's own, app:<id>, when it's made - no
 writer takes a source - so an app can only ever create or overwrite its
 own rows, never a device's. It writes OpenFit's metrics, and the ones
@@ -46,8 +47,22 @@ it invents - declare what you invent, write what exists:
     ctx.write_metric("caffeine_mg", 95)   # stored as app:<id>:caffeine_mg
 
 but never another app's: an app's own keys are namespaced under its id,
-and a ctx knows only its own app's. That's the whole of the scoping: the
-app is trusted code, as its render() is, not sandboxed.
+and a ctx knows only its own app's.
+
+handle() can write a session too - an interval, as a night's sleep or a
+workout is - with ctx.write_session(kind, start, end=None, summary=None),
+under the same source: `kind` one of OpenFit's session kinds
+(SESSION_KINDS in metrics.py: sleep, workout - an app can't invent one
+yet), `start` and `end` each a datetime or ISO-8601 text, stored as UTC
+to the second (end may be None: open-ended; never before start), and
+`summary` a dict of plain JSON, or None:
+
+    ctx.write_session("workout", start, end, {"duration_minutes": 30})
+
+A session is filed whole, as a sync files one - nothing is derived from
+it - and read back through GET /api/sessions/<kind>, beside every other
+source's. That's the whole of the scoping: the app is trusted code, as
+its render() is, not sandboxed.
 
 A file input's value in the payload is a FileUpload - the file as the
 browser sent it, which the app reads and parses itself: OpenFit carries
@@ -89,8 +104,8 @@ from typing import NamedTuple
 
 from apps import scan_apps
 from derived import derived_points
-from metrics import METRICS, finite_number, plausible_value
-from plugins.base import write_reading
+from metrics import METRICS, SESSION_KINDS, finite_number, plausible_value
+from plugins.base import iso_utc, write_reading, write_session as _write_session
 
 
 class Point(NamedTuple):
@@ -472,14 +487,33 @@ def _iso_day(raw):
     raise ValueError(f"date must be YYYY-MM-DD: {raw!r}")
 
 
+def _session_instant(raw, field):
+    """`raw` - a datetime, or ISO-8601 text - as a session's `field`
+    (start or end) is stored: iso_utc()'s YYYY-MM-DDTHH:MM:SSZ, in UTC,
+    whole seconds. A naive one is taken to be UTC, as iso_utc() takes
+    it. Else ValueError."""
+    if isinstance(raw, str):
+        try:
+            # 3.11+ takes a trailing Z, as iso_utc() writes one.
+            raw = datetime.fromisoformat(raw)
+        except ValueError:
+            pass
+    if isinstance(raw, datetime):
+        return iso_utc(raw)
+    raise ValueError(f"{field} must be a datetime or ISO-8601 timestamp: {raw!r}")
+
+
 class WriteCtx(Ctx):
     """What handle(ctx, action, payload) is given: a Ctx that can also write.
 
-    One per action, for the app `app` (an InstalledApp). Its source is
-    the app's own, app:<id>, fixed here - none of its writers takes one -
-    so whatever the app does, it can only create or overwrite its own
-    rows. It notes the days it wrote to, for the action route to
-    re-derive once the action has succeeded; nothing is committed here.
+    One per action, for the app `app` (an InstalledApp). It writes
+    readings (write_metric()) and sessions (write_session(), of an
+    existing kind). Its source is the app's own, app:<id>, fixed here -
+    none of its writers takes one - so whatever the app does, it can only
+    create or overwrite its own rows. It notes the days it wrote readings
+    to, for the action route to re-derive once the action has succeeded
+    (a session is derived into nothing, so it notes none); nothing is
+    committed here.
     """
 
     def __init__(self, conn, app, today=None):
@@ -526,6 +560,53 @@ class WriteCtx(Ctx):
         # or the app's.
         write_reading(self._conn, day, self._source, stored, reading, unit)
         self._written.add(day)
+
+    def write_session(self, kind, start, end=None, summary=None):
+        """File one session under the app's own source (app:<id>).
+
+        `kind` is one of OpenFit's session kinds (SESSION_KINDS in
+        metrics.py: sleep, workout); an app can't invent one yet.
+        `start` is when it began, a datetime or ISO-8601 text
+        ("2026-01-05T07:30:00+01:00", "...Z"), stored as iso_utc() has
+        every session's: UTC, whole seconds, a naive time taken to be
+        UTC. `end` is when it finished, the same way, or None for one
+        with no end yet; never before `start` (the same second will do).
+        `summary` is the session's breakdown - a dict of plain JSON,
+        keys belonging to the kind (listed beside SESSION_KINDS) - or
+        None. The id is app:<id>:<kind>:<start>, so writing the same
+        kind and start again replaces its end and summary.
+
+        A session goes into no day's pick (derived_metrics is metrics
+        only), so it notes no day for the route to re-derive; it's read
+        back through GET /api/sessions/<kind>, beside every other
+        source's.
+
+        Raises ValueError, writing nothing, for a kind that isn't one, a
+        start that's missing or isn't a time, an end that isn't one or
+        is before the start, or a summary that isn't a dict of JSON.
+        """
+        if not isinstance(kind, str) or kind not in SESSION_KINDS:
+            raise ValueError(f"unknown session kind: {kind!r}")
+        if start is None:
+            # Where a sync's None start is no session at all, an app's is
+            # a bug: said, not skipped.
+            raise ValueError("a session needs a start")
+        start = _session_instant(start, "start")
+        if end is not None:
+            end = _session_instant(end, "end")
+            # iso_utc()'s timestamps sort and compare as plain strings.
+            if end < start:
+                raise ValueError("a session's end is before its start")
+        if summary is not None:
+            if not isinstance(summary, dict):
+                raise ValueError("a session's summary must be a mapping or None")
+            try:
+                # NaN and Infinity aren't JSON, as for a render's spec.
+                json.dumps(summary, allow_nan=False)
+            except (TypeError, ValueError):
+                raise ValueError("a session's summary must be JSON") from None
+        # write_session()'s upsert; its own kind check stays, a backstop.
+        _write_session(self._conn, self._source, kind, start, end, summary)
 
 
 def render_app(installed, conn, cfg=None, today=None):

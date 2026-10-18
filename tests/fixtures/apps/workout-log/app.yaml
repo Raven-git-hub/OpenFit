@@ -1,0 +1,4 @@
+id: workout-log
+name: Workout log
+sizes: [{ w: 1, h: 1 }, { w: 2, h: 1 }]
+reads: []

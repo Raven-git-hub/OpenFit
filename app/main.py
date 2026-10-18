@@ -846,7 +846,8 @@ def act_on_app(app_id):
     the ctx injects it, and no writer takes one, so an app can only ever
     create or overwrite its own rows - never a device's, nor another
     app's. It writes canonical metrics and the ones its manifest declares
-    (as app:<id>:<key>), never another app's. payload is the app's to
+    (as app:<id>:<key>), never another app's, and sessions of OpenFit's
+    kinds (ctx.write_session()). payload is the app's to
     interpret: a mapping, {key: value}
     from the input, {} if absent. cfg is the instance's config, for the
     render after; one that isn't a mapping is {}.
@@ -864,8 +865,9 @@ def act_on_app(app_id):
     ctx refused, a bug - everything it wrote is rolled back and the reply
     is 400 {"ok": false, "error"}: unlike a render, a write fails
     visibly, and a ValueError's message is put as the app wrote it.
-    Otherwise each day it wrote is re-derived, landing its writes and
-    their pick together, and the app is rendered afresh (render_app(),
+    Otherwise each day it wrote a reading to is re-derived, landing its
+    writes and their pick together (a session is derived into nothing, and
+    is committed all the same), and the app is rendered afresh (render_app(),
     which never raises) for the tile: 200 {"ok": true, "spec"}.
 
     404 for an id with no app that loads; 400 for an app with no

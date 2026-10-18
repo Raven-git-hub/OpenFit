@@ -394,6 +394,19 @@ deleted once the action is done, so only what the app writes stays. The Import
 weigh-ins app, which reads past weigh-ins from a text file (`YYYY-MM-DD <kg>`
 a line) and files each on its own day, is the example.
 
+An app can file a **session** too — an interval, as a night's sleep or a
+workout is — with `ctx.write_session(kind, start, end=None, summary=None)`:
+`kind` one of OpenFit's session kinds (`sleep` or `workout`; an app can't
+invent one yet), `start` and `end` each a `datetime` or ISO-8601 text, stored
+in UTC to the second (`end` may be left out, and can't be before `start`),
+and `summary` a dict of plain JSON, the kind's breakdown
+(`{"type": "manual", "duration_minutes": 30}`). It goes under the app's own
+source like its readings, writing the same kind and start again replaces it,
+and it's read back through `GET /api/sessions/<kind>` beside every device's.
+Nothing is derived from a session, so no day is re-derived for it. The
+**Workout log** app (`tests/fixtures/apps/workout-log/`), which files a workout
+just finished from how many minutes it lasted, is the example.
+
 An app isn't limited to OpenFit's metrics: it can **invent its own**. Declare
 what you invent, write what exists — a built-in metric is just written, while a
 new one is declared in the app's `app.yaml`:
@@ -551,6 +564,8 @@ daily total beside it (schema v2 retired the old `sleep_minutes` metric). A
 `workout` session is one activity, with no daily metric beside it:
 its `type` (the device's activity type, lowercased), `duration_minutes`,
 `distance_m`, `avg_hr_bpm` and `calories_kcal`, whichever the device reports.
+An app can file sessions of these kinds too, under its own source
+(`ctx.write_session()`, above).
 A third table, `samples`, is the series (intraday) grain: one row per
 `(source, metric, timestamp)` for readings like heart rate every couple of
 minutes, filed under its own series vocabulary (`heart_rate` in bpm,

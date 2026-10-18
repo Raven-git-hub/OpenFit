@@ -61,7 +61,8 @@ When an app stores or reads a value, decide which of three it is:
   metres-per-day if persisted). Lives in `metrics`. A new value never erases the
   old — the old was true on its date.
 - **Session** — a time interval with internal structure (sleep, a flight duty).
-  Lives in `sessions`.
+  Lives in `sessions`. An app files one with `ctx.write_session()` — of a kind
+  OpenFit has (`sleep`, `workout`); its own kinds are a later job.
 
 Two tests settle almost every case:
 
@@ -209,7 +210,10 @@ the grain.
 What a declaration can't be yet, and why:
 
 - **Only `daily` or `instant`.** An app's own session kind (a roster) or series
-  is a later job; `session`/`series` fail to load.
+  is a later job; `session`/`series` fail to load. Writing a session of a kind
+  OpenFit already has (`sleep`, `workout`) is supported now: no declaration,
+  just `ctx.write_session(kind, start, end, summary)` — write what exists. The
+  reference app is `tests/fixtures/apps/workout-log/`.
 - **Only your own.** Reading another app's custom metric isn't offered — read the
   canonical metrics and your own.
 - **Its data outlives the app.** Uninstall the app and its metrics drop out of

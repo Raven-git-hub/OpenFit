@@ -118,10 +118,14 @@ which owns checking it; the Mood app the example), then file upload
 (`kind="file"`: the file posted multipart, at most 25 MB, handed to `handle()`
 as a `FileUpload` and deleted after the action — OpenFit never parses it, the
 app does; the Import weigh-ins app the example), with date/time the next brick
-(`docs/architecture/input-primitives.md`). Next:
-the rest of the Library (the writes ticker, now apps write back; alerts;
-Browse / Build / Create are still placeholders), session write-back, and the
-grid pass (free cell placement, a second layout mode on the same sizes).
+(`docs/architecture/input-primitives.md`). Then session write-back: an app's
+`handle()` files a session of an existing kind (`sleep`, `workout`) with
+`ctx.write_session()`, under its own source, read back through
+`/api/sessions/<kind>` beside every device's (the Workout log app the
+example). Next: the roster path (the session kinds it files, and its `.ics`
+app), the rest of the Library (the writes ticker, now apps write back; alerts;
+Browse / Build / Create are still placeholders), and the grid pass (free cell
+placement, a second layout mode on the same sizes).
 
 ## Phase 5 — OpenFit Host (per-user provisioning)
 
