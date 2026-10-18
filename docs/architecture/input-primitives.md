@@ -169,7 +169,8 @@ the platform stays open to any file an author brings.
   is informational).
 - Several files in one input, multi-select, drag-and-drop.
 - Session write-back (`write_session`): the roster-to-sessions app waits on
-  it; the `import` app writes metrics only.
+  it; the `import` app writes metrics only. (Since landed, separately:
+  `ctx.write_session()`, existing kinds only — `app-host.md`.)
 
 ## Later bricks (sketch only)
 - **Date / time** — a day or timestamp for a reading, rather than "today".

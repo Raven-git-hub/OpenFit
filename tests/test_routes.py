@@ -204,13 +204,13 @@ def test_index_splits_applications_into_controls_and_a_list(client, monkeypatch)
     import main
 
     # What the list shows: the installed apps, as /api/apps returns them -
-    # the six real apps.
+    # the seven real apps.
     fixtures = os.path.join(os.path.dirname(__file__), "fixtures", "apps")
     monkeypatch.setitem(main.app.config, "APPS_DIR", fixtures)
     apps = client.get("/api/apps").get_json()
     assert [(a["id"], a["name"]) for a in apps] == [
         ("caffeine", "Caffeine"), ("import", "Import weigh-ins"), ("mood", "Mood"), ("steps", "Steps"),
-        ("steps-metres", "Distance (from steps)"), ("weight", "Weight"),
+        ("steps-metres", "Distance (from steps)"), ("weight", "Weight"), ("workout-log", "Workout log"),
     ]
 
     resp = client.get("/")

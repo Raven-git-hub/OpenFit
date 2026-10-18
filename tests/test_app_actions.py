@@ -18,6 +18,10 @@ FileUpload in a temp file that's gone once the action is: the import
 app, which parses a file of past weigh-ins itself, is its end-to-end
 test.
 
+handle() can file a session too, ctx.write_session(), under the same
+source and in the same transaction: the workout-log app, which logs a
+workout just finished, is its end-to-end test.
+
 Every test gets its own temp apps folder; nothing reads /data/apps.
 """
 
@@ -27,7 +31,7 @@ import shutil
 import sqlite3
 import tempfile
 import textwrap
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from io import BytesIO
 from pathlib import Path
 
@@ -1130,6 +1134,139 @@ def test_the_import_app_has_one_action(client, conn, apps_dir, upload_dir):
 
     assert assert_refused(resp) == "unknown action: 'clear'"
     assert rows(conn) == []
+
+
+# ---------- sessions: the workout-log app ----------
+#
+# handle()'s ctx.write_session() files an interval under the app's own
+# source, in the action's one transaction - rolled back with the rest
+# when handle() raises. Committed in tests/fixtures/apps/workout-log/: a
+# field for how many minutes a workout just finished lasted, filed as a
+# workout session that ended now. Nothing is derived from a session, and
+# the app doesn't read its workouts back (an app can't read sessions).
+
+
+def sessions(conn, source, kind="workout"):
+    """(id, start, end, summary) of each of `source`'s `kind` sessions, by start."""
+    return [
+        (r[0], r[1], r[2], None if r[3] is None else json.loads(r[3]))
+        for r in conn.execute(
+            'SELECT id, "start", "end", summary_json FROM sessions '
+            'WHERE source = ? AND kind = ? ORDER BY "start"',
+            (source, kind),
+        )
+    ]
+
+
+@pytest.mark.parametrize(
+    "then, says",
+    [
+        ('raise RuntimeError("it broke after writing")', "RuntimeError: it broke after writing"),
+        ('ctx.write_session("nap", "2026-01-03T13:00:00Z")', "unknown session kind: 'nap'"),
+    ],
+)
+def test_an_action_that_raises_after_a_session_write_rolls_it_back(client, conn, apps_dir, then, says):
+    # A crash, or a second write the ctx refuses: the first session goes
+    # with it, as a reading would.
+    make_app(apps_dir, "rest", f"""
+        def render(ctx, cfg):
+            return ctx.empty()
+
+        def handle(ctx, action, payload):
+            ctx.write_session("sleep", "2026-01-02T23:00:00Z", "2026-01-03T07:00:00Z", {{"asleep_minutes": 450}})
+            {then}
+    """)
+
+    assert assert_refused(act(client, "rest", "log", {})) == says
+    assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
+
+
+WORKOUT_LOG_SPEC = {
+    "type": "panel", "children": [
+        {"type": "empty", "message": "Log a workout with Save"},
+        {"type": "input", "key": "minutes", "action": "log", "label": "Workout",
+         "kind": "number", "unit": "min", "options": None, "accept": None},
+    ],
+}
+
+
+def install_workout_log(client):
+    """Install the workout-log app through the Library, from its committed files."""
+    folder = REAL_APPS / "workout-log"
+    files = {name: (folder / name).read_text() for name in ("app.yaml", "app.py")}
+    resp = client.post("/api/apps", json={"files": files})
+    assert resp.status_code == 201, resp.get_json()
+
+
+def log_workout(client, minutes):
+    return act(client, "workout-log", "log", {"minutes": minutes})
+
+
+def instant(stamp):
+    """A stored session timestamp - iso_utc()'s, to the second - as a datetime."""
+    assert len(stamp) == 20 and stamp.endswith("Z"), stamp
+    return datetime.fromisoformat(stamp)
+
+
+def test_the_workout_log_app_installs_and_is_listed(client, apps_dir):
+    install_workout_log(client)
+
+    assert client.get("/api/apps").get_json() == [
+        {"id": "workout-log", "name": "Workout log", "default_size": {"w": 1, "h": 1},
+         "sizes": [{"w": 1, "h": 1}, {"w": 2, "h": 1}], "reads": [], "config": [], "metrics": [],
+         "files": ["app.py", "app.yaml"]},
+    ]
+    assert client.post("/api/app/workout-log/render").get_json() == WORKOUT_LOG_SPEC
+
+
+def test_the_workout_log_app_writes_a_session(client, conn, apps_dir):
+    install_workout_log(client)
+
+    resp = log_workout(client, 30)
+    now = datetime.now(timezone.utc)
+
+    assert resp.status_code == 200
+    assert resp.get_json() == {"ok": True, "spec": WORKOUT_LOG_SPEC}
+    # One workout under the app's own source: ended now, started its
+    # minutes before, its summary the app's.
+    [(session_id, start, end, summary)] = sessions(conn, "app:workout-log")
+    assert session_id == f"app:workout-log:workout:{start}"
+    assert summary == {"type": "manual", "duration_minutes": 30}
+    assert instant(end) - instant(start) == timedelta(minutes=30)
+    assert timedelta(0) <= now - instant(end) < timedelta(minutes=1)
+    # Read back through the contract, beside any other source's ...
+    assert client.get("/api/sessions/workout").get_json() == [
+        {"start": start, "end": end, "source": "app:workout-log", "summary": summary},
+    ]
+    # ... and nothing else: no reading, no derived day.
+    assert rows(conn) == []
+    assert conn.execute("SELECT COUNT(*) FROM derived_metrics").fetchone()[0] == 0
+
+
+def test_two_workouts_logged_are_two_sessions(client, conn, apps_dir):
+    install_workout_log(client)
+
+    log_workout(client, 45)
+    log_workout(client, "12.5")   # typed text that is a number
+
+    got = sessions(conn, "app:workout-log")
+    assert [s[3]["duration_minutes"] for s in got] == [45, 12.5]
+    assert [instant(s[2]) - instant(s[1]) for s in got] == [timedelta(minutes=45), timedelta(seconds=750)]
+
+
+@pytest.mark.parametrize("junk", ["abc", "", None, True, 0, -30, "nan", "inf", [30], {"min": 30}])
+def test_the_workout_log_app_refuses_junk(client, conn, apps_dir, junk):
+    install_workout_log(client)
+
+    assert assert_refused(log_workout(client, junk)) == "Enter the workout in minutes, as a positive number"
+    assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
+
+
+def test_the_workout_log_app_has_one_action(client, conn, apps_dir):
+    install_workout_log(client)
+
+    assert assert_refused(act(client, "workout-log", "clear", {"minutes": 30})) == "unknown action: 'clear'"
+    assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
 
 
 # ---------- /api/weights retired; 'manual' kept as history ----------

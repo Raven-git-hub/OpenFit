@@ -8,23 +8,26 @@ load and logs and skips the rest; GET /api/apps lists them, and POST
 cfg it's sent, and returns its display spec - or an error spec, never a
 500. ctx.metric() is an
 app's one data path: a metric's derived points as a list of Points,
-trailing `days` days.
+trailing `days` days. An app's handle() writes through a WriteCtx; its
+write_session() - a session under the app's own source - is tested here,
+its route round trip in test_app_actions.py.
 Every test gets its own temp apps folder; nothing reads /data/apps.
 """
 
+import json
 import math
 import os
 import shutil
 import textwrap
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
 
 import apps
 import host
-from derived import recompute_derived
-from metrics import DISTANCE_M, METRICS, STEPS
+from derived import recompute_derived, set_source_role
+from metrics import DISTANCE_M, METRICS, SLEEP, STEPS, WORKOUT
 
 
 # The two real apps Home was built for, steps and steps-metres, committed
@@ -878,6 +881,231 @@ def test_render_app_passes_today_and_a_copy_of_cfg(conn, apps_dir):
     spec = host.render_app(app, conn, cfg=cfg, today=TODAY)
     assert (spec["label"], spec["caption"]) == ("2026-10-15", "['days', 'seen']")
     assert cfg == {"days": 7}
+
+
+# ---------- the writing ctx: sessions ----------
+#
+# handle()'s WriteCtx files a session - an interval - as a sync does,
+# through base.write_session(), under the app's own source, app:<id>: a
+# kind OpenFit has, a start and an end stored as iso_utc() stores every
+# session's, a summary of plain JSON. Nothing is derived from it.
+
+
+def an_app(app_id):
+    """An InstalledApp to make a ctx for - no folder."""
+    return apps.InstalledApp(
+        id=app_id, name=app_id, sizes=[{"w": 1, "h": 1}], default_size={"w": 1, "h": 1},
+        reads=[], config=[], path="/nowhere", render=None,
+    )
+
+
+def sessions(conn, source, kind=WORKOUT):
+    """(id, start, end, summary) of each of `source`'s `kind` sessions, by start."""
+    return [
+        (r[0], r[1], r[2], None if r[3] is None else json.loads(r[3]))
+        for r in conn.execute(
+            'SELECT id, "start", "end", summary_json FROM sessions '
+            'WHERE source = ? AND kind = ? ORDER BY "start"',
+            (source, kind),
+        )
+    ]
+
+
+def session_count(conn):
+    return conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
+
+
+def utc(*args):
+    return datetime(*args, tzinfo=timezone.utc)
+
+
+RUN = {"type": "running", "duration_minutes": 45, "distance_m": 8012.5, "avg_hr_bpm": 151}
+
+
+def test_write_session_files_under_the_apps_own_source(conn):
+    ctx = host.WriteCtx(conn, an_app("log"), today=TODAY)
+
+    assert ctx.write_session(WORKOUT, utc(2026, 10, 14, 7, 0), utc(2026, 10, 14, 7, 45), RUN) is None
+    # Not committed: that's the route's.
+    conn.commit()
+
+    assert sessions(conn, "app:log") == [
+        ("app:log:workout:2026-10-14T07:00:00Z", "2026-10-14T07:00:00Z", "2026-10-14T07:45:00Z", RUN),
+    ]
+    # No writer takes a source: an app named after a device still files
+    # under app:<its id>, never the device's.
+    host.WriteCtx(conn, an_app("garmin")).write_session(SLEEP, utc(2026, 10, 14, 23, 0))
+    with pytest.raises(TypeError):
+        ctx.write_session(WORKOUT, utc(2026, 10, 15, 7, 0), source="garmin")
+    conn.commit()
+    assert [tuple(r) for r in conn.execute("SELECT id, source, kind FROM sessions ORDER BY id")] == [
+        ("app:garmin:sleep:2026-10-14T23:00:00Z", "app:garmin", SLEEP),
+        ("app:log:workout:2026-10-14T07:00:00Z", "app:log", WORKOUT),
+    ]
+
+
+def test_write_session_rejects_an_unknown_kind(conn):
+    ctx = host.WriteCtx(conn, an_app("log"), today=TODAY)
+
+    for kind in ("run", "Workout", "heart_rate", "steps", "", None, 3, ["workout"]):
+        with pytest.raises(ValueError) as refused:
+            ctx.write_session(kind, utc(2026, 10, 14, 7, 0), utc(2026, 10, 14, 7, 45))
+        assert str(refused.value) == f"unknown session kind: {kind!r}"
+    # The kind is checked first, the app's word for it - before the start.
+    with pytest.raises(ValueError) as refused:
+        ctx.write_session("nap", None)
+    assert str(refused.value) == "unknown session kind: 'nap'"
+    assert session_count(conn) == 0
+
+
+def test_write_session_requires_a_start(conn):
+    # Where a sync's None start writes nothing, an app's is said.
+    ctx = host.WriteCtx(conn, an_app("log"), today=TODAY)
+
+    with pytest.raises(ValueError) as refused:
+        ctx.write_session(WORKOUT, None, utc(2026, 10, 14, 7, 45), RUN)
+    assert str(refused.value) == "a session needs a start"
+    assert session_count(conn) == 0
+
+
+def test_write_session_normalises_datetimes_and_strings_to_utc(conn):
+    # One instant, 06:30 UTC, said six ways: each stored as iso_utc()
+    # stores every session's start - UTC, whole seconds, a Z.
+    same = {
+        "aware": datetime(2026, 10, 14, 8, 30, tzinfo=timezone(timedelta(hours=2))),
+        "naive": datetime(2026, 10, 14, 6, 30),          # taken to be UTC
+        "fraction": utc(2026, 10, 14, 6, 30, 0, 999999),  # cut to the second
+        "z": "2026-10-14T06:30:00Z",
+        "offset": "2026-10-14T01:30:00-05:00",
+        "micro": "2026-10-14T06:30:00.250000+00:00",
+    }
+    for app_id, start in same.items():
+        host.WriteCtx(conn, an_app(app_id)).write_session(WORKOUT, start)
+    conn.commit()
+
+    stored = conn.execute('SELECT DISTINCT "start", "end", summary_json FROM sessions').fetchall()
+    assert [tuple(r) for r in stored] == [("2026-10-14T06:30:00Z", None, None)]   # end None: SQL NULL
+    assert session_count(conn) == len(same)
+
+    # An end the same way.
+    ctx = host.WriteCtx(conn, an_app("log"))
+    ctx.write_session(WORKOUT, "2026-10-14T08:00:00+02:00", "2026-10-14T09:45:30.5+02:00")
+    assert sessions(conn, "app:log") == [
+        ("app:log:workout:2026-10-14T06:00:00Z", "2026-10-14T06:00:00Z", "2026-10-14T07:45:30Z", None),
+    ]
+
+    # And what isn't a time is refused, start or end.
+    for bad in (20261014, date(2026, 10, 14), "yesterday", "", "2026-10-14T25:00", 1.5,
+                ["2026-10-14T06:30:00Z"]):
+        with pytest.raises(ValueError) as refused:
+            ctx.write_session(WORKOUT, bad)
+        assert str(refused.value) == f"start must be a datetime or ISO-8601 timestamp: {bad!r}"
+        with pytest.raises(ValueError) as refused:
+            ctx.write_session(WORKOUT, utc(2026, 10, 15, 6, 0), bad)
+        assert str(refused.value) == f"end must be a datetime or ISO-8601 timestamp: {bad!r}"
+    assert session_count(conn) == len(same) + 1
+
+
+def test_write_session_rejects_end_before_start(conn):
+    ctx = host.WriteCtx(conn, an_app("log"), today=TODAY)
+    start = utc(2026, 10, 14, 7, 0)
+
+    # Compared as instants: 08:30+02:00 reads later, and is half an hour before.
+    for end in (utc(2026, 10, 14, 6, 59, 59), "2026-10-14T08:30:00+02:00", utc(2026, 10, 13, 7, 0)):
+        with pytest.raises(ValueError) as refused:
+            ctx.write_session(WORKOUT, start, end)
+        assert str(refused.value) == "a session's end is before its start"
+    assert session_count(conn) == 0
+
+    # Zero-length is a session: an end at the start, or in its second.
+    ctx.write_session(WORKOUT, start, start)
+    ctx.write_session(SLEEP, datetime(2026, 10, 14, 7, 0, 0, 900000), datetime(2026, 10, 14, 7, 0, 0, 100000))
+    conn.commit()
+    assert sessions(conn, "app:log") == [
+        ("app:log:workout:2026-10-14T07:00:00Z", "2026-10-14T07:00:00Z", "2026-10-14T07:00:00Z", None),
+    ]
+    assert sessions(conn, "app:log", SLEEP)[0][1:3] == ("2026-10-14T07:00:00Z", "2026-10-14T07:00:00Z")
+
+
+def test_write_session_rejects_a_non_mapping_or_unserialisable_summary(conn):
+    ctx = host.WriteCtx(conn, an_app("log"), today=TODAY)
+    start, end = utc(2026, 10, 14, 7, 0), utc(2026, 10, 14, 7, 45)
+
+    for summary in ([("type", "running")], ["running"], "running", 45, (("a", 1),)):
+        with pytest.raises(ValueError) as refused:
+            ctx.write_session(WORKOUT, start, end, summary)
+        assert str(refused.value) == "a session's summary must be a mapping or None"
+    looped = {}
+    looped["self"] = looped
+    for summary in ({"at": start}, {"stages": {"deep", "rem"}}, {"distance_m": float("nan")},
+                    {"pace": float("inf")}, {("a", 1): 2}, looped):
+        with pytest.raises(ValueError) as refused:
+            ctx.write_session(WORKOUT, start, end, summary)
+        assert str(refused.value) == "a session's summary must be JSON"
+    assert session_count(conn) == 0
+
+    # An empty one is a summary, stored as such.
+    ctx.write_session(WORKOUT, start, end, {})
+    assert sessions(conn, "app:log")[0][3] == {}
+
+
+def test_write_session_rewriting_the_same_start_replaces_the_row(conn):
+    ctx = host.WriteCtx(conn, an_app("log"), today=TODAY)
+
+    ctx.write_session(WORKOUT, utc(2026, 10, 14, 7, 0), utc(2026, 10, 14, 7, 45), RUN)
+    # The same kind and start - said another way - is the same session.
+    ctx.write_session(WORKOUT, "2026-10-14T09:00:00+02:00", "2026-10-14T08:10:00Z", {"type": "running"})
+    conn.commit()
+
+    assert sessions(conn, "app:log") == [
+        ("app:log:workout:2026-10-14T07:00:00Z", "2026-10-14T07:00:00Z", "2026-10-14T08:10:00Z",
+         {"type": "running"}),
+    ]
+    # Its end and summary can go back to none.
+    ctx.write_session(WORKOUT, utc(2026, 10, 14, 7, 0))
+    assert sessions(conn, "app:log")[0][2:] == (None, None)
+    # Another start, or another kind at that start, is another session.
+    ctx.write_session(WORKOUT, utc(2026, 10, 14, 18, 0), utc(2026, 10, 14, 18, 30))
+    ctx.write_session(SLEEP, utc(2026, 10, 14, 7, 0), utc(2026, 10, 14, 7, 20))
+    assert session_count(conn) == 3
+
+
+def test_write_session_does_not_rederive(client, conn, apps_dir):
+    # A session goes into no day's pick, so the ctx notes no day ...
+    ctx = host.WriteCtx(conn, an_app("rest"), today=TODAY)
+    ctx.write_session(SLEEP, datetime(2026, 10, 15, 1, 0), datetime(2026, 10, 15, 7, 0), {"asleep_minutes": 330})
+    assert ctx.written == []
+    conn.rollback()
+
+    # ... and an action that writes only a session re-derives nothing:
+    # with a role set since today was picked, a re-derive would flip
+    # today's steps to google_health (forward-only).
+    make_app(apps_dir, "rest", SIZE, """
+        from datetime import datetime
+
+        def render(ctx, cfg):
+            return ctx.empty("rested")
+
+        def handle(ctx, action, payload):
+            day = datetime.fromisoformat(ctx.today())
+            ctx.write_session("sleep", day.replace(hour=1), day.replace(hour=7), {"asleep_minutes": 330})
+    """)
+    today = today_minus(0)
+    insert(conn, today, "garmin", steps=9000)
+    insert(conn, today, "google_health", steps=8000)
+    recompute_derived(conn)
+    set_source_role(conn, STEPS, "google_health")
+    derived = [tuple(r) for r in conn.execute("SELECT * FROM derived_metrics")]
+
+    resp = client.post("/api/app/rest/action", json={"action": "log"})
+
+    assert resp.get_json() == {"ok": True, "spec": {"type": "empty", "message": "rested"}}
+    assert [tuple(r) for r in conn.execute("SELECT * FROM derived_metrics")] == derived
+    assert derived == [(today, STEPS, 9000, "count", "garmin", "2026-01-01 06:00:00")]
+    # The session itself was committed, with nothing to re-derive.
+    assert [s[1:] for s in sessions(conn, "app:rest", SLEEP)] == [
+        (f"{today}T01:00:00Z", f"{today}T07:00:00Z", {"asleep_minutes": 330}),
+    ]
 
 
 # ---------- ?days= on the access contract ----------

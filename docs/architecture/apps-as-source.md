@@ -195,7 +195,12 @@ built-in/default metrics themselves are never purgeable.
 - **Purge (B1):** done — per-metric removal of an orphaned app source's data
   (`DELETE /api/app-sources/<id>/<metric>`), which also clears an orphaned
   custom metric's lingering readings (above).
-- **(later) fatigue / roster path**, unblocked by the scope reversal.
+- **Session write-back:** done — `ctx.write_session(kind, start, end, summary)`
+  on the `WriteCtx`, sessions of the existing kinds (`sleep`, `workout`) under
+  the app's own source, nothing derived from them (`app-host.md`; the
+  `workout-log` app is the reference).
+- **(later) fatigue / roster path**, unblocked by the scope reversal and built
+  on session write-back: the session kinds it files, and its `.ics` app.
 
 ## Minor / noted
 
@@ -215,4 +220,6 @@ built-in/default metrics themselves are never purgeable.
 - Connector disconnect deletes a source's metrics/samples/sessions + re-derives —
   the machinery the (A) removal reuses.
 - Uninstall keeps an app's data (by design); `WriteCtx.write_metric` accepts a
-  canonical key or one the app declares in its manifest (B0), nothing else.
+  canonical key or one the app declares in its manifest (B0), nothing else;
+  `WriteCtx.write_session` an existing session kind only, under the app's own
+  source (id `app:<id>:<kind>:<start>`).

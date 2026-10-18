@@ -266,9 +266,9 @@ doesn't know is drawn as an error tile too.
 
 ## Writing: apps as sources
 
-An app is a source, as a device is: what it writes lands in the same tables,
-competes in the same per-metric pick, and is read back through the same
-contract. Its source is `app:<id>`, its installed id (`app_source()` in
+An app is a source, as a device is: what it writes lands in the same tables —
+its readings competing in the same per-metric pick, its sessions passed through
+beside every other source's — and is read back through the same contract. Its source is `app:<id>`, its installed id (`app_source()` in
 `app/host.py`), and it can write nowhere else.
 
 **`handle(ctx, action, payload)`**, beside `render()` in `app.py`, is the
@@ -296,7 +296,8 @@ for the app: a `Ctx` (so `ctx.metric()` and `ctx.today()` read as in
 `render()`), plus
 
 ```python
-ctx.write_metric(metric, value, date=None)   # files one reading, under ctx.source
+ctx.write_metric(metric, value, date=None)                  # files one reading, under ctx.source
+ctx.write_session(kind, start, end=None, summary=None)      # files one session, under ctx.source
 ```
 
 - **The source is the ctx's, never the app's.** It's fixed when the ctx is
@@ -321,7 +322,53 @@ ctx.write_metric(metric, value, date=None)   # files one reading, under ctx.sour
   local date until `base_tz` lands) by default. One reading per
   `(date, source, metric)`: writing a day again replaces it.
 - A refused write raises `ValueError` and writes nothing. The ctx commits
-  nothing; it notes the days it wrote (`ctx.written`) for the route.
+  nothing; it notes the days it wrote readings to (`ctx.written`) for the
+  route.
+
+**`ctx.write_session(kind, start, end=None, summary=None)`** files one
+session — an interval with a shape, as a sync files a night's sleep or a
+workout — under the same `ctx.source`, through `write_session()`
+(`app/plugins/base.py`, whose own kind check stays as a backstop), and
+returns nothing:
+
+- **`kind`** is one of OpenFit's session kinds, `SESSION_KINDS` in
+  `app/metrics.py`: `sleep` or `workout`. An app can't invent one yet: it
+  writes what exists, and declares nothing for it. Anything else (a
+  misspelling, a metric key, a non-string) is `ValueError("unknown session
+  kind: '<kind>'")`, checked before anything else.
+- **`start`** is required: a `datetime.datetime`, or ISO-8601 text read by
+  `datetime.fromisoformat()` (`"2026-01-05T07:30:00+01:00"`, a trailing `Z`
+  included). Either is stored as `iso_utc()` stores every source's session
+  times, `YYYY-MM-DDTHH:MM:SSZ`: converted to UTC and cut to the whole
+  second, a naive time taken to be UTC. `None` is `ValueError("a session
+  needs a start")` — where a sync's `None` start quietly writes nothing, an
+  app's is a bug, said. Anything else (a `date`, a number, text that won't
+  parse) is `ValueError("start must be a datetime or ISO-8601 timestamp:
+  <repr>")`.
+- **`end`** is optional: the same types, normalised the same way (`end must
+  be ...` for one that won't do), or `None`, the default, for a session with
+  no end yet, stored as `NULL`. An end before the start, compared once both
+  are normalised, is `ValueError("a session's end is before its start")`; an
+  end at the start (zero-length, or inside the same second) is fine.
+- **`summary`** is a `dict` or `None` (stored as `NULL`): the session's
+  breakdown, its keys the kind's, as listed beside `SESSION_KINDS`
+  (`asleep_minutes` and the stage minutes for sleep; `type`,
+  `duration_minutes`, `distance_m`, `avg_hr_bpm`, `calories_kcal` for a
+  workout), leaving out what the app doesn't have. The host doesn't check
+  the keys, but the whole must be plain JSON — `json.dumps(summary,
+  allow_nan=False)` must take it, so no `datetime`, set, NaN or Infinity.
+  Not a dict is `ValueError("a session's summary must be a mapping or
+  None")`; a dict that isn't JSON, `ValueError("a session's summary must be
+  JSON")`.
+- **The id is `app:<id>:<kind>:<start>`**, so writing the same kind and start
+  again replaces its end and summary (one row, as a re-synced night is);
+  another start, or another kind, is another session.
+- **Nothing is derived from a session**: `derived_metrics` holds metrics only,
+  so `write_session()` notes no day in `ctx.written`, and an action that
+  writes only sessions re-derives nothing (it's still committed). A session
+  is read back through `GET /api/sessions/<kind>`, beside every other
+  source's and tagged `app:<id>`: a passthrough, no pick. An app can't read
+  sessions itself yet (there's no `ctx.session()`).
 
 `render()`'s plain `Ctx` has no writer, so a render can't write.
 
@@ -345,10 +392,11 @@ too large (max 25 MB)."}`.
    (or the ctx) wrote it, so `raise ValueError("Enter your weight in kg")` is
    what the tile shows; anything else is a bug, `"<Type>: <message>"`, logged
    with its traceback.
-4. **Otherwise** each day it wrote is re-derived on its own (as a webhook
-   reading's day is: never one span over several, which would re-pick the
-   days between under the current source roles), landing its writes and
-   their pick together; then the app is rendered afresh with `cfg` (the
+4. **Otherwise** each day it wrote a reading to is re-derived on its own (as
+   a webhook reading's day is: never one span over several, which would
+   re-pick the days between under the current source roles), landing its
+   writes and their pick together — a session has no day to re-derive, and
+   is committed all the same; then the app is rendered afresh with `cfg` (the
    instance's config; not a mapping, `{}`), and the reply is `200 {"ok":
    true, "spec"}`, which the page redraws the tile from. A render that fails
    then is an error spec, as ever: the write stands.
@@ -498,6 +546,33 @@ weight_kg must be between 20 and 400 kg, got …"`, and the route rolls back
 the lines already filed. All or nothing, then; a day already there is
 replaced, and a day twice in the file is its last line. It competes in the
 pick like the weight app: a day Garmin weighed is still Garmin's.
+
+### The workout-log app
+
+The first app to write a session, committed in
+`tests/fixtures/apps/workout-log/` and run by `test_app_actions.py`: it logs a
+workout just finished, and is the proof that `ctx.write_session()` lands an
+interval under the app's own source.
+
+```yaml
+id: workout-log
+name: Workout log
+sizes: [{ w: 1, h: 1 }, { w: 2, h: 1 }]
+reads: []
+```
+
+No `metrics:` block: `workout` is one of OpenFit's session kinds, so the app
+just writes it. `render()` is deliberately dull — `empty("Log a workout with
+Save")` over an `input` (`key: minutes`, `action: log`, "Workout", min) — and
+doesn't read its workouts back (an app can't read sessions yet). `handle()`
+takes `log` only: it coerces `payload["minutes"]` to a finite positive number
+(junk, a bool, `0` → `ValueError("Enter the workout in minutes, as a positive
+number")`), takes the workout to have ended now (`datetime.now(timezone.utc)`)
+and started that many minutes before, and files it with
+`ctx.write_session("workout", start, end, {"type": "manual",
+"duration_minutes": minutes})`, under `app:workout-log`. Each log is its own
+session (its own start); it shows in `GET /api/sessions/workout` beside a
+watch's, and nothing is derived from it.
 
 ## Installing an app
 
@@ -733,8 +808,8 @@ source `app:<id>`, as a disconnected device's data does.
   app: <id>"}`.
 - `POST /api/app/<id>/action` with `{"action", "payload", "cfg"}` → runs the
   app's `handle()` with a writing ctx scoped to `app:<id>`; `200 {"ok": true,
-  "spec"}` (the app rendered afresh) once its writes are committed and their
-  days re-derived, or `400 {"ok": false, "error"}` with everything rolled back.
+  "spec"}` (the app rendered afresh) once its writes (readings and sessions)
+  are committed and its readings' days re-derived, or `400 {"ok": false, "error"}` with everything rolled back.
   404 for an unknown app, 400 for one with no `handle()` or a body that isn't
   an action. A file input's comes as `multipart/form-data`, each file handed
   to `handle()` as a `FileUpload` and deleted after; 413 for a body over 25
@@ -1027,10 +1102,11 @@ saved positions and gives `paintTiles` start cells. The sizes, the CSS grid,
 - **Richer settings fields** (a select or enum, a toggle) beyond number and
   text, a live preview as a setting is typed, and a custom `app.js` for an
   app that draws its own face.
-- **More write-back**: `ctx.write_session()` (an app contributing sessions:
-  a roster, a custom sleep detector), an app's own session kinds and series
-  (its own metrics are `daily`/`instant` only), reading another app's
-  metrics, timestamped weigh-ins more than one a day, and a
+- **More write-back**: an app's own session kinds (a roster's duties, a
+  custom sleep detector's kind) and series — it writes sessions of
+  OpenFit's kinds only (`ctx.write_session()`), and its own metrics are
+  `daily`/`instant` only — reading sessions back (`ctx.session()`), reading
+  another app's metrics, timestamped weigh-ins more than one a day, and a
   `base_tz` setting for the day a write lands on.
 - **Enforcing `reads`:** it's recorded, but `ctx.metric()` serves any
   canonical key, and the app's own.

@@ -199,11 +199,14 @@ equals, each tagged. The Oura night and the Google nap are both "sleep sessions.
   Core must not bake an overlap heuristic that could hide data from the app that
   cares most (e.g. a shift-worker fatigue tracker reading short, off-cycle rests
   by their real timestamps — not any nocturnal day-bucket).
-- **Custom / app-detected sleep is just another source** in the same pool (tier
-  `app`), queryable alongside vendor sessions, filterable by source. Vendor
-  detection stays the gold standard; custom detectors coexist, they don't
-  replace. *Depends on session write-back (to-build; the webhook is metrics-only
-  today).*
+- **Custom / app-detected sleep is just another source** in the same pool
+  (source `app:<id>`), queryable alongside vendor sessions, filterable by
+  source. Vendor detection stays the gold standard; custom detectors coexist,
+  they don't replace. **App session write-back is built**: an app's `handle()`
+  files a session of an existing kind (`sleep`, `workout`) with
+  `ctx.write_session()`, under its own source only, as its readings are
+  (`app-host.md`). Still to come: an app's own session kinds, and pushing
+  sessions through the webhook (it's metrics-only today).
 - **Preferred-source-per-session-kind** selection reuses the same priority
   config. *Designed.*
 
@@ -275,6 +278,9 @@ canonical key competing in the default per-metric pick.
   fetched — no extra request).
 - Sync: 6-hourly, 7-day trailing window, re-derive.
 - Webhook push ingestion (metrics only, token auth, own-source enforcement).
+- App write-back, own-source (`app:<id>`): readings (`ctx.write_metric()`,
+  canonical keys and the app's own) and sessions of the existing kinds
+  (`ctx.write_session()`), from an app's `handle()`.
 - Access contract (catalog, metric range, sessions, intraday series as a
   per-source passthrough).
 - Google Health's daily metrics (daily roll-ups and daily summaries), sleep
@@ -295,7 +301,9 @@ canonical key competing in the default per-metric pick.
 - **Wide expansion** — more daily/session/series types, each a fetcher + a
   canonical key/kind (a new metric is data, not a migration).
 - **Per-event session dedup** + preferred-source-per-kind selection view.
-- **Session write-back** (apps contributing sessions, incl. custom detectors).
+- **App-declared session kinds** (a roster's duties, a custom detector's own
+  kind) and session push through the webhook — apps already write sessions of
+  the existing kinds.
 - **Additive-type single-source** handling (no fall-through).
 - **User-local day-boundary** bucketing (requires a timezone setting).
 

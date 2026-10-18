@@ -282,7 +282,28 @@ own calls to its device API. Full direction:
   app.yaml's metrics to write it")`. `date` to `YYYY-MM-DD`
   (or a `date`; default `ctx.today()`), else `ValueError`, writing
   nothing; it commits nothing and notes the days written (`ctx.written`,
-  sorted) for the route to re-derive. The render
+  sorted) for the route to re-derive. Beside it, `ctx.write_session(kind,
+  start, end=None, summary=None)` (returns nothing) files one session
+  through `write_session()` (`app/plugins/base.py`, unchanged — its own
+  kind check kept as a backstop) under the same `ctx.source`, id
+  `app:<id>:<kind>:<start>`, so a rewrite of that kind and start replaces
+  its end and summary: `kind` in `SESSION_KINDS` (else
+  `ValueError("unknown session kind: <repr>")`, checked first; existing
+  kinds only — an app can't invent one yet); `start` required (`None` →
+  `ValueError("a session needs a start")`, where `write_session()` itself
+  silently skips one) and `end` optional (`None` → NULL), each a
+  `datetime` or ISO-8601 text (`datetime.fromisoformat()`, a `Z` taken)
+  normalised by `_session_instant()` through `iso_utc()` (naive = UTC;
+  else `ValueError("<start|end> must be a datetime or ISO-8601 timestamp:
+  <repr>")`); an end before the start once normalised (compared as
+  `iso_utc()` strings, which sort as time) → `ValueError("a session's end
+  is before its start")`, equal allowed; `summary` a dict or None (else
+  `ValueError("a session's summary must be a mapping or None")`) that
+  `json.dumps(allow_nan=False)` takes (else `ValueError("a session's
+  summary must be JSON")`). It commits nothing and notes no day in
+  `ctx.written` — nothing derives from a session (read back through `GET
+  /api/sessions/<kind>`), so a session-only action re-derives nothing and
+  is still committed. The render
   path's `Ctx` has no writer. The app is trusted code, as its `render()`
   is: the scoping is the ctx, not a sandbox. **A file input's value**
   is a `FileUpload(path, name="", content_type="")`: `.name` the file's
@@ -375,7 +396,21 @@ own calls to its device API. Full direction:
   …" — then `ctx.write_metric("weight_kg", kg, date=day)` for each, on
   its own day, a refusal from the host (the plausible range) said as
   "line N: <why>" and the earlier lines rolled back by the route: all or
-  nothing; a day replaced, a day twice the file's last line.
+  nothing; a day replaced, a day twice the file's last line. And the
+  first to write a session: `workout-log`
+  (`tests/fixtures/apps/workout-log/`, run by `tests/test_app_actions.py`,
+  the end-to-end test of `ctx.write_session()`). Its `app.yaml`: id
+  `workout-log`, name "Workout log", `sizes: [{ w: 1, h: 1 }, { w: 2, h:
+  1 }]`, `reads: []` — no `metrics:` (`workout` is an existing kind).
+  `render()`: `empty("Log a workout with Save")` over an `input` (`key`
+  `minutes`, `action` `log`, "Workout", min), panelled — it doesn't read
+  sessions back (apps can't yet). `handle()`: `log` only;
+  `payload["minutes"]` coerced to a finite positive float (a bool, junk,
+  `0` → `ValueError("Enter the workout in minutes, as a positive
+  number")`), then `ctx.write_session("workout", start, end, {"type":
+  "manual", "duration_minutes": minutes})`, `end` now
+  (`datetime.now(timezone.utc)`) and `start` that many minutes before —
+  each log its own session.
 - `app/home_layout.py` — the Home tab's layout, one `settings` row
   (`LAYOUT_KEY` `home_layout`, no migration): `{"tabs": [{id, name,
   mode: "flow", subtitle, items: [{instance_id, app_id, size: {w, h},
@@ -975,7 +1010,10 @@ own calls to its device API. Full direction:
   `app/host.py`) — canonical keys stay canonical (`weight_kg` under
   `app:weight`), competing in the same pick, after the pull plugins
   (unlisted, by name) unless a source role says otherwise; no tier, no
-  opt-in, no observed/computed flag. **An app's own metrics** (no
+  opt-in, no observed/computed flag. Sessions too, of an existing kind
+  (`ctx.write_session()`, id `app:<id>:<kind>:<start>`), passed through by
+  `GET /api/sessions/<kind>` beside every source's — no pick, nothing
+  derived. **An app's own metrics** (no
   migration): declare what you invent, write what exists — a metric the
   app invents is declared in its manifest's `metrics` (see Layout:
   `app/apps.py`) and stored as `metric = app:<id>:<key>`, `source =
@@ -1049,8 +1087,9 @@ own calls to its device API. Full direction:
   breakdown as JSON. Quote `"start"`/`"end"` in SQL (`end` is a keyword).
   Written via `write_session()`, which raises on a `kind` outside
   `SESSION_KINDS` (`app/metrics.py`, where each kind's summary keys are listed).
-  Two kinds, both from Garmin and Google; a summary holds only what the source
-  gives:
+  Two kinds, both from Garmin and Google (and from an app, through
+  `ctx.write_session()`, under `app:<id>`); a summary holds only what the
+  source gives:
   - `sleep` — one session per night/nap, summary in minutes: `asleep_minutes`
     plus `light_minutes`/`deep_minutes`/`rem_minutes`/`awake_minutes`. Sleep is
     sessions only: there is no daily sleep metric (v2 retired `sleep_minutes`
@@ -1472,10 +1511,14 @@ same PR:
   temp file deleted after the action, a 25 MiB `MAX_CONTENT_LENGTH` (413
   over it) — OpenFit carries the file and never parses it, the app does;
   the `import` app (past weigh-ins from a text file, each on its own
-  day) is the reference.
-  Still to come for write-back: `write_session` (the
-  roster path — the `.ics` roster app waits on it), an app's own session
-  kinds and series, cross-app reads
+  day) is the reference. Then app session write-back landed (no
+  migration, no route change): `ctx.write_session(kind, start, end,
+  summary)` on the `WriteCtx`, reusing `write_session()`/`iso_utc()`,
+  existing kinds only, under the app's own source, deriving nothing; the
+  `workout-log` app is the reference.
+  Still to come for write-back: the roster path (the session kinds it
+  files, and its `.ics` app — the next brick), an app's own session
+  kinds and series, reading sessions back (`ctx.session()`), cross-app reads
   of a custom metric, the later input bricks (date/time,
   auto-recompute), per-app Python dependencies (an app gets the image's
   Python; a PDF library isn't in it), several files in one input and,
