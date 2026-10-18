@@ -295,7 +295,9 @@ as `/api/sessions` serves them: every source's, each with `.start`, `.end`,
 `.source` and `.summary`, by source priority and then start, with `since`/`until`
 (`YYYY-MM-DD`, inclusive) matched against the start's UTC date. `render()`
 returns a display spec built from `number`, `line` (a sparkline, with an
-optional title), `panel` and `empty`. An app that fails to load is logged and
+optional title), `panel`, `input` (below), `timeline` (one lane or two of
+time-blocks on a scrolling time axis, with a now line: a plan beside what
+happened) and `empty`. An app that fails to load is logged and
 left out, and one whose `render()` fails shows as an error tile, never a
 broken page.
 
@@ -424,8 +426,11 @@ carries its code and a best-effort label (`flight`, `reserve`, `sim`, or
 `other` for a code the app doesn't know — still filed), a flight's number and
 route, and the roster's description verbatim. The app also files each day's
 duty hours as its own metrics, `duty_hours_complete` and `duty_hours_rostered`
-(summed by the UTC day a duty starts), and its tile shows the flown hours
-against the rostered. Uploading again replaces a duty with the same start and
+(summed by the UTC day a duty starts). Its tile draws the duties back on a
+timeline under the picker: the last six months or so and everything still to
+come, rostered on the left and flown on the right, each duty a block at its
+time labelled with its code, a line at now and the flown side greyed after it;
+it scrolls, a week to the tile's height. Uploading again replaces a duty with the same start and
 the same day's hours, but removes nothing: a duty dropped from a later roster
 keeps its row for now. Both kinds and both metrics file under the Roster
 category: OpenFit keeps operational context like this because you do — it

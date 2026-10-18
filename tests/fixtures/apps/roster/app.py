@@ -21,6 +21,12 @@ hours of the duties that started that day (UTC), summed -
 duty_hours_complete and duty_hours_rostered, metrics this app invents
 (app.yaml).
 
+The tile reads the duties back (ctx.sessions()) - about six months of
+them, and all still to come - and draws them on a timeline under the
+picker: rostered on the left, flown on the right, each duty a block at
+its time and labelled with its code, a line at now and the flown side
+greyed after it.
+
 Uploading again replaces a duty of the same kind and start, and a day's
 figure; it removes nothing, so a duty taken off the roster keeps its
 row until another lands on its start.
@@ -34,7 +40,7 @@ call on their own.
 """
 
 import re
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import NamedTuple
 
 ROSTERED = "duties_rostered"
@@ -48,25 +54,31 @@ NON_UTC = "roster has a non-UTC time, which isn't supported yet: {}"
 
 def render(ctx, cfg):
     picker = ctx.input("file", "upload", label="Upload roster", kind="file", accept=".ics")
-    flown = ctx.metric(HOURS[COMPLETE])
-    rostered = ctx.metric(HOURS[ROSTERED])
-    if not flown and not rostered:
+    # About six months back, and every duty still to come.
+    since = (date.fromisoformat(ctx.today()) - timedelta(days=183)).isoformat()
+    rostered = ctx.sessions(ROSTERED, since=since)
+    flown = ctx.sessions(COMPLETE, since=since)
+    if not rostered and not flown:
         return ctx.panel(ctx.empty("Upload your roster .ics"), picker)
 
-    # The flown hours, and one line of text under them - no label, no
-    # sparkline - so a 2x1 tile still has room for the picker: render()
-    # isn't told its tile's size, so this has to fit the smaller one.
-    caption = f"flown · {_days(flown)} · rostered {_total(rostered):g} h · {_days(rostered)}"
-    return ctx.panel(ctx.number(_total(flown), unit="h", caption=caption), picker)
+    # The plan on the left, what was flown on the right - greyed after
+    # now, when nothing's flown yet. The picker on top; the timeline
+    # takes the rest of the tile and scrolls, laid out to whatever size
+    # the tile is (render() isn't told it).
+    return ctx.panel(picker, ctx.timeline(
+        [_lane(rostered, label="Rostered"), _lane(flown, label="Flown", grey_after_now=True)],
+        now=datetime.now(timezone.utc),
+    ))
 
 
-def _total(points):
-    """The hours of a metric's days, summed, to a tenth."""
-    return round(sum(p.value for p in points), 1)
-
-
-def _days(points):
-    return f"{len(points)} day{'' if len(points) == 1 else 's'}"
+def _lane(sessions, **lane):
+    """A timeline lane of duty sessions, each a block labelled with its
+    code. One with no end - another source's, still open - has no length
+    to draw, so it's left out."""
+    return {"intervals": [
+        {"start": s.start, "end": s.end, "label": s.summary.get("code", "")}
+        for s in sessions if s.end is not None
+    ], **lane}
 
 
 def handle(ctx, action, payload):

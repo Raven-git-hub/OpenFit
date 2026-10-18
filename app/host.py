@@ -100,6 +100,13 @@ the dicts directly):
         the picker's hints, such as ".ics,.csv", or null - null for the
         other kinds) - then the tile is drawn afresh; label and unit may
         be null
+    {"type": "timeline", "title", "now", "lanes": [{"label", "grey_after_now",
+                                                    "intervals": [{"start", "end", "label"}, ...]}, ...]}
+        one lane or two of time-blocks, side by side on one vertical
+        time axis - lane 0 left and lighter, lane 1 right and darker -
+        laid out by the page to its tile and scrolled: each block from
+        its start to its end (UTC text), its label on it; a line at
+        `now` (null: none), and a grey_after_now lane greyed below it
     {"type": "empty", "message"}
     {"type": "error", "message"}
         the host's, when a render fails - never an app's to return
@@ -242,9 +249,9 @@ OPTIONS_PROBLEM = "a select's options must be a non-empty list of strings"
 ACCEPT_PROBLEM = "a file input's accept must be non-empty text, such as '.ics,.csv'"
 
 
-def _text_or_none(value, what):
+def _text_or_none(value, what, whose="an input's"):
     if value is not None and not isinstance(value, str):
-        raise TypeError(f"an input's {what} must be text: {value!r}")
+        raise TypeError(f"{whose} {what} must be text: {value!r}")
     return value
 
 
@@ -349,6 +356,97 @@ class FileUpload:
         return self.bytes.decode(encoding)
 
 
+# A timeline's lanes: one, or two side by side - lane 0 the left column,
+# lane 1 the right. What a lane and an interval take, and nothing else:
+# a misspelt field (gray_after_now) is refused, not quietly ignored.
+TIMELINE_LANES = (1, 2)
+LANE_FIELDS = ("label", "grey_after_now", "intervals")
+INTERVAL_FIELDS = ("start", "end", "label")
+
+
+def _fields(raw, fields, what):
+    """`raw`, a mapping of only `fields`: TypeError for one that isn't a
+    mapping, ValueError for a field it doesn't take."""
+    if not isinstance(raw, dict):
+        raise TypeError(f"{what} must be a mapping: {raw!r}")
+    unknown = [repr(field) for field in raw if field not in fields]
+    if unknown:
+        raise ValueError(f"{what} takes {', '.join(fields)} - not {', '.join(unknown)}")
+    return raw
+
+
+def _interval(raw):
+    """One block on a lane, as the spec carries it: {start, end, label},
+    both ends iso_utc()'s UTC text."""
+    _fields(raw, INTERVAL_FIELDS, "a timeline interval")
+    if raw.get("start") is None or raw.get("end") is None:
+        # A block is drawn from its start to its end: an open one has no
+        # length to draw.
+        raise ValueError(f"a timeline interval needs a start and an end: {raw!r}")
+    start = _session_instant(raw["start"], "a timeline interval's start")
+    end = _session_instant(raw["end"], "a timeline interval's end")
+    # iso_utc()'s timestamps sort and compare as plain strings.
+    if end < start:
+        raise ValueError(f"a timeline interval's end is before its start: {end} < {start}")
+    return {"start": start, "end": end, "label": _text_or_none(raw.get("label"), "label", "a timeline interval's")}
+
+
+def _lane(raw):
+    _fields(raw, LANE_FIELDS, "a timeline lane")
+    grey = raw.get("grey_after_now", False)
+    if not isinstance(grey, bool):
+        raise TypeError(f"a timeline lane's grey_after_now must be True or False: {grey!r}")
+    intervals = raw.get("intervals")
+    if not isinstance(intervals, (list, tuple)):
+        raise TypeError(f"a timeline lane's intervals must be a list: {intervals!r}")
+    return {
+        "label": _text_or_none(raw.get("label"), "label", "a timeline lane's"),
+        "grey_after_now": grey,
+        "intervals": [_interval(interval) for interval in intervals],
+    }
+
+
+def timeline(lanes, now=None, title=None):
+    """A two-lane interval timeline: time-blocks on a shared vertical axis, lane 0 left, lane 1 right.
+
+    `lanes` is a list of one lane or two. Their order is what's drawn:
+    lane 0 the left column, in the lighter tone, lane 1 the right, in
+    the darker (one lane takes the whole width, in lane 0's). Each is a
+    dict:
+
+        label           text or None: the column's heading
+        grey_after_now  True for a lane with nothing after `now` - the
+                        flown side of a roster - whose column is greyed
+                        from the now line down; False by default
+        intervals       a list of {start, end, label}: each a block from
+                        `start` to `end` - a datetime or ISO-8601 text,
+                        stored as a session's are, UTC to the second (a
+                        naive time taken to be UTC) - both required, the
+                        end never before the start; `label` text or
+                        None, a short code drawn on the block (CX105)
+
+    `now` is a datetime or ISO-8601 text, the same way, or None: where
+    the now line is drawn - none for None. `title` is text or None.
+
+    The host carries the times and draws nothing: the page lays the axis
+    out to the tile it's in, as it does a line - a week of it to the
+    tile's height (less, in a short tile), the rest a scroll away.
+    Raises TypeError or ValueError for anything it can't draw.
+    """
+    if not isinstance(lanes, (list, tuple)):
+        raise TypeError(f"a timeline's lanes must be a list of one lane or two: {lanes!r}")
+    if len(lanes) not in TIMELINE_LANES:
+        raise ValueError(f"a timeline has one lane or two, not {len(lanes)}")
+    if title is not None and not isinstance(title, str):
+        raise TypeError(f"a timeline's title must be text: {title!r}")
+    return {
+        "type": "timeline",
+        "title": title,
+        "now": None if now is None else _session_instant(now, "a timeline's now"),
+        "lanes": [_lane(lane) for lane in lanes],
+    }
+
+
 def empty(message=None):
     """Nothing to show, and why."""
     return {"type": "empty", "message": message or "No data yet"}
@@ -371,6 +469,7 @@ class Ctx:
     line = staticmethod(line)
     panel = staticmethod(panel)
     input = staticmethod(input)
+    timeline = staticmethod(timeline)
     empty = staticmethod(empty)
 
     def __init__(self, conn, today=None, app=None):
