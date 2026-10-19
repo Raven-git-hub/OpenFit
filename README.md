@@ -298,7 +298,9 @@ as `/api/sessions` serves them: every source's, each with `.start`, `.end`,
 returns a display spec built from `number`, `line` (a sparkline, with an
 optional title), `panel`, `input` (below), `timeline` (one lane or two of
 time-blocks on a scrolling time axis, with a now line: a plan beside what
-happened) and `empty`. An app that fails to load is logged and
+happened — and, named into a sync group, a fixed cursor with the UTC time under
+it and a Now button, every timeline of the group scrolling to one time) and
+`empty`. An app that fails to load is logged and
 left out, and one whose `render()` fails shows as an error tile, never a
 broken page.
 
@@ -450,7 +452,10 @@ duty hours as its own metrics, `duty_hours_complete` and `duty_hours_rostered`
 timeline under the picker: the last six months or so and everything still to
 come, rostered on the left and flown on the right, each duty a block at its
 time labelled with its code, a line at now and the flown side greyed after it;
-it scrolls, a week to the tile's height. Uploading again replaces a duty with the same start and
+it scrolls, a week to the tile's height. A cursor stays fixed across the middle
+of it, with the time under it (UTC, to the quarter hour) shown above: it follows
+now until you scroll, and a Now button brings it back. The timeline is in the
+FRMS sync group, so later FRMS panels will scroll with it, by time. Uploading again replaces a duty with the same start and
 the same day's hours, but removes nothing: a duty dropped from a later roster
 keeps its row for now. Both kinds and both metrics file under the Roster
 category: OpenFit keeps operational context like this because you do — it

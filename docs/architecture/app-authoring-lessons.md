@@ -144,6 +144,16 @@ in three different homes.
   vocabulary of display primitives (`number`, `line`, `panel`, `input`, `timeline`,
   `empty`, `error`).
   Keep the vocabulary tight — add a primitive only when a real app needs it.
+- **Sync timelines by naming a group; the host does the rest.** A timeline that
+  should scroll with others — the FRMS panels: the roster now, sleep and the
+  like later — passes `sync="<group>"` to `ctx.timeline()` (the roster uses
+  `"frms"`). That's the app's whole part: the page draws the fixed cursor, the
+  UTC readout and the Now button, keeps the group's focus time and whether it
+  follows now, and scrolls every timeline of the group to that time by its own
+  scale. The focus is UI state — in memory, not in the engine, `app.yaml` or
+  the database — so `render()` never sees or returns it, and stays a pure
+  function of the data. Two apps using one group name are synced, whether or
+  not they meant to be: pick a name for the set of panels that belong together.
 - **The spec is a transient message, not a file.** Generated per render, drawn,
   and gone. Nothing in the app folder is the "display"; the only display-side file
   is the optional `app.js`.

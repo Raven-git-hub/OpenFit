@@ -72,7 +72,8 @@
   /* timeline - an interval timeline's two lanes, one hue: lane 0 (the
      left, a plan - rostered) the lighter tone, lane 1 (the right, the
      actual - flown) the darker, each with the ink that reads on it. Its
-     now line is --accent; the greyed future and the frame, the neutrals. */
+     now line is --accent, as is a synced timeline's fixed cursor; the
+     greyed future and the frame, the neutrals. */
   --timeline-a:#b4a8f0;
   --timeline-a-ink:var(--ink);
   --timeline-b:#5a47c9;
@@ -690,6 +691,26 @@ h5 + .dnote{margin-top:0;}
 }
 .tl-now{position:absolute;left:0;right:0;height:0;margin-top:-1px;border-top:2px solid var(--accent);z-index:1;pointer-events:none;}
 .tl-now::before{content:"";position:absolute;left:0;top:-4px;width:6px;height:6px;border-radius:50%;background:var(--accent);}
+/* a synced timeline (spec.sync): a row over the headings - the time
+   under the cursor, and a Now button once it's scrolled off now - and
+   the frame wrapped (.tl-view) so the cursor, a fixed line across its
+   middle, stays put while the track scrolls under it. The now line
+   carries a Now tag, on the greyed lane, under the line. Both lines in
+   the accent: they meet while the group follows now. */
+.tl-focus{display:flex;align-items:center;gap:8px;min-height:20px;}
+.tl-readout{font:600 11.5px/16px var(--font-mono);color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;}
+.tl-focus .tl-nowbtn{flex:none;margin-left:auto;padding:1px 8px;font-size:11px;line-height:16px;}
+.tl-focus .tl-nowbtn[hidden]{display:none;}
+.tl-view{position:relative;display:flex;flex-direction:column;flex:1 1 0;min-height:24px;min-width:0;}
+.tl-view > .tl-scroll{overflow-anchor:none;}
+.tl-cursor{position:absolute;left:0;right:0;top:50%;height:0;margin-top:-1px;border-top:2px solid var(--accent);z-index:2;pointer-events:none;}
+.tl-cursor::before, .tl-cursor::after{content:"";position:absolute;top:-5px;border:4px solid transparent;}
+.tl-cursor::before{left:0;border-left:6px solid var(--accent);}
+.tl-cursor::after{right:0;border-right:6px solid var(--accent);}
+.tl-now-tag{
+  position:absolute;top:3px;padding:0 5px;border-radius:4px;
+  background:var(--accent);color:var(--accent-ink);font:700 9.5px/14px var(--font-body);text-transform:uppercase;letter-spacing:.6px;
+}
 /* panel: its children, stacked */
 .spec-panel{display:flex;flex-direction:column;gap:12px;}
 .spec-panel > .spec-line{flex:1;}
@@ -3851,12 +3872,75 @@ h5 + .dnote{margin-top:0;}
      layout scrolls the now line to the middle (with no now, the end into
      view); after that a resize keeps the time at the top where it is,
      and with no height at all - Home hidden behind another tab - the
-     last layout stands. */
+     last layout stands.
+
+     A synced timeline (s.sync, a focus group's name) is drawn around its
+     group's focus clock (below) instead: a fixed cursor across the
+     middle of the viewport (.tl-cursor, over it in .tl-view - the track
+     scrolls under it), the time under it over the headings (.tl-readout,
+     UTC, to the quarter hour) and a Now button (.tl-nowbtn) while the
+     group isn't following now. It's scrolled to put the group's focus
+     time under the cursor - on every layout, and whenever the group's
+     focus moves - not to centre now: the two are one only while it
+     follows. The track is padded half a viewport at each end, so every
+     time on the axis can reach the cursor. Scrolled by hand, it moves
+     the group's focus to the time under its cursor and stops it
+     following. The now line stays at s.now, tagged Now on the greyed
+     lane. With no s.sync, none of that is drawn. */
   const TL_VIEW_MS = 7 * 86400000;   // the span of axis one viewport's height shows: a week
   const TL_MIN_WEEK_PX = 240;        // ... but never less than this to the week: a shorter viewport shows less
   const TL_MIN_BLOCK_PX = 18;        // a block's least height: a short duty stays legible, and tappable
   const TL_FALLBACK_PX = 240;        // the viewport's height until it has one: built detached, or no layout
-  const timelines = new Set();       // the timelines drawn, each {scroll, observer}: see releaseTimelines()
+  const timelines = new Set();       // the timelines drawn, each {scroll, observer, group, show}: see releaseTimelines()
+  /* The focus clock: by group name, the time in focus on the synced
+     timelines - the one under every member's cursor - and whether it's
+     following now. UI state, in memory for the page's life: never
+     stored, so a page load starts every group on now. The first
+     timeline naming a group starts it, following now; a timeline joins
+     (members) when drawn and leaves once it's off the page
+     (releaseTimelines()), so a tile drawn afresh keeps its group's time.
+     setFocus() publishes a change to every member: each scrolls the
+     time under its cursor - by its own scale: the time is what's shared,
+     never a scroll position - bar the one scrolled by hand (already
+     there), and redraws its readout and Now button. While a group
+     follows, the follow tick (followNow(), on each quarter hour) moves
+     it on to now; a scroll by hand stops that, and Now starts it again.
+     Every focus time is snapped to the quarter hour (tlSnap). */
+  const TL_STEP_MS = 15 * 60000;     // the focus clock's grain: its times, readout and follow tick to the quarter hour
+  const tlSnap = ms => Math.floor(ms / TL_STEP_MS) * TL_STEP_MS;
+  const focusGroups = new Map();     // a focus group's name -> {focusMs, following, members}
+  let followTimer = null;            // the one follow tick, set going by the first group
+  function focusGroup(name){
+    let g = focusGroups.get(name);
+    if(!g){
+      g = {focusMs: tlSnap(Date.now()), following: true, members: new Set()};
+      focusGroups.set(name, g);
+      armFollow();
+    }
+    return g;
+  }
+  function setFocus(g, focusMs, following, from){
+    g.focusMs = focusMs;
+    g.following = following;
+    g.members.forEach(m => m.show(m!==from));
+  }
+  function followNow(){
+    const now = tlSnap(Date.now());
+    focusGroups.forEach(g => { if(g.following && g.focusMs!==now) setFocus(g, now, true); });
+  }
+  function armFollow(){
+    if(followTimer!==null) return;
+    // Due on the next quarter hour, then again on each one after.
+    followTimer = setTimeout(() => { followTimer = null; followNow(); armFollow(); }, TL_STEP_MS - Date.now() % TL_STEP_MS);
+  }
+  const TL_DAYS = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+  const TL_MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  /* A focus time as the readout says it, in UTC: Mon 03 Nov 14:15Z. */
+  function fmtFocus(ms){
+    const d = new Date(ms), two = n => String(n).padStart(2, '0');
+    return `${TL_DAYS[d.getUTCDay()]} ${two(d.getUTCDate())} ${TL_MONTHS[d.getUTCMonth()]} `
+      + `${two(d.getUTCHours())}:${two(d.getUTCMinutes())}Z`;
+  }
   function timelineSpec(s){
     const ms = t => { const v = typeof t==='string' ? Date.parse(t) : NaN; return Number.isFinite(v) ? v : null; };
     const text = v => v!=null && v!=='' ? String(v) : '';
@@ -3877,6 +3961,21 @@ h5 + .dnote{margin-top:0;}
     if(!all.length){ box.appendChild(specMsg(null, 'No data')); return box; }
     const t0 = all.reduce((m, b) => Math.min(m, b.a), Infinity);
     const t1 = all.reduce((m, b) => Math.max(m, b.b), now===null ? -Infinity : now);
+    // Synced: a member of its focus group, its readout and Now button
+    // over the headings.
+    const group = typeof s.sync==='string' && s.sync!=='' ? focusGroup(s.sync) : null;
+    let readout = null, nowBtn = null;
+    if(group){
+      const row = el('div','tl-focus');
+      readout = row.appendChild(el('div','tl-readout'));
+      readout.title = 'The time at the cursor, UTC';
+      nowBtn = row.appendChild(el('button','btn sm tl-nowbtn'));
+      nowBtn.type = 'button';
+      nowBtn.textContent = 'Now';
+      nowBtn.title = 'Back to now, and follow it';
+      nowBtn.onclick = () => setFocus(group, tlSnap(Date.now()), true);
+      box.appendChild(row);
+    }
 
     if(lanes.some(l => l.label)){
       const head = el('div','tl-head');
@@ -3905,26 +4004,42 @@ h5 + .dnote{margin-top:0;}
       return {l, blocks, future};
     });
     const line = now!==null ? track.appendChild(el('div','tl-now')) : null;
+    if(group && line){
+      // Tagged under the line, on the greyed lane (the first, with none).
+      const tag = line.appendChild(el('div','tl-now-tag'));
+      tag.textContent = 'Now';
+      tag.style.left = `calc(${Math.max(0, lanes.findIndex(l => l.grey)) * 100 / lanes.length}% + 4px)`;
+    }
     scroll.appendChild(track);
-    box.appendChild(scroll);
+    if(group){
+      // The cursor over the viewport, not in it: the track scrolls, it stays.
+      const view = el('div','tl-view');
+      view.appendChild(scroll);
+      view.appendChild(el('div','tl-cursor'));
+      box.appendChild(view);
+    }else box.appendChild(scroll);
 
     let laidH = 0, laidPx = 0;   // the viewport height it's laid out for, and its scale (px a ms): 0 before any
     let topMs = null;   // the time at the viewport's top, as last scrolled: null before a real layout
+    let ours = null;    // synced: the scrollTop it last set itself, so its own scroll isn't taken for the user's
     const layout = () => {
       const h = scroll.clientHeight || 0;
       if(!h && laidH) return;   // hidden, or gone: the last layout stands
       const viewH = h || TL_FALLBACK_PX, px = Math.max(viewH, TL_MIN_WEEK_PX) / TL_VIEW_MS;
+      // Synced, half a viewport of axis past each end, so the cursor - its
+      // middle - can reach every time on it.
+      const pad = group ? viewH/2 : 0;
       if(viewH!==laidH){
-        let bottom = (t1 - t0) * px;
+        let bottom = pad + (t1 - t0) * px;
         cols.forEach(c => c.l.blocks.forEach((b, i) => {
-          const top = (b.a - t0) * px, height = Math.max(TL_MIN_BLOCK_PX, (b.b - b.a) * px);
+          const top = pad + (b.a - t0) * px, height = Math.max(TL_MIN_BLOCK_PX, (b.b - b.a) * px);
           c.blocks[i].style.top = top+'px';
           c.blocks[i].style.height = height+'px';
           bottom = Math.max(bottom, top + height);
         }));
-        track.style.height = bottom+'px';
+        track.style.height = (bottom + pad)+'px';
         if(now!==null){
-          const y = (now - t0) * px;
+          const y = pad + (now - t0) * px;
           line.style.top = y+'px';
           cols.forEach(c => { if(c.future) c.future.style.top = Math.max(0, y)+'px'; });
         }
@@ -3932,25 +4047,59 @@ h5 + .dnote{margin-top:0;}
         laidPx = px;
       }
       if(!h) return;            // no real height yet: nothing to scroll
+      if(group){ toFocus(); return; }
       if(topMs===null) topMs = now!==null ? now - viewH/2/px : t1 - viewH/px;
       scroll.scrollTop = (topMs - t0) * px;
     };
-    scroll.onscroll = () => { if(scroll.clientHeight && laidPx) topMs = t0 + scroll.scrollTop / laidPx; };
+    // Synced: the group's focus time under the cursor - padded, that's
+    // where its scrollTop is that time's offset on the axis. A time
+    // past either end of the axis scrolls as far as it goes.
+    const toFocus = () => {
+      if(!scroll.clientHeight || !laidPx) return;
+      scroll.scrollTop = (group.focusMs - t0) * laidPx;
+      ours = scroll.scrollTop;
+    };
+    const t = {scroll, observer: null, group, show: null};
+    if(group){
+      // Its own scroll to the focus passes; the user's moves the group's
+      // focus to the time under the cursor, and stops it following.
+      scroll.onscroll = () => {
+        if(!scroll.clientHeight || !laidPx) return;
+        const mine = ours!==null && Math.abs(scroll.scrollTop - ours) < 1;
+        ours = null;
+        if(!mine) setFocus(group, tlSnap(t0 + scroll.scrollTop / laidPx), false, t);
+      };
+      t.show = rescroll => {
+        readout.textContent = fmtFocus(group.focusMs);
+        nowBtn.hidden = group.following;
+        if(rescroll) toFocus();
+      };
+      group.members.add(t);
+      t.show(false);
+    }else{
+      scroll.onscroll = () => { if(scroll.clientHeight && laidPx) topMs = t0 + scroll.scrollTop / laidPx; };
+    }
     layout();
     if(typeof requestAnimationFrame==='function') requestAnimationFrame(layout);
     if(typeof ResizeObserver==='function'){
-      const t = {scroll, observer: new ResizeObserver(() => { if(scroll.isConnected) layout(); else releaseTimelines(); })};
+      t.observer = new ResizeObserver(() => { if(scroll.isConnected) layout(); else releaseTimelines(); });
       t.observer.observe(scroll);
-      timelines.add(t);
     }
+    if(t.observer || group) timelines.add(t);
     return box;
   }
   /* Lets go of the timelines no longer on the page - their tile drawn
      afresh, or Home painted anew - disconnecting each one's
-     ResizeObserver, so none keeps a replaced tile alive. Called wherever
-     Home's faces are replaced (paintHome, repaintTile). */
+     ResizeObserver and taking a synced one out of its focus group, so
+     none keeps a replaced tile alive (the group, and its time, stay).
+     Called wherever Home's faces are replaced (paintHome, repaintTile). */
   function releaseTimelines(){
-    timelines.forEach(t => { if(!t.scroll.isConnected){ t.observer.disconnect(); timelines.delete(t); } });
+    timelines.forEach(t => {
+      if(t.scroll.isConnected) return;
+      if(t.observer) t.observer.disconnect();
+      if(t.group) t.group.members.delete(t);
+      timelines.delete(t);
+    });
   }
 
   /* =========================================================

@@ -101,12 +101,18 @@ the dicts directly):
         other kinds) - then the tile is drawn afresh; label and unit may
         be null
     {"type": "timeline", "title", "now", "lanes": [{"label", "grey_after_now",
-                                                    "intervals": [{"start", "end", "label"}, ...]}, ...]}
+                                                    "intervals": [{"start", "end", "label"}, ...]}, ...],
+     "sync"}
         one lane or two of time-blocks, side by side on one vertical
         time axis - lane 0 left and lighter, lane 1 right and darker -
         laid out by the page to its tile and scrolled: each block from
         its start to its end (UTC text), its label on it; a line at
-        `now` (null: none), and a grey_after_now lane greyed below it
+        `now` (null: none), and a grey_after_now lane greyed below it.
+        `sync`, only when given, names a focus group: the page draws a
+        fixed cursor at the frame's middle, the time under it (UTC, to
+        the quarter hour) and a Now button, and every timeline of the
+        group scrolls to the one focus time - following now until one
+        is scrolled
     {"type": "empty", "message"}
     {"type": "error", "message"}
         the host's, when a render fails - never an app's to return
@@ -406,7 +412,7 @@ def _lane(raw):
     }
 
 
-def timeline(lanes, now=None, title=None):
+def timeline(lanes, now=None, title=None, sync=None):
     """A two-lane interval timeline: time-blocks on a shared vertical axis, lane 0 left, lane 1 right.
 
     `lanes` is a list of one lane or two. Their order is what's drawn:
@@ -428,9 +434,21 @@ def timeline(lanes, now=None, title=None):
     `now` is a datetime or ISO-8601 text, the same way, or None: where
     the now line is drawn - none for None. `title` is text or None.
 
+    `sync` is text or None: the name of a focus group ("frms") the
+    timeline joins - an empty name is none. Given, the spec carries it
+    and the page draws the timeline around a focus clock it keeps for
+    the group: a fixed cursor across the middle of the frame, the time
+    under it (UTC, to the quarter hour) over the lanes, the now line
+    labelled Now, and a Now button once it's been scrolled off now.
+    Every timeline of one group, in any tile, scrolls to the same time:
+    the time is what's shared, never a scroll position. None (the
+    default) leaves the spec - and the timeline drawn - as it was.
+
     The host carries the times and draws nothing: the page lays the axis
     out to the tile it's in, as it does a line - a week of it to the
-    tile's height (less, in a short tile), the rest a scroll away.
+    tile's height (less, in a short tile), the rest a scroll away. The
+    focus clock is the page's too - what's in focus, and whether it's
+    following now, is never stored.
     Raises TypeError or ValueError for anything it can't draw.
     """
     if not isinstance(lanes, (list, tuple)):
@@ -439,12 +457,17 @@ def timeline(lanes, now=None, title=None):
         raise ValueError(f"a timeline has one lane or two, not {len(lanes)}")
     if title is not None and not isinstance(title, str):
         raise TypeError(f"a timeline's title must be text: {title!r}")
-    return {
+    if sync is not None and not isinstance(sync, str):
+        raise TypeError(f"a timeline's sync must be text, a focus group's name: {sync!r}")
+    spec = {
         "type": "timeline",
         "title": title,
         "now": None if now is None else _session_instant(now, "a timeline's now"),
         "lanes": [_lane(lane) for lane in lanes],
     }
+    if sync:
+        spec["sync"] = sync
+    return spec
 
 
 def empty(message=None):

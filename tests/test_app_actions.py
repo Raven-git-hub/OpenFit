@@ -1508,12 +1508,12 @@ def test_the_roster_app_shows_rostered_against_flown_on_a_timeline(client, conn,
     # The upload's reply is the tile, drawn afresh: the picker, over the
     # timeline - rostered on the left, flown on the right and greyed
     # after now - each duty a block of its start and end, labelled with
-    # its code, oldest first.
+    # its code, oldest first - in the FRMS focus group.
     block = lambda i: {"start": stamp(duties[i][1]), "end": stamp(duties[i][1] + duties[i][2]),
                        "label": ["CX9102", "A1534", "CX9101", "R1E"][i]}
     [picker, timeline] = resp.get_json()["spec"]["children"]
     assert picker == ROSTER_PICKER
-    assert timeline == {"type": "timeline", "title": None, "now": drawn_now(before, after, timeline), "lanes": [
+    assert timeline == {"type": "timeline", "title": None, "now": drawn_now(before, after, timeline), "sync": "frms", "lanes": [
         {"label": "Rostered", "grey_after_now": False, "intervals": [block(3)]},
         {"label": "Flown", "grey_after_now": True, "intervals": [block(1), block(2)]},
     ]}
