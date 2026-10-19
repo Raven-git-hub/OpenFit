@@ -181,19 +181,53 @@ own calls to its device API. Full direction:
   non-empty, not `.`, no `/`, `\`, `..` or control character, writable as
   UTF-8) and every content a string; the id free (`_taken()`: no
   `<apps dir>/<id>` as anything, a broken link included, and no app in
-  another folder loading under it) else 409 `"'<id>' already exists — remove
-  it first to reinstall."` (install only creates, never updates); then
+  another folder loading under it) else 409 `"'<id>' already exists — use
+  Update in its row to replace its files, or remove it first to
+  reinstall."` (install only creates, never updates — that's
+  `update_app()`); then
   `check_app(manifest, files)` — **the correctness layer that grows**; its
   one rule so far is a size (`manifest_sizes()`: "won't deploy without a
   size", refused 400 with the scanner's own reason); no other manifest
   field is checked, `app.py` isn't parsed, nothing is run. Only then is
   anything written: into a hidden
-  `.install-<hex>` folder (the scanner skips dot-folders), renamed to `<id>`
-  once whole, under a process lock (`_write_lock`, shared with uninstall),
-  `APPS_DIR` made if missing; a failed
+  `.install-<hex>` folder (the scanner skips dot-folders; `_stage()`,
+  shared with update), renamed to `<id>` once whole, under a process lock
+  (`_write_lock`, shared with update and uninstall), `APPS_DIR` made if
+  missing; a failed
   write removes it (500). Every refusal raises `InstallError(message,
   status)` having written nothing; containment checks run before anything
   touches the disk and never move into `check_app()`.
+  `update_app(apps_dir, app_id, files)` is the one way an installed app's
+  files are replaced (`PUT /api/apps/<id>`, the Library's Update): the safe,
+  one-step form of uninstall-then-add, its id and data kept. In order,
+  before the app is touched: `app_id` (the URL's) matching the scanner's
+  `APP_ID` else 400 "not an app id: ..." (uninstall's rule, so a
+  hand-placed `My_App` can be updated); `files` a non-empty mapping, its
+  `app.yaml` parsing (`_manifest_to_install()`); the manifest's `id` the
+  app's own (`_update_id()`: absent, not text, or another →
+  400 `"this updates '<id>', but the files are for '<other>' — an update
+  keeps the app's id (Duplicate makes a copy under a new one)"`); every
+  file name and content install's (`_check_files()`, shared). Then under
+  `_write_lock`: the app installed — loading, its folder the one
+  `find_app()` loaded it from, a direct child of `APPS_DIR` — else 404
+  `"'<id>' isn't installed — use Add Application to install it"`;
+  `check_app()`; the files staged in a hidden `.update-<hex>`
+  (`_stage()`), which must load as the scanner loads it (`_loads()`:
+  `load_app()` — the whole manifest, and `app.py` imported, unlike
+  install, which runs nothing: a broken update would take down a working
+  app) else 400 `"the update doesn't load, so '<id>' is unchanged:
+  <why>"`, staging removed; then `_swap()`: the old folder renamed aside
+  to a hidden `.update-old-<hex>`, the staged one renamed into its place
+  (each atomic; the second failing → the old one renamed back; either →
+  500, the app on its old files), the `_loaded` entry dropped, and the old
+  folder deleted — a link unlinked, never its target; a delete that fails
+  leaves it hidden, logged (`[apps] updated <id>, but couldn't delete
+  ...`). A replace, not a merge: the folder holds exactly `files`, a file
+  left out gone. No database work: what it wrote under `app:<id>` stays
+  (a custom metric the new manifest drops leaves the catalog, readings
+  kept, and is back when declared again; its source isn't orphaned while
+  the app is installed). → `{"id", "has_app_py"}`; every refusal an
+  `InstallError` with the app as it was.
   `uninstall_app(apps_dir, app_id)` is the one way an app is removed
   (`DELETE /api/apps/<id>`): the id, from the URL, must match the scanner's
   `APP_ID` (every listed id does, so a hand-placed `My_App` can go too;
@@ -545,8 +579,8 @@ own calls to its device API. Full direction:
   order — so there's no installed-but-unplaced app, and an install
   appears on Home. A read never rewrites the row (so an unsaved
   instance's id is that read's alone), and an app uninstalled and
-  reinstalled before the next save (the update path) comes back where it
-  was, id and config included. `parse_layout(body)` checks a save's shape
+  reinstalled before the next save comes back where it was, id and
+  config included (an update, `update_app()`, never leaves the layout). `parse_layout(body)` checks a save's shape
   only: `tabs` a non-empty list, each `{id` (`TAB_ID`, unique), `name`
   (text, not blank, ≤ 40), `mode` `"flow"`, `subtitle` (text ≤
   `MAX_SUBTITLE` 120), `items` (a list)`}`; each item `{app_id` (the
@@ -695,7 +729,7 @@ own calls to its device API. Full direction:
   apps that load and carries no status), and the list's states — "No
   applications installed" when there are none, a Retry when the read
   fails. Read at boot (`loadApps()`, which returns what it read, or null),
-  separately from Home, and again after an install or uninstall. A row
+  separately from Home, and again after an install, update or uninstall. A row
   expands as a Your data row does — one mechanism, `expandable(item, head,
   o)`, which both `rowItem()` and `appRow()` hand their item and head to:
   the head a button, its click showing/hiding the panel, the chevron
@@ -715,13 +749,17 @@ own calls to its device API. Full direction:
   tile's config, `tileCfg()` — the existing route, no rescan, no reload —
   and `repaintTile()` redraws that
   app's Home tile in place from the fresh spec; a render that failed says
-  so), then at the far end **Duplicate** (`btn sm`) and **Uninstall**
-  (`btn sm danger`). Duplicate forks the app, client-only: every file in
+  so), then at the far end **Update**, **Duplicate** (both `btn sm`,
+  `aria-haspopup="dialog"`) and **Uninstall** (`btn sm danger`). Update
+  and Duplicate both start with `readBack(btn, verb)`: every file in
   `a.files` read back (`api.appFile()`, the button off meanwhile, one
-  `Promise.all`; an empty file is copied empty) — any read that fails
+  `Promise.all`; an empty file is read empty) — any read that fails
   (a non-text file's 415, a network error) stops it with "Couldn't read
-  <file> (<why>) — can't duplicate <name>." in the row and nothing
-  opened — then `dupeTarget(a, appsList.apps)` → `{id, name}`, the
+  <file> (<why>) — can't <update|duplicate> <name>." in the row and
+  nothing opened — as `[{name, text}]`. Update then opens the Add popup
+  on them as they are, in its update mode: `openAddApp(current, null,
+  a)` (below). Duplicate forks the app, client-only:
+  `dupeTarget(a, appsList.apps)` → `{id, name}`, the
   lowest n ≥ 2 with neither `<baseId>-n` nor `"<baseName> n"` installed
   (`baseId` the id less a trailing `-<digits>`, lowercased with `_` → `-`
   so a hand-placed `My_App` gives a valid install id; `baseName` the name
@@ -745,12 +783,29 @@ own calls to its device API. Full direction:
   the tile go) and `loadAppSources()` (what it wrote stays, orphaned now:
   Connected sources' Remove data) and notes "✓ Uninstalled <name>"; an
   error stays in the row. Alerts are their own branch. **The Add Application popup** (`openAddApp(prefill,
-  copyOf)` — ＋ Add Application calls it bare; Duplicate passes the copy's
+  copyOf, update)` — ＋ Add Application calls it bare; Duplicate passes the copy's
   `[{name, text}]` and the source's name, and the popup is titled
   "Duplicate application", says it's a copy, and starts with `app.yaml`
   and `app.py` in their slots and an added slot per other file, each
   filled through `fileSlot()`'s `prefill` `{name, text}` as values, never
-  markup — all editable before Review;
+  markup — all editable before Review; Update passes the app's files and
+  the app itself as `update`, and the popup is that app's update: titled
+  "Update application", the same slots filled with its files untouched,
+  the id shown locked over them (`data-f="locked"`: "Application:
+  `<id>`" and a Locked tag — no field: the id lives in `app.yaml`),
+  Review reading the id with `updateId(text, keep)` (the same parse,
+  `yamlId()`, held to the app's own id, any `APP_ID` form, as the
+  server's `_update_id()`; another or none says so, "This updates
+  "<id>", but app.yaml's id is "<other>": …", Update disabled) and
+  showing "Update application: `<id>`", no tab picker (the app is
+  placed already), and at its foot the confirm — a `danger-panel`
+  (`.update-sure`, `data-f="sure"`, shown only when the id holds)
+  "Update <name>?" / "This replaces the app's files. Its data is kept." —
+  over [Cancel] [Back] **Update**; only Update sends anything:
+  `api.updateApp(id, files)` → `PUT /api/apps/<id>` `{files}`, then as
+  Install's success (`appInstalled(res, 'Updated')`, "✓ Updated
+  <name>"), a refusal (the server's message — an update that doesn't
+  load) staying in the popup, nothing changed;
   the `.modal` chrome widened by `.wide`) builds the app folder as file
   slots (`fileSlot()`): `app.yaml` (Required) and `app.py` (Optional), each
   a monospace paste `<textarea>` with an **Upload** button beside it
@@ -761,8 +816,8 @@ own calls to its device API. Full direction:
   name stops on the files step, the server's rules mirrored by
   `fileNameProblem()`), then the confirm step reads the id from the
   `app.yaml` — there's no id field — with `manifestId()`, a parser-free
-  preview (the last top-level `id:` line, quotes and a trailing comment
-  stripped, checked against the server's `INSTALL_ID`): "Install
+  preview (`yamlId()`: the last top-level `id:` line, quotes and a
+  trailing comment stripped; checked against the server's `INSTALL_ID`): "Install
   application: `<id>`", or why it can't (empty, no id, an unclosed quote,
   a bad id) with Install disabled; under it, only when Home's layout
   (`home.layout`, as last read) has more than one tab and Configure is
@@ -784,14 +839,14 @@ own calls to its device API. Full direction:
   the chosen tab and `PUT`s the layout once; a failed read, a tab it
   doesn't hold or no instance found leaves it on the default, as before
   the picker — and then
-  `appInstalled()` re-reads Home and the list at once, then notes "✓
+  `appInstalled(res, done)` re-reads Home and the list at once, then notes "✓
   Installed <name>" — or, if the new id isn't listed (installed but the
   scanner skipped it), that it doesn't load and the server's log says
   why; an error (the server's message, as given — taken id, parse error)
   stays in the popup. Every name and id reaching `innerHTML` is `esc()`d.
   The page's checks are UX only; the server re-checks everything. A
-  test runs `fileNameProblem()`/`manifestId()` under node (skipped
-  without it) against the server's own checks. A round voice button
+  test runs `fileNameProblem()`/`manifestId()`/`updateId()` under node
+  (skipped without it) against the server's own checks. A round voice button
   after the "Connected sources", "Your data" and "Applications" titles plays
   that card's clip (`/audio/connected-sources.mp3`, `/audio/your-data.mp3`,
   `/audio/applications.mp3` — the last not recorded yet, so it 404s and
@@ -810,7 +865,7 @@ own calls to its device API. Full direction:
   `/api/connectors/<id>/detail`, `PUT /api/connectors/<id>/cadence`,
   `DELETE /api/connectors/<id>`,
   `/api/sync/<plugin>`), and the app routes (`/api/apps`, `POST /api/apps`,
-  `DELETE /api/apps/<id>`, `POST /api/app/<id>/render`, `POST
+  `PUT /api/apps/<id>`, `DELETE /api/apps/<id>`, `POST /api/app/<id>/render`, `POST
   /api/app/<id>/action`, `/api/app/<id>/file`, `/api/app-sources`, `DELETE
   /api/app-sources/<id>`, `DELETE /api/app-sources/<id>/<metric>`) and Home's layout (`GET`/`PUT /api/home-layout`);
   not `/api/activity` (the last-sync stamp that read it
@@ -821,7 +876,7 @@ own calls to its device API. Full direction:
   over the layout read — mid-Configure the working copy, the tab on screen
   flushed into it first, so an unsaved setting holds; a failed fetch is that
   app's error tile), and is re-read after a Sync now or a source removal,
-  as the data card is, and after an app install or uninstall; an app row's
+  as the data card is, and after an app install, update or uninstall; an app row's
   Refresh redraws just its own tile (keeping its Configure controls).
   Home draws one tab of the layout at a time, the one picked on the strip
   (`home.activeTab`; none picked, or one that's no tab, → the default,
@@ -1722,10 +1777,19 @@ same PR:
   files — `app.py` became optional; then expandable app rows — reads, files
   in a read-only viewer (`GET /api/app/<id>/file`), a reserved writes-ticker
   slot, Refresh, Duplicate (slice 4, above) and Uninstall (`DELETE /api/apps/<id>`, the first
-  destructive app action); Browse / Build / Create are still placeholders;
+  destructive app action); then **App Update** (no migration): an app's
+  files replaced in place, its id and data kept — `PUT /api/apps/<id>`
+  (`update_app()`: the new set validated and staged, loaded as the
+  scanner would load it, then atomically swapped for the old folder,
+  which is kept aside until the new one is in; a whole-folder replace;
+  no database work), and an **Update** button in the app row, left of
+  Duplicate, opening the Add popup on the app's files with the id
+  locked and Review as the confirm ("Update <name>? This replaces the
+  app's files. Its data is kept."); the safe form of uninstall-then-add,
+  which it replaces as the update path; Browse / Build / Create are still placeholders;
   next the writes ticker (now app write-back exists to count), then alerts;
-  updating in place, editing files, disabling an app and zip upload are
-  out — Uninstall, then add, is the update path),
+  partial (single-file) updates, version history beyond the swap's
+  recovery, disabling an app and zip upload are out),
   a custom `app.js`, enforcing `reads`, and the sandbox (Phase 4).
 - **The access contract:** landed (see Data model): discovery, range queries
   with provenance, sessions, intraday series (passthrough); for the

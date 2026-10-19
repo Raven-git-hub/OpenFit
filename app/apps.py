@@ -34,7 +34,8 @@ is logged once per change rather than on every page load.
 
 This is the one way the host finds an app: the Home tab's routes use it
 now, and the Library reuses it. install_app() is the one way one is
-added from the browser (POST /api/apps), uninstall_app() the one way one
+added from the browser (POST /api/apps), update_app() the one way one's
+files are replaced (PUT /api/apps/<id>), uninstall_app() the one way one
 is removed (DELETE /api/apps/<id>), and read_app_file() the one way a
 file in one is read back (GET /api/app/<id>/file): see their sections,
 below.
@@ -512,8 +513,9 @@ INSTALL_ID = re.compile(r"[a-z0-9][a-z0-9-]*\Z")
 # The control characters, NUL among them: never in a file name.
 _CONTROL = re.compile(r"[\x00-\x1f\x7f]")
 
-# Installs and uninstalls one at a time, so two installs can't both find
-# an id free, and an uninstall can't move a folder an install is checking.
+# Installs, updates and uninstalls one at a time, so two installs can't
+# both find an id free, and an uninstall can't move a folder an install
+# is checking or an update is replacing.
 _write_lock = threading.Lock()
 
 
@@ -526,11 +528,15 @@ class LibraryError(Exception):
 
 
 class InstallError(LibraryError):
-    """An install refused. Nothing was written."""
+    """An install refused, nothing written - or an update refused, the
+    app left as it was."""
 
 
 def taken_message(app_id):
-    return f"'{app_id}' already exists — remove it first to reinstall."
+    return (
+        f"'{app_id}' already exists — use Update in its row to replace its files, "
+        "or remove it first to reinstall."
+    )
 
 
 def _manifest_to_install(files):
@@ -643,11 +649,11 @@ def install_app(apps_dir, files):
 
     In order: app.yaml must be among the files and parse; its id and
     every file name must pass the containment checks; the id must be
-    free - an install only ever creates, never updates in place; then
-    check_app(). Only then is anything written: the files go into a
-    hidden staging folder (the scanner skips dot-folders), which is
-    renamed to <id> once they're all there, so the app appears whole or
-    not at all. Nothing is imported or run.
+    free - an install only ever creates, never updates in place (that's
+    update_app()); then check_app(). Only then is anything written: the
+    files go into a hidden staging folder (the scanner skips
+    dot-folders), which is renamed to <id> once they're all there, so the
+    app appears whole or not at all. Nothing is imported or run.
 
     Returns {"id", "has_app_py"}. Raises InstallError, having written
     nothing: status 400 for a bad request, manifest, id or file name,
@@ -658,12 +664,7 @@ def install_app(apps_dir, files):
 
     manifest = _manifest_to_install(files)
     app_id = _install_id(manifest)
-    for name, content in files.items():
-        problem = filename_problem(name)
-        if problem:
-            raise InstallError(problem)
-        if not isinstance(content, str) or not _is_text(content):
-            raise InstallError(f"{name!r} must be text")
+    _check_files(files)
 
     apps_dir = os.path.abspath(apps_dir)
     with _write_lock:
@@ -679,10 +680,22 @@ def install_app(apps_dir, files):
     return {"id": app_id, "has_app_py": MODULE in files}
 
 
-def _write_app(apps_dir, app_id, files):
-    """Write `files` into a new <apps_dir>/<app_id>/, whole or not at all."""
+def _check_files(files):
+    """Every file's name plain and its content text, else InstallError."""
+    for name, content in files.items():
+        problem = filename_problem(name)
+        if problem:
+            raise InstallError(problem)
+        if not isinstance(content, str) or not _is_text(content):
+            raise InstallError(f"{name!r} must be text")
+
+
+def _stage(apps_dir, files, kind):
+    """Write `files` into a new hidden <apps_dir>/.<kind>-<hex>/ - the
+    scanner skips dot-folders - and return its path. Whole or not at all:
+    a failure part way removes it."""
     os.makedirs(apps_dir, exist_ok=True)
-    staging = os.path.join(apps_dir, f".install-{secrets.token_hex(8)}")
+    staging = os.path.join(apps_dir, f".{kind}-{secrets.token_hex(8)}")
     os.mkdir(staging)
     try:
         for name, content in files.items():
@@ -694,6 +707,16 @@ def _write_app(apps_dir, app_id, files):
             # "x": create, never overwrite; newline="": as given.
             with open(path, "x", encoding="utf-8", newline="") as f:
                 f.write(content)
+    except BaseException:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
+    return staging
+
+
+def _write_app(apps_dir, app_id, files):
+    """Write `files` into a new <apps_dir>/<app_id>/, whole or not at all."""
+    staging = _stage(apps_dir, files, "install")
+    try:
         os.rename(staging, os.path.join(apps_dir, app_id))
     except BaseException:
         shutil.rmtree(staging, ignore_errors=True)
@@ -837,3 +860,138 @@ def uninstall_app(apps_dir, app_id):
     else:
         _log(f"uninstalled {app_id}: removed {folder}")
     return {"id": app_id}
+
+
+# ---------- updating an app: PUT /api/apps/<id> ----------
+
+# An installed app's files replaced, in one step: the safe form of
+# uninstalling it and adding it again. Install and uninstall composed -
+# the new files staged and checked, then swapped in for the old folder -
+# with the old folder kept aside until the new one is in its place. The
+# request names the app, never a path: the folder replaced is the one
+# the scanner loaded it from, as uninstall's is.
+
+
+def _update_id(manifest, app_id):
+    """The manifest's id, which must be the app's own: an update never
+    renames an app, nor puts one app's files in another's place."""
+    new_id = manifest.get("id")
+    if new_id is None:
+        raise InstallError(f"{MANIFEST} needs an id: this updates '{app_id}', so id: {app_id}")
+    if not isinstance(new_id, str):
+        raise InstallError(f"id must be text: this updates '{app_id}', so id: '{app_id}'")
+    if new_id != app_id:
+        raise InstallError(
+            f"this updates '{app_id}', but the files are for '{new_id}' — an update keeps "
+            "the app's id (Duplicate makes a copy under a new one)"
+        )
+    return new_id
+
+
+def _loads(staging, app_id):
+    """Whether the staged files load as the scanner would load them, else
+    InstallError: the app is left on its old files."""
+    try:
+        load_app(staging)
+    except AppError as e:
+        raise InstallError(f"the update doesn't load, so '{app_id}' is unchanged: {e}") from None
+
+
+def _swap(folder, staging):
+    """Put the staged folder in `folder`'s place: the old folder renamed
+    aside to a hidden .update-old-<hex> - one atomic step - then the new
+    one renamed in, another. Returns the old folder's new path. If the
+    second rename fails, the old folder is put back. Either way, the app
+    is never missing: InstallError, 500, with the old files in place."""
+    old = os.path.join(os.path.dirname(folder), f".update-old-{secrets.token_hex(8)}")
+    try:
+        os.rename(folder, old)
+    except OSError as e:
+        raise InstallError(f"couldn't replace the app's files: {e.strerror or e}", 500) from None
+    try:
+        os.rename(staging, folder)
+    except OSError as e:
+        try:
+            os.rename(old, folder)
+        except OSError as again:
+            # Nothing's left to try: the files are kept, hidden, and said.
+            _log(f"couldn't put {folder} back: its files are in {old}: {again.strerror or again}")
+        raise InstallError(f"couldn't replace the app's files: {e.strerror or e}", 500) from None
+    return old
+
+
+def update_app(apps_dir, app_id, files):
+    """Replace the installed app's files with `files`, {name: text}: the
+    same app, its id kept, under its own folder.
+
+    In order, before the app is touched: the URL's id must be one an app
+    could have (APP_ID, as uninstall's); app.yaml must be among the files
+    and parse, with an id - this app's own, not another's; every file
+    name and content must pass install's containment checks. Then, one
+    at a time with installs and uninstalls (_write_lock): the app must be
+    installed - loading - and its folder is the one the scanner loaded it
+    from; check_app(); the files are written to a hidden staging folder,
+    which must load as the scanner would load it (load_app(): the whole
+    manifest, and app.py imported - unlike install, which runs nothing,
+    because a broken update would take down an app that works); then the
+    swap (_swap()): the old folder aside, the new one in, each an atomic
+    rename. The app's cached load is dropped, so the next scan loads the
+    new files, and only then is the old folder deleted - a link unlinked,
+    its target never touched; a delete that fails leaves it hidden, and
+    logged.
+
+    A replace, not a merge: the folder afterwards holds exactly `files`,
+    so a file left out is gone. No database work: what the app wrote,
+    under app:<id>, is untouched. A custom metric the new app.yaml no
+    longer declares drops out of the catalog, its readings kept, until
+    it's declared again.
+
+    Returns {"id", "has_app_py"}. Raises InstallError, having changed
+    nothing - the app runs on its old files - 400 for a bad request,
+    manifest, id, file name or app that doesn't load, 404 for an app
+    that isn't installed, 500 if the files can't be written or swapped.
+    """
+    if not isinstance(app_id, str) or not APP_ID.match(app_id):
+        raise InstallError(
+            f"not an app id: letters, digits, '-' and '_', starting with a letter or digit: {app_id!r}"
+        )
+    if not isinstance(files, dict) or not files:
+        raise InstallError('expected {"files": {name: content}}, with at least an app.yaml')
+
+    manifest = _manifest_to_install(files)
+    _update_id(manifest, app_id)
+    _check_files(files)
+
+    apps_dir = os.path.abspath(apps_dir)
+    with _write_lock:
+        installed = find_app(apps_dir, app_id)
+        folder = installed.path if installed else None
+        # The scanner only loads a direct child of the apps folder; this
+        # is the last word, in case that ever changes.
+        if folder is None or os.path.dirname(folder) != apps_dir:
+            raise InstallError(f"'{app_id}' isn't installed — use Add Application to install it", 404)
+        check_app(manifest, dict(files))
+        try:
+            staging = _stage(apps_dir, files, "update")
+        except OSError as e:
+            raise InstallError(f"couldn't write the app's files: {e.strerror or e}", 500) from None
+        try:
+            _loads(staging, app_id)
+            old = _swap(folder, staging)
+        except BaseException:
+            shutil.rmtree(staging, ignore_errors=True)
+            raise
+        # The new files are loaded afresh, never from the old ones' cache.
+        with _loaded_lock:
+            _loaded.pop(folder, None)
+
+    try:
+        if os.path.islink(old):
+            os.unlink(old)
+        else:
+            shutil.rmtree(old)
+    except OSError as e:
+        # Updated all the same: what's left is hidden from the scanner.
+        _log(f"updated {app_id}, but couldn't delete {old}: {e.strerror or e}")
+    _log(f"updated {app_id}: {', '.join(sorted(files))}")
+    return {"id": app_id, "has_app_py": MODULE in files}

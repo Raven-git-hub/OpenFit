@@ -289,7 +289,7 @@ def test_index_splits_applications_into_controls_and_a_list(client, monkeypatch)
     assert "note.id = 'appsMsg';" in controls
 
 
-def test_the_applications_list_writes_only_uninstall_and_the_popup_installs(client):
+def test_the_applications_list_writes_only_uninstall_and_the_popup_installs_or_updates(client):
     resp = client.get("/")
     page = resp.get_data(as_text=True)
     resp.close()
@@ -310,12 +310,14 @@ def test_the_applications_list_writes_only_uninstall_and_the_popup_installs(clie
     assert "appFile:      (id, name)     => send('/api/app/'+enc(id)+'/file?name='+enc(name), 'GET')," in page
     assert "uninstallApp: id             => send('/api/apps/'+enc(id), 'DELETE')," in page
 
-    # The popup's one write is the install, through the API block.
+    # The popup's one write is the install - or, opened by Update, the
+    # update - through the API block.
     section = page[popup:home]
-    assert re.findall(r"api\.\w+", section) == ["api.installApp"]
+    assert re.findall(r"api\.\w+", section) == ["api.updateApp", "api.installApp"]
     for other in ("send(", "fetch(", "'POST'", "'PUT'", "'DELETE'", "localStorage", "'/api/"):
         assert other not in section, other
     assert "installApp:   files          => send('/api/apps', 'POST', {files})," in page
+    assert "updateApp:    (id, files)    => send('/api/apps/'+enc(id), 'PUT', {files})," in page
 
 
 def test_add_application_builds_the_app_from_file_slots(client):
@@ -340,8 +342,10 @@ def test_add_application_builds_the_app_from_file_slots(client):
 
     # Review reads the id from the app.yaml - there's no id field - and
     # names it, or says why it can't.
-    assert "manifestId(files.find(x => x.name === 'app.yaml').text)" in popup
-    assert "idLine.innerHTML = `Install application: <code>${esc(read.id)}</code>`;" in popup
+    assert "const yamlText = files.find(x => x.name === 'app.yaml').text;" in popup
+    assert "const read = update ? updateId(yamlText, update.id) : manifestId(yamlText);" in popup
+    assert "const verb = update ? 'Update' : 'Install';" in popup
+    assert "idLine.innerHTML = `${verb} application: <code>${esc(read.id)}</code>`;" in popup
     assert "else idLine.textContent = read.problem;" in popup
     assert "install.disabled = !read.id;" in popup
     assert "data-key" not in popup and "id-field" not in popup
@@ -359,9 +363,12 @@ def test_add_application_builds_the_app_from_file_slots(client):
     # Install sends the files; success closes the popup, puts the app on
     # the tab picked (if one was), and re-reads the list and Home at once -
     # an error keeps it open, the server's message shown as given.
-    assert "const res = await api.installApp(body);" in popup
-    assert "close();\n        if(tabId) await placeNewAppOnTab(res.id, tabId);\n        appInstalled(res);" in popup
-    assert "say(res.error || 'Could not install this application');" in popup
+    assert "const res = update ? await api.updateApp(update.id, body) : await api.installApp(body);" in popup
+    assert (
+        "close();\n        if(tabId) await placeNewAppOnTab(res.id, tabId);\n"
+        "        appInstalled(res, update ? 'Updated' : 'Installed');"
+    ) in popup
+    assert "say(res.error || `Could not ${verb.toLowerCase()} this application`);" in popup
     after = _js_function(page, "appInstalled")
     assert "loadHome();" in after and "const listed = await loadApps();" in after
     assert "appsNote('bad'," in after and "appsNote('ok'," in after
@@ -420,6 +427,7 @@ def test_the_popups_checks_mirror_the_servers(client):
         re.search(r"\n  (const INSTALL_ID = .*?;)\n", page).group(1),
         re.search(r"\n  (const NO_ID = .*?;)\n", page).group(1),
         _js_source(page, "fileNameProblem"),
+        _js_source(page, "yamlId"),
         _js_source(page, "manifestId"),
     ])
     script = source + f"""
@@ -1919,7 +1927,7 @@ PARSING_DOM = MINI_DOM.replace(
 # here, so no picker).
 DUPE_PARTS = [
     "$", "el", "home", "appsList", "appPanelId", "appPanel", "writesTicker", "openModal",
-    "INSTALL_ID", "CUSTOM_CODE", "fileNameProblem", "NO_ID", "manifestId",
+    "INSTALL_ID", "CUSTOM_CODE", "fileNameProblem", "NO_ID", "yamlId", "manifestId", "updateId",
     "dupeTarget", "bumpManifest", "fileSlot", "slotFiles", "openAddApp",
 ]
 
@@ -1931,15 +1939,20 @@ DUPE_HARNESS = r"""
     // reply from the file route, as send() hands it on. Every read and
     // install is noted; an install is answered as the server would.
     const APPS_ = APPS, FILES_ = FILES;
-    const reads = [], installs = [], installed = [];
+    const reads = [], installs = [], installed = [], updates = [];
+    let updateReply = null;   // the server's answer to an update: null, a success
     const api = {
       appFile: async (id, name) => { reads.push([id, name]); return copy(FILES_[id+'/'+name]); },
       installApp: async files => {
         installs.push(copy(files));
         return {ok:true, id:manifestId(files['app.yaml']).id};
       },
+      updateApp: async (id, files) => {
+        updates.push([id, copy(files)]);
+        return updateReply || {ok:true, id, has_app_py:'app.py' in files};
+      },
     };
-    const appInstalled = res => { installed.push(res); };
+    const appInstalled = (res, done) => { installed.push([res, done]); };
     appsList.apps = copy(APPS_);
     const r = {};
 
@@ -2033,22 +2046,26 @@ def dupe_apps(tmp_path, monkeypatch):
 def test_an_open_app_row_has_duplicate_beside_uninstall(client):
     page = _page(client)
     panel = _js_function(page, "appPanel")
-    # A plain button, before Uninstall at the row's far end, opening a popup.
+    # A plain button, before Uninstall at the row's far end - after Update -
+    # opening a popup.
     assert re.search(
         r'<span class="a-acts-end">\s*'
+        r'<button class="btn sm" data-act="update" type="button" aria-haspopup="dialog">Update</button>\s*'
         r'<button class="btn sm" data-act="duplicate" type="button" aria-haspopup="dialog">Duplicate</button>\s*'
         r'<button class="btn sm danger" data-act="uninstall" type="button">Uninstall</button>\s*'
         r"</span>",
         panel,
     )
-    # It reads every file through the file route, and opens the Add popup
-    # on the copy - it installs nothing itself.
+    # It reads every file through the file route, as Update does, and
+    # opens the Add popup on the copy - it installs nothing itself.
+    read = panel[panel.index("const readBack = async (btn, verb) => {") : panel.index("const upd = act('update');")]
+    assert "await Promise.all(files.map(f => api.appFile(a.id, f)))" in read
     handler = panel[panel.index("dupe.onclick = async () => {") : panel.index("const gateOpen")]
-    assert "await Promise.all(files.map(f => api.appFile(a.id, f)))" in handler
+    assert "const copy = await readBack(dupe, 'duplicate');" in handler
     assert "dupeTarget(a, appsList.apps || [])" in handler
     assert "bumpManifest(manifest.text, to.id, to.name)" in handler
     assert "openAddApp(copy, name);" in handler
-    for write in ("installApp", "uninstallApp", "loadApps", "loadHome"):
+    for write in ("installApp", "updateApp", "uninstallApp", "loadApps", "loadHome"):
         assert write not in handler, write
     # The copy's names and texts go into the slots as values, never markup.
     slot = _js_function(page, "fileSlot")
@@ -2061,9 +2078,10 @@ def test_an_open_app_row_has_duplicate_beside_uninstall(client):
 def test_duplicate_opens_the_add_popup_on_a_copy_that_installs_as_a_new_app(client, dupe_apps):
     r = _run_dupe(client, "r.steps = await duplicate('steps');")
     out = r["steps"]
-    # The row's actions: Refresh, then Duplicate beside Uninstall.
+    # The row's actions: Refresh, then Update and Duplicate beside Uninstall.
     assert out["acts"] == [
         ["refresh", "Refresh", "btn sm"],
+        ["update", "Update", "btn sm"],
         ["duplicate", "Duplicate", "btn sm"],
         ["uninstall", "Uninstall", "btn sm danger"],
     ]
@@ -2095,7 +2113,7 @@ def test_duplicate_opens_the_add_popup_on_a_copy_that_installs_as_a_new_app(clie
     # Install: the copy, sent as the popup installs any app.
     [body] = out["installs"]
     assert body == {**original, "app.yaml": manifest}
-    assert out["installed"] == [{"ok": True, "id": "steps-2"}] and out["closed"] is True
+    assert out["installed"] == [[{"ok": True, "id": "steps-2"}, "Installed"]] and out["closed"] is True
 
     # ... which the server installs as a second app, beside the first.
     resp = client.post("/api/apps", json={"files": body})
@@ -2249,7 +2267,8 @@ def test_bump_manifest_rewrites_the_id_and_name_and_keeps_the_rest(client):
     yamls = [[text, new_id, name] for text, new_id, name, _ in BUMPS]
     tricky = [["id: steps\nname: Steps\nsizes: [{w: 1, h: 1}]\n", "steps-2", n] for n in TRICKY_NAMES]
     script = "\n".join([
-        _js(page, "INSTALL_ID"), _js(page, "NO_ID"), _js(page, "manifestId"), _js(page, "bumpManifest"),
+        _js(page, "INSTALL_ID"), _js(page, "NO_ID"), _js(page, "yamlId"), _js(page, "manifestId"),
+        _js(page, "bumpManifest"),
     ]) + f"""
         const bump = cases => cases.map(([t, id, name]) => bumpManifest(t, id, name));
         const bumped = bump({json.dumps(yamls)}), tricky = bump({json.dumps(tricky)});
@@ -2291,6 +2310,268 @@ def test_the_duplicate_popup_sets_names_and_texts_as_values_never_markup(client)
     assert r["plain"] == ["Add an application", ["", ""]]
 
 
+# ---------- App Update: an app's files replaced, its data kept ----------
+#
+# Update, in an open app row, beside Duplicate: the app's files read back
+# as Duplicate reads them, and the Add popup opened on them in its update
+# mode - the id locked, no tab to pick, and Review the confirm ("Update
+# <name>? This replaces the app's files. Its data is kept.") - whose
+# Update PUTs them to /api/apps/<id>. The page's own appPanel and
+# openAddApp run under node over the parsing DOM, against the files the
+# server hands out; what the popup sends is then PUT to the server.
+
+UPDATE_HARNESS = r"""
+    // An app's open row, and its Update clicked: what it read and said,
+    // the popup it opened, edited by `edit`, then Review - nothing sent
+    // yet - and, if Review lets it, Update.
+    async function updateApp(id, edit){
+      const row = appPanel(APPS_.find(a => a.id===id));
+      const btn = row.querySelector('[data-act="update"]');
+      const before = document.body.children.length;
+      const pending = btn.onclick();
+      const out = {busy:btn.disabled};
+      await pending;
+      out.after = btn.disabled;
+      out.reads = reads.splice(0);
+      out.msg = row.querySelector('.a-msg').textContent;
+      if(document.body.children.length===before){ out.popup = null; return out; }
+      const bg = document.body.children[document.body.children.length-1], box = bg.children[0];
+      const q = s => box.querySelector(s);
+      out.popup = {
+        title: q('h4').textContent,
+        hint: q('[data-step="files"] .hint').textContent.replace(/\s+/g, ' '),
+        locked: [q('[data-f="locked"] code').textContent, q('[data-f="locked"] .fslot-tag').textContent],
+        slots: box.querySelectorAll('.fslot').map(s =>
+          [s.dataset.file || '', s.querySelector('.fname') ? s.querySelector('.fname').value : null,
+           s.querySelector('textarea').value]),
+      };
+      if(edit) edit(box);
+      q('[data-act="review"]').onclick();
+      const sure = q('[data-f="sure"]'), go = q('[data-act="install"]');
+      out.review = {
+        id: q('[data-f="id"]').textContent, problem: q('[data-f="msg"]').textContent,
+        files: box.querySelectorAll('[data-f="files"] li').map(li => li.textContent),
+        notice: !q('[data-f="notice"]').hidden, picker: !q('[data-f="tabField"]').hidden,
+        sure: sure.hidden ? null : [sure.querySelector('h5').textContent, sure.querySelector('p').textContent],
+        button: [go.textContent, !go.hidden, !go.disabled],
+        sent: updates.length + installs.length,
+      };
+      if(!go.disabled) await go.onclick();
+      out.updates = updates.splice(0);
+      out.installs = installs.splice(0);
+      out.installed = installed.splice(0);
+      out.closed = !bg.parent;
+      out.after_msg = q('[data-f="msg"]').textContent;
+      out.button = [go.textContent, !go.disabled];
+      return out;
+    }
+"""
+
+
+def _run_update(client, scenario):
+    listed, files = _served(client)
+    return _node(_dupe_script(_page(client), listed, files, UPDATE_HARNESS + scenario))
+
+
+# Home with two tabs: an install would be asked which; an update isn't.
+TWO_TABS = "home.layout = {tabs:[{id:'home', name:'Home'}, {id:'two', name:'Two'}], default_tab:'home'};"
+
+
+def test_an_open_app_row_has_update_before_duplicate(client):
+    page = _page(client)
+    panel = _js_function(page, "appPanel")
+    # A plain button, Duplicate's style, to its left - opening a popup.
+    assert re.search(
+        r'<button class="btn sm" data-act="update" type="button" aria-haspopup="dialog">Update</button>\s*'
+        r'<button class="btn sm" data-act="duplicate" type="button" aria-haspopup="dialog">Duplicate</button>',
+        panel,
+    )
+    # It reads every file back, as Duplicate does, and opens the Add popup
+    # on them, for this app - it writes nothing itself.
+    handler = panel[panel.index("upd.onclick = async () => {") : panel.index("const dupe = act('duplicate');")]
+    assert "const current = await readBack(upd, 'update');" in handler
+    assert "if(current) openAddApp(current, null, a);" in handler
+    for write in ("installApp", "updateApp", "uninstallApp", "loadApps", "loadHome", "bumpManifest"):
+        assert write not in handler, write
+    # The popup's update mode: its title, the id locked and shown as text,
+    # Review held to the app's id and asking to confirm, Update PUTting.
+    popup = _js_function(page, "openAddApp")
+    assert "update ? 'Update application' : given ? 'Duplicate application' : 'Add an application'" in popup
+    assert '<p class="install-id" data-f="locked">Application: <code>${esc(update.id)}</code>' in popup
+    assert '<div class="danger-panel update-sure" data-f="sure">' in popup
+    assert "<h5>Update ${esc(updName)}?</h5>" in popup
+    assert "<p>This replaces the app's files. Its data is kept.</p>" in popup
+    assert "if(update) f('sure').hidden = !read.id;" in popup
+    assert "api.updateApp(update.id, body)" in popup
+    # Its id isn't a field: there's none to edit, only app.yaml's line.
+    assert "data-key" not in popup and "id-field" not in popup
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
+def test_update_opens_the_popup_on_all_the_apps_files_and_confirms_before_a_put(client, dupe_apps):
+    (dupe_apps / "steps" / "config.json").write_text('{"goal": 8000}\n')
+    original = {p.name: p.read_text() for p in (dupe_apps / "steps").iterdir() if p.is_file()}
+    r = _run_update(client, TWO_TABS + "r.out = await updateApp('steps');")
+    out = r["out"]
+
+    # Every file read, the button off while they're read.
+    assert out["reads"] == [["steps", f] for f in ("app.py", "app.yaml", "config.json", "empty.txt", "notes.txt")]
+    assert (out["busy"], out["after"], out["msg"]) == (True, False, "")
+    # The popup: titled for an update, the id locked - shown, not a field -
+    # and every file in its slot as installed, app.yaml untouched.
+    popup = out["popup"]
+    assert popup["title"] == "Update application"
+    assert popup["hint"].startswith("The files of Steps, as installed.")
+    assert "a file whose slot you remove is deleted" in popup["hint"]
+    assert popup["locked"] == ["steps", "Locked"]
+    assert popup["slots"] == [
+        ["app.yaml", None, original["app.yaml"]],
+        ["app.py", None, original["app.py"]],
+        ["", "config.json", '{"goal": 8000}\n'],
+        ["", "empty.txt", ""],
+        ["", "notes.txt", "stride: 0.75 m\n"],
+    ]
+    # Review is the confirm: what's applied, asked before it's sent - and
+    # no tab to pick, though Home has two (the app is placed already).
+    assert out["review"] == {
+        "id": "Update application: steps", "problem": "",
+        "files": ["app.yaml", "app.py", "config.json", "empty.txt", "notes.txt"],
+        "notice": True, "picker": False,
+        "sure": ["Update Steps?", "This replaces the app's files. Its data is kept."],
+        "button": ["Update", True, True], "sent": 0,
+    }
+    # Update: the files PUT for this app - not installed - and the list
+    # and Home re-read once it's done.
+    [(app_id, body)] = out["updates"]
+    assert app_id == "steps" and body == original
+    assert out["installs"] == []
+    assert out["installed"] == [[{"ok": True, "id": "steps", "has_app_py": True}, "Updated"]]
+    assert out["closed"] is True
+
+    # ... which the server takes: the same app, its files as sent.
+    resp = client.put("/api/apps/steps", json={"files": body})
+    assert resp.status_code == 200 and resp.get_json()["id"] == "steps"
+    assert [a["id"] for a in client.get("/api/apps").get_json()] == ["pics", "steps", "steps-metres"]
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
+def test_an_update_sends_the_popup_as_edited_and_a_removed_slot_is_deleted(client, dupe_apps):
+    r = _run_update(client, """
+        r.out = await updateApp('steps', box => {
+          box.querySelector('[data-file="app.py"] textarea').value += '# v2\\n';
+          const notes = box.querySelectorAll('.fslot').find(s => s.querySelector('.fname') &&
+                                                               s.querySelector('.fname').value === 'notes.txt');
+          notes.querySelector('[data-act="remove"]').onclick();
+        });
+    """)
+    out = r["out"]
+    assert out["review"]["files"] == ["app.yaml", "app.py", "empty.txt"]
+    [(app_id, body)] = out["updates"]
+    assert sorted(body) == ["app.py", "app.yaml", "empty.txt"]
+    assert body["app.py"].endswith("# v2\n")
+
+    # The server replaces the folder with exactly that: notes.txt is gone.
+    assert client.put(f"/api/apps/{app_id}", json={"files": body}).status_code == 200
+    assert apps.app_files(str(dupe_apps / "steps")) == ["app.py", "app.yaml", "empty.txt"]
+    assert (dupe_apps / "steps" / "app.py").read_text() == body["app.py"]
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
+def test_an_update_whose_id_changed_is_stopped_at_review(client, dupe_apps):
+    r = _run_update(client, """
+        r.out = await updateApp('steps', box => {
+          const yaml = box.querySelector('[data-file="app.yaml"] textarea');
+          yaml.value = yaml.value.replace('id: steps', 'id: strides');
+        });
+    """)
+    review = r["out"]["review"]
+    # Said, the Update off and no confirm asked - nothing sent.
+    assert review["id"] == (
+        'This updates "steps", but app.yaml\'s id is "strides": an update keeps the app\'s id. '
+        "Duplicate makes a copy under a new one."
+    )
+    assert review["sure"] is None and review["button"] == ["Update", True, False]
+    assert r["out"]["updates"] == [] and r["out"]["installs"] == []
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
+def test_a_refused_update_stays_in_the_popup(client, dupe_apps):
+    r = _run_update(client, """
+        updateReply = {ok:false, error:"the update doesn't load, so 'steps' is unchanged: app.py failed to import"};
+        r.out = await updateApp('steps');
+        updateReply = null;
+        r.pics = await updateApp('pics');
+    """)
+    out = r["out"]
+    # The server's refusal, as given; the popup open, Update back on.
+    assert len(out["updates"]) == 1 and out["installed"] == [] and out["closed"] is False
+    assert out["after_msg"] == "the update doesn't load, so 'steps' is unchanged: app.py failed to import"
+    assert out["button"] == ["Update", True]
+    # An app with a file that isn't text can't be updated from here: its
+    # files can't all be read back, so the popup never opens.
+    pics = r["pics"]
+    assert pics["popup"] is None
+    assert pics["msg"] == "Couldn't read logo.png ('logo.png' isn't text, so it can't be shown) — can't update Pics."
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
+def test_the_update_popup_sets_names_and_ids_as_text_never_markup(client):
+    page = _page(client)
+    script = _dupe_script(page, [], {}, """
+        openAddApp([{name:'app.yaml', text:'id: a<b>\\nsizes: [{w: 1, h: 1}]\\n'}], null, {id:'a<b>', name:'A <b>&'});
+        const box = document.body.children[0].children[0];
+        box.querySelector('[data-act="review"]').onclick();
+        r.hint = box.querySelector('[data-step="files"] .hint b').textContent;
+        r.locked = box.querySelector('[data-f="locked"] code').textContent;
+        r.id = box.querySelector('[data-f="id"] code').textContent;
+        r.sure = box.querySelector('[data-f="sure"] h5').textContent;
+    """)
+    assert _node(script) == {"hint": "A <b>&", "locked": "a<b>", "id": "a<b>", "sure": "Update A <b>&?"}
+
+
+# (an app.yaml, the id of the app it updates): the page's check, as the
+# server's - an update keeps the app's id, whatever its form.
+UPDATE_IDS = [
+    ("id: echo\nname: Echo\n", "echo"),
+    ("name: Echo\nid: 'echo'\n", "echo"),
+    ('id: "echo"\n', "echo"),
+    ("id: echo # a comment\n", "echo"),
+    ("---\nid: echo\n", "echo"),
+    ("id: echo\r\nname: CRLF\r\n", "echo"),
+    ("id: other\nid: echo\n", "echo"),
+    ("id: My_App\n", "My_App"),
+    ("id: my_app\n", "My_App"),
+    ("id: other\n", "echo"),
+    ("id: echo-2\n", "echo"),
+    ("name: No id\n", "echo"),
+    ("settings:\n  id: echo\n", "echo"),
+    ("id:\n", "echo"),
+    ("id: ''\n", "echo"),
+    ("id: 'unclosed\n", "echo"),
+    ("", "echo"),
+    ("   \n", "echo"),
+]
+
+
+def _server_update_id(text, keep):
+    try:
+        return apps._update_id(apps._manifest_to_install({"app.yaml": text}), keep)
+    except apps.InstallError:
+        return None
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
+def test_the_update_id_check_mirrors_the_servers(client):
+    page = _page(client)
+    script = "\n".join([_js(page, "NO_ID"), _js(page, "yamlId"), _js(page, "updateId")]) + f"""
+        console.log(JSON.stringify({json.dumps(UPDATE_IDS)}.map(([text, keep]) => updateId(text, keep))));
+    """
+    result = _node(script)
+    for (text, keep), read in zip(UPDATE_IDS, result):
+        assert read.get("id") == _server_update_id(text, keep), repr(text)
+        assert bool(read.get("problem")) == (_server_update_id(text, keep) is None), repr(text)
+
+
 # ---------- multi-tab Home, slice 5: deploy-to-tab ----------
 #
 # The Add popup's Review asks which of Home's tabs the app goes on - only
@@ -2317,11 +2598,13 @@ def test_the_add_popup_offers_a_tab_picker_wired_to_placement(client):
         popup,
     )
     assert ".install-tab" not in page
+    # ... and hidden means hidden: .field's display would show it otherwise.
+    assert ".field[hidden]{display:none;}" in page
     # Review fills it from Home's layout - only with more than one tab and
     # not mid-Configure, the default selected - every id and name escaped.
     review = popup[popup.index("act('review').onclick") : popup.index("act('back').onclick")]
     assert "const tabs = home.layout && Array.isArray(home.layout.tabs) ? home.layout.tabs : [];" in review
-    assert "if(tabs.length > 1 && !home.configuring){" in review
+    assert "if(tabs.length > 1 && !home.configuring && !update){" in review
     assert (
         "`<option value=\"${esc(t.id)}\"${t.id===home.layout.default_tab ? ' selected' : ''}>"
         "${esc(t.name)}</option>`"
@@ -2331,7 +2614,10 @@ def test_the_add_popup_offers_a_tab_picker_wired_to_placement(client):
     # closed, places the app before Home and the list are re-read.
     install = popup[popup.index("install.onclick") :]
     assert "const tabId = f('tabField').hidden ? null : f('tab').value;" in install
-    assert "close();\n        if(tabId) await placeNewAppOnTab(res.id, tabId);\n        appInstalled(res);" in install
+    assert (
+        "close();\n        if(tabId) await placeNewAppOnTab(res.id, tabId);\n"
+        "        appInstalled(res, update ? 'Updated' : 'Installed');"
+    ) in install
     # Placement: the layout read, the new app's instance lifted onto the
     # chosen tab and the layout saved - nothing to do for the default, and
     # nothing more if the read fails. Home's working copy is never touched.
@@ -2347,8 +2633,8 @@ def test_the_add_popup_offers_a_tab_picker_wired_to_placement(client):
 # The parts of the page an install goes through: the popup, Home's state
 # (its layout, for the picker) and the placement.
 ADD_PARTS = [
-    "$", "el", "home", "openModal", "INSTALL_ID", "CUSTOM_CODE", "fileNameProblem", "NO_ID", "manifestId",
-    "fileSlot", "slotFiles", "openAddApp", "placeNewAppOnTab",
+    "$", "el", "home", "openModal", "INSTALL_ID", "CUSTOM_CODE", "fileNameProblem", "NO_ID", "yamlId",
+    "manifestId", "updateId", "fileSlot", "slotFiles", "openAddApp", "placeNewAppOnTab",
 ]
 
 ADD_HARNESS = r"""
@@ -2449,8 +2735,9 @@ def test_the_add_popups_tab_picker_shows_only_with_two_tabs(client, tab_apps):
 @pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
 def test_the_tab_picker_is_hidden_while_configuring(client, tab_apps):
     page = _page(client)
-    # The guard is on both counts: more than one tab, and not mid-Configure.
-    assert "if(tabs.length > 1 && !home.configuring){" in _js_function(page, "openAddApp")
+    # The guard is on both counts: more than one tab, and not mid-Configure
+    # (nor an update: its app is placed already).
+    assert "if(tabs.length > 1 && !home.configuring && !update){" in _js_function(page, "openAddApp")
     _, two = _seeded(client)
     r = _node(_add_script(page, two, f"""
         // Two tabs, but Configure is on: no picker. Placing now would be a

@@ -248,6 +248,7 @@ button{font-family:inherit;cursor:pointer;}
    a real anchor so it can open in a new tab */
 a.btn{display:inline-block;text-decoration:none;}
 .field{display:flex;flex-direction:column;gap:5px;}
+.field[hidden]{display:none;}
 .field label{font-size:11.5px;text-transform:uppercase;letter-spacing:.8px;color:var(--muted);font-weight:600;}
 .input, select.input{
   background:var(--inset);border:1px solid var(--border);color:var(--ink);
@@ -346,8 +347,8 @@ a.btn{display:inline-block;text-decoration:none;}
 .aticks .rh-cell{gap:2px;}
 .atick-l{font-size:10.5px;text-transform:uppercase;letter-spacing:.8px;color:var(--muted);font-weight:600;}
 .atick-v{font-family:var(--font-mono);font-size:12.5px;color:var(--muted);}
-/* Refresh on the left, Duplicate and Uninstall at the far end; the
-   confirm under them */
+/* Refresh on the left, Update, Duplicate and Uninstall at the far end;
+   the confirm under them */
 .a-acts, .a-confirm, .a-msg{grid-column:1 / -1;}
 .a-acts{display:flex;align-items:center;justify-content:space-between;gap:10px;}
 .a-acts[hidden]{display:none;}
@@ -393,6 +394,8 @@ a.btn{display:inline-block;text-decoration:none;}
   border:1px solid color-mix(in srgb,var(--warn) 45%,var(--border));border-radius:var(--radius-sm);
   background:color-mix(in srgb,var(--warn) 9%,var(--surface));padding:10px 12px;font-size:13px;color:var(--ink-2);margin:0;
 }
+/* an update's confirm, at the foot of its Review, by its Update */
+.update-sure{margin-top:12px;}
 
 /* ---------- floating modal: add-device flows, Settings, the coming-soon stub ---------- */
 .modal-bg{position:fixed;inset:0;z-index:80;background:color-mix(in srgb,var(--ink) 45%,transparent);display:grid;place-items:center;padding:20px;}
@@ -914,8 +917,10 @@ h5 + .dnote{margin-top:0;}
     homeLayout:   ()             => fetchJSON('/api/home-layout'),
     saveLayout:   layout         => send('/api/home-layout', 'PUT', layout),
     /* Install one from its files, {name: text}; the server reads the id
-       from the app.yaml among them and re-checks everything. */
+       from the app.yaml among them and re-checks everything. Updating
+       one replaces its files with these, its id and data kept. */
     installApp:   files          => send('/api/apps', 'POST', {files}),
+    updateApp:    (id, files)    => send('/api/apps/'+enc(id), 'PUT', {files}),
     /* One of an app's files, as text ({id, name, text}), for the viewer -
        a name /api/apps listed; and uninstalling one, folder and all. */
     appFile:      (id, name)     => send('/api/app/'+enc(id)+'/file?name='+enc(name), 'GET'),
@@ -2240,9 +2245,10 @@ h5 + .dnote{margin-top:0;}
      /api/apps (the list Home draws its tiles from), with its own
      loading, empty and error states. A row expands as Your data's
      do: what the app reads, its files (each opens read-only), a slot
-     for what it writes, then Refresh - its render, re-run - and
-     Uninstall, the one write here, behind a confirm. Installing is
-     the popup's (below), which re-reads this.
+     for what it writes, then Refresh - its render, re-run - Update
+     and Duplicate, which open the popup on its files, and Uninstall,
+     the one write here, behind a confirm. Installing and updating
+     are the popup's (below), which re-reads this.
      ========================================================= */
   const appsList = {
     status:'loading',   // loading | ready | error
@@ -2352,6 +2358,7 @@ h5 + .dnote{margin-top:0;}
       <div class="a-acts">
         <button class="btn sm" data-act="refresh" type="button">Refresh</button>
         <span class="a-acts-end">
+          <button class="btn sm" data-act="update" type="button" aria-haspopup="dialog">Update</button>
           <button class="btn sm" data-act="duplicate" type="button" aria-haspopup="dialog">Duplicate</button>
           <button class="btn sm danger" data-act="uninstall" type="button">Uninstall</button>
         </span>
@@ -2397,24 +2404,44 @@ h5 + .dnote{margin-top:0;}
       else say('ok', '✓ Refreshed');
     };
 
+    /* Every one of the app's files, read back through the file route -
+       [{name, text}], for Update and Duplicate to open the popup on - its
+       button off meanwhile. A file that can't be read stops it, said in
+       the row: null. */
+    const readBack = async (btn, verb) => {
+      btn.disabled = true;
+      say('', '');
+      const read = await Promise.all(files.map(f => api.appFile(a.id, f)));
+      btn.disabled = false;
+      const unread = (file, why) => {
+        say('bad', `Couldn't read ${file}${why ? ` (${why})` : ''} — can't ${verb} ${name}.`);
+        return null;
+      };
+      const bad = read.findIndex(res => !res.ok);
+      if(bad >= 0) return unread(files[bad], read[bad].error);
+      // An empty file is read, empty.
+      const got = files.map((f, i) => ({name:f, text:typeof read[i].text === 'string' ? read[i].text : ''}));
+      return got.some(x => x.name === 'app.yaml') ? got : unread('app.yaml', 'not a plain file in its folder');
+    };
+
+    /* Update: this app's files - every one read back - opened in the Add
+       popup to change and apply in place: the same id, its data kept.
+       Nothing is written until Update there, past its confirm. */
+    const upd = act('update');
+    upd.onclick = async () => {
+      const current = await readBack(upd, 'update');
+      if(current) openAddApp(current, null, a);
+    };
+
     /* Duplicate: a new app from this one's files - every one read back,
        its app.yaml given the next free id and name - opened in the Add
        popup to review and install like any other. A file that can't be
        read stops it; nothing is written until Install there. */
     const dupe = act('duplicate');
     dupe.onclick = async () => {
-      dupe.disabled = true;
-      say('', '');
-      const read = await Promise.all(files.map(f => api.appFile(a.id, f)));
-      dupe.disabled = false;
-      const unread = (file, why) =>
-        say('bad', `Couldn't read ${file}${why ? ` (${why})` : ''} — can't duplicate ${name}.`);
-      const bad = read.findIndex(res => !res.ok);
-      if(bad >= 0) return unread(files[bad], read[bad].error);
-      // An empty file is copied, empty.
-      const copy = files.map((f, i) => ({name:f, text:typeof read[i].text === 'string' ? read[i].text : ''}));
+      const copy = await readBack(dupe, 'duplicate');
+      if(!copy) return;
       const manifest = copy.find(x => x.name === 'app.yaml');
-      if(!manifest) return unread('app.yaml', 'not a plain file in its folder');
       const to = dupeTarget(a, appsList.apps || []);
       manifest.text = bumpManifest(manifest.text, to.id, to.name);
       openAddApp(copy, name);
@@ -2522,7 +2549,10 @@ h5 + .dnote{margin-top:0;}
      shows what's about to be installed: the id, read from the
      app.yaml (there's no id field of its own), the files, and - when
      any is Python - that it's custom code. Install POSTs the files to
-     /api/apps, the one write here.
+     /api/apps, the one write here - or, opened by an app row's Update,
+     the popup is that app's update: its files to start with, its id
+     locked, Review the confirm, and Update PUTs them to /api/apps/<id>
+     in place of the app's own, which keeps its data.
      The checks below mirror the server's (app/apps.py) for quick
      feedback, and that's all they are: the server re-checks
      everything, and a refusal - a taken id, an app.yaml that doesn't
@@ -2550,6 +2580,22 @@ h5 + .dnote{margin-top:0;}
      file properly, and its parse error is the one that counts. */
   const NO_ID = 'No id in app.yaml: it needs a line like  id: my-app';
   function manifestId(text){
+    return yamlId(text, v => INSTALL_ID.test(v) ? ''
+      : `"${v}" isn't a valid id: lowercase letters, digits and "-", starting with a letter or digit.`);
+  }
+
+  /* An update's id, read as manifestId reads it: {id}, or {problem}. It
+     must be keep, the app's own - whatever its form, a hand-placed app's
+     capitals and '_' included - as the server holds it. */
+  function updateId(text, keep){
+    return yamlId(text, v => v === keep ? ''
+      : `This updates "${keep}", but app.yaml's id is "${v}": an update keeps the app's id. `
+        + 'Duplicate makes a copy under a new one.');
+  }
+
+  /* The value of an app.yaml's last top-level `id:` line, unquoted, held
+     to check - why it won't do, or '' - as {id} or {problem}. */
+  function yamlId(text, check){
     if(!text.trim()) return {problem:'app.yaml is empty: paste or upload it first.'};
     const lines = text.split(/\r?\n/).filter(l => /^id[ \t]*:([ \t]|$)/.test(l));
     if(!lines.length) return {problem:NO_ID};
@@ -2563,9 +2609,8 @@ h5 + .dnote{margin-top:0;}
       v = v.replace(/(^|[ \t])#.*$/, '').trim();   // a comment after it
     }
     if(!v) return {problem:NO_ID};
-    if(!INSTALL_ID.test(v))
-      return {problem:`"${v}" isn't a valid id: lowercase letters, digits and "-", starting with a letter or digit.`};
-    return {id:v};
+    const problem = check(v);
+    return problem ? {problem} : {id:v};
   }
 
   /* A duplicate's id and name: {id, name}. Copies of an app stay in step,
@@ -2691,19 +2736,32 @@ h5 + .dnote{margin-top:0;}
      be installed - and Install. prefill, [{name, text}], starts it on
      those files rather than empty slots - a duplicate of the app named
      copyOf: its app.yaml and app.py in their slots, an added slot for
-     each of the rest - all of it editable before Review. */
-  function openAddApp(prefill, copyOf){
+     each of the rest - all of it editable before Review. update, an
+     installed app ({id, name}), makes it that app's update, prefilled
+     with its files: its id shown locked, and held to by Review; no tab
+     to pick (it's placed already); and Review the confirm - "Update
+     <name>?" - whose Update replaces the app's files with these. */
+  function openAddApp(prefill, copyOf, update){
     const given = Array.isArray(prefill) ? prefill : null;
+    const updName = update ? update.name || update.id : '';
+    const hint = update
+      ? `<p class="hint">The files of <b>${esc(updName)}</b>, as installed. Change any of them, add
+          one or remove one, then review the update: these become its files — a file whose slot
+          you remove is deleted — and what it has written is kept.</p>
+         <p class="install-id" data-f="locked">Application: <code>${esc(update.id)}</code>
+          <span class="fslot-tag">Locked</span></p>`
+      : given
+      ? `<p class="hint">A copy of <b>${esc(copyOf)}</b>: its files, with a new <code>id</code> and
+          <code>name</code> in its <code>app.yaml</code>. Change anything here, then review and
+          install it — a separate application, with its own settings.</p>`
+      : `<p class="hint">An application is a folder of files: its <code>app.yaml</code> manifest,
+          an <code>app.py</code> if it computes anything, and any files it reads. Paste each
+          one, or upload it.</p>`;
+    const verb = update ? 'Update' : 'Install';
     const {box, close} = openModal(`
-      <h4>${given ? 'Duplicate application' : 'Add an application'}</h4>
+      <h4>${update ? 'Update application' : given ? 'Duplicate application' : 'Add an application'}</h4>
       <div data-step="files">
-        ${given
-          ? `<p class="hint">A copy of <b>${esc(copyOf)}</b>: its files, with a new <code>id</code> and
-              <code>name</code> in its <code>app.yaml</code>. Change anything here, then review and
-              install it — a separate application, with its own settings.</p>`
-          : `<p class="hint">An application is a folder of files: its <code>app.yaml</code> manifest,
-              an <code>app.py</code> if it computes anything, and any files it reads. Paste each
-              one, or upload it.</p>`}
+        ${hint}
         <div class="fslots"></div>
         <button class="btn sm" data-act="add-file" type="button">＋ Add file</button>
       </div>
@@ -2715,13 +2773,19 @@ h5 + .dnote{margin-top:0;}
         </div>
         <ul class="install-files" data-f="files" aria-label="Files"></ul>
         <p class="install-warn" data-f="notice" hidden>${esc(CUSTOM_CODE)}</p>
+        ${update
+          ? `<div class="danger-panel update-sure" data-f="sure">
+              <h5>Update ${esc(updName)}?</h5>
+              <p>This replaces the app's files. Its data is kept.</p>
+            </div>`
+          : ''}
       </div>
       <div class="form-msg bad src-msg" data-f="msg" role="alert"></div>
       <div class="modal-actions">
         <button class="btn sm" data-act="cancel" type="button">Cancel</button>
         <button class="btn sm" data-act="back" type="button" hidden>Back</button>
         <button class="btn sm primary" data-act="review" type="button">Review</button>
-        <button class="btn sm primary" data-act="install" type="button" hidden>Install</button>
+        <button class="btn sm primary" data-act="install" type="button" hidden>${verb}</button>
       </div>`);
     box.classList.add('wide');
 
@@ -2762,10 +2826,11 @@ h5 + .dnote{margin-top:0;}
         return;
       }
       files = got.files;
-      const read = manifestId(files.find(x => x.name === 'app.yaml').text);
+      const yamlText = files.find(x => x.name === 'app.yaml').text;
+      const read = update ? updateId(yamlText, update.id) : manifestId(yamlText);
       const idLine = f('id');
       idLine.classList.toggle('bad', !read.id);
-      if(read.id) idLine.innerHTML = `Install application: <code>${esc(read.id)}</code>`;
+      if(read.id) idLine.innerHTML = `${verb} application: <code>${esc(read.id)}</code>`;
       else idLine.textContent = read.problem;
       f('files').innerHTML = files.map(x => `<li><code>${esc(x.name)}</code></li>`).join('');
       f('notice').hidden = !files.some(x => /\.py$/i.test(x.name));
@@ -2773,9 +2838,10 @@ h5 + .dnote{margin-top:0;}
       // choice, the layout's default tab picked to start with. Not while
       // Configure is on: its save, of a working copy without the app,
       // would put it on the tab on screen whatever was picked - so it
-      // joins that tab, to be moved like any tile.
+      // joins that tab, to be moved like any tile. Nor for an update: the
+      // app is placed already, and stays where it is.
       const tabs = home.layout && Array.isArray(home.layout.tabs) ? home.layout.tabs : [];
-      if(tabs.length > 1 && !home.configuring){
+      if(tabs.length > 1 && !home.configuring && !update){
         f('tab').innerHTML = tabs.map(t =>
           `<option value="${esc(t.id)}"${t.id===home.layout.default_tab ? ' selected' : ''}>${esc(t.name)}</option>`).join('');
         f('tabField').hidden = false;
@@ -2783,6 +2849,8 @@ h5 + .dnote{margin-top:0;}
         f('tabField').hidden = true;
       }
       install.disabled = !read.id;
+      // An update's confirm, asked only of an update that can go ahead.
+      if(update) f('sure').hidden = !read.id;
       show('confirm');
       (read.id ? install : act('back')).focus();
     };
@@ -2790,37 +2858,40 @@ h5 + .dnote{margin-top:0;}
 
     install.onclick = async () => {
       say('');
-      install.disabled = true; install.textContent = 'Installing…';
+      install.disabled = true; install.textContent = update ? 'Updating…' : 'Installing…';
       const body = {};
       files.forEach(x => { body[x.name] = x.text; });
-      const res = await api.installApp(body);
+      // An update replaces the app's files with these, in place.
+      const res = update ? await api.updateApp(update.id, body) : await api.installApp(body);
       if(res.ok){
         // The tab picked, if there was a choice (null: the default's).
         const tabId = f('tabField').hidden ? null : f('tab').value;
         close();
         if(tabId) await placeNewAppOnTab(res.id, tabId);
-        appInstalled(res);
+        appInstalled(res, update ? 'Updated' : 'Installed');
       }else{
-        // The server's own refusal - a taken id, a parse error - as-is.
-        say(res.error || 'Could not install this application');
-        install.disabled = false; install.textContent = 'Install';
+        // The server's own refusal - a taken id, a parse error, an update
+        // that doesn't load - as-is.
+        say(res.error || `Could not ${verb.toLowerCase()} this application`);
+        install.disabled = false; install.textContent = verb;
       }
     };
 
     box.querySelector('textarea').focus();
   }
 
-  /* After an install, the list and Home are re-read at once, so the new
-     app shows without a reload. If the scanner didn't take it (a
-     malformed app installs, then is skipped and logged), the controls
-     card says so - the list alone wouldn't. */
-  async function appInstalled(res){
+  /* After an install or an update (done says which), the list and Home
+     are re-read at once, so the app shows - drawn by its new code -
+     without a reload. If the scanner didn't take it (a malformed app
+     installs, then is skipped and logged), the controls card says so -
+     the list alone wouldn't. */
+  async function appInstalled(res, done){
     loadHome();
     loadAppSources();   // an app back under its old id owns its data again
     const listed = await loadApps();
     const app = listed && listed.find(a => a.id === res.id);
-    if(listed && !app) appsNote('bad', `Installed "${res.id}", but it doesn't load: the server's log says why.`);
-    else appsNote('ok', `✓ Installed ${app ? (app.name || app.id) : res.id}`);
+    if(listed && !app) appsNote('bad', `${done} "${res.id}", but it doesn't load: the server's log says why.`);
+    else appsNote('ok', `✓ ${done} ${app ? (app.name || app.id) : res.id}`);
   }
 
   /* =========================================================

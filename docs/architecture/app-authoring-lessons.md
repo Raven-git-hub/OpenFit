@@ -115,11 +115,21 @@ in three different homes.
 - **Getting it there:** copy the folder onto the volume, or paste/upload the
   files in **＋ Add Application** (Data tab → Applications), which installs
   them as `/data/apps/<id>/`. The id comes from `app.yaml` and must be
-  lowercase letters, digits and dashes; an install never overwrites —
-  **Uninstall** the app (its row in the Applications list), then add it
-  again, to update it. The same row shows what it reads and its files, and
-  **Refresh** re-runs its render after a change. See `app-host.md`,
-  "Installing an app" and "An app's row".
+  lowercase letters, digits and dashes; an install never overwrites.
+- **Changing it: use Update — the data is kept.** **Update** in the app's row
+  (Applications list) opens its files as installed; edit, add or remove one,
+  review, confirm, and they replace the app's files in one step
+  (`PUT /api/apps/<id>`). Everything the app wrote under `app:<id>` stays, its
+  Home tile keeps its place and settings, and the new files are checked first
+  — staged and loaded as the scanner would load them — so a bad paste (an
+  `app.py` that won't import, a bad `metrics` block) is refused and the app
+  keeps running on its old files. The id in `app.yaml` must stay the app's
+  own (Duplicate makes a copy under a new one), and it's a whole-folder
+  replace: a file whose slot you remove is deleted. Don't uninstall and
+  re-add to update — that works, but Update is the safe path. The same row
+  shows what the app reads and its files, and **Refresh** re-runs its render
+  after a change. See `app-host.md`, "Installing an app", "An app's row" and
+  "Updating an app".
 - **First app is expensive, the rest are cheap.** The first app drags the whole
   host into existence. After that, a new app is a folder with two small files.
 
@@ -238,7 +248,10 @@ What a declaration can't be yet, and why:
   the catalog, but what it wrote stays under `app:<id>` until you remove it
   (Connected sources → the app's row: Remove all data, or open it and remove
   one metric's). Reinstall it and the metric comes back,
-  history and all.
+  history and all. An **Update** keeps all of it too; if the new `app.yaml`
+  stops declaring a metric, that metric drops out of the catalog the same
+  way, readings kept, and comes back when it's declared again (while the app
+  is installed its data isn't orphaned, so Remove data can't reach it).
 
 A bad block — an unknown category, a built-in key, a key twice, a misspelt field
 (`ragne`) — means the app doesn't load, logged like any manifest error. The

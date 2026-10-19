@@ -26,6 +26,12 @@ REAL_APPS = Path(__file__).parent / "fixtures" / "apps"
 # that aren't about size give their apps this one.
 SIZE = "sizes: [{w: 1, h: 1}]\n"
 
+# What a taken id is refused with: Update is the way to change the app.
+TAKEN = (
+    "'steps' already exists — use Update in its row to replace its files, "
+    "or remove it first to reinstall."
+)
+
 
 @pytest.fixture
 def apps_dir(tmp_path, monkeypatch):
@@ -234,7 +240,7 @@ def test_containment_and_a_taken_id_are_refused_before_the_size(client, apps_dir
     assert error.startswith("id must be lowercase letters, digits and '-'"), error
     assert install(client, {"app.yaml": "id: steps\n" + SIZE}).status_code == 201
     error = refused(client, apps_dir, {"app.yaml": "id: steps\n"}, status=409)
-    assert error == "'steps' already exists — remove it first to reinstall."
+    assert error == TAKEN
 
 
 def test_check_app_is_the_extension_point(client, apps_dir, monkeypatch):
@@ -410,7 +416,7 @@ def test_a_taken_id_is_refused_and_the_installed_app_untouched(client, apps_dir)
     }
     error = refused(client, apps_dir, replacement, status=409)
 
-    assert error == "'steps' already exists — remove it first to reinstall."
+    assert error == TAKEN
     assert {p: p.read_bytes() for p in (apps_dir / "steps").iterdir()} == before
     assert client.get("/api/apps").get_json()[0]["name"] == "Steps"
 
@@ -429,7 +435,7 @@ def test_an_id_whose_folder_exists_as_anything_is_taken(client, apps_dir, kind):
         path.symlink_to(apps_dir / "nowhere")
 
     error = refused(client, apps_dir, {"app.yaml": "id: steps\n" + SIZE}, status=409)
-    assert error == "'steps' already exists — remove it first to reinstall."
+    assert error == TAKEN
 
 
 def test_an_id_another_folders_app_loads_under_is_taken(client, apps_dir):
@@ -442,7 +448,7 @@ def test_an_id_another_folders_app_loads_under_is_taken(client, apps_dir):
     assert [a["id"] for a in client.get("/api/apps").get_json()] == ["steps"]
 
     error = refused(client, apps_dir, {"app.yaml": "id: steps\n" + SIZE}, status=409)
-    assert error == "'steps' already exists — remove it first to reinstall."
+    assert error == TAKEN
 
 
 def test_a_failed_write_leaves_nothing_behind(client, apps_dir, monkeypatch):

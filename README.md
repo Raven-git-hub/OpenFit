@@ -75,7 +75,8 @@ continuous it is, and which source wins each metric — not the product.
   window, an **Applications** panel — its controls on top, the apps you've
   installed listed below them. **＋ Add Application** installs an app from
   files you paste or upload, and each app's row opens onto what it reads, its
-  files (viewable, read-only), **Refresh**, **Duplicate** (a copy of the
+  files (viewable, read-only), **Refresh**, **Update** (its files replaced
+  with an edited set, its data kept), **Duplicate** (a copy of the
   app under a new id and name, to place it twice with different settings)
   and **Uninstall** (browsing and building apps from it are still to come).
 - A first **app host**: the Home tab shows the apps you install (none ship with
@@ -329,8 +330,19 @@ app's declared reads, its config fields and its files) and `POST
 spec; the Data tab's Applications panel lists the same apps. Open
 an app's row there to see what it reads, view any of its files read-only
 (`GET /api/app/<id>/file?name=`), re-run its render (**Refresh**),
-**Duplicate** it, or **Uninstall** it (`DELETE /api/apps/<id>`, after a
-confirm), which deletes its folder from `/data/apps/`. Duplicate copies the
+**Update** it, **Duplicate** it, or **Uninstall** it (`DELETE /api/apps/<id>`,
+after a confirm), which deletes its folder from `/data/apps/`. Update opens
+the app's files, as installed, in the Add Application popup with its id
+locked: change, add or remove files, review, confirm ("Update <name>? This
+replaces the app's files. Its data is kept."), and `PUT /api/apps/<id>`
+(`{"files": {name: text}}`) replaces the app's folder with them in one step.
+The new files are checked first, staged and loaded as the scanner would load
+them, so a bad paste is refused and the app keeps running on its old ones;
+the id in `app.yaml` must stay the app's own; and it's a whole-folder
+replace, so a file whose slot you remove is deleted. Nothing in the database
+changes: what the app wrote stays its own, and its tile keeps its place and
+settings. Use Update rather than uninstalling and adding an app again.
+Duplicate copies the
 app's files into the Add Application popup with the next free id and name
 (`steps` → `steps-2`, "Steps" → "Steps 2", then `-3`, …) for you to review
 and install as a separate app, with its own tile and settings. It's a fork:
@@ -346,7 +358,7 @@ That's `POST /api/apps`
 (`{"files": {name: text}}`), which writes them to `/data/apps/<id>/`, the
 id read from the `app.yaml` (lowercase letters, digits and dashes). The
 server checks every id and file name stays inside the apps folder, refuses
-an id that's already taken (uninstall the app first to reinstall it), and
+an id that's already taken (use Update to change an installed app), and
 otherwise doesn't check or run the app: a broken one installs, then is
 logged and left out, as a hand-placed one would be. Apps run as trusted code
 for now (a sandbox is Phase 4). The full contract is in
