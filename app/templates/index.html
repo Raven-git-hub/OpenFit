@@ -758,6 +758,9 @@ h5 + .dnote{margin-top:0;}
 }
 .spec-input input[type="file"].input:hover::file-selector-button{border-color:var(--accent);color:var(--accent);}
 .spec-input .u{font-size:12px;font-weight:600;color:var(--ink-2);}
+/* a file input's companion toggle: a checkbox and its label, before Save */
+.spec-input .tg{display:inline-flex;align-items:center;gap:4px;flex:none;font-size:12px;font-weight:600;color:var(--ink-2);cursor:pointer;}
+.spec-input .tg input{margin:0;accent-color:var(--accent);cursor:pointer;}
 .spec-input .btn{flex:none;padding:5px 9px;}
 .spec-input .m{font-size:11px;font-family:var(--font-mono);color:var(--crit);overflow-wrap:anywhere;}
 .spec-input .m:empty{display:none;}
@@ -941,12 +944,16 @@ h5 + .dnote{margin-top:0;}
       send('/api/app/'+enc(id)+'/action', 'POST', {action, payload, cfg: cfg || {}}),
     /* The same for a file input: the action and the tile's config as
        form fields, and the file itself under the input's key - bytes
-       don't fit JSON, so it goes multipart. The server keeps nothing of
-       it: the app's handle() reads it, and what that writes stays. */
-    appActionFile: (id, action, key, file, cfg) => {
+       don't fit JSON, so it goes multipart. A payload, if any - a
+       companion toggle's state - goes beside it as a form field of its
+       JSON, and the server puts the file in it. The server keeps
+       nothing of the file: the app's handle() reads it, and what that
+       writes stays. */
+    appActionFile: (id, action, key, file, cfg, payload) => {
       const form = new FormData();
       form.append('action', action);
       form.append('cfg', JSON.stringify(cfg || {}));
+      if(payload) form.append('payload', JSON.stringify(payload));
       form.append(key, file);
       return sendForm('/api/app/'+enc(id)+'/action', form);
     },
@@ -2079,8 +2086,9 @@ h5 + .dnote{margin-top:0;}
     return openCredentialsDevice(c);
   }
 
-  /* Modal chrome shared by both flows: backdrop, Escape, click-outside. */
-  function openModal(html){
+  /* Modal chrome shared by both flows: backdrop, Escape, click-outside.
+     onClose, if given, runs as it closes - however it was closed. */
+  function openModal(html, onClose){
     const bg = el('div','modal-bg');
     const box = el('div','modal', html);
     bg.appendChild(box);
@@ -2089,6 +2097,7 @@ h5 + .dnote{margin-top:0;}
     function close(){
       document.removeEventListener('keydown', onKey);
       bg.remove();
+      if(onClose) onClose();
     }
     function onKey(e){ if(e.key === 'Escape') close(); }
     document.addEventListener('keydown', onKey);
@@ -2110,6 +2119,33 @@ h5 + .dnote{margin-top:0;}
     const btn = box.querySelector('[data-act="close"]');
     btn.onclick = close;
     btn.focus();
+  }
+
+  /* A tile's ask before it sends: an app's own words - `text`, under
+     `title` - in a danger panel, over [Cancel] (focused) and [Continue].
+     Resolves true on Continue, false however else it closes: Cancel,
+     Escape, a click outside. Both set as text, never markup. No
+     confirm(): the modal is the gate, as Remove data's is. */
+  function confirmFirst(title, text){
+    return new Promise(done => {
+      let go = false;
+      const {box, close} = openModal(`
+        <h4 data-f="title"></h4>
+        <div class="danger-panel">
+          <h5>Are you sure?</h5>
+          <p data-f="what"></p>
+          <div class="modal-actions">
+            <button class="btn sm" data-act="cancel" type="button">Cancel</button>
+            <button class="btn sm primary" data-act="confirm" type="button">Continue</button>
+          </div>
+        </div>`, () => done(go));
+      box.querySelector('[data-f="title"]').textContent = title;
+      box.querySelector('[data-f="what"]').textContent = text;
+      const cancel = box.querySelector('[data-act="cancel"]');
+      cancel.onclick = close;
+      box.querySelector('[data-act="confirm"]').onclick = () => { go = true; close(); };
+      cancel.focus();
+    });
   }
 
   /* The manifest rendered as inputs - the same markup for step one of
@@ -3729,7 +3765,11 @@ h5 + .dnote{margin-top:0;}
      tile's config; the app's fresh spec redraws the tile, and a refusal
      shows under the field, kept as entered. Nothing is sent from a tile
      drawn for no app, for a select with no option chosen yet, or for a
-     file picker with no file picked, or one over UPLOAD_MAX. */
+     file picker with no file picked, or one over UPLOAD_MAX. A file
+     input with a toggle (s.toggle) has a checkbox before Save, its
+     state sent in the payload under the toggle's key beside the file;
+     ticked, with a confirm, that's asked first (confirmFirst()), and
+     nothing is sent unless it's confirmed. */
   function specInput(s, appId){
     const box = el('div','spec-input');
     const label = s.label!=null && s.label!=='' ? String(s.label) : '';
@@ -3763,6 +3803,20 @@ h5 + .dnote{margin-top:0;}
     field.setAttribute('aria-label', label || String(s.key));
     row.appendChild(field);
     if(s.unit!=null && s.unit!==''){ const u = el('span','u'); u.textContent = s.unit; row.appendChild(u); }
+    // A file input's companion toggle: a checkbox in its label, before Save.
+    const tg = upload && s.toggle && typeof s.toggle.key==='string' && s.toggle.key ? s.toggle : null;
+    const tgLabel = tg && tg.label!=null && tg.label!=='' ? String(tg.label) : tg ? tg.key : '';
+    let check = null;
+    if(tg){
+      const wrap = el('label','tg');
+      check = el('input');
+      check.type = 'checkbox';
+      const t = el('span');
+      t.textContent = tgLabel;
+      wrap.appendChild(check);
+      wrap.appendChild(t);
+      row.appendChild(wrap);
+    }
     const save = el('button','btn sm');
     save.type = 'button';
     save.textContent = 'Save';
@@ -3772,6 +3826,8 @@ h5 + .dnote{margin-top:0;}
     const msg = el('div','m');
     msg.setAttribute('role','status');
     box.appendChild(msg);
+    // Save, the field and a toggle held while it's on its way.
+    const hold = on => { save.disabled = field.disabled = on; if(check) check.disabled = on; };
     const submit = async () => {
       if(save.disabled) return;
       let sending;
@@ -3779,7 +3835,15 @@ h5 + .dnote{margin-top:0;}
         const file = field.files && field.files[0];
         if(!file){ msg.textContent = 'Choose a file.'; return; }
         if(file.size > UPLOAD_MAX){ msg.textContent = 'File too large (max 25 MB).'; return; }
-        sending = () => api.appActionFile(appId, s.action, s.key, file, tileCfg(appId));
+        // A toggle's state goes beside the file; ticked, its confirm first.
+        const payload = check ? {[tg.key]: check.checked} : undefined;
+        if(check && check.checked && tg.confirm!=null && tg.confirm!==''){
+          hold(true);
+          const go = await confirmFirst(tgLabel, String(tg.confirm));
+          hold(false);
+          if(!go) return;
+        }
+        sending = () => api.appActionFile(appId, s.action, s.key, file, tileCfg(appId), payload);
       }else{
         const typed = String(field.value);
         const value = numeric ? Number(typed) : typed;
@@ -3791,9 +3855,9 @@ h5 + .dnote{margin-top:0;}
         sending = () => api.appAction(appId, s.action, {[s.key]: value}, tileCfg(appId));
       }
       msg.textContent = '';
-      save.disabled = field.disabled = true;
+      hold(true);
       const res = await sending();
-      save.disabled = field.disabled = false;
+      hold(false);
       if(res.ok && res.spec) repaintTile(appId, res.spec);
       else msg.textContent = res.error || "Couldn't save.";
     };

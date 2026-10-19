@@ -2818,13 +2818,13 @@ def test_installing_onto_a_chosen_tab_moves_the_new_app_and_saves_once(client, t
 # renderer runs under node over the stand-in DOM, against the replies the
 # server gives.
 
-INPUT_PARTS = ["el", "SPECS", "renderSpec", "UPLOAD_MAX", "specInput", "specMsg"]
+INPUT_PARTS = ["el", "SPECS", "renderSpec", "UPLOAD_MAX", "specInput", "specMsg", "confirmFirst"]
 
 INPUT_HARNESS = r"""
     // What Save reaches: the action route (each call noted, the reply the
     // test's), the tile's config, and the tile's redraw.
     // A file input's Save reaches its own sender, noted apart - the file
-    // by its name.
+    // by its name, and a payload only when one is sent.
     const calls = [], fileCalls = [], repaints = [];
     let reply = {ok:true, spec:{type:'empty', message:'fresh'}};
     let release = null;
@@ -2833,11 +2833,25 @@ INPUT_HARNESS = r"""
         calls.push([id, action, payload, cfg]);
         return new Promise(done => { release = () => done(reply); });
       },
-      appActionFile: (id, action, key, file, cfg) => {
-        fileCalls.push([id, action, key, file.name, cfg]);
+      appActionFile: (id, action, key, file, cfg, payload) => {
+        fileCalls.push(payload===undefined ? [id, action, key, file.name, cfg] : [id, action, key, file.name, cfg, payload]);
         return new Promise(done => { release = () => done(reply); });
       },
     };
+    // The modal chrome confirmFirst() opens: its markup noted, the parts
+    // it fills found in it, and closed by a button - or by openModal's
+    // own close, as Escape or a click outside closes it.
+    const modals = [];
+    function openModal(html, onClose){
+      const found = {};
+      for(const [, k, v] of html.matchAll(/data-(f|act)="([\w-]+)"/g)) found[`[data-${k}="${v}"]`] = mk(k==='f' ? 'p' : 'button');
+      const modal = {html, found, closed:false};
+      const close = () => { if(modal.closed) return; modal.closed = true; if(onClose) onClose(); };
+      modal.dismiss = close;
+      modals.push(modal);
+      return {box:{querySelector: sel => found[sel] || null}, close};
+    }
+    const tick = () => new Promise(done => setImmediate(done));
     const tileCfg = id => ({for:id});
     const repaintTile = (id, spec) => repaints.push([id, spec]);
     // What the other specs draw with, which these tests don't look at.
@@ -2873,6 +2887,39 @@ INPUT_HARNESS = r"""
       await pending;
       return {busy, after:[!!btn.disabled, !!field.disabled], value:field.value, msg:msg.textContent,
         calls:calls.splice(0), repaints:repaints.splice(0)};
+    }
+    // A file picker's toggle, as drawn: its label, its checkbox and text.
+    const toggleOf = box => {
+      const row = box.children.find(c => c.className==='row');
+      const wrap = row.children.find(c => c.className==='tg');
+      return wrap ? {wrap, check:wrap.children[0], text:wrap.children[1]} : null;
+    };
+    // A file picker with a toggle: `files` picked, the box `ticked` or
+    // not, Save pressed - and a confirm, if one opens, answered: 'confirm',
+    // 'cancel', or 'dismiss' (Escape, a click outside). What it asked,
+    // what was held while it asked, and what was sent.
+    async function saveToggled(box, files, ticked, answer){
+      const {field, save:btn, msg} = parts(box);
+      const {check} = toggleOf(box);
+      field.files = files;
+      check.checked = ticked;
+      const opened = modals.length;
+      const pending = btn.onclick();
+      const modal = modals.length > opened ? modals[modals.length-1] : null;
+      const asked = modal ? {title:modal.found['[data-f="title"]'].textContent, what:modal.found['[data-f="what"]'].textContent,
+                             html:modal.html.replace(/\s+/g, ' ').trim()} : null;
+      const held = [!!btn.disabled, !!field.disabled, !!check.disabled];
+      const sentWhileAsking = fileCalls.length;
+      if(modal){
+        if(answer==='dismiss') modal.dismiss();
+        else modal.found[`[data-act="${answer}"]`].onclick();
+      }
+      await tick();
+      if(release){ release(); release = null; }
+      await pending;
+      return {asked, held, sentWhileAsking, closed:modal ? modal.closed : null,
+        after:[!!btn.disabled, !!field.disabled, !!check.disabled], ticked:!!check.checked, msg:msg.textContent,
+        sent:fileCalls.splice(0), repaints:repaints.splice(0)};
     }
     // The same for a file picker, with `files` picked in it: Save only.
     async function saveFile(box, files){
@@ -3290,6 +3337,132 @@ def test_number_text_and_select_still_post_json_beside_the_file(client):
     assert r["fileCalls"] == 0
 
 
+TOGGLED_FIELD = dict(
+    FILE_FIELD, key="file", action="upload", label="Upload roster", accept=".ics",
+    toggle={"key": "backfill", "label": "Back<b>fill</b>", "confirm": "Backfill <i>past</i> duties too?"},
+)
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
+def test_a_file_inputs_toggle_is_a_checkbox_in_its_row_before_save(client):
+    page = _page(client)
+    r = _node(_input_script(page, f"""
+        const box = renderSpec({{type:'panel', children:[{{type:'empty', message:'x'}}, {json.dumps(TOGGLED_FIELD)}]}}, 'Roster', 'roster').children[1];
+        const row = box.children.find(c => c.className==='row');
+        const tg = toggleOf(box);
+        r.row = row.children.map(c => [c.tag, c.className]);
+        r.toggle = [tg.wrap.tag, tg.check.tag, tg.check.type, !!tg.check.checked, tg.text.tag, tg.text.textContent];
+        r.look = look(box);
+        r.plain = renderSpec({json.dumps(FILE_FIELD)}, 'Import', 'import').children.find(c => c.className==='row').children.map(c => c.tag);
+        // A toggle with no key is no toggle; one with no label is named by its key.
+        r.keyless = toggleOf(renderSpec({json.dumps(dict(TOGGLED_FIELD, toggle={"label": "Backfill"}))}, 'R', 'r'));
+        r.unlabelled = toggleOf(renderSpec({json.dumps(dict(TOGGLED_FIELD, toggle={"key": "backfill"}))}, 'R', 'r')).text.textContent;
+        // Only a file input draws one.
+        r.onNumber = toggleOf(renderSpec({json.dumps(dict(WEIGHT_FIELD, toggle={"key": "b", "label": "B"}))}, 'W', 'w'));
+    """))
+
+    # The picker, then the toggle - a checkbox in its label, unticked, its
+    # text as text - then Save, all in the one row; the picker still the
+    # field, its label over it, nothing as markup.
+    assert r["row"] == [["input", "input"], ["label", "tg"], ["button", "btn sm"]]
+    assert r["toggle"] == ["label", "input", "checkbox", False, "span", "Back<b>fill</b>"]
+    assert r["look"]["field"] == ["input", "file", None, "Upload roster"]
+    assert r["look"]["save"] == ["btn sm", "button", "Save", False]
+    assert r["look"]["html"] == ""
+    # A file input with no toggle: no checkbox - the row as before.
+    assert r["plain"] == ["input", "button"]
+    assert r["keyless"] is None
+    assert r["unlabelled"] == "backfill"
+    assert r["onNumber"] is None
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
+def test_a_toggle_unticked_sends_its_state_with_no_confirm(client):
+    page = _page(client)
+    r = _node(_input_script(page, f"""
+        const box = () => renderSpec({json.dumps(TOGGLED_FIELD)}, 'Roster', 'roster');
+        r.unticked = await saveToggled(box(), [{{name:'roster.ics', size:16}}], false);
+        // Ticked, but with no confirm: sent straight away too.
+        const quiet = {json.dumps(dict(TOGGLED_FIELD, toggle={"key": "backfill", "label": "Backfill"}))};
+        r.quiet = await saveToggled(renderSpec(quiet, 'Roster', 'roster'), [{{name:'roster.ics', size:16}}], true);
+        r.modals = modals.length;
+    """))
+
+    fresh = {"type": "empty", "message": "fresh"}
+    # No confirm asked; the file under the input's key, and the payload
+    # the toggle's state under its own; the tile redrawn from the reply.
+    assert r["unticked"] == {
+        "asked": None, "held": [True, True, True], "sentWhileAsking": 1, "closed": None,
+        "after": [False, False, False], "ticked": False, "msg": "",
+        "sent": [["roster", "upload", "file", "roster.ics", {"for": "roster"}, {"backfill": False}]],
+        "repaints": [["roster", fresh]],
+    }
+    assert r["quiet"]["asked"] is None
+    assert r["quiet"]["sent"] == [["roster", "upload", "file", "roster.ics", {"for": "roster"}, {"backfill": True}]]
+    assert r["modals"] == 0
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
+def test_a_toggle_ticked_asks_its_confirm_and_sends_only_once_confirmed(client):
+    page = _page(client)
+    r = _node(_input_script(page, f"""
+        const box = () => renderSpec({json.dumps(TOGGLED_FIELD)}, 'Roster', 'roster');
+        r.confirmed = await saveToggled(box(), [{{name:'roster.ics', size:16}}], true, 'confirm');
+        r.cancelled = await saveToggled(box(), [{{name:'roster.ics', size:16}}], true, 'cancel');
+        r.dismissed = await saveToggled(box(), [{{name:'roster.ics', size:16}}], true, 'dismiss');
+        // No file, or one over the cap: refused on the tile before any ask.
+        r.none = await saveToggled(box(), [], true, 'confirm');
+        r.big = await saveToggled(box(), [{{name:'huge.ics', size:UPLOAD_MAX + 1}}], true, 'confirm');
+        // The app's refusal after a confirm: under the picker, still ticked.
+        reply = {{ok:false, error:'No duties found in roster.ics'}};
+        r.refused = await saveToggled(box(), [{{name:'roster.ics', size:16}}], true, 'confirm');
+    """))
+
+    fresh = {"type": "empty", "message": "fresh"}
+    # The app's confirm, as text, under the toggle's label - held while it
+    # asks, nothing sent until Continue; then {backfill: true} beside the
+    # file, and the tile redrawn.
+    confirmed = r["confirmed"]
+    assert confirmed["asked"]["title"] == "Back<b>fill</b>"
+    assert confirmed["asked"]["what"] == "Backfill <i>past</i> duties too?"
+    assert "<b>" not in confirmed["asked"]["html"] and "<i>" not in confirmed["asked"]["html"]
+    assert 'data-act="cancel"' in confirmed["asked"]["html"] and ">Continue</button>" in confirmed["asked"]["html"]
+    assert (confirmed["held"], confirmed["sentWhileAsking"], confirmed["closed"]) == ([True, True, True], 0, True)
+    assert confirmed["sent"] == [["roster", "upload", "file", "roster.ics", {"for": "roster"}, {"backfill": True}]]
+    assert confirmed["repaints"] == [["roster", fresh]]
+    assert confirmed["after"] == [False, False, False]
+    # Cancelled, or closed any other way: nothing sent, the tile as it was
+    # - still ticked, Save back.
+    for case in ("cancelled", "dismissed"):
+        out = r[case]
+        assert out["asked"]["what"] == "Backfill <i>past</i> duties too?", case
+        assert (out["sent"], out["repaints"], out["closed"], out["msg"]) == ([], [], True, ""), case
+        assert (out["after"], out["ticked"]) == ([False, False, False], True), case
+    # The tile's own refusals come first: no ask, nothing sent.
+    assert (r["none"]["asked"], r["none"]["msg"], r["none"]["sent"]) == (None, "Choose a file.", [])
+    assert (r["big"]["asked"], r["big"]["msg"], r["big"]["sent"]) == (None, "File too large (max 25 MB).", [])
+    assert r["refused"]["sent"] == confirmed["sent"]
+    assert (r["refused"]["msg"], r["refused"]["ticked"], r["refused"]["repaints"]) == ("No duties found in roster.ics", True, [])
+
+
+def test_the_confirm_is_the_pages_own_modal_never_confirm(client):
+    page = _page(client)
+    ask = _js_function(page, "confirmFirst")
+    # openModal's chrome - Escape and a click outside close it, and say
+    # so - its words set as text; never the browser's confirm().
+    assert "openModal(`" in ask and "() => done(go));" in ask
+    assert "box.querySelector('[data-f=\"title\"]').textContent = title;" in ask
+    assert "box.querySelector('[data-f=\"what\"]').textContent = text;" in ask
+    assert "${" not in ask and "innerHTML" not in ask
+    assert "confirm(" not in ask.replace("confirmFirst(", "")
+    assert "      if(onClose) onClose();\n" in _js_function(page, "openModal")
+    spec_input = _js_function(page, "specInput")
+    assert "const payload = check ? {[tg.key]: check.checked} : undefined;" in spec_input
+    assert "if(check && check.checked && tg.confirm!=null && tg.confirm!==''){" in spec_input
+    assert "const go = await confirmFirst(tgLabel, String(tg.confirm));" in spec_input
+    assert not re.search(r"(?<![\w.])confirm\(", spec_input)
+
+
 def test_a_file_input_is_built_as_text_and_capped_as_the_server_caps_it(client):
     import main
 
@@ -3302,7 +3475,7 @@ def test_a_file_input_is_built_as_text_and_capped_as_the_server_caps_it(client):
     assert "const file = field.files && field.files[0];" in spec_input
     assert "if(!file){ msg.textContent = 'Choose a file.'; return; }" in spec_input
     assert "if(file.size > UPLOAD_MAX){ msg.textContent = 'File too large (max 25 MB).'; return; }" in spec_input
-    assert "api.appActionFile(appId, s.action, s.key, file, tileCfg(appId));" in spec_input
+    assert "api.appActionFile(appId, s.action, s.key, file, tileCfg(appId), payload);" in spec_input
     assert "if(!upload) field.onkeydown = e => { if(e.key==='Enter') submit(); };" in spec_input
     assert _const(page, "UPLOAD_MAX") == "const UPLOAD_MAX = 25 * 1024 * 1024;"
     assert 25 * 1024 * 1024 == main.MAX_UPLOAD_BYTES
@@ -3341,6 +3514,9 @@ FORM_SCRIPT = r"""
       r.unsaid = await api.appActionFile('import', 'import', 'file', file, {});
       answer = async () => { throw new TypeError('Failed to fetch'); };
       r.offline = await api.appActionFile('import', 'import', 'file', file, {});
+      // A payload - a toggle's state - as a form field of its JSON.
+      await api.appActionFile('roster', 'upload', 'file', file, {}, {backfill:true});
+      r.withPayload = [...sent[sent.length-1][1].body.entries()].map(entry);
       console.log(JSON.stringify(r));
     })().catch(e => { console.error(e); process.exit(1); });
 """
@@ -3387,6 +3563,12 @@ def test_a_file_input_posts_multipart_the_action_route_takes(client, tmp_path, m
     assert r["refused"] == {"ok": False, "error": "Request too large (max 25 MB)."}
     assert r["unsaid"] == {"ok": False}
     assert r["offline"] == {"ok": False, "error": "network error"}
+    # No payload given, no payload field (above); one given, its JSON as
+    # one, before the file - the route parses it and puts the file in it.
+    assert r["withPayload"] == [
+        ["action", "upload"], ["cfg", "{}"], ["payload", '{"backfill":true}'],
+        ["file", {"name": "weigh-ins.txt", "type": "text/plain", "size": len(content)}],
+    ]
 
     # What a browser would send, sent: the route takes it, the app reads
     # the file, and its weigh-ins are filed on their days.
@@ -3406,10 +3588,11 @@ def test_the_file_sender_reaches_the_action_route_through_the_api_block(client):
     page = _page(client)
     # Beside appAction, in the API block - the only place a URL lives.
     assert (
-        "    appActionFile: (id, action, key, file, cfg) => {\n"
+        "    appActionFile: (id, action, key, file, cfg, payload) => {\n"
         "      const form = new FormData();\n"
         "      form.append('action', action);\n"
         "      form.append('cfg', JSON.stringify(cfg || {}));\n"
+        "      if(payload) form.append('payload', JSON.stringify(payload));\n"
         "      form.append(key, file);\n"
         "      return sendForm('/api/app/'+enc(id)+'/action', form);\n"
         "    },"

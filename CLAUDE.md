@@ -297,8 +297,9 @@ own calls to its device API. Full direction:
   `None`/non-finite is a gap; anything else `TypeError`; `title` text or
   `None`, else `TypeError`),
   `panel(*children)` (or one list), `input(key, action, label=None,
-  kind="number", unit=None, options=None, accept=None)` → `{"type":
-  "input", key, action, label, kind, unit, options, accept}` (the one
+  kind="number", unit=None, options=None, accept=None, toggle=None)` →
+  `{"type": "input", key, action, label, kind, unit, options, accept}`,
+  plus `toggle` only when given (the one
   interactive element: a
   field and Save, which sends `action` to the app's `handle()` with `{key:
   what was entered}`; `key` and `action` non-empty text, `kind`
@@ -315,7 +316,18 @@ own calls to its device API. Full direction:
   `TypeError`, empty → `ValueError`, "a file input's accept must be
   non-empty text"), never enforced, and refused for the other kinds
   (`ValueError`, "accept is only for a file"), whose specs — and a file's
-  without one — carry `accept: None`;
+  without one — carry `accept: None`; `toggle` a file input's companion
+  checkbox, optional and only for a file (another kind's → `ValueError`,
+  "a toggle is only for a file"): a mapping of only `TOGGLE_FIELDS`
+  (`_fields()`: not a mapping `TypeError`, another field `ValueError`) —
+  `key` the payload key its checked state is sent under and `label` its
+  text, each non-empty text (not text `TypeError`, empty `ValueError`),
+  `key` never the input's own (`ValueError`: the file is sent under it),
+  and `confirm` optional non-empty text the page asks before sending with
+  it ticked — carried as `{key, label, confirm}` (`confirm` `None` for
+  none), and no `toggle` key at all without one (`_toggle()`), so every
+  input spec from before is unchanged; the payload is then `{key:
+  FileUpload, <toggle key>: True/False}`;
   `docs/architecture/input-primitives.md`),
   `timeline(lanes, now=None, title=None, sync=None)` → `{"type":
   "timeline", title, now, lanes: [{label, grey_after_now, intervals:
@@ -529,7 +541,8 @@ own calls to its device API. Full direction:
   reinstall the app with one", "config.json won't read: …", "config.json
   needs a duty_types list"), never raising, so the app still loads (and
   can be Updated). Guarded at the edge, never in the parser: `render()`
-  then returns `empty(CONFIG_ERROR)` over the picker, `handle()` raises
+  then returns `empty(CONFIG_ERROR)` over the picker (the picker last, at
+  the foot), `handle()` raises
   `ValueError(CONFIG_ERROR)` before it reads the upload. `app.py` stdlib
   only (no `icalendar` in the image), its logic module functions:
   `parse_events(text)` (unfold — a CRLF/LF then a space or tab removed —
@@ -556,9 +569,16 @@ own calls to its device API. Full direction:
   base to base, and no trip; `position` a trailing 2–3-letter code of
   the title),
   `bucket_for(end, now)` (`end <= now` → `duties_complete`, else
-  `duties_rostered`), `daily_hours(duties, now)` (each kind's hours
-  by `DTSTART`'s UTC date, a duty past midnight whole on its start day;
-  a kind+start twice counted once) and `trips(sessions, home_base,
+  `duties_rostered`), `filed_as(end, now, backfill=False)` (the write
+  matrix, `[(kind, capture)]`: its `bucket_for()` kind, `"live"` — and,
+  backfilling, a duty already over (`duties_complete`) filed into the
+  plan too, `(duties_rostered, "backfill")`; a duty still to come once
+  either way), `session_summary(duty, capture="live")` (the summary
+  below, `capture` as given), `daily_hours(duties, now, backfill=False)`
+  (each kind's hours by `DTSTART`'s UTC date, a duty past midnight whole
+  on its start day, each kind `filed_as()` files it as — so a backfilled
+  day has `duty_hours_rostered` too; a kind+start twice counted once)
+  and `trips(sessions, home_base,
   open_end=None)` (one lane's duty `Session`s grouped into trips away
   from base, by flights alone — a session whose summary `type` is
   `flight` with `dep` and `arr` and an end, sorted by `start`; a reserve,
@@ -575,19 +595,30 @@ own calls to its device API. Full direction:
   `[{id, start, end, out_port}]`, in order). `handle()`: `upload` only;
   `payload["file"]` decoded `utf-8-sig` (not text → "<name> isn't a text
   roster"); no duty (a file of days off, not iCalendar, empty) → "No
-  duties found in <name>"; `now` taken once; each duty
+  duties found in <name>"; `backfill` `payload.get("backfill") is True`
+  (the picker's toggle, below — only its JSON `true`; absent, `false` or
+  anything else off); `now` taken once; each duty, for each `(kind,
+  capture)` of `filed_as(end, now, backfill)`,
   `ctx.write_session(kind, start, end, summary)` with `start`/`end` the
-  `DTSTART`/`DTEND` datetimes and the summary `{capture: "live", type,
-  code, label, raw, [flight_no, dep, arr, position]}`; then each
-  `(metric, day)` total once, `ctx.write_metric(…, date=day)` — a day
-  over the declared 24 h refused as "<day>: <why>". All or nothing (the
-  route rolls back). `render()` reads the duties back, both kinds through
+  `DTSTART`/`DTEND` datetimes and the summary `{capture, type, code,
+  label, raw, [flight_no, dep, arr, position]}` — `capture` `"live"`, or
+  `"backfill"` on a past duty's rostered copy (the paper trail: a plan
+  put back is always told from one captured live; its id the one a live
+  upload of it had, so it replaces that plan); then each `(metric, day)`
+  total of `daily_hours(found, now, backfill)` once,
+  `ctx.write_metric(…, date=day)` — a day over the declared 24 h refused
+  as "<day>: <why>". Backfill off is exactly the plain clock split. All
+  or nothing (the route rolls back). `render()` reads the duties back, both kinds through
   `ctx.sessions(kind, since=…)`, `since` 183 days before `ctx.today()`
   (about six months, by the start's UTC date) and no `until` (every duty
   to come): none → `empty("Upload your roster .ics")` over the picker
   (`input` `file`/`upload`, kind `"file"`, `accept` `.ics`, "Upload
-  roster"), a roster all older than that included; else the picker over a
-  `timeline` — lane 0 "Rostered" (`duties_rostered`), lane 1 "Flown"
+  roster", `toggle` `BACKFILL` — `{key: "backfill", label: "Backfill",
+  confirm: "Backfill past duties into your rostered plan? They're also
+  recorded as flown, and any plan you already uploaded for those duties
+  is replaced."}`), a roster all older than that included; else
+  `panel(timeline, picker)` — the upload at the tile's foot — the
+  `timeline` lane 0 "Rostered" (`duties_rostered`), lane 1 "Flown"
   (`duties_complete`, `grey_after_now`), each session an interval of its
   `start`/`end` labelled with `summary["code"]` (`""` for none; a session
   with no end, only another source's, left out — `_lane()`), and each
@@ -1064,13 +1095,28 @@ own calls to its device API. Full direction:
   `api.appAction(appId, action, {[key]: value}, tileCfg(appId))` (a
   select's value the chosen string, never `Number()`d) →
   `POST /api/app/<id>/action` `{action, payload, cfg}`, or for a file
-  `api.appActionFile(appId, action, key, file, tileCfg(appId))` — a
-  `FormData` of `action`, `cfg` (JSON) and the file under `key`, POSTed
+  `api.appActionFile(appId, action, key, file, tileCfg(appId), payload)`
+  — a `FormData` of `action`, `cfg` (JSON), `payload` (JSON, only when
+  given — a toggle's state) and the file under `key`, POSTed
   multipart by `sendForm()` (no `Content-Type` of its own, so the
-  browser sets the boundary; `send()`'s `{ok, ...}` reply) — with Save and the
-  field held meanwhile, then `{ok, spec}` → `repaintTile(appId, spec)`, or
+  browser sets the boundary; `send()`'s `{ok, ...}` reply). A file input
+  with a `toggle` (a spec's with a non-empty `key`; none on any other
+  kind) has a checkbox in its label (`label.tg`, the toggle's `label`
+  else its key, as text) in the row between the picker (and unit) and
+  Save, unticked; its state goes as `payload` `{[toggle.key]:
+  checked}`, ticked or not — none at all without a toggle, the request
+  as before — and ticked, with a `confirm`, after the tile's own refusals
+  it first `await`s `confirmFirst(label, confirm)` (Save, the picker and
+  the box held meanwhile): a `.modal` from `openModal(html, onClose)` —
+  whose optional `onClose` runs however it closes — the label as its
+  `h4` over a `danger-panel` "Are you sure?" with the app's text, [Cancel]
+  (focused) / [Continue], both texts `textContent`; true only on
+  Continue, and anything else (Cancel, Escape, a click outside) sends
+  nothing, the tile as it was (still ticked); no `confirm()`. Then with Save,
+  the field and a toggle held meanwhile (`hold()`), `{ok, spec}` →
+  `repaintTile(appId, spec)`, or
   `{ok: false}` → its `error` in the message line, the field kept as
-  typed (a file still picked); drawn with no app id, Save is off; in Configure the face is
+  typed (a file still picked, a toggle still ticked); drawn with no app id, Save is off; in Configure the face is
   inert, its input with it), `timeline` (`timelineSpec(s)`: its `title`
   over the lanes' labels (`.tl-head`, a heading a lane, drawn if any lane
   has one) over a frame (`.tl-scroll`, `overflow-y: auto`, filling the rest
@@ -1857,6 +1903,15 @@ same PR:
   sectors between inside it, flights only; an open trip to the roster's
   end, rostered, or to now, flown), each a band labelled with its first
   port, its stable id the flight out's start (kept for the report store).
+  Then the upload moved to the foot, with a Backfill checkbox (no
+  migration, no route change): a file input's companion `toggle` (`{key,
+  label, confirm}`) in the input vocabulary — its state sent in the same
+  payload, the page asking its `confirm` in its own modal before a ticked
+  send — and the roster tile `panel(timeline, picker)`, its picker's
+  **Backfill** filing a past duty into `duties_rostered` too, captured
+  `"backfill"` (`filed_as()`), with its rostered hours; for a roster
+  uploaded after it started. Off is the plain split. Still to come: a
+  count-aware confirm (after parsing) and an undo for a backfill.
   Still to come for it: reading `destinations` (time-zone shifts), the
   trip lists either side (planning, reports), their popups and PDF, the
   report store (re-attached to a trip by its id), per-block or per-band

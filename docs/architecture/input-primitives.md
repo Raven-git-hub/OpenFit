@@ -173,6 +173,38 @@ the platform stays open to any file an author brings.
   `ctx.write_session()`, existing kinds only — `app-host.md`; and the roster
   app on it, `tests/fixtures/apps/roster/`.)
 
+## A file input's toggle, and confirm-before-submit (built)
+
+A file input can carry one companion checkbox — a choice that goes with the
+file — and a confirm the page asks before sending with it ticked:
+
+```python
+ctx.input("file", "upload", label="Upload roster", kind="file", accept=".ics",
+          toggle={"key": "backfill", "label": "Backfill",
+                  "confirm": "Backfill past duties into your rostered plan? ..."})
+```
+
+- **Host:** `toggle` only for `kind="file"` (another kind's → `ValueError`);
+  a mapping of only `key`, `label`, `confirm` — `key` and `label` non-empty
+  text, `key` never the input's own (the file has it), `confirm` optional
+  non-empty text. The spec carries `"toggle": {key, label, confirm}`
+  (`confirm` null for none) only when given: every input without one is the
+  spec from before.
+- **Page:** a checkbox in its label, between the picker and Save, unticked.
+  Save sends `payload` `{<toggle key>: true|false}` beside the file (a form
+  field of its JSON; the route already merged one), ticked or not. Ticked,
+  with a `confirm`, Save first opens the page's own small modal — the label
+  over the app's text, [Cancel] / [Continue], never the browser's
+  `confirm()` — and sends only on Continue. A file input without a toggle
+  sends no `payload` field: the request as before.
+- **App:** `handle()` reads `payload.get(<key>) is True`. The confirm is
+  static — fixed at render, before the file's read — so it can't count what
+  the file holds; a count-aware confirm is a later step.
+- **Reference:** the roster's **Backfill** (`app-host.md`, the roster app).
+  Tests: the builder (`tests/test_app_host.py`), the checkbox, the payload and
+  the confirm under the node/DOM harness (`tests/test_routes.py`), and the
+  round trip (`tests/test_app_actions.py`).
+
 ## Later bricks (sketch only)
 - **Date / time** — a day or timestamp for a reading, rather than "today".
 - **Auto-recompute** — re-run an app's computed output when its inputs change.

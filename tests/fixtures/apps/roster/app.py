@@ -21,8 +21,16 @@ hours of the duties that started that day (UTC), summed -
 duty_hours_complete and duty_hours_rostered, metrics this app invents
 (app.yaml).
 
+Backfill, a checkbox beside the picker, is for a roster uploaded after
+it started: a duty already over is filed into the rostered plan as well
+as the flown record - its rostered copy captured "backfill", so a
+reconstructed plan is always told from one captured live - and counted
+in the rostered hours too. A duty still to come is filed once, backfill
+or not. Ticked, the page asks first: a backfilled duty replaces any plan
+already uploaded for it.
+
 The tile reads the duties back (ctx.sessions()) - about six months of
-them, and all still to come - and draws them on a timeline under the
+them, and all still to come - and draws them on a timeline over the
 picker: rostered on the left, flown on the right, each duty a block at
 its time and labelled with its code, a line at now and the flown side
 greyed after it. Behind the blocks, each lane shades its trips away
@@ -39,8 +47,8 @@ hours - writes nothing; the host rolls back whatever was already filed.
 The parsing, labelling, routing and trip-finding are module functions -
 parse_events(), duties(), classify() (a flight's dep and arr its origin
 and final destination, first leg to last, the description's legs before
-the title's), bucket_for(), daily_hours(), trips() - pure, for a test to
-call on their own.
+the title's), bucket_for(), filed_as(), daily_hours(), trips() - pure,
+for a test to call on their own.
 """
 
 import json
@@ -56,6 +64,13 @@ COMPLETE = "duties_complete"
 HOURS = {ROSTERED: "duty_hours_rostered", COMPLETE: "duty_hours_complete"}
 
 NON_UTC = "roster has a non-UTC time, which isn't supported yet: {}"
+
+# The upload's companion checkbox: past duties into the plan as well.
+BACKFILL = {
+    "key": "backfill", "label": "Backfill",
+    "confirm": "Backfill past duties into your rostered plan? They're also recorded as "
+               "flown, and any plan you already uploaded for those duties is replaced.",
+}
 
 
 # The roster config, read once from config.json beside this file (an
@@ -77,7 +92,7 @@ except (OSError, ValueError) as _e:
 
 
 def render(ctx, cfg):
-    picker = ctx.input("file", "upload", label="Upload roster", kind="file", accept=".ics")
+    picker = ctx.input("file", "upload", label="Upload roster", kind="file", accept=".ics", toggle=BACKFILL)
     if CONFIG is None:
         return ctx.panel(ctx.empty(CONFIG_ERROR), picker)
     # About six months back, and every duty still to come.
@@ -98,19 +113,20 @@ def render(ctx, cfg):
     flown_trips = trips(flown, home_base, _utc_text(now))
 
     # The plan on the left, what was flown on the right - greyed after
-    # now, when nothing's flown yet. The picker on top; the timeline
-    # takes the rest of the tile and scrolls, laid out to whatever size
-    # the tile is (render() isn't told it). It's in the FRMS focus
+    # now, when nothing's flown yet. The timeline takes the rest of the
+    # tile and scrolls, laid out to whatever size the tile is (render()
+    # isn't told it); the picker at its foot. It's in the FRMS focus
     # group: the page keeps a cursor on it, and scrolls every timeline
     # of the group to one time.
-    return ctx.panel(picker, ctx.timeline(
+    timeline = ctx.timeline(
         [
             _lane(rostered, label="Rostered", bands=[_band(t) for t in rostered_trips]),
             _lane(flown, label="Flown", grey_after_now=True, bands=[_band(t) for t in flown_trips]),
         ],
         now=now,
         sync="frms",
-    ))
+    )
+    return ctx.panel(timeline, picker)
 
 
 def _home_base():
@@ -158,11 +174,14 @@ def handle(ctx, action, payload):
     found = duties(parse_events(text))
     if not found:
         raise ValueError(f"No duties found in {upload.name}")
+    # The checkbox's state, a JSON bool: only a true one backfills.
+    backfill = payload.get("backfill") is True
     # Once, so every duty in the file is routed against the same instant.
     now = datetime.now(timezone.utc)
     for duty in found:
-        ctx.write_session(bucket_for(duty.end, now), duty.start, duty.end, session_summary(duty))
-    for (metric, day), hours in sorted(daily_hours(found, now).items()):
+        for kind, capture in filed_as(duty.end, now, backfill):
+            ctx.write_session(kind, duty.start, duty.end, session_summary(duty, capture))
+    for (metric, day), hours in sorted(daily_hours(found, now, backfill).items()):
         try:
             # The host holds each to the declared range, 0-24.
             ctx.write_metric(metric, hours, date=day)
@@ -373,13 +392,14 @@ def classify(summary, config=None, description=""):
     return found
 
 
-def session_summary(duty):
+def session_summary(duty, capture="live"):
     """What a duty's session is filed with: its capture ("live", filed from
-    the roster as it stood), type, code, label (the whole title) and raw
-    description, and a flight's flight_no, dep, arr and position where it
-    has them."""
+    the roster as it stood; "backfill", a past duty filed into the plan
+    after the fact - filed_as()), type, code, label (the whole title) and
+    raw description, and a flight's flight_no, dep, arr and position
+    where it has them."""
     summary = {
-        "capture": "live", "type": duty.type, "code": duty.code,
+        "capture": capture, "type": duty.type, "code": duty.code,
         "label": duty.summary, "raw": duty.description,
     }
     for key in ("flight_no", "dep", "arr", "position"):
@@ -394,12 +414,27 @@ def bucket_for(end, now):
     return COMPLETE if end <= now else ROSTERED
 
 
-def daily_hours(duties, now):
+def filed_as(end, now, backfill=False):
+    """Where a duty ending at `end` is filed at `now`, and how it was
+    captured: [(kind, capture)]. Its bucket_for() kind, captured "live" -
+    and, backfilling, a duty already over is filed into the rostered plan
+    as well, captured "backfill": the plan of a roster uploaded after it
+    started, put back. A duty still to come is filed once either way."""
+    kind = bucket_for(end, now)
+    filed = [(kind, "live")]
+    if backfill and kind == COMPLETE:
+        filed.append((ROSTERED, "backfill"))
+    return filed
+
+
+def daily_hours(duties, now, backfill=False):
     """{(metric, YYYY-MM-DD): hours} - each kind's duty hours a day: the
     duties that started that day (UTC) summed, one past midnight counted
-    whole on the day it started. A duty twice in the file (one kind, one
+    whole on the day it started - each kind a duty is filed as
+    (filed_as()), so backfilling counts a past duty in the rostered hours
+    too, as its sessions are. A duty twice in the file (one kind, one
     start) counts once, its last, as its session does."""
-    filed = {(bucket_for(d.end, now), d.start): d for d in duties}
+    filed = {(kind, d.start): d for d in duties for kind, _ in filed_as(d.end, now, backfill)}
     seconds = {}
     for (kind, start), d in filed.items():
         key = (HOURS[kind], start.date().isoformat())
