@@ -85,7 +85,7 @@ Right column:
      here too: with none installed it reads "No applications installed"; if
      the read fails, it says so with a **Retry**.
 
-   The list is read at boot and again after an install or uninstall. **Each
+   The list is read at boot and again after an install, update or uninstall. **Each
    row expands** exactly as a Your data row does: the same mechanism
    (`expandable()`, which both lists' rows use) and the same look (a
    `.ditem` whose head is a `.drow`: chevron · name, the detail a `.dpanel`),
@@ -100,7 +100,12 @@ Right column:
 
    Under them, **Refresh** re-runs the app's render (`POST
    /api/app/<id>/render`, with its tile's settings) and redraws its Home
-   tile in place, without a reload; **Duplicate** reads every one of the
+   tile in place, without a reload; **Update** reads every one of the app's
+   files back, as Duplicate does, and opens the Add Application popup on them
+   as installed, its id locked, to change and confirm ("Update <name>? This
+   replaces the app's files. Its data is kept."), then replaces the app's
+   files with them in one step (`PUT /api/apps/<id>`), keeping its data and
+   its tile; **Duplicate** reads every one of the
    app's files back and opens the Add Application popup on a copy, its
    `app.yaml` given the next free id and name (`steps-2`, "Steps 2"), to
    review and install as a separate app (a file that can't be read, such as
@@ -109,7 +114,7 @@ Right column:
    opens a confirm in the row, "Uninstall <name>? This deletes its files
    from `/data/apps/`.", and confirming it (`DELETE /api/apps/<id>`) takes
    the app off the list and Home at once. Still to come, each its own branch: the writes ticker, then
-   alerts. The server side of both actions is in
+   alerts. The server side of these actions is in
    [app-host.md](app-host.md#an-apps-row-reads-files-refresh-uninstall).
 
    **The Add Application popup** installs an app from the browser: a slot per

@@ -33,6 +33,8 @@ An app gets into the folder by hand (copy it onto the volume) or from the
 browser, with **＋ Add Application** ([Installing an app](#installing-an-app),
 below). It leaves the same two ways: delete its folder, or **Uninstall** in its
 row of the Applications list ([An app's row](#an-apps-row-reads-files-refresh-uninstall),
+below). In between, **Update** in the same row replaces its files in one step,
+its id and data kept ([Updating an app](#updating-an-app-put-apiappsid),
 below).
 
 **`app.yaml`**
@@ -774,11 +776,14 @@ the files.
      not `.`, and with no `/`, `\`, `..` or control character in it, so none
      can be absolute or name anywhere outside the new folder. Every file's
      content must be text.
-3. **A taken id is refused** with a 409: `'<id>' already exists — remove it
-   first to reinstall.` That's when `<apps dir>/<id>` exists as anything (a
-   folder, a file, a broken link), or an app in another folder already loads
-   under that id. An install only ever creates. It never updates an app in
-   place: uninstalling the app, then adding it again, is the update path.
+3. **A taken id is refused** with a 409: `'<id>' already exists — use Update
+   in its row to replace its files, or remove it first to reinstall.` That's
+   when `<apps dir>/<id>` exists as anything (a folder, a file, a broken
+   link), or an app in another folder already loads under that id. An
+   install only ever creates. It never updates an app in place: **Update**
+   (`PUT /api/apps/<id>`, [below](#updating-an-app-put-apiappsid)) is the
+   update path, the safe one-step form of uninstalling the app and adding it
+   again.
 4. **Correctness** is `check_app(manifest, files)`, and it's deliberately
    small. Past the parsable `app.yaml` with a valid id, its one rule so far
    is **a size**: the manifest must declare `sizes` (or the older
@@ -827,6 +832,17 @@ Opened by
 an app row's **Duplicate**, the popup is titled "Duplicate application" and
 starts filled with the copy's files (`app.yaml` and `app.py` in their slots,
 an added slot for each other file), all editable before Review.
+Opened by an app row's **Update**, it's that app's update: titled "Update
+application", filled with the app's files as installed (the same slots as a
+duplicate, `app.yaml` untouched), with the app's id shown locked over them
+(not a field: the id lives in `app.yaml`). Review holds `app.yaml`'s id to
+the app's own, whatever its form (a hand-placed `My_App` included): a
+changed or missing id is said there (This updates "<id>", but app.yaml's
+id is "<other>" …), and Update is disabled. There's no tab to
+pick (the app is placed already, and stays where it is). Review is the
+confirm: under the id, the files and the custom-code notice, a panel asks
+"Update <name>? This replaces the app's files. Its data is kept.", and only
+its **Update** sends anything.
 
 The popup's checks mirror the server's (the id charset and the file-name
 rules), for quick feedback only. It reads the id from the top-level `id:`
@@ -842,11 +858,14 @@ Applications list and Home are re-read at once, so the app appears without a
 reload, and the controls card notes "✓ Installed <name>", or, if the new app
 didn't load, that the server's log says why. On a refusal the popup stays
 open and shows the server's message as it's given, such as the taken-id
-message or a YAML parse error.
+message or a YAML parse error. An update's **Update** `PUT`s the files to
+`/api/apps/<id>` instead, and on success does the same: the popup closes, the
+list and Home are re-read (the tile drawn by the new `app.py`) and the card
+notes "✓ Updated <name>". A refusal (say, a new `app.py` that won't import)
+stays in the popup, the app untouched.
 
-Not in this slice: updating an app in place (refused by design), a zip or
-folder upload (it would need its own path checks), and deeper correctness
-checks.
+Not in this slice: a zip or folder upload (it would need its own path
+checks), and deeper correctness checks.
 
 ## An app's row: reads, files, Refresh, Uninstall
 
@@ -870,6 +889,15 @@ An open row stays open when the list is re-read. The detail is three columns
   redraws that app's Home tile in place from the fresh spec: no new route, no
   reload, nothing else repainted. (Every request scans the apps folder, so an edited `app.py` is
   picked up too, as it would be on any load.)
+- **Update** replaces the app's files, keeping its id and its data: it reads
+  every file back as Duplicate does (below; a file that can't be read stops
+  it, said in the row) and opens the Add Application popup in its update mode
+  ([above](#the-add-application-popup)) on them, untouched: change any, add
+  one, remove a slot, then Review, confirm, and **Update** sends them all
+  through `PUT /api/apps/<id>` ([below](#updating-an-app-put-apiappsid)). The
+  folder becomes exactly what's sent, so a file is only lost if its slot is
+  removed. An app with a file that isn't text (a 415 on the read back) can't
+  be updated from here, since the update would delete that file.
 - **Duplicate** forks the app, from the page alone: it reads every file back
   (`GET /api/app/<id>/file`), gives the `app.yaml` the next free id and name
   (the lowest n from 2 with neither `<id>-n` nor "<name> n" installed, so
@@ -945,6 +973,72 @@ the app, never a path. It's `uninstall_app()` in `app/apps.py`.
 Uninstalling removes only its folder: what the app wrote stays, under its
 source `app:<id>`, as a disconnected device's data does.
 
+### Updating an app: `PUT /api/apps/<id>`
+
+The safe, one-step form of uninstalling an app and adding it again: its files
+replaced with a new set, `{"files": {name: text}}`, its id and its data kept.
+Install and uninstall composed: the new files are staged and checked, then
+swapped in for the old folder, which is kept aside until the new one is in
+its place. It's `update_app()` in `app/apps.py`, and the steps run in order;
+everything up to the swap leaves the app exactly as it was.
+
+1. **The id**, from the URL, must match the scanner's `APP_ID`, as
+   uninstall's does, or it's a 400 ("not an app id: ...").
+2. **The files** are checked as an install's are: an `app.yaml` among them
+   that parses to a mapping; every file name plain and every content text
+   (`filename_problem()`), or a 400.
+3. **The manifest's id must be the app's own** (`_update_id()`): `this updates
+   '<id>', but the files are for '<other>'`, a 400, otherwise; an `app.yaml`
+   with no id, or one that isn't text, likewise. An update never renames an
+   app, nor puts one app's files in another's place: Duplicate makes a copy
+   under a new id. The id may be any the scanner loads (a hand-placed app's
+   capitals and `_` included), not only an install's `INSTALL_ID`, since it
+   names the app already there.
+4. **The app must be installed**, under the same process lock as installs and
+   uninstalls: an app must load under the id, and its folder is the one the
+   scanner loaded it from, a direct child of the apps folder. Otherwise it's a
+   404: `'<id>' isn't installed — use Add Application to install it`. A
+   folder whose app doesn't load isn't installed as far as the Library knows,
+   as for uninstall.
+5. **`check_app()`**, the install's correctness layer (a size, so far).
+6. **The files are staged** in a hidden `.update-<hex>` folder (the scanner
+   skips dot-folders), written as an install's are (`_stage()`, which both
+   use).
+7. **The staged folder must load** as the scanner would load it
+   (`load_app()`): the whole manifest (`name`, `reads`, `config`, `metrics`,
+   which install leaves to the scanner), and `app.py` imported, with a
+   callable `render` and, if it has one, `handle`. Unlike install, which runs
+   nothing, an update imports the new code once here: a broken update would
+   take down an app that works, where a broken install has nothing to break.
+   One that doesn't load is a 400 (`the update doesn't load, so '<id>' is
+   unchanged: <why>`), the staging folder removed.
+8. **The swap**: the old folder renamed aside to a hidden
+   `.update-old-<hex>`, then the staged one renamed into its place, each one
+   atomic step. If the first rename fails, nothing has changed; if the second
+   does, the old folder is renamed back. Either way it's a 500 and the app
+   runs on its old files. The app's loader cache entry is dropped, so the next
+   scan loads the new files, never the old ones' cache.
+9. **The old folder is deleted.** A folder that was a link is unlinked; what
+   it pointed to is never touched (the app is now a real folder of the new
+   files). If the delete fails, only the hidden folder is left, logged
+   (`[apps] updated <id>, but couldn't delete ...`); the update stands.
+10. **The response** is `200 {"ok": true, "id": "<id>", "has_app_py": true|false}`.
+
+**A replace, not a merge.** The folder afterwards holds exactly the files
+sent: one left out is deleted. The popup starts filled with every file the
+app has, so nothing goes unless its slot is removed.
+
+**The data stays.** An update does no database work: what the app wrote under
+`app:<id>` (readings, sessions, its own metrics' readings) is untouched, and
+the new code reads and writes the same source. Its Home tile keeps its place,
+its instance's settings, and its size if the new manifest still offers it
+(else the app's default). A custom metric the new `app.yaml` no longer
+declares drops out of the catalog, coverage and the metric route, as after an
+uninstall, its readings kept under `app:<id>:<key>`; declared again, it's back,
+history and all. Since the app is still installed, its source isn't orphaned,
+so Remove data doesn't reach that metric while it's undeclared: declare it
+again, or uninstall the app, to see or remove it.
+
 ## Routes
 
 - `GET /api/apps` → `[{id, name, default_size: {w, h}, sizes: [{w, h}],
@@ -961,6 +1055,12 @@ source `app:<id>`, as a disconnected device's data does.
 - `POST /api/apps` → installs an app from `{"files": {name: text}}`; `201
   {"ok": true, "id", "has_app_py"}`, or a refusal that writes nothing. See
   [Installing an app](#installing-an-app).
+- `PUT /api/apps/<id>` → updates the app from `{"files": {name: text}}`, the
+  new set replacing its files, its id and data kept; `200 {"ok": true, "id",
+  "has_app_py"}`, or a 400 (an id no app could have, a bad request, a file
+  name, an `app.yaml` whose id isn't the app's, files that don't load), 404
+  (no app loads under it) or 500 that leaves the app as it was. See
+  [Updating an app](#updating-an-app-put-apiappsid).
 - `DELETE /api/apps/<id>` → uninstalls the app, its folder and all; `200
   {"ok": true, "id"}`, or a 400 (an id no app could have) or 404 (no app
   loads under it) that removes nothing. See
@@ -1093,8 +1193,9 @@ wouldn't take reads as the tab's id. There's always at least one tab, and
 `default_tab` always names one (the first, if the saved one is gone).
 
 A read never rewrites the saved row: the next save stores the reconciled
-layout. So an app uninstalled and installed again before then (the update
-path) comes back where it was, with the same instance id and config. It also
+layout. So an app uninstalled and installed again before then comes back
+where it was, with the same instance id and config. (An update, which keeps
+the app installed throughout, never leaves the layout at all.) It also
 means an instance the read added has an id for that read only, until it's
 saved.
 
@@ -1247,12 +1348,14 @@ saved positions and gives `paintTiles` start cells. The sizes, the CSS grid,
   `/api/apps` by name (see
   [frontend-redesign-and-widget-model.md](frontend-redesign-and-widget-model.md)),
   Add Application installs one ([above](#installing-an-app)), and each row
-  expands to what the app reads, its files, Refresh, Duplicate and Uninstall
-  ([above](#an-apps-row-reads-files-refresh-uninstall)). Browse, Build and
-  Create are still placeholders. Still to come: the writes ticker (an app can
-  write back now) and alerts (an app that doesn't load, or whose render
-  fails, flagged in its row). Editing an app's files, updating one in place
-  and disabling one are out: there's no mechanism for them.
+  expands to what the app reads, its files, Refresh, Update, Duplicate and
+  Uninstall ([above](#an-apps-row-reads-files-refresh-uninstall)). Browse,
+  Build and Create are still placeholders. Still to come: the writes ticker
+  (an app can write back now) and alerts (an app that doesn't load, or whose
+  render fails, flagged in its row; Update can't reach one, since it isn't
+  listed). Disabling an app is out, and so are partial updates (one file,
+  merged into the rest) and version history: an update replaces the whole
+  folder, and keeps no copy of the old one once it's in.
 - **Multi-tab Home**, beyond the tab strip ([above](#tabs)), tile settings
   ([Configure](#configure)), Duplicate
   ([an app's row](#an-apps-row-reads-files-refresh-uninstall), the way the

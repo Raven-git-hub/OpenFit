@@ -31,6 +31,7 @@ from apps import (
     read_app_file,
     scan_apps,
     uninstall_app,
+    update_app,
 )
 from crypto import encrypt
 from home_layout import LayoutError, load_layout, parse_layout, save_layout
@@ -664,8 +665,8 @@ def get_samples(metric):
 # input, writing under its own source (POST /api/app/<id>/action). The
 # folder is scanned on every request, so an app added, edited or removed
 # shows on the next load, with no restart. An app is added by hand, or installed
-# from the page through POST /api/apps, and removed through DELETE
-# /api/apps/<id>.
+# from the page through POST /api/apps, its files replaced through PUT
+# /api/apps/<id>, and removed through DELETE /api/apps/<id>.
 
 
 @app.route("/api/apps", methods=["GET"])
@@ -699,9 +700,10 @@ def add_app():
     app.yaml among the files. Every check is install_app()'s - the
     page's own are a convenience - and a refusal writes nothing: 400
     for a request, app.yaml, id or file name that won't do, 409 for an
-    id that's taken (an install only ever creates: remove the app to
-    reinstall it). 201 {"ok": true, "id", "has_app_py"} once it's there;
-    nothing in it has been run - the next scan loads it.
+    id that's taken (an install only ever creates: PUT /api/apps/<id>
+    replaces an installed app's files). 201 {"ok": true, "id",
+    "has_app_py"} once it's there; nothing in it has been run - the next
+    scan loads it.
     """
     body = request.get_json(force=True, silent=True)
     files = body.get("files") if isinstance(body, dict) else None
@@ -710,6 +712,31 @@ def add_app():
     except LibraryError as e:
         return jsonify({"ok": False, "error": str(e)}), e.status
     return jsonify({"ok": True, **installed}), 201
+
+
+@app.route("/api/apps/<app_id>", methods=["PUT"])
+def update_installed_app(app_id):
+    """Update an app: {"files": {name: text}} replace the files in its folder.
+
+    The Applications list's Update is its caller: install's popup,
+    prefilled with the app's files, confirmed. Every check is
+    update_app()'s, and they all run before the app is touched - the
+    new files staged and loaded first - so a refusal leaves it running
+    on its old files: 400 for an id no app could have, or a request,
+    app.yaml, id (it must be this app's own), file name or app that
+    won't do; 404 for an app that isn't installed; 500 if the files
+    can't be written or swapped in. 200 {"ok": true, "id",
+    "has_app_py"} once the new folder is in place - all of it: a file
+    left out is gone. Nothing in the database changes: what the app
+    wrote under app:<id> stays its own.
+    """
+    body = request.get_json(force=True, silent=True)
+    files = body.get("files") if isinstance(body, dict) else None
+    try:
+        updated = update_app(app.config["APPS_DIR"], app_id, files)
+    except LibraryError as e:
+        return jsonify({"ok": False, "error": str(e)}), e.status
+    return jsonify({"ok": True, **updated})
 
 
 @app.route("/api/apps/<app_id>", methods=["DELETE"])
