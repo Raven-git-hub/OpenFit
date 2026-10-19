@@ -3688,6 +3688,287 @@ def test_the_timeline_tones_are_in_every_theme(client):
     assert ".tl-lane.l1 .tl-block{background:var(--timeline-b);color:var(--timeline-b-ink);}" in css
 
 
+# ---------- a synced timeline: the focus clock ----------
+#
+# A timeline naming a focus group (spec.sync) is drawn around the
+# group's clock: a fixed cursor over the middle of the frame, the time
+# under it, and a Now button once it's been scrolled off now. Every
+# timeline of one group scrolls to the same time - by its own scale -
+# and a scroll by hand on one moves them all. Under node, over the
+# stand-in DOM, with the clock held still and the follow tick's timer
+# run when the test says.
+
+SYNC_PARTS = TIMELINE_PARTS + [
+    "TL_STEP_MS", "tlSnap", "focusGroups", "followTimer", "focusGroup", "setFocus", "followNow", "armFollow",
+    "TL_DAYS", "TL_MONTHS", "fmtFocus",
+]
+
+SYNC_HARNESS = r"""
+    // The clock, held at 12:07:30Z on Sunday 18 October 2026 - seven and
+    // a half minutes after TIMELINE's now - until a test moves it on.
+    let clock = Date.parse('2026-10-18T12:07:30Z');
+    Date.now = () => clock;
+    // The follow tick's timer: noted, run when the test says.
+    const timers = [];
+    const setTimeout = (f, ms) => { timers.push({f, ms}); return timers.length; };
+    const WEEK = 7 * 86400000;
+    // The viewport given a height and put on the page, as a browser
+    // would, and laid out for it.
+    const show = (box, h) => {
+      const sc = box.querySelector('.tl-scroll');
+      sc.clientHeight = h;
+      sc.isConnected = true;
+      observers.find(o => o.observed.includes(sc)).callback([]);
+      return sc;
+    };
+    // Scrolled by hand: the browser moves it, then tells it.
+    const scrollTo = (box, top) => { const sc = box.querySelector('.tl-scroll'); sc.scrollTop = top; sc.onscroll(); };
+    // A synced timeline as drawn: its parts, the focus row and the frame,
+    // and - laid out at height h, from its first block's start t0 - the
+    // time under its cursor.
+    const synced = (box, t0, h) => {
+      const sc = box.querySelector('.tl-scroll');
+      const focus = box.querySelector('.tl-focus');
+      const view = box.querySelector('.tl-view');
+      const btn = box.querySelector('.tl-nowbtn');
+      const tag = box.querySelector('.tl-now-tag');
+      const now = box.querySelector('.tl-now');
+      const px = Math.max(h, TL_MIN_WEEK_PX) / WEEK;
+      return {
+        kids: box.children.map(c => c.className),
+        focus: focus ? focus.children.map(c => c.className) : null,
+        view: view ? view.children.map(c => c.className) : null,
+        cursors: box.querySelectorAll('.tl-cursor').length,
+        readout: (box.querySelector('.tl-readout') || {textContent: null}).textContent,
+        nowBtn: btn ? {tag: btn.tag, text: btn.textContent, hidden: btn.hidden} : null,
+        nowTag: tag ? {text: tag.textContent, left: tag.style.left, on: tag.parent.className} : null,
+        top: sc.scrollTop,
+        // The cursor is the viewport's middle: half a viewport into it.
+        atCursor: sc.scrollTop===undefined ? null : new Date(t0 + sc.scrollTop / px).toISOString(),
+        nowBelowCursor: now && sc.scrollTop!==undefined ? parseFloat(now.style.top) - (sc.scrollTop + h/2) : null,
+      };
+    };
+"""
+
+
+def _sync_script(page, scenario):
+    return (
+        MINI_DOM + "\n".join(_js(page, n) for n in SYNC_PARTS) + TIMELINE_HARNESS + SYNC_HARNESS
+        + scenario + "\nconsole.log(JSON.stringify(r));"
+    )
+
+
+# TIMELINE's first block starts here: its axis' t0.
+TIMELINE_T0 = "Date.parse('2026-10-10T01:00:00Z')"
+SYNCED = {**TIMELINE, "sync": "frms"}
+# Another member of the group: one lane, starting weeks earlier - so
+# another axis, and another scroll position for the same time.
+OTHER = {"type": "timeline", "title": "Sleep", "now": "2026-10-18T12:00:00Z", "sync": "frms", "lanes": [
+    {"label": None, "grey_after_now": False, "intervals": [
+        {"start": "2026-09-01T00:00:00Z", "end": "2026-09-01T07:00:00Z", "label": "Night"},
+        {"start": "2026-10-17T23:00:00Z", "end": "2026-10-18T06:30:00Z", "label": "Night"},
+    ]},
+]}
+OTHER_T0 = "Date.parse('2026-09-01T00:00:00Z')"
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
+def test_a_synced_timeline_draws_a_cursor_a_readout_and_a_now_button(client):
+    page = _page(client)
+    r = _node(_sync_script(page, f"""
+        // Unsynced - no sync, an empty name, not a name - first: none of
+        // them starts a group, or the clock.
+        r.plain = look(renderSpec({json.dumps(TIMELINE)}, 'Roster', 'roster'));
+        r.plainKids = [{json.dumps(TIMELINE)}, {json.dumps({**TIMELINE, "sync": ""})}, {json.dumps({**TIMELINE, "sync": 5})}]
+          .map(spec => renderSpec(spec, 'Roster', 'roster'))
+          .map(box => [box.children.map(c => c.className),
+                       ['.tl-focus', '.tl-readout', '.tl-nowbtn', '.tl-view', '.tl-cursor', '.tl-now-tag']
+                         .map(sel => box.querySelectorAll(sel).length)]);
+        r.groupsUnsynced = [focusGroups.size, timers.length];
+        // Synced, with nothing to draw: said, as unsynced - no group.
+        r.none = look(renderSpec({{type:'timeline', sync:'frms', lanes:[{{intervals:[]}}]}}, 'X', 'x'));
+        r.groupsNone = focusGroups.size;
+
+        const box = renderSpec({json.dumps(SYNCED)}, 'Roster', 'roster');
+        r.built = look(box);
+        r.drawn = synced(box, {TIMELINE_T0}, 480);
+        show(box, 480);
+        r.shown = synced(box, {TIMELINE_T0}, 480);
+        r.group = [...focusGroups].map(([name, g]) => [name, new Date(g.focusMs).toISOString(), g.following, g.members.size]);
+        r.timers = timers.map(t => t.ms);
+        // The readout's form, at another time: the quarter hour it's in.
+        r.form = fmtFocus(tlSnap(Date.parse('2025-11-03T14:22:59Z')));
+    """))
+
+    # Unsynced, exactly as before: the title, the headings, the frame -
+    # no focus row, no cursor, no Now tag - and no group, no clock.
+    assert r["plain"]["kids"] == ["t", "tl-head", "tl-scroll"]
+    assert r["plain"]["track"] == ["tl-lane l0", "tl-lane l1", "tl-now"]
+    assert r["plainKids"] == [[["t", "tl-head", "tl-scroll"], [0, 0, 0, 0, 0, 0]]] * 3
+    assert r["groupsUnsynced"] == [0, 0]
+    assert (r["none"]["kids"], r["none"]["msg"]) == (["spec-msg"], "No data")
+    assert r["groupsNone"] == 0
+
+    # Synced: the focus row - the readout, the Now button - over the
+    # headings, and the frame wrapped with the cursor over it; inside it
+    # the same track: the lanes, their blocks, the now line.
+    built, drawn = r["built"], r["drawn"]
+    assert built["kids"] == ["t", "tl-focus", "tl-head", "tl-view"]
+    assert drawn["focus"] == ["tl-readout", "btn sm tl-nowbtn"]
+    assert drawn["view"] == ["tl-scroll", "tl-cursor"]
+    assert drawn["cursors"] == 1
+    assert built["track"] == ["tl-lane l0", "tl-lane l1", "tl-now"]
+    assert [lane["blocks"] for lane in built["lanes"]] == [["CX9101 <b>", "R1E"], ["CX9101", "A1534", ""]]
+    assert built["laidOut"] is True
+    assert built["html"] == ""
+    # The now line tagged Now, on the greyed lane - the right half.
+    assert drawn["nowTag"] == {"text": "Now", "left": "calc(50% + 4px)", "on": "tl-now"}
+    # The readout: the group's time, UTC, to the quarter hour - now, as
+    # it's following; so no Now button.
+    assert drawn["readout"] == "Sun 18 Oct 12:00Z"
+    assert drawn["nowBtn"] == {"tag": "button", "text": "Now", "hidden": True}
+    assert r["form"] == "Mon 03 Nov 14:15Z"
+    # The group: started on now, following, the timeline its member; and
+    # the follow tick due on the next quarter hour.
+    assert r["group"] == [["frms", "2026-10-18T12:00:00.000Z", True, 1]]
+    assert r["timers"] == [7.5 * 60000]
+    # Built off the page, nothing's scrolled; given a height, the
+    # group's time sits under the cursor - and while it follows, the now
+    # line with it.
+    assert drawn["atCursor"] is None
+    assert r["shown"]["atCursor"] == "2026-10-18T12:00:00.000Z"
+    assert r["shown"]["nowBelowCursor"] == pytest.approx(0)
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
+def test_timelines_of_one_focus_group_scroll_together_by_time(client):
+    page = _page(client)
+    other_group = {**OTHER, "sync": "elsewhere"}
+    r = _node(_sync_script(page, f"""
+        const a = renderSpec({json.dumps(SYNCED)}, 'Roster', 'roster');
+        const b = renderSpec({json.dumps(OTHER)}, 'Sleep', 'sleep');
+        const c = renderSpec({json.dumps(other_group)}, 'Sleep', 'sleep');
+        // Two scales: a tall frame and a short one.
+        show(a, 480); show(b, 300); show(c, 300);
+        const look3 = () => [synced(a, {TIMELINE_T0}, 480), synced(b, {OTHER_T0}, 300), synced(c, {OTHER_T0}, 300)];
+        r.opened = look3();
+        // Its own scroll - the browser telling it of the scroll it made to
+        // the focus - isn't the user's: still following.
+        a.querySelector('.tl-scroll').onscroll();
+        r.ownScroll = [focusGroups.get('frms').following, look3()];
+        // a scrolled by hand to 05:40Z on Monday 12 October (from its t0,
+        // at its scale): the group's focus moves to the quarter hour
+        // under its cursor, and b - another axis, another scale - follows.
+        const aTop = (Date.parse('2026-10-12T05:40:00Z') - {TIMELINE_T0}) * 480 / WEEK;
+        scrollTo(a, aTop);
+        r.scrolled = look3();
+        r.aTop = aTop;
+        r.group = [new Date(focusGroups.get('frms').focusMs).toISOString(), focusGroups.get('frms').following];
+        // b's own scroll to it, told: passes.
+        b.querySelector('.tl-scroll').onscroll();
+        r.bEcho = new Date(focusGroups.get('frms').focusMs).toISOString();
+        // Now b scrolled by hand, back a day: a follows.
+        scrollTo(b, b.querySelector('.tl-scroll').scrollTop - 86400000 * 300 / WEEK);
+        r.back = look3();
+        // A member drawn afresh - its tile redrawn, the new face on the
+        // page, the old one off it - leaves; the new one joins and opens
+        // on the group's time, not now.
+        const a2 = renderSpec({json.dumps(SYNCED)}, 'Roster', 'roster');
+        show(a2, 480);
+        a.querySelector('.tl-scroll').isConnected = false;
+        releaseTimelines();
+        r.redrawn = [synced(a2, {TIMELINE_T0}, 480), focusGroups.get('frms').members.size, focusGroups.size];
+    """))
+
+    [a, b, c] = r["opened"]
+    # Opened together on now - each its own axis and scale, so its own
+    # scroll position, the same time.
+    assert a["atCursor"] == b["atCursor"] == c["atCursor"] == "2026-10-18T12:00:00.000Z"
+    assert a["top"] != pytest.approx(b["top"])
+    assert r["ownScroll"] == [True, r["opened"]]
+
+    [a, b, c] = r["scrolled"]
+    # a stays where it was put - no snapping back under the user's hand -
+    # and says the quarter hour it's in; b is scrolled to that time by
+    # its own scale, and says the same. Both offer Now.
+    assert a["top"] == pytest.approx(r["aTop"])
+    assert a["readout"] == b["readout"] == "Mon 12 Oct 05:30Z"
+    assert b["atCursor"] == "2026-10-12T05:30:00.000Z"
+    assert b["top"] != pytest.approx(a["top"])
+    assert a["nowBtn"]["hidden"] is False and b["nowBtn"]["hidden"] is False
+    # The group's focus: that quarter hour, no longer following now.
+    assert r["group"] == ["2026-10-12T05:30:00.000Z", False]
+    # Another group's timeline isn't moved: still on now, following.
+    assert c == r["opened"][2]
+    assert r["bEcho"] == "2026-10-12T05:30:00.000Z"
+
+    # b scrolled back a day by hand: a follows it there.
+    [a, b, c] = r["back"]
+    assert b["readout"] == a["readout"] == "Sun 11 Oct 05:30Z"
+    assert a["atCursor"] == "2026-10-11T05:30:00.000Z"
+    assert c == r["opened"][2]
+
+    # A tile drawn afresh: the old member gone, the new one in, on the
+    # group's time - which outlives its timelines.
+    [a2, members, groups] = r["redrawn"]
+    assert a2["atCursor"] == "2026-10-11T05:30:00.000Z"
+    assert a2["readout"] == "Sun 11 Oct 05:30Z"
+    assert a2["nowBtn"]["hidden"] is False
+    assert (members, groups) == (2, 2)
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
+def test_the_now_button_shows_once_scrolled_off_now_and_brings_the_group_back(client):
+    page = _page(client)
+    r = _node(_sync_script(page, f"""
+        const a = renderSpec({json.dumps(SYNCED)}, 'Roster', 'roster');
+        const b = renderSpec({json.dumps(OTHER)}, 'Sleep', 'sleep');
+        show(a, 480); show(b, 300);
+        const hidden = () => [a, b].map(x => x.querySelector('.tl-nowbtn').hidden);
+        r.following = hidden();
+        // The follow tick, on the quarter hour, twenty minutes on: the
+        // group moves on to now, and every member with it.
+        clock = Date.parse('2026-10-18T12:27:30Z');
+        timers[0].f();
+        r.ticked = [synced(a, {TIMELINE_T0}, 480).atCursor, synced(b, {OTHER_T0}, 300).readout, hidden(),
+                    timers.map(t => t.ms)];
+        // Scrolled by hand: off now, so Now on every member.
+        scrollTo(a, (Date.parse('2026-10-14T03:00:00Z') - {TIMELINE_T0}) * 480 / WEEK);
+        r.scrolled = [hidden(), synced(b, {OTHER_T0}, 300).readout];
+        // The tick doesn't move a group that isn't following.
+        clock = Date.parse('2026-10-18T12:45:00Z');
+        timers[1].f();
+        r.held = [synced(b, {OTHER_T0}, 300).readout, hidden()];
+        // Now, on b: the group back on now, following - every member
+        // scrolled there, Now hidden again.
+        b.querySelector('.tl-nowbtn').onclick();
+        r.back = [focusGroups.get('frms').following, synced(a, {TIMELINE_T0}, 480).atCursor,
+                  synced(b, {OTHER_T0}, 300).atCursor, synced(a, {TIMELINE_T0}, 480).readout, hidden()];
+    """))
+
+    # Following: no Now button on any member.
+    assert r["following"] == [True, True]
+    # The tick: on to 12:15Z everywhere, still following; due again in
+    # fifteen minutes - the next quarter hour.
+    assert r["ticked"] == ["2026-10-18T12:15:00.000Z", "Sun 18 Oct 12:15Z", [True, True], [7.5 * 60000, 2.5 * 60000]]
+    # Scrolled off now: Now shown on both.
+    assert r["scrolled"] == [[False, False], "Wed 14 Oct 03:00Z"]
+    assert r["held"] == ["Wed 14 Oct 03:00Z", [False, False]]
+    # Now: back on now - the quarter hour - following again, Now hidden.
+    assert r["back"] == [True, "2026-10-18T12:45:00.000Z", "2026-10-18T12:45:00.000Z", "Sun 18 Oct 12:45Z", [True, True]]
+
+
+def test_a_synced_timelines_cursor_and_now_line_are_the_accent(client):
+    page = _page(client)
+    css = page[: page.index("</style>")]
+    # Two cyan lines: the fixed cursor and the now line it meets while following.
+    assert "border-top:2px solid var(--accent)" in css[css.index(".tl-cursor{") :].split("}")[0]
+    assert "border-top:2px solid var(--accent)" in css[css.index(".tl-now{") :].split("}")[0]
+    assert "background:var(--accent);color:var(--accent-ink)" in css[css.index(".tl-now-tag{") :].split("}")[0]
+    # The track scrolls under the cursor: it's over the frame, not in it.
+    assert ".tl-view{position:relative;" in css
+
+
 # ---------- an uninstalled app's data: Remove data ----------
 #
 # Uninstall keeps what an app wrote; GET /api/app-sources lists every

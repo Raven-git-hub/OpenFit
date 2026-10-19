@@ -1005,6 +1005,37 @@ def test_a_timelines_title_is_text(title):
         host.timeline([{"intervals": []}], title=title)
 
 
+def test_a_timeline_joins_a_focus_group_by_name():
+    lanes = [{"label": "Flown", "grey_after_now": True, "intervals": [
+        {"start": "2026-10-19T01:00:00Z", "end": "2026-10-19T02:00:00Z", "label": "CX105"},
+    ]}]
+    plain = host.timeline(lanes, now="2026-10-19T00:00:00Z", title="Duties")
+    synced = host.timeline(lanes, now="2026-10-19T00:00:00Z", title="Duties", sync="frms")
+
+    # Named, the spec carries the group's name - and is otherwise the
+    # same spec: the host carries it, the page keeps the focus clock.
+    assert synced == {**plain, "sync": "frms"}
+    assert json.loads(json.dumps(synced, allow_nan=False)) == synced
+    # Not named - no sync, None or an empty name - the spec is exactly
+    # what it was before there was a sync: no key, the same JSON.
+    before = (
+        '{"type": "timeline", "title": "Duties", "now": "2026-10-19T00:00:00Z", "lanes": '
+        '[{"label": "Flown", "grey_after_now": true, "intervals": '
+        '[{"start": "2026-10-19T01:00:00Z", "end": "2026-10-19T02:00:00Z", "label": "CX105"}]}]}'
+    )
+    assert json.dumps(plain) == before
+    for unnamed in (None, ""):
+        assert json.dumps(host.timeline(lanes, now="2026-10-19T00:00:00Z", title="Duties", sync=unnamed)) == before
+    # On the ctx, as the other builders are.
+    assert host.Ctx.timeline(lanes, sync="frms")["sync"] == "frms"
+
+
+@pytest.mark.parametrize("sync", [3, True, ["frms"], {"group": "frms"}])
+def test_a_timelines_sync_is_a_groups_name(sync):
+    with pytest.raises(TypeError, match="a timeline's sync must be text, a focus group's name"):
+        host.timeline([{"intervals": []}], sync=sync)
+
+
 def test_the_ctx_carries_the_builders(conn):
     ctx = host.Ctx(conn)
     assert ctx.panel(ctx.number(1), ctx.line([1]), ctx.input("k", "a"), ctx.empty())["type"] == "panel"

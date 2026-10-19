@@ -298,11 +298,11 @@ def test_render_draws_the_rostered_and_the_flown_on_a_timeline(conn):
 
     # The picker on top; the timeline under it, rostered then flown, each
     # duty a block labelled with its code; the line at now, the render's
-    # own; the flown side greyed after it.
+    # own; the flown side greyed after it; in the FRMS focus group.
     [picker, timeline] = spec["children"]
     assert spec["type"] == "panel" and picker == PICKER
     assert iso_utc(before) <= timeline["now"] <= iso_utc(after)
-    assert timeline == {"type": "timeline", "title": None, "now": timeline["now"], "lanes": [
+    assert timeline == {"type": "timeline", "title": None, "now": timeline["now"], "sync": "frms", "lanes": [
         {"label": "Rostered", "grey_after_now": False, "intervals": [
             {"start": "2026-10-20T22:00:00Z", "end": "2026-10-21T10:00:00Z", "label": "R1E"},
             {"start": "2099-11-05T15:10:00Z", "end": "2099-11-06T04:10:00Z", "label": "CX9102"},

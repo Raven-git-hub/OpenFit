@@ -86,10 +86,13 @@ def render(ctx, cfg):
     # The plan on the left, what was flown on the right - greyed after
     # now, when nothing's flown yet. The picker on top; the timeline
     # takes the rest of the tile and scrolls, laid out to whatever size
-    # the tile is (render() isn't told it).
+    # the tile is (render() isn't told it). It's in the FRMS focus
+    # group: the page keeps a cursor on it, and scrolls every timeline
+    # of the group to one time.
     return ctx.panel(picker, ctx.timeline(
         [_lane(rostered, label="Rostered"), _lane(flown, label="Flown", grey_after_now=True)],
         now=datetime.now(timezone.utc),
+        sync="frms",
     ))
 
 

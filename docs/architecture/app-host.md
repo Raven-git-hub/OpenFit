@@ -275,7 +275,7 @@ the dicts itself.
 | `ctx.line(points, title=None)` | `{"type": "line", "points": [[date, value], ...], "title"}` | A sparkline with its title above it. See [the line builder](#the-line-builder), below. |
 | `ctx.panel(*children)` or `ctx.panel([children])` | `{"type": "panel", "children": [...]}` | Its children stacked in order. A number keeps its height and a line takes the rest. |
 | `ctx.input(key, action, label=None, kind="number", unit=None, options=None, accept=None)` | `{"type": "input", "key", "action", "label", "kind", "unit", "options", "accept"}` | A field under its label (small, uppercase), its unit and a **Save** button beside it. `kind` is one of `INPUT_KINDS`: `"number"` (the default), `"text"`, `"select"` — a dropdown of `options`, a non-empty list of non-empty strings, required for a select and refused for the other kinds (`options` is `null` in their specs) — or `"file"`, a file picker offering `accept`'s hints (`".txt,.csv"`, `"text/plain"`: optional non-empty text, refused for the other kinds — `accept` is `null` in their specs, and in a file's without one). Save, or Enter, sends `action` to the app's `handle()` with the payload `{key: what was entered}` (a number for kind `"number"`, text as typed for `"text"`, the chosen option's string as written for `"select"`, and for `"file"` the file picked, a `FileUpload` — Save only, sent multipart), and the tile is redrawn from the fresh spec the reply carries; a refusal shows under the field, which keeps what was entered. A blank field, or a number that isn't one, says so and sends nothing; so does a select still on its "Choose…" placeholder, a picker with no file picked ("Choose a file.") or one over 25 MB ("File too large (max 25 MB)."). The host doesn't check a select's value is one of its options (the action route remembers no render), nor what a file holds: `handle()` does. In a panel it sits at the foot. In Configure it's inert, like the rest of the face. See [Writing](#writing-apps-as-sources) and `docs/architecture/input-primitives.md`. |
-| `ctx.timeline(lanes, now=None, title=None)` | `{"type": "timeline", "title", "now", "lanes": [{"label", "grey_after_now", "intervals": [{"start", "end", "label"}, ...]}, ...]}` | One lane or two of time-blocks side by side on one vertical time axis, in a frame that scrolls — lane 0 the left column in the lighter tone, lane 1 the right in the darker — under the lanes' labels; a line at `now`, and a `grey_after_now` lane greyed below it. See [the timeline builder](#the-timeline-builder), below. |
+| `ctx.timeline(lanes, now=None, title=None, sync=None)` | `{"type": "timeline", "title", "now", "lanes": [{"label", "grey_after_now", "intervals": [{"start", "end", "label"}, ...]}, ...]}`, plus `"sync"` only when given | One lane or two of time-blocks side by side on one vertical time axis, in a frame that scrolls — lane 0 the left column in the lighter tone, lane 1 the right in the darker — under the lanes' labels; a line at `now`, and a `grey_after_now` lane greyed below it. With `sync`, a focus group's name, it's drawn around the group's focus clock: a fixed cursor, the time under it and a Now button, every timeline of the group scrolling to one time. See [the timeline builder](#the-timeline-builder), below. |
 | `ctx.empty(message=None)` | `{"type": "empty", "message"}` | Muted, centred text (default "No data yet"). |
 | (the host's) | `{"type": "error", "message"}` | Muted, centred: "Couldn't render <app name>" over the message. |
 
@@ -314,11 +314,12 @@ are `{date, value}` objects or bare numbers.
 ### The timeline builder
 
 ```python
-ctx.timeline(lanes, now=None, title=None)
+ctx.timeline(lanes, now=None, title=None, sync=None)
 # -> {"type": "timeline", "title": title, "now": "2026-10-19T00:00:00Z",
 #     "lanes": [{"label": "Rostered", "grey_after_now": False,
 #                "intervals": [{"start": "...Z", "end": "...Z", "label": "CX105"}, ...]},
 #               {"label": "Flown", "grey_after_now": True, "intervals": [...]}]}
+# with sync="frms", the same plus "sync": "frms"
 ```
 
 A generic two-lane interval timeline — a roster's plan against what was flown,
@@ -352,6 +353,11 @@ carries the times and the page owns every pixel, as with a line.
 - **`now`** is a `datetime`, ISO-8601 text or `None`, normalised the same way:
   where the now line is drawn. `None` draws no line, and greys nothing.
 - **`title`** is optional text, drawn small above the timeline, as a line's is.
+- **`sync`** is optional text, the name of a focus group (`"frms"`) the
+  timeline joins; `None` or an empty name joins none. Given, the spec carries
+  it as `"sync"`; otherwise the spec has no `sync` key at all — exactly the
+  spec from before there was one. Anything but text raises `TypeError`. The
+  host only carries the name: the focus clock is the page's (below).
 
 **How it's drawn.** The axis runs from the earliest start to the latest end
 (or `now`, if that's later), down the tile. The timeline fills what's left of
@@ -379,6 +385,47 @@ frame. That observer is disconnected once its tile is drawn afresh
 (`releaseTimelines()`, called wherever Home's faces are replaced, and by the
 observer itself on finding its frame gone). With no height at all — Home behind
 another tab — the last layout stands.
+
+**Synced: the focus clock.** A timeline with a `sync` name is drawn around its
+group's focus clock instead — the backbone for panels that scroll together by
+time (the roster's is the first; a sleep panel joining `"frms"` later syncs
+with it for free). Without `sync`, none of this is drawn: no cursor, no
+readout, no button, the now line centred on opening as above.
+
+- **The focus clock** is UI state the page keeps, in memory, per group name
+  (`focusGroups`: `{focusMs, following, members}`) — never stored, never sent
+  to the server, nothing in `app.yaml`. A group starts with the first timeline
+  that names it, on now and **following** it; a page load starts every group
+  afresh. A timeline joins its group when drawn and leaves once its frame is
+  off the page (`releaseTimelines()`, beside its `ResizeObserver`), so a tile
+  drawn afresh — an upload's reply, a Refresh, a sync — rejoins on the group's
+  time, scrolled or not. What's shared is the **time**, never a scroll
+  position: each member converts it to its own scroll by its own scale, so
+  timelines of different spans and heights stay on one instant.
+- **The cursor** (`.tl-cursor`) is a fixed `--accent` line across the middle
+  of the frame, over it in a wrapper (`.tl-view`): the track scrolls under it.
+  The track is padded half a frame at each end, so every time on the axis can
+  reach the cursor. Every layout — the first, and every resize — puts the
+  group's focus time under it (a time past an end of this axis scrolls as far
+  as it goes).
+- **The readout** (`.tl-readout`), in a row over the lanes' labels, is the
+  focus time in UTC, to the quarter hour: `Mon 03 Nov 14:15Z`. Every focus
+  time is snapped down to the quarter hour (`tlSnap()`).
+- **Scrolling by hand** — a wheel, a drag, the keyboard — sets the group's
+  focus to the quarter hour under that timeline's cursor and stops it
+  following; every other member scrolls there, and every readout says it. The
+  one scrolled stays where it was put (no snap under the hand). Its own scrolls
+  — to the focus — aren't taken for the user's.
+- **Following**: while a group follows, a single shared timer (`followNow()`,
+  due on each quarter hour) moves its focus on to now, and every member with
+  it. A group that isn't following stays where it was left.
+- **Now** (`.tl-nowbtn`), at the end of the readout's row, is shown only while
+  the group isn't following — scrolled off now — and hidden while it is.
+  It puts the focus back on now, following again, on every member.
+- **The now line** stays at the spec's `now`, scrolling with the track, and
+  carries a **Now** tag on the greyed lane, just under the line, where the grey
+  starts. It's `--accent`, like the cursor: the two lines meet while the group
+  follows, and part once it's scrolled.
 
 **Errors never fail the page.** `render_app()` catches anything `render()`
 raises and logs it with the traceback (`[apps] <id>: render failed`). It also
@@ -737,7 +784,10 @@ picker. Otherwise it's the picker on top and, under it, a timeline
 right with `grey_after_now`, each a block from its start to its end labelled
 with its code, and the now line at the time of the render. The timeline fills
 the rest of the tile and scrolls, laid out to whichever size the tile is
-(`render()` isn't told it). A duty with no end, which only another source could
+(`render()` isn't told it). It's synced into the `"frms"` focus group
+(`sync="frms"`): a fixed cursor across its middle, the UTC time under it above
+the labels, following now until it's scrolled, with a Now button to come back —
+and any later FRMS panel naming the same group scrolls with it. A duty with no end, which only another source could
 file, is left out. The `duty_hours_*` metrics are still written on every
 upload; the tile no longer reads them. A roster that's all over six months old
 is filed but draws as the empty state.

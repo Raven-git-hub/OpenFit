@@ -317,9 +317,10 @@ own calls to its device API. Full direction:
   (`ValueError`, "accept is only for a file"), whose specs — and a file's
   without one — carry `accept: None`;
   `docs/architecture/input-primitives.md`),
-  `timeline(lanes, now=None, title=None)` → `{"type": "timeline", title,
-  now, lanes: [{label, grey_after_now, intervals: [{start, end,
-  label}]}]}` (a generic two-lane interval timeline — a plan beside the
+  `timeline(lanes, now=None, title=None, sync=None)` → `{"type":
+  "timeline", title, now, lanes: [{label, grey_after_now, intervals:
+  [{start, end, label}]}]}`, plus `sync` only when given (a generic
+  two-lane interval timeline — a plan beside the
   actual — whose pixels are all the page's: `lanes` a list or tuple of 1
   or 2 (`TIMELINE_LANES`; else `ValueError`, not a list `TypeError`), in
   visual order, lane 0 left and lighter, lane 1 right and darker, coloured
@@ -333,7 +334,11 @@ own calls to its device API. Full direction:
   a lane or interval not a dict `TypeError`, an unknown field (a misspelt
   `gray_after_now`) `ValueError` (`_fields()`), a missing end, a time that
   isn't one or an end before its start `ValueError`; `now` normalised the
-  same way or `None` (no line); `title` text or `None`, else `TypeError`),
+  same way or `None` (no line); `title` text or `None`, else `TypeError`;
+  `sync` a focus group's name (`"frms"`), text or `None`, else
+  `TypeError` — `None` or `""` adds no key, so an unsynced spec is
+  exactly the one from before `sync`; the host only carries the name, the
+  focus clock is the page's, below),
   `empty(message)`; the host's own is `{"type": "error", "message"}`. `render_app(app, conn, cfg=None,
   today=None)` calls `render(ctx, dict(cfg or {}))` (the ctx made for
   `app`) — `cfg` the
@@ -557,7 +562,9 @@ own calls to its device API. Full direction:
   (`duties_complete`, `grey_after_now`), each session an interval of its
   `start`/`end` labelled with `summary["code"]` (`""` for none; a session
   with no end, only another source's, left out — `_lane()`), `now`
-  `datetime.now(timezone.utc)`. The timeline fills the rest of the tile
+  `datetime.now(timezone.utc)`, `sync` `"frms"` (the FRMS focus group:
+  a later FRMS panel naming it scrolls with the roster, by time). The
+  timeline fills the rest of the tile
   and scrolls, laid out to its size by the page (`render()` isn't told
   it). The `duty_hours_*` metrics are still written; the tile no longer
   reads them (`app.yaml`'s `reads` still names them).
@@ -1052,9 +1059,39 @@ own calls to its device API. Full direction:
   (`onscroll`), through a resize. Each observer is in `timelines` and let
   go of by `releaseTimelines()` — called at the end of `paintHome()` and
   `repaintTile()`, and by the observer finding its frame gone —
-  disconnecting any whose frame `!isConnected`. A hand-built spec draws
+  disconnecting any whose frame `!isConnected` (and taking a synced one
+  out of its group). A hand-built spec draws
   what it can: two lanes at most, an interval without both ends in order
-  dropped; no intervals → "No data"), `empty`/`error` (muted, centred; error under
+  dropped; no intervals → "No data". **Synced** — `s.sync` a non-empty
+  string; anything else draws all of the above and nothing more, the
+  same DOM as before `sync` — it's drawn around its group's **focus
+  clock**: `focusGroups`, a `Map` of group name → `{focusMs, following,
+  members}`, UI state in memory for the page's life (never stored: a
+  load starts every group on now); `focusGroup(name)` gets or starts one
+  (on `tlSnap(Date.now())`, following, and arms the one shared follow
+  tick, `armFollow()`); `setFocus(g, focusMs, following, from)` publishes
+  — every member's `show(rescroll)` redraws its readout and Now button
+  and, bar `from` (the one scrolled by hand), scrolls the time under its
+  cursor; `followNow()`, run by a `setTimeout` due on each quarter hour
+  (`TL_STEP_MS`) and re-armed, moves every following group on to now;
+  every focus time `tlSnap()`ed down to the quarter hour. The time is
+  shared, never a scroll position: each member scrolls to it by its own
+  `px`. A member (its `timelines` entry, `{scroll, observer, group,
+  show}`) joins on render and leaves in `releaseTimelines()`, so a tile
+  drawn afresh rejoins on the group's time. A synced timeline's DOM: a
+  `.tl-focus` row over the headings — `.tl-readout` (`fmtFocus()`, UTC:
+  `Mon 03 Nov 14:15Z`) and a `.tl-nowbtn` (`btn sm`, "Now", `hidden`
+  while following) at its end — and the frame wrapped in `.tl-view` with
+  a `.tl-cursor` over it, a fixed `--accent` line across its middle (the
+  track scrolls under it); the track padded half a frame each end, so
+  `scrollTop = (focusMs − t0)·px` puts the focus under the cursor — on
+  every layout, in place of the now-centring; the `.tl-now` line still at
+  `s.now`, with a `.tl-now-tag` "Now" under it on the greyed lane (the
+  first, with none). Its `onscroll`: a scroll it made itself (to
+  `ours`, the `scrollTop` it set, read back) passes; any other is the
+  user's — the group's focus to the quarter hour under its cursor,
+  `following` false. Now: `setFocus(group, tlSnap(Date.now()), true)`.
+  `.tl-view > .tl-scroll` has `overflow-anchor: none`), `empty`/`error` (muted, centred; error under
   "Couldn't render <name>"), any other type an error tile. A spec is drawn
   for its app — `renderSpec(spec, name, appId)`, the id threaded from the
   tile (`paintTiles()`, `repaintTile()`) through a panel to its input. No apps → a note pointing to ＋ Add Application (or the apps
@@ -1755,6 +1792,18 @@ same PR:
   and its tests): its duty-code rules, the owner's base and timezone and
   a destinations table moved out of `app.py` into a `config.json`
   installed beside it, read at import and fail-safe (see Layout).
+  Then timeline v2 landed (no migration, no route change): a timeline
+  opts into a shared **focus clock** with `ctx.timeline(..., sync=
+  "<group>")` — the spec carries `sync`; the page keeps the group's
+  focus time and whether it follows now (in memory, never stored, every
+  group on now at load), draws a fixed cursor across the frame's middle,
+  the UTC time under it to the quarter hour, the now line tagged Now and
+  a Now button once scrolled off now, and scrolls every timeline of the
+  group to one time — by time, never pixels; a scroll by hand moves the
+  group and stops it following, a tick on each quarter hour moves a
+  following group on. No `sync`: exactly the timeline before it. The
+  roster's timeline is the first member (`sync="frms"`); a second panel
+  joining `"frms"` syncs with it for free.
   Still to come for it: reading `destinations` (time-zone shifts, layover
   highlighting), the trip lists either side (planning, reports),
   their popups and PDF, grouping duties into trips (the layover
