@@ -499,8 +499,25 @@ own calls to its device API. Full direction:
   `app.yaml`: id `roster`, name "Roster", `sizes: [{ w: 2, h: 1 }, { w: 2,
   h: 2 }]`, `reads: [duty_hours_rostered, duty_hours_complete]`, and
   `metrics:` those two — "Rostered duty hours"/"Flown duty hours", `h`,
-  Roster, daily, `range: [0, 24]`. One `app.py`, stdlib only (no
-  `icalendar` in the image), its logic module functions:
+  Roster, daily, `range: [0, 24]`. Config-driven: three files, `app.yaml`,
+  `app.py` (the engine) and `config.json` (the reference it reads — the
+  round trip installs all three). The config: `duty_types`, an ordered
+  list of rules `{type, prefixes: [...]}` or `{type, regex}`, the first
+  match winning; `default_type`; `personal` (`home_base`, `timezone`); and
+  `destinations` (IATA → `{city, tz}`, an IANA zone — not read yet: staged
+  for the time-zone/layover work). The fixture's is synthetic (`CX` →
+  flight, `^A\d` → sim, `R` → reserve, else other; home base and ports
+  `ZZA`/`ZZB`); the owner's real one stays on their volume, never
+  committed. Read once at import from beside the module (`__file__`, so
+  wherever the host loads it — installed or staged by Update) into
+  `CONFIG`; missing, not JSON, or not a dict with a `duty_types` list →
+  `CONFIG` None and a plain `CONFIG_ERROR` ("config.json is missing —
+  reinstall the app with one", "config.json won't read: …", "config.json
+  needs a duty_types list"), never raising, so the app still loads (and
+  can be Updated). Guarded at the edge, never in the parser: `render()`
+  then returns `empty(CONFIG_ERROR)` over the picker, `handle()` raises
+  `ValueError(CONFIG_ERROR)` before it reads the upload. `app.py` stdlib
+  only (no `icalendar` in the image), its logic module functions:
   `parse_events(text)` (unfold — a CRLF/LF then a space or tab removed —
   then each `VEVENT`'s `SUMMARY`/`DESCRIPTION` (RFC 5545-unescaped) and
   `DTSTART`/`DTEND`: `VALUE=DATE` (or bare `YYYYMMDD`) a date, all-day;
@@ -510,11 +527,14 @@ own calls to its device API. Full direction:
   nested component, an alarm, lends nothing), `duties(events)` (every
   timed event with both ends, in file order — duty-ness structural,
   never a list of codes: all-day `O`/`G`/`U`/`L`/anything skipped; no
-  end, or an end before the start, skipped and logged), `classify(title)`
-  (labels only, never filters: after a leading `DD-Mon`, `CX` and digits
-  — apart or together — `flight` with `flight_no`, `dep`/`arr` from an
-  `XXX-XXX` token, `position` a trailing 2–3-letter code; `A<digit>…`
-  `sim`; `R…` `reserve`; else `other`, `code` the first token kept),
+  end, or an end before the start, skipped and logged), `classify(title,
+  config=None)` (labels only, never filters; `config` defaults to
+  `CONFIG`: after a leading `DD-Mon`, `code` the first token and its type
+  `_duty_type(code, config)` — the first `duty_types` rule matching by
+  `regex` (`re.match`) or `prefixes` (`startswith`), else `default_type`;
+  no carrier in the code — and a `flight` gets `flight_no` (the code,
+  joined to an all-digit next token: `CX 105` → `CX105`), `dep`/`arr` from
+  an `XXX-XXX` token, `position` a trailing 2–3-letter code),
   `bucket_for(end, now)` (`end <= now` → `duties_complete`, else
   `duties_rostered`) and `daily_hours(duties, now)` (each kind's hours
   by `DTSTART`'s UTC date, a duty past midnight whole on its start day;
@@ -1731,7 +1751,12 @@ same PR:
   measuring after attach (a `requestAnimationFrame`, a `ResizeObserver`
   released with its tile) — and the `roster` app's tile, its centre
   column: rostered against flown over about six months and all to come.
-  Still to come for it: the trip lists either side (planning, reports),
+  Then the roster app went config-driven (no host change: an app fixture
+  and its tests): its duty-code rules, the owner's base and timezone and
+  a destinations table moved out of `app.py` into a `config.json`
+  installed beside it, read at import and fail-safe (see Layout).
+  Still to come for it: reading `destinations` (time-zone shifts, layover
+  highlighting), the trip lists either side (planning, reports),
   their popups and PDF, grouping duties into trips (the layover
   definition, `dep`/`arr`), per-block detail on click or hover, and
   `base_tz` day gridlines and WOCL shading on the axis.

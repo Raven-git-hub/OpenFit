@@ -436,7 +436,15 @@ when you uploaded, else `duties_rostered`, so a roster uploaded before and after
 a duty holds the plan and what was flown side by side. Each duty's summary
 carries its code and a best-effort label (`flight`, `reserve`, `sim`, or
 `other` for a code the app doesn't know — still filed), a flight's number and
-route, and the roster's description verbatim. The app also files each day's
+route, and the roster's description verbatim. The labels aren't written into
+the code: the app is three files, `app.yaml`, `app.py` and a `config.json`
+beside them that holds the duty-code rules (a code's prefix or a pattern for
+each type, the first match winning, and the type for a code none match), your
+home base and timezone, and a table of destinations, so adding a carrier or a
+duty code is a config edit, made with Update. The committed copy's config is a
+synthetic one for the tests; your own stays on your server. If the config is
+missing or won't read, the tile says so over its picker and an upload is
+refused, nothing filed. The app also files each day's
 duty hours as its own metrics, `duty_hours_complete` and `duty_hours_rostered`
 (summed by the UTC day a duty starts). Its tile draws the duties back on a
 timeline under the picker: the last six months or so and everything still to

@@ -273,6 +273,45 @@ at. (`default_size: {w, h}`, the older form, still counts as a list of one.)
   `'w:1'` and `'h:1'`, both null; write `{w: 1, h: 1}`. The install says so.
 - **A fixed-size app lists one size**, and gets no picker.
 
+## Config and reference data: an install file, read at import
+
+An app folder can hold more than `app.yaml` and `app.py`: any other file is
+the app's own, installed, listed and updated with it. Put what's specific to
+a domain or an owner there, as data — a carrier's duty codes, a home base, a
+lookup table — and keep `app.py` the engine, so adding a code or a carrier
+is a config edit, never a code change. The Roster app is the reference: its
+`config.json` holds the duty-type rules (`prefixes` or a `regex` per type,
+the first match winning, else `default_type`), the owner's home base and
+timezone, and a destinations table (each port's city and IANA zone).
+
+- **Read it once, at import, from beside the module** —
+  `os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")`,
+  never the working directory or a hard-coded `/data/apps/<id>/`. The host
+  imports `app.py` by its path, so `__file__` is wherever the files are: the
+  installed folder when the scanner loads it, and the staging folder when
+  Update loads the new files before swapping them in.
+- **It's an install file, not state.** Change it with Update (or by
+  reinstalling); the app never writes it. Update reads every file of the app
+  into its popup, so the config travels with it, and Update reloads the app.
+  A hand edit on the volume isn't picked up by itself: the scanner's cache
+  watches only `app.yaml` and `app.py`, so it waits for one of those to
+  change or a restart.
+- **Fail safe: the module must still import.** Catch a missing file, bad
+  JSON and the wrong shape at load, and keep the config `None` and a
+  plain-English reason, never raise. An `app.py` that raises at import
+  doesn't load: the scanner skips it (its tile and row go, the reason only
+  in the server log), and Update needs a loading app, so the bad config
+  couldn't be fixed in place.
+- **Guard at the edge, not in the helpers.** `render()` returns the reason
+  (`ctx.empty(...)`) over whatever input still makes sense; `handle()`
+  raises `ValueError(reason)` before it reads the payload, so nothing is
+  written. Pure helpers (`classify()`) take the config as an argument,
+  defaulting to the module's, and assume it loaded — their callers have
+  checked, and a test can hand them any config it likes.
+- **Keep personal data out of the repo.** The committed fixture's config is
+  synthetic (fake ports `ZZA`/`ZZB` and just the rules the tests need); the
+  owner's real one lives only on their volume.
+
 ## Known limitations (as of PR #43)
 
 - Mobile caption truncation hides the `via <source>` provenance on phone-width
