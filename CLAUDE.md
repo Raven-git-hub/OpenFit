@@ -319,7 +319,8 @@ own calls to its device API. Full direction:
   `docs/architecture/input-primitives.md`),
   `timeline(lanes, now=None, title=None, sync=None)` → `{"type":
   "timeline", title, now, lanes: [{label, grey_after_now, intervals:
-  [{start, end, label}]}]}`, plus `sync` only when given (a generic
+  [{start, end, label}], [bands: [{start, end, label}]]}]}`, plus `sync`
+  only when given (a generic
   two-lane interval timeline — a plan beside the
   actual — whose pixels are all the page's: `lanes` a list or tuple of 1
   or 2 (`TIMELINE_LANES`; else `ValueError`, not a list `TypeError`), in
@@ -331,9 +332,17 @@ own calls to its device API. Full direction:
   `INTERVAL_FIELDS` — `start` and `end` both required (no open blocks, unlike
   `write_session()`) and normalised by `_session_instant()` to `iso_utc()`
   text, `end >= start` (compared as those strings), `label` text or `None`;
-  a lane or interval not a dict `TypeError`, an unknown field (a misspelt
-  `gray_after_now`) `ValueError` (`_fields()`), a missing end, a time that
-  isn't one or an end before its start `ValueError`; `now` normalised the
+  and `bands`, optional, a list or tuple of dicts of only `BAND_FIELDS`
+  (`start`, `end`, `label`) — spans the page shades behind the lane's
+  blocks (a trip away, `label` the port), each checked as an interval is
+  (`_band()` and `_interval()` both `_span(raw, fields, what)`, the
+  messages naming "a timeline band"/"a timeline interval"), not a list
+  `TypeError`; emitted only when non-empty (absent, `None` or `[]` → no
+  `bands` key, so a lane without is exactly the lane from before bands);
+  what a band spans is the app's to work out, the host only carries it;
+  a lane, interval or band not a dict `TypeError`, an unknown field (a
+  misspelt `gray_after_now`) `ValueError` (`_fields()`), a missing end, a
+  time that isn't one or an end before its start `ValueError`; `now` normalised the
   same way or `None` (no line); `title` text or `None`, else `TypeError`;
   `sync` a focus group's name (`"frms"`), text or `None`, else
   `TypeError` — `None` or `""` adds no key, so an unsynced spec is
@@ -541,9 +550,23 @@ own calls to its device API. Full direction:
   joined to an all-digit next token: `CX 105` → `CX105`), `dep`/`arr` from
   an `XXX-XXX` token, `position` a trailing 2–3-letter code),
   `bucket_for(end, now)` (`end <= now` → `duties_complete`, else
-  `duties_rostered`) and `daily_hours(duties, now)` (each kind's hours
+  `duties_rostered`), `daily_hours(duties, now)` (each kind's hours
   by `DTSTART`'s UTC date, a duty past midnight whole on its start day;
-  a kind+start twice counted once). `handle()`: `upload` only;
+  a kind+start twice counted once) and `trips(sessions, home_base,
+  open_end=None)` (one lane's duty `Session`s grouped into trips away
+  from base, by flights alone — a session whose summary `type` is
+  `flight` with `dep` and `arr` and an end, sorted by `start`; a reserve,
+  sim, ground duty or routeless flight never opens or closes one: a
+  flight out of base (`dep == home_base`) opens a trip — `start` its
+  start, `out_port` its `arr`, `id` its start, the stable layover id
+  (for the report store to come; never in the spec) — the next flight
+  into base (`arr == home_base`) closes it at its end, a sector between
+  is inside it (`HKG-BKK, BKK-SIN, SIN-HKG` one trip); a flight into base
+  with none open is nothing; a flight out of base with one open drops it
+  (its way home isn't in the data) and opens anew; base to base opens
+  nothing; still open at the end → closed at `open_end` (UTC text),
+  never before its flight out's end (`max`), or dropped when `None` →
+  `[{id, start, end, out_port}]`, in order). `handle()`: `upload` only;
   `payload["file"]` decoded `utf-8-sig` (not text → "<name> isn't a text
   roster"); no duty (a file of days off, not iCalendar, empty) → "No
   duties found in <name>"; `now` taken once; each duty
@@ -561,8 +584,14 @@ own calls to its device API. Full direction:
   `timeline` — lane 0 "Rostered" (`duties_rostered`), lane 1 "Flown"
   (`duties_complete`, `grey_after_now`), each session an interval of its
   `start`/`end` labelled with `summary["code"]` (`""` for none; a session
-  with no end, only another source's, left out — `_lane()`), `now`
-  `datetime.now(timezone.utc)`, `sync` `"frms"` (the FRMS focus group:
+  with no end, only another source's, left out — `_lane()`), and each
+  lane's `bands` its own `trips()` (`_band()`: `{start, end, label:
+  out_port}`), home base `_home_base()` — `CONFIG["personal"]
+  ["home_base"]`, None (no bands) without one — the rostered lane's
+  `open_end` its latest duty's end (the loaded roster's), the flown
+  lane's now (`_utc_text(now)`: a trip flown out and not back runs to the
+  now line); `now` `datetime.now(timezone.utc)`, taken once for both,
+  `sync` `"frms"` (the FRMS focus group:
   a later FRMS panel naming it scrolls with the roster, by time). The
   timeline fills the rest of the tile
   and scrolls, laid out to its size by the page (`render()` isn't told
@@ -625,7 +654,9 @@ own calls to its device API. Full direction:
   (vanilla JS, no build step, no external calls or web fonts; every colour/font/
   radius in its `CUSTOMISE OPENFIT HERE` token block — the timeline's two lane
   tones, `--timeline-a`/`--timeline-b`, and the ink each takes,
-  `--timeline-a-ink`/`--timeline-b-ink`, in all three theme blocks). Under the top bar
+  `--timeline-a-ink`/`--timeline-b-ink`, and its bands' amber,
+  `--layover` (`#c07d18` light, `#e0a83a` dark), in all three theme
+  blocks). Under the top bar
   (date, a `settings` button, the theme toggle) sits the original angled tab
   strip: Home's tabs (far left, one per tab of the layout, drawn by
   `paintTabStrip()` into `#layoutTabs`, a `display: contents` region — until
@@ -1044,8 +1075,15 @@ own calls to its device API. Full direction:
   whole width), each interval an absolutely placed `.tl-block` with its
   label as text; a `.tl-now` rule across both in `--accent` when `now` is
   set; and in a `grey_after_now` lane, with a `now`, a `.tl-future` hatch
-  from it down, under the blocks. The axis runs from the earliest start to
-  the latest end (or `now`); `TL_VIEW_MS`, a week, fills the frame's
+  from it down, under the blocks. A lane's bands are `.tl-band`s, first
+  in its column (so under the hatch, the blocks and the lines;
+  `pointer-events: none`), its full width, a 14% tint of `--layover`
+  with dashed top and bottom edges, placed in the same layout pass as the
+  blocks — `top = (start − t0)·px`, `height = length·px`, no floor — each
+  label a `.tl-band-label` (as text) set past the block(s) covering the
+  band's top edge (the flight out), so on the layover, clipped by the
+  band. The axis runs from the earliest start to
+  the latest end (or `now`) of every block and band; `TL_VIEW_MS`, a week, fills the frame's
   height (`px = max(height, TL_MIN_WEEK_PX 240) / week`, so a frame under
   240px — a 2×1's — shows less than a week and scrolls further, never
   squeezing a week until every block is at the floor), each block `top =
@@ -1061,8 +1099,8 @@ own calls to its device API. Full direction:
   `repaintTile()`, and by the observer finding its frame gone —
   disconnecting any whose frame `!isConnected` (and taking a synced one
   out of its group). A hand-built spec draws
-  what it can: two lanes at most, an interval without both ends in order
-  dropped; no intervals → "No data". **Synced** — `s.sync` a non-empty
+  what it can: two lanes at most, an interval or band without both ends
+  in order dropped (bands not a list: none); nothing → "No data". **Synced** — `s.sync` a non-empty
   string; anything else draws all of the above and nothing more, the
   same DOM as before `sync` — it's drawn around its group's **focus
   clock**: `focusGroups`, a `Map` of group name → `{focusMs, following,
@@ -1804,11 +1842,20 @@ same PR:
   following group on. No `sync`: exactly the timeline before it. The
   roster's timeline is the first member (`sync="frms"`); a second panel
   joining `"frms"` syncs with it for free.
-  Still to come for it: reading `destinations` (time-zone shifts, layover
-  highlighting), the trip lists either side (planning, reports),
-  their popups and PDF, grouping duties into trips (the layover
-  definition, `dep`/`arr`), per-block detail on click or hover, and
-  `base_tz` day gridlines and WOCL shading on the axis.
+  Then trips & layover bands landed (no migration, no route change): a
+  timeline lane takes optional `bands` — spans the page shades amber
+  (`--layover`) behind its blocks, on the blocks' scale, the label on the
+  layover past the flight out; a lane without is the spec from before —
+  and the roster app's engine groups each lane's duties into trips
+  (`trips()`: a flight out of `home_base` to the next flight back, the
+  sectors between inside it, flights only; an open trip to the roster's
+  end, rostered, or to now, flown), each a band labelled with its first
+  port, its stable id the flight out's start (kept for the report store).
+  Still to come for it: reading `destinations` (time-zone shifts), the
+  trip lists either side (planning, reports), their popups and PDF, the
+  report store (re-attached to a trip by its id), per-block or per-band
+  detail on click or hover, and `base_tz` day gridlines and WOCL shading
+  on the axis.
   Still to come for write-back: an app replacing its own sessions and
   metrics over a date range (so a re-planned roster's dropped duties go),
   the rostered↔flown per-duty matching (needs a derived duty key — the

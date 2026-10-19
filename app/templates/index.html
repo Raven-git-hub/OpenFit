@@ -73,11 +73,14 @@
      left, a plan - rostered) the lighter tone, lane 1 (the right, the
      actual - flown) the darker, each with the ink that reads on it. Its
      now line is --accent, as is a synced timeline's fixed cursor; the
-     greyed future and the frame, the neutrals. */
+     greyed future and the frame, the neutrals. A lane's bands - a trip
+     away, its layovers - are --layover, amber, a soft tint behind the
+     blocks with a dashed edge. */
   --timeline-a:#b4a8f0;
   --timeline-a-ink:var(--ink);
   --timeline-b:#5a47c9;
   --timeline-b-ink:var(--accent-ink);
+  --layover:#c07d18;
 
   --radius:14px;
   --radius-sm:9px;
@@ -113,6 +116,7 @@
     --timeline-a-ink:var(--accent-ink);
     --timeline-b:#5d4ecc;
     --timeline-b-ink:var(--ink);
+    --layover:#e0a83a;
     --shadow:0 1px 2px rgba(0,0,0,.3), 0 10px 30px rgba(0,0,0,.35);
   }
 }
@@ -141,6 +145,7 @@
   --timeline-a-ink:var(--accent-ink);
   --timeline-b:#5d4ecc;
   --timeline-b-ink:var(--ink);
+  --layover:#e0a83a;
   --shadow:0 1px 2px rgba(0,0,0,.3), 0 10px 30px rgba(0,0,0,.35);
 }
 
@@ -657,9 +662,10 @@ h5 + .dnote{margin-top:0;}
    under their headings, in a frame that scrolls it - a week to the
    frame's height (timelineSpec lays it out). Lane 0 left, in the lighter
    tone; lane 1 right, in the darker; the now line across both in the
-   accent; a grey_after_now lane hatched grey from it down. The heading
-   row keeps the same scrollbar gutter as the frame, so each heading sits
-   over its lane. */
+   accent; a grey_after_now lane hatched grey from it down; a lane's
+   bands - a trip away - tinted amber behind everything else in it, its
+   port written where the band shows. The heading row keeps the same
+   scrollbar gutter as the frame, so each heading sits over its lane. */
 .spec-timeline{display:flex;flex-direction:column;gap:4px;min-height:0;min-width:0;}
 .spec-panel > .spec-timeline{flex:1 1 0;}
 .spec-timeline .t{font-size:10.5px;text-transform:uppercase;letter-spacing:.8px;color:var(--muted);font-weight:600;}
@@ -684,6 +690,19 @@ h5 + .dnote{margin-top:0;}
 }
 .tl-lane.l0 .tl-block{background:var(--timeline-a);color:var(--timeline-a-ink);}
 .tl-lane.l1 .tl-block{background:var(--timeline-b);color:var(--timeline-b-ink);}
+/* a band: the lane's full width - so it shows either side of the blocks
+   over it - first in the lane, so under its blocks, the grey and the
+   lines; its label past the flight out, on the layover */
+.tl-band{
+  position:absolute;left:0;right:0;overflow:hidden;pointer-events:none;
+  background:color-mix(in srgb,var(--layover) 14%,transparent);
+  border-top:1px dashed color-mix(in srgb,var(--layover) 60%,transparent);
+  border-bottom:1px dashed color-mix(in srgb,var(--layover) 60%,transparent);
+}
+.tl-band-label{
+  position:absolute;left:5px;right:5px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;
+  font:600 10px/14px var(--font-mono);color:color-mix(in srgb,var(--layover) 80%,var(--ink));
+}
 .tl-future{
   position:absolute;left:0;right:0;bottom:0;pointer-events:none;
   background:repeating-linear-gradient(135deg,
@@ -3859,10 +3878,14 @@ h5 + .dnote{margin-top:0;}
      empty axis. A block runs from its start to its end, never shorter
      than TL_MIN_BLOCK_PX, so a short one stays legible; the now line
      crosses both lanes, and a grey_after_now lane is greyed from it
-     down. A viewport shorter than TL_MIN_WEEK_PX (a 2x1 tile's) shows
-     less than a week, at that scale, and scrolls further: squeezed to a
-     week, its blocks would all be at the floor, running into each other
-     over the gaps between them. Everything an app sent is set as text.
+     down. A lane's bands (a trip away) are shaded behind its blocks on
+     the same scale - their true length, no floor - each band's label
+     past the block(s) over its top edge (the flight out, which starts
+     with it), so it's on the layover, not under a block. A viewport
+     shorter than TL_MIN_WEEK_PX (a 2x1 tile's) shows less than a week,
+     at that scale, and scrolls further: squeezed to a week, its blocks
+     would all be at the floor, running into each other over the gaps
+     between them. Everything an app sent is set as text.
 
      The viewport's height is only known once the timeline is on the
      page, which it isn't while renderSpec() builds it: it's laid out at
@@ -3945,19 +3968,20 @@ h5 + .dnote{margin-top:0;}
     const ms = t => { const v = typeof t==='string' ? Date.parse(t) : NaN; return Number.isFinite(v) ? v : null; };
     const text = v => v!=null && v!=='' ? String(v) : '';
     // A hand-built spec is drawn as far as it can be: two lanes at most,
-    // and an interval without both ends, in order, left out.
+    // and an interval or a band without both ends, in order, left out.
+    const spans = list => (Array.isArray(list) ? list : []).map(i => {
+      const iv = i!==null && typeof i==='object' ? i : {};
+      return {a: ms(iv.start), b: ms(iv.end), label: text(iv.label)};
+    }).filter(b => b.a!==null && b.b!==null && b.b >= b.a);
     const lanes = (Array.isArray(s.lanes) ? s.lanes : []).slice(0, 2).map(raw => {
       const l = raw!==null && typeof raw==='object' ? raw : {};
-      const blocks = (Array.isArray(l.intervals) ? l.intervals : []).map(i => {
-        const iv = i!==null && typeof i==='object' ? i : {};
-        return {a: ms(iv.start), b: ms(iv.end), label: text(iv.label)};
-      }).filter(b => b.a!==null && b.b!==null && b.b >= b.a);
-      return {label: text(l.label), grey: l.grey_after_now===true, blocks};
+      return {label: text(l.label), grey: l.grey_after_now===true, blocks: spans(l.intervals), bands: spans(l.bands)};
     });
     const now = ms(s.now);
     const box = el('div','spec-timeline');
     if(s.title!=null && s.title!==''){ const t = el('div','t'); t.textContent = s.title; box.appendChild(t); }
-    const all = lanes.flatMap(l => l.blocks);
+    // The axis spans every block and band: none drawn off it.
+    const all = lanes.flatMap(l => [...l.blocks, ...l.bands]);
     if(!all.length){ box.appendChild(specMsg(null, 'No data')); return box; }
     const t0 = all.reduce((m, b) => Math.min(m, b.a), Infinity);
     const t1 = all.reduce((m, b) => Math.max(m, b.b), now===null ? -Infinity : now);
@@ -3992,6 +4016,14 @@ h5 + .dnote{margin-top:0;}
       const col = el('div','tl-lane l'+i);
       col.style.left = (i * 100 / lanes.length)+'%';
       col.style.width = (100 / lanes.length)+'%';
+      // First, so under the rest: the bands, each a trip's whole time
+      // away, its flights drawn over it.
+      const bands = l.bands.map(b => {
+        const band = col.appendChild(el('div','tl-band'));
+        const tag = b.label ? band.appendChild(el('div','tl-band-label')) : null;
+        if(tag) tag.textContent = b.label;
+        return {band, tag};
+      });
       // Under the blocks: one held to the floor can run on past now, and
       // stays readable over the grey.
       const future = l.grey && now!==null ? col.appendChild(el('div','tl-future')) : null;
@@ -4001,7 +4033,7 @@ h5 + .dnote{margin-top:0;}
         return col.appendChild(n);
       });
       track.appendChild(col);
-      return {l, blocks, future};
+      return {l, bands, blocks, future};
     });
     const line = now!==null ? track.appendChild(el('div','tl-now')) : null;
     if(group && line){
@@ -4031,12 +4063,23 @@ h5 + .dnote{margin-top:0;}
       const pad = group ? viewH/2 : 0;
       if(viewH!==laidH){
         let bottom = pad + (t1 - t0) * px;
-        cols.forEach(c => c.l.blocks.forEach((b, i) => {
-          const top = pad + (b.a - t0) * px, height = Math.max(TL_MIN_BLOCK_PX, (b.b - b.a) * px);
-          c.blocks[i].style.top = top+'px';
-          c.blocks[i].style.height = height+'px';
-          bottom = Math.max(bottom, top + height);
-        }));
+        cols.forEach(c => {
+          const placed = c.l.blocks.map((b, i) => {
+            const top = pad + (b.a - t0) * px, height = Math.max(TL_MIN_BLOCK_PX, (b.b - b.a) * px);
+            c.blocks[i].style.top = top+'px';
+            c.blocks[i].style.height = height+'px';
+            bottom = Math.max(bottom, top + height);
+            return [top, top + height];
+          });
+          c.l.bands.forEach((d, i) => {
+            const top = pad + (d.a - t0) * px, {band, tag} = c.bands[i];
+            band.style.top = top+'px';
+            band.style.height = (d.b - d.a) * px+'px';
+            // Its label below whatever covers its top edge - the flight
+            // out - so on the layover; clipped by the band if it's short.
+            if(tag) tag.style.top = placed.reduce((y, [a, z]) => a <= top && top < z ? Math.max(y, z) : y, top) - top+'px';
+          });
+        });
         track.style.height = (bottom + pad)+'px';
         if(now!==null){
           const y = pad + (now - t0) * px;

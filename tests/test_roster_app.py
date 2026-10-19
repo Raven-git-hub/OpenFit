@@ -325,6 +325,50 @@ def test_a_duty_with_no_code_is_a_block_with_no_label(conn):
     ]
 
 
+def file_flight(conn, kind, start, end, code, route):
+    """A flight duty, filed as the app files one: its route a summary's dep and arr."""
+    dep, arr = route.split("-")
+    write_session(conn, "app:roster", kind, start, end,
+                  {"capture": "live", "type": "flight", "code": code, "flight_no": code, "dep": dep, "arr": arr})
+
+
+def test_render_shades_each_lanes_trips_behind_its_blocks(conn):
+    # The fixture's home base is ZZA. Flown: a trip out and back; and one
+    # out, not back yet - on the layover now.
+    file_flight(conn, "duties_complete", "2026-10-01T01:00:00Z", "2026-10-01T14:00:00Z", "CX9101", "ZZA-ZZB")
+    file_flight(conn, "duties_complete", "2026-10-03T02:00:00Z", "2026-10-03T13:00:00Z", "CX9102", "ZZB-ZZA")
+    file_flight(conn, "duties_complete", "2026-10-12T01:00:00Z", "2026-10-12T14:00:00Z", "CX9103", "ZZA-ZZC")
+    # Rostered: a trip out and back, a reserve, and one out the roster
+    # runs out before it's back - its last duty a reserve after it.
+    file_flight(conn, "duties_rostered", "2099-11-05T15:10:00Z", "2099-11-06T04:10:00Z", "CX9101", "ZZA-ZZB")
+    file_flight(conn, "duties_rostered", "2099-11-08T02:00:00Z", "2099-11-08T13:00:00Z", "CX9102", "ZZB-ZZA")
+    file_duty(conn, "duties_rostered", "2099-11-10T22:00:00Z", "2099-11-11T10:00:00Z", "R1E")
+    file_flight(conn, "duties_rostered", "2099-11-20T01:00:00Z", "2099-11-20T12:00:00Z", "CX9105", "ZZA-ZZD")
+    file_duty(conn, "duties_rostered", "2099-11-25T22:00:00Z", "2099-11-26T10:00:00Z", "R2E")
+    conn.commit()
+
+    spec, before, after = drawn(conn)
+
+    [_, timeline] = spec["children"]
+    rostered, flown = timeline["lanes"]
+    # Each lane its own trips, a band each from the flight out's start
+    # to the flight home's end, labelled with the port it flew out to;
+    # one still away ends where the lane's data does - the rostered at
+    # the loaded roster's last duty, the flown now: the render's own.
+    assert rostered["bands"] == [
+        {"start": "2099-11-05T15:10:00Z", "end": "2099-11-08T13:00:00Z", "label": "ZZB"},
+        {"start": "2099-11-20T01:00:00Z", "end": "2099-11-26T10:00:00Z", "label": "ZZD"},
+    ]
+    assert flown["bands"] == [
+        {"start": "2026-10-01T01:00:00Z", "end": "2026-10-03T13:00:00Z", "label": "ZZB"},
+        {"start": "2026-10-12T01:00:00Z", "end": timeline["now"], "label": "ZZC"},
+    ]
+    assert iso_utc(before) <= timeline["now"] <= iso_utc(after)
+    # The blocks are as they were: every duty, the flights among them.
+    assert [i["label"] for i in rostered["intervals"]] == ["CX9101", "CX9102", "R1E", "CX9105", "R2E"]
+    assert [i["label"] for i in flown["intervals"]] == ["CX9101", "CX9102", "CX9103"]
+
+
 def test_render_with_nothing_in_the_window_asks_for_a_roster(conn):
     empty = {"type": "panel", "children": [{"type": "empty", "message": "Upload your roster .ics"}, PICKER]}
     assert drawn(conn)[0] == empty
@@ -431,7 +475,179 @@ def test_a_config_that_wont_load_is_caught_at_the_edge(tmp_path, config_text, me
     assert str(refused.value) == app.CONFIG_ERROR
 
 
+def test_a_config_with_no_home_base_shades_no_trips(tmp_path, conn):
+    # A config with its rules but no personal block: the duties still
+    # draw, as blocks; with no base to be away from, there's no trip.
+    app = load_with_config(tmp_path, '{"duty_types": [{"type": "flight", "prefixes": ["CX"]}]}')
+    file_flight(conn, "duties_complete", "2026-10-01T01:00:00Z", "2026-10-01T14:00:00Z", "CX9101", "ZZA-ZZB")
+    file_flight(conn, "duties_complete", "2026-10-03T02:00:00Z", "2026-10-03T13:00:00Z", "CX9102", "ZZB-ZZA")
+    conn.commit()
+
+    [_, timeline] = app.render(host.Ctx(conn, today=TODAY), {})["children"]
+
+    assert [len(lane["intervals"]) for lane in timeline["lanes"]] == [0, 2]
+    assert not any("bands" in lane for lane in timeline["lanes"])
+
+
 def test_a_good_config_loads():
     # The fixture's own config.json, loaded as the host loads it.
     assert roster.CONFIG is not None and roster.CONFIG_ERROR is None
     assert any(r.get("type") == "flight" for r in roster.CONFIG["duty_types"])
+
+
+# ---------- trips: the layovers ----------
+#
+# trips() on its own: a lane's duty sessions, as ctx.sessions() gives
+# them, grouped into trips away from a home base - here HKG - by their
+# flights alone: a flight out of base opens one, the next flight back
+# into base closes it, sectors between are inside it.
+
+HOME = "HKG"
+
+
+def flight(route, start, end, code="CX100"):
+    dep, arr = route.split("-")
+    return host.Session(start, end, "app:roster", {"type": "flight", "code": code, "dep": dep, "arr": arr})
+
+
+def duty(kind, start, end, code, **summary):
+    return host.Session(start, end, "app:roster", {"type": kind, "code": code, **summary})
+
+
+def trip(start, end, out_port):
+    return {"id": start, "start": start, "end": end, "out_port": out_port}
+
+
+def test_a_simple_trip_is_one_band():
+    out = flight("HKG-MEL", "2026-11-05T15:10:00Z", "2026-11-06T04:10:00Z", "CX105")
+    back = flight("MEL-HKG", "2026-11-08T02:00:00Z", "2026-11-08T13:00:00Z", "CX104")
+
+    # From the flight out's start to the flight home's end; the port it
+    # flew out to. Taken by start, whatever order they're given in.
+    assert roster.trips([back, out], HOME) == [trip("2026-11-05T15:10:00Z", "2026-11-08T13:00:00Z", "MEL")]
+
+
+def test_an_integrated_pattern_is_one_band():
+    sectors = [
+        flight("HKG-BKK", "2026-11-05T01:00:00Z", "2026-11-05T04:00:00Z"),
+        flight("BKK-SIN", "2026-11-06T03:00:00Z", "2026-11-06T05:30:00Z"),
+        flight("SIN-HKG", "2026-11-07T06:00:00Z", "2026-11-07T10:00:00Z"),
+    ]
+
+    # One trip - the whole time away - not one a sector: BKK-SIN is inside
+    # it, and the first port is the one it's labelled with.
+    assert roster.trips(sectors, HOME) == [trip("2026-11-05T01:00:00Z", "2026-11-07T10:00:00Z", "BKK")]
+
+
+def test_reserve_and_sim_between_trips_open_no_band():
+    sessions = [
+        flight("HKG-MEL", "2026-11-01T15:00:00Z", "2026-11-02T04:00:00Z"),
+        flight("MEL-HKG", "2026-11-04T02:00:00Z", "2026-11-04T13:00:00Z"),
+        duty("reserve", "2026-11-05T22:00:00Z", "2026-11-06T10:00:00Z", "R1E"),
+        duty("sim", "2026-11-07T01:00:00Z", "2026-11-07T05:30:00Z", "A1534"),
+        # A ground positioning, out of base and back, by road: it has a
+        # route, but only flights make a trip.
+        duty("ground", "2026-11-08T01:00:00Z", "2026-11-08T03:00:00Z", "BUS", dep="HKG", arr="SZX"),
+        duty("ground", "2026-11-08T09:00:00Z", "2026-11-08T11:00:00Z", "BUS", dep="SZX", arr="HKG"),
+        flight("HKG-BKK", "2026-11-10T01:00:00Z", "2026-11-10T04:00:00Z"),
+        flight("BKK-HKG", "2026-11-11T05:00:00Z", "2026-11-11T08:00:00Z"),
+    ]
+
+    # Two trips, each its flights' - nothing between opens or stretches one.
+    assert roster.trips(sessions, HOME, open_end="2026-11-30T00:00:00Z") == [
+        trip("2026-11-01T15:00:00Z", "2026-11-04T13:00:00Z", "MEL"),
+        trip("2026-11-10T01:00:00Z", "2026-11-11T08:00:00Z", "BKK"),
+    ]
+
+
+def test_an_open_rostered_trip_runs_to_the_rosters_end():
+    out = flight("HKG-MEL", "2026-11-20T15:00:00Z", "2026-11-21T04:00:00Z")
+    reserve = duty("reserve", "2026-11-24T22:00:00Z", "2026-11-25T10:00:00Z", "R1E")
+
+    # Out, and the roster runs out before the flight home: the trip ends
+    # where the roster does.
+    assert roster.trips([out, reserve], HOME, open_end="2026-11-25T10:00:00Z") == [
+        trip("2026-11-20T15:00:00Z", "2026-11-25T10:00:00Z", "MEL"),
+    ]
+    # With nowhere to end it, it's dropped: a band needs an end.
+    assert roster.trips([out, reserve], HOME) == []
+    # And never before its flight out has landed - the flight out the
+    # roster's last word, an end before that is the flight's.
+    assert roster.trips([out], HOME, open_end="2026-11-20T15:00:00Z") == [
+        trip("2026-11-20T15:00:00Z", "2026-11-21T04:00:00Z", "MEL"),
+    ]
+
+
+def test_an_open_complete_trip_runs_to_now():
+    now = "2026-11-06T09:30:00Z"
+    flown = [
+        flight("HKG-BKK", "2026-11-05T01:00:00Z", "2026-11-05T04:00:00Z"),
+        flight("BKK-SIN", "2026-11-06T03:00:00Z", "2026-11-06T05:30:00Z"),
+    ]
+
+    # Flown out - and on, a sector - and not home yet: away until now.
+    assert roster.trips(flown, HOME, open_end=now) == [trip("2026-11-05T01:00:00Z", now, "BKK")]
+
+
+def test_back_to_back_trips_are_two_bands():
+    sessions = [
+        flight("HKG-MEL", "2026-11-01T15:00:00Z", "2026-11-02T04:00:00Z"),
+        flight("MEL-HKG", "2026-11-04T02:00:00Z", "2026-11-04T13:00:00Z"),
+        # Out again the next morning.
+        flight("HKG-BKK", "2026-11-05T01:00:00Z", "2026-11-05T04:00:00Z"),
+        flight("BKK-HKG", "2026-11-06T05:00:00Z", "2026-11-06T08:00:00Z"),
+    ]
+
+    assert roster.trips(sessions, HOME) == [
+        trip("2026-11-01T15:00:00Z", "2026-11-04T13:00:00Z", "MEL"),
+        trip("2026-11-05T01:00:00Z", "2026-11-06T08:00:00Z", "BKK"),
+    ]
+
+
+def test_a_flight_with_no_route_is_skipped_for_boundaries():
+    bkk = [
+        flight("HKG-BKK", "2026-11-10T01:00:00Z", "2026-11-10T04:00:00Z"),
+        flight("BKK-HKG", "2026-11-11T05:00:00Z", "2026-11-11T08:00:00Z"),
+    ]
+    routeless = lambda start, end: duty("flight", start, end, "CX103")
+
+    # Its flight out with no route: nothing opens, so the flight home
+    # closes nothing - and the trip after is its own.
+    out_unknown = [routeless("2026-11-01T15:00:00Z", "2026-11-02T04:00:00Z"),
+                   flight("MEL-HKG", "2026-11-04T02:00:00Z", "2026-11-04T13:00:00Z"), *bkk]
+    assert roster.trips(out_unknown, HOME) == [trip("2026-11-10T01:00:00Z", "2026-11-11T08:00:00Z", "BKK")]
+    # Its flight home with no route: that trip never closes - the next
+    # flight out of base shows it was home by then, so it's dropped, not
+    # paired with the next trip's flight home.
+    back_unknown = [flight("HKG-MEL", "2026-11-01T15:00:00Z", "2026-11-02T04:00:00Z"),
+                    routeless("2026-11-04T02:00:00Z", "2026-11-04T13:00:00Z"), *bkk]
+    assert roster.trips(back_unknown, HOME) == [trip("2026-11-10T01:00:00Z", "2026-11-11T08:00:00Z", "BKK")]
+    # A sector with no route, inside a trip: nothing changes.
+    inside = [bkk[0], routeless("2026-11-10T20:00:00Z", "2026-11-10T22:00:00Z"), bkk[1]]
+    assert roster.trips(inside, HOME) == [trip("2026-11-10T01:00:00Z", "2026-11-11T08:00:00Z", "BKK")]
+    # A flight that's another source's, still open - no end - is no
+    # boundary either.
+    assert roster.trips([bkk[0], bkk[1]._replace(end=None)], HOME) == []
+
+
+def test_a_flight_from_base_to_base_is_no_trip():
+    # Out and straight back - a turnback, a local training flight - never
+    # leaves base: no trip, and nothing left open for a later flight home.
+    sessions = [flight("HKG-HKG", "2026-11-01T01:00:00Z", "2026-11-01T03:00:00Z"),
+                flight("MEL-HKG", "2026-11-04T02:00:00Z", "2026-11-04T13:00:00Z")]
+
+    assert roster.trips(sessions, HOME, open_end="2026-11-30T00:00:00Z") == []
+
+
+def test_the_trip_id_is_the_outbound_flight_start():
+    out = flight("HKG-MEL", "2026-11-05T15:10:00Z", "2026-11-06T04:10:00Z")
+    back = flight("MEL-HKG", "2026-11-08T02:00:00Z", "2026-11-08T13:00:00Z")
+
+    [found] = roster.trips([out, back], HOME)
+    assert found["id"] == out.start == "2026-11-05T15:10:00Z"
+    # The flight home re-planned, a day later: the same trip - the same
+    # id - longer.
+    [replanned] = roster.trips([out, back._replace(start="2026-11-09T02:00:00Z", end="2026-11-09T13:00:00Z")], HOME)
+    assert (replanned["id"], replanned["end"]) == (found["id"], "2026-11-09T13:00:00Z")
+    # Not drawn: a band is its span and its port, nothing more.
+    assert roster._band(found) == {"start": "2026-11-05T15:10:00Z", "end": "2026-11-08T13:00:00Z", "label": "MEL"}

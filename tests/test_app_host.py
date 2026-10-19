@@ -985,7 +985,8 @@ def test_a_timelines_now_is_a_time_or_none(now):
         ({"intervals": [], "grey_after_now": 1}, TypeError, "grey_after_now must be True or False"),
         ({"intervals": [], "grey_after_now": "yes"}, TypeError, "grey_after_now must be True or False"),
         # A misspelt field is refused, not ignored.
-        ({"intervals": [], "gray_after_now": True}, ValueError, "a timeline lane takes label, grey_after_now, intervals - not 'gray_after_now'"),
+        ({"intervals": [], "gray_after_now": True}, ValueError,
+         "a timeline lane takes label, grey_after_now, intervals, bands - not 'gray_after_now'"),
         ({"intervals": ["CX105"]}, TypeError, "a timeline interval must be a mapping"),
         ({"intervals": [("2026-10-19T01:00:00Z", "2026-10-19T02:00:00Z")]}, TypeError, "a timeline interval must be a mapping"),
         ({"intervals": [{"start": "2026-10-19T01:00:00Z", "end": "2026-10-19T02:00:00Z", "label": 105}]},
@@ -997,6 +998,74 @@ def test_a_timelines_now_is_a_time_or_none(now):
 def test_a_timeline_refuses_a_lane_or_interval_it_cant_draw(lane, error, says):
     with pytest.raises(error, match=says):
         host.timeline([lane])
+
+
+def test_a_timeline_lanes_bands_are_spans_shaded_behind_its_blocks():
+    flights = [block("2026-10-19T01:10:00Z", "2026-10-19T14:10:00Z", "CX105"),
+               block("2026-10-21T02:00:00Z", "2026-10-21T13:00:00Z", "CX104")]
+    spec = host.timeline([
+        {"label": "Rostered", "intervals": flights, "bands": [
+            # Its ends as an interval's: any zone or a datetime, each UTC
+            # to the second; a label the port, or none.
+            {"start": "2026-10-19T09:10:00+08:00", "end": datetime(2026, 10, 21, 13, 0, 30, 999, tzinfo=timezone.utc),
+             "label": "MEL"},
+            {"start": datetime(2026, 10, 25, 1, 0), "end": "2026-10-25T01:00:00Z"},   # no length, no label: fine
+        ]},
+        # A tuple of bands, as of intervals.
+        {"label": "Flown", "grey_after_now": True, "intervals": flights,
+         "bands": ({"start": "2026-10-19T01:10:00Z", "end": "2026-10-21T13:00:00Z", "label": "MEL"},)},
+    ])
+
+    assert spec["lanes"] == [
+        {"label": "Rostered", "grey_after_now": False, "intervals": flights, "bands": [
+            block("2026-10-19T01:10:00Z", "2026-10-21T13:00:30Z", "MEL"),
+            block("2026-10-25T01:00:00Z", "2026-10-25T01:00:00Z"),
+        ]},
+        {"label": "Flown", "grey_after_now": True, "intervals": flights, "bands": [
+            block("2026-10-19T01:10:00Z", "2026-10-21T13:00:00Z", "MEL"),
+        ]},
+    ]
+    assert json.loads(json.dumps(spec, allow_nan=False)) == spec
+
+
+@pytest.mark.parametrize("none", [{}, {"bands": None}, {"bands": []}, {"bands": ()}])
+def test_a_lane_without_bands_is_the_lane_from_before_them(none):
+    lane = {"label": "Flown", "intervals": [block("2026-10-19T01:00:00Z", "2026-10-19T02:00:00Z")], **none}
+
+    # No "bands" key at all - not an empty list - so a timeline without
+    # any is exactly the spec from before them.
+    assert host.timeline([lane])["lanes"] == [
+        {"label": "Flown", "grey_after_now": False, "intervals": [block("2026-10-19T01:00:00Z", "2026-10-19T02:00:00Z")]},
+    ]
+
+
+@pytest.mark.parametrize(
+    "bands, error, says",
+    [
+        ("MEL", TypeError, "a timeline lane's bands must be a list"),
+        ({"start": "2026-10-19T01:00:00Z", "end": "2026-10-19T02:00:00Z"}, TypeError, "a timeline lane's bands must be a list"),
+        (["MEL"], TypeError, "a timeline band must be a mapping"),
+        ([{"start": "2026-10-19T01:00:00Z"}], ValueError, "a timeline band needs a start and an end"),
+        ([{"start": None, "end": "2026-10-19T01:00:00Z"}], ValueError, "a timeline band needs a start and an end"),
+        ([{"start": "2026-10-21T00:00:00Z", "end": "2026-10-20T23:59:59Z"}], ValueError,
+         "a timeline band's end is before its start"),
+        # Compared once normalised: 09:00 in Hong Kong is 01:00 UTC, before 01:30.
+        ([{"start": "2026-10-19T01:30:00Z", "end": "2026-10-19T09:00:00+08:00"}], ValueError,
+         "a timeline band's end is before its start"),
+        ([{"start": "tomorrow", "end": "2026-10-19T01:00:00Z"}], ValueError,
+         "a timeline band's start must be a datetime or ISO-8601 timestamp"),
+        ([{"start": "2026-10-19T01:00:00Z", "end": date(2026, 10, 20)}], ValueError,
+         "a timeline band's end must be a datetime or ISO-8601 timestamp"),
+        ([{"start": "2026-10-19T01:00:00Z", "end": "2026-10-20T01:00:00Z", "label": 5}], TypeError,
+         "a timeline band's label must be text"),
+        # A misspelt field is refused, not ignored.
+        ([{"start": "2026-10-19T01:00:00Z", "end": "2026-10-20T01:00:00Z", "port": "MEL"}], ValueError,
+         "a timeline band takes start, end, label - not 'port'"),
+    ],
+)
+def test_a_timeline_refuses_a_band_it_cant_draw(bands, error, says):
+    with pytest.raises(error, match=says):
+        host.timeline([{"intervals": [], "bands": bands}])
 
 
 @pytest.mark.parametrize("title", [3, ["Duties"], True])
