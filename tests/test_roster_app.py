@@ -651,3 +651,92 @@ def test_the_trip_id_is_the_outbound_flight_start():
     assert (replanned["id"], replanned["end"]) == (found["id"], "2026-11-09T13:00:00Z")
     # Not drawn: a band is its span and its port, nothing more.
     assert roster._band(found) == {"start": "2026-11-05T15:10:00Z", "end": "2026-11-08T13:00:00Z", "label": "MEL"}
+
+
+# ---------- a duty's route: its legs, first to last ----------
+#
+# One duty can fly more than one sector - a day turn out and back, or on
+# from one port to another - and the roster lists every leg: in its
+# description, a line a sector, and in its title. A flight's dep and arr
+# are the duty's origin and final destination - the first leg's
+# departure, the last leg's arrival - so trips() sees where it started
+# and where it ended, not just its first sector. A Cathay-style day turn,
+# its shape as exported (the date and times made up):
+
+TURN_TITLE = "20-Nov CX 903 HKG-MNL / 20-Nov CX 902 MNL-HKG"
+TURN_DESCRIPTION = (
+    "DUTY START: 20-Nov 07:25\n"
+    "20-Nov CX 903 HKG-MNL  35G 08:35 - 10:45\n"
+    "20-Nov CX 902 MNL-HKG  35G 12:05 - 14:30 TOTAL: 07:35 \n"
+    "DUTY END: 20-Nov 15:00\n"
+)
+
+
+def filed(title, description, start="20261119T232500Z", end="20261120T070000Z"):
+    """The one duty of an .ics holding just this event, as duties() reads it."""
+    [found] = roster.duties(roster.parse_events(ics(timed(title, start, end, description.replace("\n", "\\n")))))
+    return found
+
+
+def as_session(d):
+    """A duty as ctx.sessions() gives it back once filed."""
+    return host.Session(iso_utc(d.start), iso_utc(d.end), "app:roster", roster.session_summary(d))
+
+
+def test_a_day_turn_is_not_a_layover():
+    # Out to MNL and back to base, one duty: base to base.
+    assert roster.classify(TURN_TITLE, description=TURN_DESCRIPTION) == {
+        "type": "flight", "code": "CX903", "flight_no": "CX903", "dep": "HKG", "arr": "HKG",
+    }
+    turn = filed(TURN_TITLE, TURN_DESCRIPTION)
+    assert (turn.dep, turn.arr) == ("HKG", "HKG")
+
+    # The last duty flown, no flight home after it: still no trip - not a
+    # layover in MNL running to now.
+    now = "2026-11-26T00:00:00Z"
+    assert roster.trips([as_session(turn)], HOME, open_end=now) == []
+    # And a real trip before it is still its one band.
+    out = flight("HKG-BLR", "2026-11-10T15:00:00Z", "2026-11-11T00:30:00Z")
+    back = flight("BLR-HKG", "2026-11-13T19:00:00Z", "2026-11-14T03:00:00Z")
+    assert roster.trips([out, back, as_session(turn)], HOME, open_end=now) == [
+        trip("2026-11-10T15:00:00Z", "2026-11-14T03:00:00Z", "BLR"),
+    ]
+
+
+def test_the_leg_chain_is_read_from_the_description():
+    # The title shows only the way out; the description lists both legs,
+    # and wins: the duty ends back at base.
+    found = roster.classify("20-Nov CX 903 HKG-MNL", description=TURN_DESCRIPTION)
+    assert (found["dep"], found["arr"]) == ("HKG", "HKG")
+    # duties() hands classify() the event's description.
+    turn = filed("20-Nov CX 903 HKG-MNL", TURN_DESCRIPTION)
+    assert (turn.dep, turn.arr) == ("HKG", "HKG")
+
+
+def test_without_a_description_the_title_is_the_fallback():
+    found = roster.classify("12-Oct CX 903 HKG-MNL / 12-Oct CX 902 MNL-HKG")
+    assert (found["dep"], found["arr"]) == ("HKG", "HKG")
+    # A description with no legs in it falls back to the title too.
+    found = roster.classify(TURN_TITLE, description="DUTY START: 20-Nov 07:25\nDUTY END: 20-Nov 15:00")
+    assert (found["dep"], found["arr"]) == ("HKG", "HKG")
+
+
+def test_a_one_way_duty_keeps_origin_and_destination():
+    title = "20-Nov CX 903 HKG-MNL / 20-Nov CX 9031 MNL-CEB"
+    description = (
+        "DUTY START: 20-Nov 07:25\n"
+        "20-Nov CX 903 HKG-MNL  35G 08:35 - 10:45\n"
+        "20-Nov CX 9031 MNL-CEB  35G 12:05 - 13:30 TOTAL: 06:35 \n"
+        "DUTY END: 20-Nov 14:00\n"
+    )
+
+    # Out of base and on, ending away: from HKG - the first leg's origin,
+    # not the last's - to CEB.
+    assert roster.classify(title, description=description) == {
+        "type": "flight", "code": "CX903", "flight_no": "CX903", "dep": "HKG", "arr": "CEB",
+    }
+    # So it still opens a real trip, to where the duty ended.
+    one_way = filed(title, description, end="20261120T060000Z")
+    assert roster.trips([as_session(one_way)], HOME, open_end="2026-11-22T00:00:00Z") == [
+        trip("2026-11-19T23:25:00Z", "2026-11-22T00:00:00Z", "CEB"),
+    ]

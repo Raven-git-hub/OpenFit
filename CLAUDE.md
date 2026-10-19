@@ -541,14 +541,20 @@ own calls to its device API. Full direction:
   nested component, an alarm, lends nothing), `duties(events)` (every
   timed event with both ends, in file order — duty-ness structural,
   never a list of codes: all-day `O`/`G`/`U`/`L`/anything skipped; no
-  end, or an end before the start, skipped and logged), `classify(title,
-  config=None)` (labels only, never filters; `config` defaults to
+  end, or an end before the start, skipped and logged; each event's
+  description handed to `classify()`), `classify(title, config=None,
+  description="")` (labels only, never filters; `config` defaults to
   `CONFIG`: after a leading `DD-Mon`, `code` the first token and its type
   `_duty_type(code, config)` — the first `duty_types` rule matching by
   `regex` (`re.match`) or `prefixes` (`startswith`), else `default_type`;
   no carrier in the code — and a `flight` gets `flight_no` (the code,
-  joined to an all-digit next token: `CX 105` → `CX105`), `dep`/`arr` from
-  an `XXX-XXX` token, `position` a trailing 2–3-letter code),
+  joined to an all-digit next token: `CX 105` → `CX105`), `dep`/`arr`
+  the duty's origin and final destination — the first leg's departure,
+  the last leg's arrival — from its chain of `XXX-XXX` legs, the
+  description's (every sector, a line each) else the title's, so a day
+  turn in one duty (`CX 903 HKG-MNL / CX 902 MNL-HKG`) is `HKG`→`HKG`,
+  base to base, and no trip; `position` a trailing 2–3-letter code of
+  the title),
   `bucket_for(end, now)` (`end <= now` → `duties_complete`, else
   `duties_rostered`), `daily_hours(duties, now)` (each kind's hours
   by `DTSTART`'s UTC date, a duty past midnight whole on its start day;

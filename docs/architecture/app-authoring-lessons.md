@@ -164,6 +164,15 @@ in three different homes.
   band. Anything the app needs beyond the drawing — the trip's stable id, for
   a report to re-attach to later — stays on its own data, never in the spec.
   A lane with no bands is the timeline from before them, key for key.
+- **A multi-sector duty's route is its first port to its last.** One duty
+  can fly several legs — a day turn out and back (`CX 903 HKG-MNL / CX 902
+  MNL-HKG`), or on from one port to another — so its `dep`/`arr` are the
+  first leg's departure and the last leg's arrival, read from the whole
+  chain of legs (the description's, which lists every sector, before the
+  title's, which may abbreviate). Reading only the first sector made a day
+  turn look like a flight out that never came back: a phantom layover
+  running to now. Feed `trips()` where a duty started and ended, never
+  where its first sector landed.
 - **The spec is a transient message, not a file.** Generated per render, drawn,
   and gone. Nothing in the app folder is the "display"; the only display-side file
   is the optional `app.js`.

@@ -439,7 +439,10 @@ when you uploaded, else `duties_rostered`, so a roster uploaded before and after
 a duty holds the plan and what was flown side by side. Each duty's summary
 carries its code and a best-effort label (`flight`, `reserve`, `sim`, or
 `other` for a code the app doesn't know — still filed), a flight's number and
-route, and the roster's description verbatim. The labels aren't written into
+route, and the roster's description verbatim. A duty's route is where it
+started and where it ended — the first leg's departure to the last leg's
+arrival, read from the description's list of sectors (the title if it has
+none) — so a day turn, out and back in one duty, starts and ends at base. The labels aren't written into
 the code: the app is three files, `app.yaml`, `app.py` and a `config.json`
 beside them that holds the duty-code rules (a code's prefix or a pattern for
 each type, the first match winning, and the type for a code none match), your
@@ -459,7 +462,7 @@ now until you scroll, and a Now button brings it back. Behind the blocks, each
 lane shades its trips away from your home base (the config's) in amber: a
 flight out of base to the next flight back, any sectors between inside the one
 trip, labelled with the port it flew out to — only flights count, so a reserve
-or a sim never starts one. A rostered trip the loaded roster ends before it's
+or a sim never starts one, and nor does a day turn. A rostered trip the loaded roster ends before it's
 back runs to the roster's end; a flown one you're still away on runs to now.
 The timeline is in the
 FRMS sync group, so later FRMS panels will scroll with it, by time. Uploading again replaces a duty with the same start and
