@@ -79,7 +79,9 @@ trusted code, as its render() is, not sandboxed.
 
 A file input's value in the payload is a FileUpload - the file as the
 browser sent it, which the app reads and parses itself: OpenFit carries
-a file, and never reads one.
+a file, and never reads one. A file input may carry a companion toggle
+- a checkbox beside the picker - whose checked state comes in the same
+payload, under its own key, and which can ask for a confirm first.
 
 The spec vocabulary, built by the ctx's builders (an app may also return
 the dicts directly):
@@ -91,7 +93,8 @@ the dicts directly):
         undated point, and title (optional) names it
     {"type": "panel", "children": [spec, ...]}
         its children, stacked in order
-    {"type": "input", "key", "action", "label", "kind", "unit", "options", "accept"}
+    {"type": "input", "key", "action", "label", "kind", "unit", "options", "accept",
+     "toggle"}
         a field and a Save button: Save sends `action` to the app's
         handle(), the payload {key: what was entered} - a number for
         kind "number", text for "text", the option chosen for "select"
@@ -99,7 +102,11 @@ the dicts directly):
         kinds), and for "file" the file picked (a FileUpload; `accept`
         the picker's hints, such as ".ics,.csv", or null - null for the
         other kinds) - then the tile is drawn afresh; label and unit may
-        be null
+        be null. `toggle`, on a file input only when given, is
+        {"key", "label", "confirm"}: a checkbox beside the picker, its
+        checked state sent in the payload under its own key beside the
+        file, and with it ticked the page asks `confirm` (null: none)
+        before it sends
     {"type": "timeline", "title", "now", "lanes": [{"label", "grey_after_now",
                                                     "intervals": [{"start", "end", "label"}, ...],
                                                     "bands": [{"start", "end", "label"}, ...]}, ...],
@@ -257,6 +264,10 @@ INPUT_KINDS = ("number", "text", "select", "file")
 OPTIONS_PROBLEM = "a select's options must be a non-empty list of strings"
 ACCEPT_PROBLEM = "a file input's accept must be non-empty text, such as '.ics,.csv'"
 
+# What a file input's companion toggle takes, and nothing else: a
+# misspelt "confrim" is refused, not quietly no confirm.
+TOGGLE_FIELDS = ("key", "label", "confirm")
+
 
 def _text_or_none(value, what, whose="an input's"):
     if value is not None and not isinstance(value, str):
@@ -295,7 +306,35 @@ def _accept(kind, accept):
     return accept
 
 
-def input(key, action, label=None, kind="number", unit=None, options=None, accept=None):
+def _toggle(kind, toggle, key):
+    """A file input's companion toggle as {key, label, confirm} - confirm
+    None for none - or None; None for the other kinds."""
+    if kind != "file":
+        if toggle is not None:
+            raise ValueError(f"a toggle is only for a file, not a {kind}: {toggle!r}")
+        return None
+    if toggle is None:
+        return None
+    what = "a file input's toggle"
+    _fields(toggle, TOGGLE_FIELDS, what)
+    for field in ("key", "label"):
+        value = toggle.get(field)
+        if not isinstance(value, str):
+            raise TypeError(f"{what}'s {field} must be non-empty text: {value!r}")
+        if not value:
+            raise ValueError(f"{what}'s {field} must be non-empty text: {value!r}")
+    if toggle["key"] == key:
+        raise ValueError(f"{what}'s key can't be the input's own, {key!r}: the file is sent under it")
+    confirm = toggle.get("confirm")
+    if confirm is not None:
+        if not isinstance(confirm, str):
+            raise TypeError(f"{what}'s confirm must be text: {confirm!r}")
+        if not confirm:
+            raise ValueError(f"{what}'s confirm must be non-empty text, or left out: {confirm!r}")
+    return {"key": toggle["key"], "label": toggle["label"], "confirm": confirm}
+
+
+def input(key, action, label=None, kind="number", unit=None, options=None, accept=None, toggle=None):
     """A field and a Save button that sends `action` to the app's handle().
 
     The payload is {key: what was entered}: a number for kind "number",
@@ -310,13 +349,29 @@ def input(key, action, label=None, kind="number", unit=None, options=None, accep
     enforced. `label` names the field, `unit` sits beside it; either may
     be None. Once handle() has run, the tile is drawn afresh from
     render().
+
+    `toggle` is a file input's companion checkbox, only for a file and
+    optional: a mapping {key, label, confirm} - `key` the payload key
+    its checked state is sent under (non-empty text, never the input's
+    own `key`, which the file has), `label` the checkbox's label
+    (non-empty text), and `confirm`, optional, text the page asks the
+    user to confirm before it sends with the box ticked (unticked, Save
+    sends straight away). The payload is then {key: the FileUpload,
+    toggle key: True or False}:
+
+        ctx.input("file", "upload", kind="file", accept=".ics",
+                  toggle={"key": "backfill", "label": "Backfill",
+                          "confirm": "Backfill past duties too?"})
+
+    An input without one carries no "toggle" key: its spec is the one
+    from before toggles.
     """
     for what, value in (("key", key), ("action", action)):
         if not isinstance(value, str) or not value:
             raise TypeError(f"an input's {what} must be non-empty text: {value!r}")
     if kind not in INPUT_KINDS:
         raise ValueError(f"an input's kind is one of {', '.join(INPUT_KINDS)}: {kind!r}")
-    return {
+    spec = {
         "type": "input",
         "key": key,
         "action": action,
@@ -326,6 +381,10 @@ def input(key, action, label=None, kind="number", unit=None, options=None, accep
         "options": _options(kind, options),
         "accept": _accept(kind, accept),
     }
+    companion = _toggle(kind, toggle, key)
+    if companion is not None:
+        spec["toggle"] = companion
+    return spec
 
 
 class FileUpload:

@@ -1285,6 +1285,11 @@ ROSTERS = Path(__file__).parent / "fixtures" / "rosters"
 ROSTER_PICKER = {
     "type": "input", "key": "file", "action": "upload", "label": "Upload roster",
     "kind": "file", "unit": None, "options": None, "accept": ".ics",
+    "toggle": {
+        "key": "backfill", "label": "Backfill",
+        "confirm": "Backfill past duties into your rostered plan? They're also recorded as "
+                   "flown, and any plan you already uploaded for those duties is replaced.",
+    },
 }
 
 FLOWN = "app:roster:duty_hours_complete"
@@ -1299,10 +1304,15 @@ def install_roster(client):
     assert resp.status_code == 201, resp.get_json()
 
 
-def upload_roster(client, content, name="roster.ics"):
+def upload_roster(client, content, name="roster.ics", payload=None):
+    """Upload `content` as the page sends it - a payload, the Backfill
+    toggle's state, as a form field of its JSON, when given."""
     if isinstance(content, str):
         content = content.encode()
-    return post_form(client, "roster", {"action": "upload", "cfg": "{}"}, {"file": (content, name, "text/calendar")})
+    fields = {"action": "upload", "cfg": "{}"}
+    if payload is not None:
+        fields["payload"] = json.dumps(payload)
+    return post_form(client, "roster", fields, {"file": (content, name, "text/calendar")})
 
 
 def sample_roster(year=2025):
@@ -1470,6 +1480,131 @@ def test_reupload_replaces_same_duty(client, conn, apps_dir, upload_dir):
     assert len(rows(conn)) == 4
 
 
+# ---------- backfill: past duties into the plan too ----------
+#
+# The Backfill toggle beside the picker sends {"backfill": true} with the
+# file. A duty already over is then filed into the rostered plan as well
+# as the flown record, the rostered copy captured "backfill"; a duty
+# still to come is filed once, as without it.
+
+MIXED_ROSTER = roster_ics(
+    ("19-Nov R1E", "20251119T010000Z", "20251119T050000Z"),             # 4h, over
+    ("20-Nov CX9101 ZZA-ZZB", "20251120T100000Z", "20251120T230000Z"),  # 13h, over
+    ("19-Nov CX9102 ZZB-ZZA", "20991119T100000Z", "20991120T000000Z"),  # 14h, to come
+)
+
+
+def filed(conn):
+    """(kind, start, code, capture) of every session, by kind then start."""
+    return [(kind, start, s["code"], s["capture"]) for kind, start, _, s in duty_rows(conn)]
+
+
+def test_backfill_writes_past_duties_to_rostered_too(client, conn, apps_dir, upload_dir):
+    install_roster(client)
+
+    resp = upload_roster(client, MIXED_ROSTER, payload={"backfill": True})
+
+    assert resp.status_code == 200, resp.get_json()
+    # Each past duty twice - flown, captured live, and in the plan,
+    # captured "backfill" - and the duty to come once, rostered, live.
+    assert filed(conn) == [
+        ("duties_complete", "2025-11-19T01:00:00Z", "R1E", "live"),
+        ("duties_complete", "2025-11-20T10:00:00Z", "CX9101", "live"),
+        ("duties_rostered", "2025-11-19T01:00:00Z", "R1E", "backfill"),
+        ("duties_rostered", "2025-11-20T10:00:00Z", "CX9101", "backfill"),
+        ("duties_rostered", "2099-11-19T10:00:00Z", "CX9102", "live"),
+    ]
+    # The backfilled copy is the flown duty, its envelope and summary,
+    # but for its capture.
+    by_kind = {(kind, start): (end, summary) for kind, start, end, summary in duty_rows(conn)}
+    for start in ("2025-11-19T01:00:00Z", "2025-11-20T10:00:00Z"):
+        (end, flown), (rostered_end, backfilled) = by_kind[("duties_complete", start)], by_kind[("duties_rostered", start)]
+        assert rostered_end == end
+        assert {**backfilled, "capture": "live"} == flown
+    # The duty to come: rostered once, never flown.
+    assert [r for r in filed(conn) if r[1].startswith("2099")] == [
+        ("duties_rostered", "2099-11-19T10:00:00Z", "CX9102", "live"),
+    ]
+    # The rostered hours take in the past days, as the sessions do.
+    assert rows(conn) == [
+        ("2025-11-19", "app:roster", FLOWN, 4.0),
+        ("2025-11-19", "app:roster", ROSTERED_HOURS, 4.0),
+        ("2025-11-20", "app:roster", FLOWN, 13.0),
+        ("2025-11-20", "app:roster", ROSTERED_HOURS, 13.0),
+        ("2099-11-19", "app:roster", ROSTERED_HOURS, 14.0),
+    ]
+    # Read back through the contract, as any session is.
+    assert [(s["start"], s["summary"]["capture"]) for s in client.get("/api/sessions/duties_rostered").get_json()] == [
+        ("2025-11-19T01:00:00Z", "backfill"), ("2025-11-20T10:00:00Z", "backfill"), ("2099-11-19T10:00:00Z", "live"),
+    ]
+    assert os.listdir(upload_dir) == []
+
+
+@pytest.mark.parametrize("payload", [
+    None,                    # no payload field at all: a page from before the toggle
+    {"backfill": False},     # the toggle unticked
+    {},
+    {"backfill": "true"},    # not the checkbox's JSON bool: no backfill
+    {"backfill": 1},
+])
+def test_without_backfill_past_duties_are_complete_only(client, conn, apps_dir, upload_dir, payload):
+    install_roster(client)
+
+    resp = upload_roster(client, MIXED_ROSTER, payload=payload)
+
+    assert resp.status_code == 200, resp.get_json()
+    # The plain clock split: over is flown, to come rostered - each duty
+    # once, captured live.
+    assert filed(conn) == [
+        ("duties_complete", "2025-11-19T01:00:00Z", "R1E", "live"),
+        ("duties_complete", "2025-11-20T10:00:00Z", "CX9101", "live"),
+        ("duties_rostered", "2099-11-19T10:00:00Z", "CX9102", "live"),
+    ]
+    assert rows(conn) == [
+        ("2025-11-19", "app:roster", FLOWN, 4.0),
+        ("2025-11-20", "app:roster", FLOWN, 13.0),
+        ("2099-11-19", "app:roster", ROSTERED_HOURS, 14.0),
+    ]
+
+
+def test_backfill_replaces_a_plan_uploaded_before(client, conn, apps_dir, upload_dir):
+    install_roster(client)
+    # The plan for CX9101 as an earlier upload filed it, while it was
+    # still to come: rostered, live.
+    plan = {"capture": "live", "type": "flight", "code": "CX9101", "label": "20-Nov CX9101 ZZA-ZZB",
+            "raw": "the plan as it stood"}
+    conn.execute(
+        'INSERT INTO sessions (id, source, kind, "start", "end", summary_json) VALUES (?, ?, ?, ?, ?, ?)',
+        ("app:roster:duties_rostered:2025-11-20T10:00:00Z", "app:roster", "duties_rostered",
+         "2025-11-20T10:00:00Z", "2025-11-20T20:00:00Z", json.dumps(plan)),
+    )
+    conn.commit()
+
+    assert upload_roster(client, MIXED_ROSTER, payload={"backfill": True}).status_code == 200
+
+    # What the confirm warns of: the plan of that duty replaced by the
+    # one put back from the file - its envelope, and its capture - not
+    # kept beside it.
+    rostered = [r for r in duty_rows(conn) if r[0] == "duties_rostered" and r[3]["code"] == "CX9101"]
+    assert [(start, end, s["capture"], s["raw"]) for _, start, end, s in rostered] == [
+        ("2025-11-20T10:00:00Z", "2025-11-20T23:00:00Z", "backfill", ""),
+    ]
+
+
+def test_a_backfilled_duty_draws_in_the_rostered_lane(client, conn, apps_dir, upload_dir):
+    install_roster(client)
+    start = datetime.now(timezone.utc).replace(microsecond=0) - timedelta(days=3)
+    end = start + timedelta(hours=12)
+
+    spec = upload_roster(client, roster_ics(("R1E", ics_at(start), ics_at(end))), payload={"backfill": True}).get_json()["spec"]
+
+    # The past duty on both sides: flown, and in the plan beside it.
+    [timeline, picker] = spec["children"]
+    assert picker == ROSTER_PICKER
+    block = {"start": stamp(start), "end": stamp(end), "label": "R1E"}
+    assert [lane["intervals"] for lane in timeline["lanes"]] == [[block], [block]]
+
+
 def ics_at(moment):
     """A datetime as an .ics UTC time: 20251105T151000Z."""
     return moment.strftime("%Y%m%dT%H%M%SZ")
@@ -1505,15 +1640,15 @@ def test_the_roster_app_shows_rostered_against_flown_on_a_timeline(client, conn,
     resp = upload_roster(client, roster_ics(*((t, ics_at(a), ics_at(a + d)) for t, a, d in duties)))
     after = datetime.now(timezone.utc)
 
-    # The upload's reply is the tile, drawn afresh: the picker, over the
-    # timeline - rostered on the left, flown on the right and greyed
-    # after now - each duty a block of its start and end, labelled with
-    # its code, oldest first - in the FRMS focus group. Behind the flown
-    # blocks, a band: three days ago out of base (ZZA) to ZZB, and not
-    # back - away, on the layover, until now.
+    # The upload's reply is the tile, drawn afresh: the timeline -
+    # rostered on the left, flown on the right and greyed after now -
+    # each duty a block of its start and end, labelled with its code,
+    # oldest first - in the FRMS focus group, over the picker at the
+    # tile's foot. Behind the flown blocks, a band: three days ago out of
+    # base (ZZA) to ZZB, and not back - away, on the layover, until now.
     block = lambda i: {"start": stamp(duties[i][1]), "end": stamp(duties[i][1] + duties[i][2]),
                        "label": ["CX9102", "A1534", "CX9101", "R1E"][i]}
-    [picker, timeline] = resp.get_json()["spec"]["children"]
+    [timeline, picker] = resp.get_json()["spec"]["children"]
     assert picker == ROSTER_PICKER
     now_drawn = drawn_now(before, after, timeline)
     assert timeline == {"type": "timeline", "title": None, "now": now_drawn, "sync": "frms", "lanes": [
@@ -1525,10 +1660,10 @@ def test_the_roster_app_shows_rostered_against_flown_on_a_timeline(client, conn,
     before = datetime.now(timezone.utc)
     again = client.post("/api/app/roster/render").get_json()
     after = datetime.now(timezone.utc)
-    assert again["children"][0] == ROSTER_PICKER
-    now_again = drawn_now(before, after, again["children"][1])
+    assert again["children"][1] == ROSTER_PICKER
+    now_again = drawn_now(before, after, again["children"][0])
     rostered, flown = timeline["lanes"]
-    assert again["children"][1] == {**timeline, "now": now_again, "lanes": [
+    assert again["children"][0] == {**timeline, "now": now_again, "lanes": [
         rostered, {**flown, "bands": [{**flown["bands"][0], "end": now_again}]},
     ]}
 
@@ -1545,7 +1680,7 @@ def test_the_roster_app_with_only_a_roster_to_come_has_flown_nothing(client, con
 
     # Every duty still to come, however far ahead; nothing flown - an
     # empty lane, still drawn, greyed after now, and with no trip.
-    [picker, timeline] = spec["children"]
+    [timeline, picker] = spec["children"]
     assert picker == ROSTER_PICKER
     rostered, flown = timeline["lanes"]
     assert [(i["start"], i["end"], i["label"]) for i in rostered["intervals"]] == [

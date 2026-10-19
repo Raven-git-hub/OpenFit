@@ -274,7 +274,7 @@ the dicts itself.
 | `ctx.number(value, label=None, caption=None, unit=None)` | `{"type": "number", "value", "label", "caption", "unit"}` | A large value in tabular figures, `unit` small beside it, `label` beneath, and `caption` smaller and muted. A null value reads `—`, and a null label, caption or unit is left out. A number is shown with thousands separators; a string is shown as given. The caption is cut to two lines, or one in a short tile (a 2×2 on a phone), with the full text on hover. |
 | `ctx.line(points, title=None)` | `{"type": "line", "points": [[date, value], ...], "title"}` | A sparkline with its title above it. See [the line builder](#the-line-builder), below. |
 | `ctx.panel(*children)` or `ctx.panel([children])` | `{"type": "panel", "children": [...]}` | Its children stacked in order. A number keeps its height and a line takes the rest. |
-| `ctx.input(key, action, label=None, kind="number", unit=None, options=None, accept=None)` | `{"type": "input", "key", "action", "label", "kind", "unit", "options", "accept"}` | A field under its label (small, uppercase), its unit and a **Save** button beside it. `kind` is one of `INPUT_KINDS`: `"number"` (the default), `"text"`, `"select"` — a dropdown of `options`, a non-empty list of non-empty strings, required for a select and refused for the other kinds (`options` is `null` in their specs) — or `"file"`, a file picker offering `accept`'s hints (`".txt,.csv"`, `"text/plain"`: optional non-empty text, refused for the other kinds — `accept` is `null` in their specs, and in a file's without one). Save, or Enter, sends `action` to the app's `handle()` with the payload `{key: what was entered}` (a number for kind `"number"`, text as typed for `"text"`, the chosen option's string as written for `"select"`, and for `"file"` the file picked, a `FileUpload` — Save only, sent multipart), and the tile is redrawn from the fresh spec the reply carries; a refusal shows under the field, which keeps what was entered. A blank field, or a number that isn't one, says so and sends nothing; so does a select still on its "Choose…" placeholder, a picker with no file picked ("Choose a file.") or one over 25 MB ("File too large (max 25 MB)."). The host doesn't check a select's value is one of its options (the action route remembers no render), nor what a file holds: `handle()` does. In a panel it sits at the foot. In Configure it's inert, like the rest of the face. See [Writing](#writing-apps-as-sources) and `docs/architecture/input-primitives.md`. |
+| `ctx.input(key, action, label=None, kind="number", unit=None, options=None, accept=None, toggle=None)` | `{"type": "input", "key", "action", "label", "kind", "unit", "options", "accept"}`, plus `"toggle"` only when given | A field under its label (small, uppercase), its unit and a **Save** button beside it. `kind` is one of `INPUT_KINDS`: `"number"` (the default), `"text"`, `"select"` — a dropdown of `options`, a non-empty list of non-empty strings, required for a select and refused for the other kinds (`options` is `null` in their specs) — or `"file"`, a file picker offering `accept`'s hints (`".txt,.csv"`, `"text/plain"`: optional non-empty text, refused for the other kinds — `accept` is `null` in their specs, and in a file's without one). Save, or Enter, sends `action` to the app's `handle()` with the payload `{key: what was entered}` (a number for kind `"number"`, text as typed for `"text"`, the chosen option's string as written for `"select"`, and for `"file"` the file picked, a `FileUpload` — Save only, sent multipart), and the tile is redrawn from the fresh spec the reply carries; a refusal shows under the field, which keeps what was entered. A blank field, or a number that isn't one, says so and sends nothing; so does a select still on its "Choose…" placeholder, a picker with no file picked ("Choose a file.") or one over 25 MB ("File too large (max 25 MB)."). A file input can carry a companion **toggle**, `{key, label, confirm}` (only for a file — any other kind's is refused; see [A file input's toggle](#writing-apps-as-sources)): a checkbox and its label in the row before Save, its checked state sent in the payload under its own `key` beside the file, and — ticked, with a `confirm` — the page's own modal asking that first, nothing sent unless it's confirmed; a spec with none has no `toggle` key, the one from before toggles. The host doesn't check a select's value is one of its options (the action route remembers no render), nor what a file holds: `handle()` does. In a panel it sits at the foot. In Configure it's inert, like the rest of the face. See [Writing](#writing-apps-as-sources) and `docs/architecture/input-primitives.md`. |
 | `ctx.timeline(lanes, now=None, title=None, sync=None)` | `{"type": "timeline", "title", "now", "lanes": [{"label", "grey_after_now", "intervals": [{"start", "end", "label"}, ...]}, ...]}`, plus `"sync"` only when given | One lane or two of time-blocks side by side on one vertical time axis, in a frame that scrolls — lane 0 the left column in the lighter tone, lane 1 the right in the darker — under the lanes' labels; a line at `now`, and a `grey_after_now` lane greyed below it. With `sync`, a focus group's name, it's drawn around the group's focus clock: a fixed cursor, the time under it and a Now button, every timeline of the group scrolling to one time. See [the timeline builder](#the-timeline-builder), below. |
 | `ctx.empty(message=None)` | `{"type": "empty", "message"}` | Muted, centred text (default "No data yet"). |
 | (the host's) | `{"type": "error", "message"}` | Muted, centred: "Couldn't render <app name>" over the message. |
@@ -483,6 +483,28 @@ how to read it is the app's. Nothing of it is kept: it lives for the action,
 in a temp file the host named, deleted once the action is done whatever
 `handle()` did, so only what the app writes survives.
 
+**A file input's toggle.** A file input can carry one companion checkbox —
+`ctx.input("file", "upload", kind="file", toggle={"key": "backfill",
+"label": "Backfill", "confirm": "…"})` — for a choice that goes with the file,
+such as how to file it. `toggle` is only for a file (any other kind's →
+`ValueError`) and optional: a mapping of only `key`, `label` and `confirm`
+(not a mapping → `TypeError`, another field → `ValueError`); `key` the payload
+key its checked state is sent under — non-empty text, never the input's own
+`key` (the file has that); `label` the checkbox's text, non-empty; `confirm`
+optional non-empty text. The spec carries `"toggle": {key, label, confirm}`
+(`confirm` `null` for none) only when one is given, so every input without one
+is the spec from before. The page draws the checkbox, unticked, in the row
+between the picker and Save, and the payload is then `{<input key>: the
+FileUpload, <toggle key>: true or false}` — a JSON bool, always sent, ticked or
+not. Ticked, with a `confirm`, Save first opens the page's own modal (never the
+browser's `confirm()`): the toggle's label over the app's text, [Cancel]
+(focused) and [Continue]; only Continue sends — Cancel, Escape or a click
+outside sends nothing and leaves the tile as it was, still ticked. The tile's
+own refusals (no file, one over 25 MB) come before it. The confirm is static
+text: the app writes it at render, before it has read any file. What the
+toggle means is the app's — the host carries its state and holds nothing to
+it; `handle()` reads `payload.get(<key>)`.
+
 **The writing ctx.** `handle()` gets a `WriteCtx(conn, app, today=None)`, made
 for the app: a `Ctx` (so `ctx.metric()`, `ctx.sessions()` and `ctx.today()`
 read as in `render()`), plus
@@ -573,7 +595,9 @@ file under its input's key, set into `payload` under that key as a
 `FileUpload` (a file and a `payload` entry of one key: the file). A body over
 `MAX_UPLOAD_BYTES` (25 MiB, Flask's `MAX_CONTENT_LENGTH`, on every route) is
 turned away before any of it is read: `413 {"ok": false, "error": "Request
-too large (max 25 MB)."}`.
+too large (max 25 MB)."}`. The page sends a `payload` field only for a file
+input with a toggle — `{"<toggle key>": true|false}` — and none otherwise, as
+before toggles.
 
 1. `404` for an id no app loads under; `400` for an app with no `handle()`,
    or a body whose `action` isn't non-empty text or whose `payload` (absent:
@@ -798,11 +822,32 @@ summed first, then one `ctx.write_metric(…, date=day)` a day), held to the
 declared 0–24. A time with a `TZID` or none (floating) refuses the upload, as
 does a file with no duty; the route rolls back whatever was filed.
 
+**Backfill.** The picker carries a toggle, **Backfill** (`toggle={"key":
+"backfill", …}`, its confirm "Backfill past duties into your rostered plan?
+They're also recorded as flown, and any plan you already uploaded for those
+duties is replaced."), for a roster uploaded after it started. `handle()`
+reads `payload.get("backfill") is True` — only the checkbox's JSON `true`
+turns it on — and files each duty by `filed_as(end, now, backfill)`, the write
+matrix, `[(kind, capture)]`:
+
+| | Backfill off | Backfill on |
+|---|---|---|
+| A duty already over | `duties_complete`, `capture: "live"` | `duties_complete`, `"live"`, **and** `duties_rostered`, `capture: "backfill"` |
+| A duty still to come | `duties_rostered`, `"live"` | `duties_rostered`, `"live"` — unchanged |
+
+`session_summary(duty, capture="live")` stamps it, so a reconstructed plan is
+always told from one captured live, and `daily_hours(duties, now,
+backfill=False)` counts each kind a duty is filed as, so backfilled days have
+`duty_hours_rostered` as their sessions do (a duty twice in the file still
+once). A backfilled duty's rostered session has the id a live upload of it
+had, so it replaces that plan — the confirm's warning. Off — unticked, or no
+payload at all — it's exactly the plain clock split from before.
+
 Its tile reads the duties back: `ctx.sessions()` of both kinds since about six
 months before today (183 days, by the day a duty starts in UTC), and every duty
 still to come. With none, it's `empty("Upload your roster .ics")` over the
-picker. Otherwise it's the picker on top and, under it, a timeline
-(`ctx.timeline()`, above): rostered duties in the left lane, flown ones in the
+picker. Otherwise it's a timeline (`ctx.timeline()`, above) over the picker —
+the upload at the tile's foot: rostered duties in the left lane, flown ones in the
 right with `grey_after_now`, each a block from its start to its end labelled
 with its code, and the now line at the time of the render. The timeline fills
 the rest of the tile and scrolls, laid out to whichever size the tile is

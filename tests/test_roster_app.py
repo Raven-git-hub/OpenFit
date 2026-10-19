@@ -259,15 +259,76 @@ def test_a_duty_twice_in_the_file_counts_once():
     assert roster.daily_hours(duties, now) == {("duty_hours_complete", "2025-11-19"): 4.0}
 
 
+# ---------- backfill: past duties into the plan too ----------
+
+
+def test_filed_as_is_the_clock_split_and_backfill_doubles_only_a_past_duty():
+    now = utc(2025, 11, 10, 12, 0)
+    past, just_over, under_way = utc(2025, 11, 8, 13, 0), now, now + timedelta(seconds=1)
+
+    # Off: one kind each, by the clock, captured live.
+    assert roster.filed_as(past, now) == [("duties_complete", "live")]
+    assert roster.filed_as(under_way, now) == [("duties_rostered", "live")]
+    assert roster.filed_as(past, now, backfill=False) == [("duties_complete", "live")]
+    # On: a duty that's over is flown, and put back into the plan - its
+    # copy there captured "backfill"; one still to come is as it was.
+    assert roster.filed_as(past, now, backfill=True) == [("duties_complete", "live"), ("duties_rostered", "backfill")]
+    assert roster.filed_as(just_over, now, backfill=True) == [("duties_complete", "live"), ("duties_rostered", "backfill")]
+    assert roster.filed_as(under_way, now, backfill=True) == [("duties_rostered", "live")]
+
+
+def test_a_backfilled_summary_says_so():
+    flight = roster.duties(roster.parse_events(sample()))[0]
+
+    live = roster.session_summary(flight)
+    backfilled = roster.session_summary(flight, capture="backfill")
+
+    # The capture is the one difference: the paper trail of a plan put
+    # back after the fact.
+    assert live["capture"] == "live" and backfilled["capture"] == "backfill"
+    assert {**backfilled, "capture": "live"} == live
+    assert roster.session_summary(flight, "live") == live
+
+
+def test_backfilled_hours_count_a_past_duty_in_the_rostered_hours_too():
+    now = utc(2025, 11, 20, 12, 0)
+    text = ics(
+        timed("19-Nov R1E", "20251119T010000Z", "20251119T050000Z"),            # 4h over
+        timed("19-Nov A1534", "20251119T080000Z", "20251119T113000Z"),          # 3.5h over, same day
+        timed("21-Nov CX9102 ZZB-ZZA", "20251121T220000Z", "20251122T090000Z"),  # 11h to come
+        timed("19-Nov R1E", "20251119T010000Z", "20251119T050000Z"),            # the first, twice
+    )
+    found = roster.duties(roster.parse_events(text))
+
+    # Each past day's hours both flown and rostered, as its sessions are
+    # filed - the duty in the file twice still once; a day to come
+    # rostered alone, counted once.
+    assert roster.daily_hours(found, now, backfill=True) == {
+        ("duty_hours_complete", "2025-11-19"): 7.5,
+        ("duty_hours_rostered", "2025-11-19"): 7.5,
+        ("duty_hours_rostered", "2025-11-21"): 11.0,
+    }
+    # Off, the plain split - as before backfill.
+    assert roster.daily_hours(found, now) == roster.daily_hours(found, now, backfill=False) == {
+        ("duty_hours_complete", "2025-11-19"): 7.5,
+        ("duty_hours_rostered", "2025-11-21"): 11.0,
+    }
+
+
 # ---------- the tile ----------
 #
 # render() over a ctx of sessions written straight in, as the host would
 # have filed them, with today fixed: what it draws, and how far back.
 
 TODAY = date(2026, 10, 15)
+BACKFILL = {
+    "key": "backfill", "label": "Backfill",
+    "confirm": "Backfill past duties into your rostered plan? They're also recorded as "
+               "flown, and any plan you already uploaded for those duties is replaced.",
+}
 PICKER = {
     "type": "input", "key": "file", "action": "upload", "label": "Upload roster",
-    "kind": "file", "unit": None, "options": None, "accept": ".ics",
+    "kind": "file", "unit": None, "options": None, "accept": ".ics", "toggle": BACKFILL,
 }
 
 
@@ -296,10 +357,11 @@ def test_render_draws_the_rostered_and_the_flown_on_a_timeline(conn):
 
     spec, before, after = drawn(conn)
 
-    # The picker on top; the timeline under it, rostered then flown, each
-    # duty a block labelled with its code; the line at now, the render's
-    # own; the flown side greyed after it; in the FRMS focus group.
-    [picker, timeline] = spec["children"]
+    # The timeline, rostered then flown, each duty a block labelled with
+    # its code; the line at now, the render's own; the flown side greyed
+    # after it; in the FRMS focus group. The upload at the foot, under it
+    # - its picker carrying the Backfill toggle and its confirm.
+    [timeline, picker] = spec["children"]
     assert spec["type"] == "panel" and picker == PICKER
     assert iso_utc(before) <= timeline["now"] <= iso_utc(after)
     assert timeline == {"type": "timeline", "title": None, "now": timeline["now"], "sync": "frms", "lanes": [
@@ -314,11 +376,25 @@ def test_render_draws_the_rostered_and_the_flown_on_a_timeline(conn):
     ]}
 
 
+def test_the_upload_is_at_the_tiles_foot_in_every_state(conn):
+    # Nothing yet: the ask, then the picker.
+    [ask, picker] = drawn(conn)[0]["children"]
+    assert ask["type"] == "empty" and picker == PICKER
+    # Duties: the timeline, then the picker - the upload last, under it,
+    # with its Backfill toggle and the confirm it asks.
+    file_duty(conn, "duties_rostered", "2099-11-05T15:10:00Z", "2099-11-06T04:10:00Z", "CX9102")
+    conn.commit()
+    [timeline, picker] = drawn(conn)[0]["children"]
+    assert timeline["type"] == "timeline" and picker == PICKER
+    assert picker["toggle"] == roster.BACKFILL
+    assert picker["toggle"]["confirm"].startswith("Backfill past duties into your rostered plan?")
+
+
 def test_a_duty_with_no_code_is_a_block_with_no_label(conn):
     write_session(conn, "app:roster", "duties_complete", "2026-10-10T01:00:00Z", "2026-10-10T02:00:00Z", {})
     conn.commit()
 
-    [_, timeline] = drawn(conn)[0]["children"]
+    [timeline, _] = drawn(conn)[0]["children"]
 
     assert timeline["lanes"][1]["intervals"] == [
         {"start": "2026-10-10T01:00:00Z", "end": "2026-10-10T02:00:00Z", "label": ""},
@@ -349,7 +425,7 @@ def test_render_shades_each_lanes_trips_behind_its_blocks(conn):
 
     spec, before, after = drawn(conn)
 
-    [_, timeline] = spec["children"]
+    [timeline, _] = spec["children"]
     rostered, flown = timeline["lanes"]
     # Each lane its own trips, a band each from the flight out's start
     # to the flight home's end, labelled with the port it flew out to;
@@ -483,7 +559,7 @@ def test_a_config_with_no_home_base_shades_no_trips(tmp_path, conn):
     file_flight(conn, "duties_complete", "2026-10-03T02:00:00Z", "2026-10-03T13:00:00Z", "CX9102", "ZZB-ZZA")
     conn.commit()
 
-    [_, timeline] = app.render(host.Ctx(conn, today=TODAY), {})["children"]
+    [timeline, _] = app.render(host.Ctx(conn, today=TODAY), {})["children"]
 
     assert [len(lane["intervals"]) for lane in timeline["lanes"]] == [0, 2]
     assert not any("bands" in lane for lane in timeline["lanes"])

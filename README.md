@@ -414,7 +414,11 @@ library that wants a real file). OpenFit carries the file and never parses it:
 the app reads whatever format it expects, and the file itself isn't kept — it's
 deleted once the action is done, so only what the app writes stays. The Import
 weigh-ins app, which reads past weigh-ins from a text file (`YYYY-MM-DD <kg>`
-a line) and files each on its own day, is the example.
+a line) and files each on its own day, is the example. A file input can carry
+a companion **toggle** — `toggle={"key": "backfill", "label": "Backfill",
+"confirm": "…"}` — a checkbox beside the picker whose state the app gets in the
+same payload (`{"file": <FileUpload>, "backfill": true}`); with a `confirm`,
+ticking it makes Save ask first, in the page's own popup.
 
 An app can file a **session** too — an interval, as a night's sleep or a
 workout is — with `ctx.write_session(kind, start, end=None, summary=None)`:
@@ -452,9 +456,15 @@ synthetic one for the tests; your own stays on your server. If the config is
 missing or won't read, the tile says so over its picker and an upload is
 refused, nothing filed. The app also files each day's
 duty hours as its own metrics, `duty_hours_complete` and `duty_hours_rostered`
-(summed by the UTC day a duty starts). Its tile draws the duties back on a
-timeline under the picker: the last six months or so and everything still to
-come, rostered on the left and flown on the right, each duty a block at its
+(summed by the UTC day a duty starts). If you upload a roster after it
+started, tick **Backfill** beside the picker: a duty already over is then filed
+into the rostered plan as well as the flown record (its copy there marked
+`capture: "backfill"`, so a plan put back after the fact is always told from one
+captured live) and counted in the rostered hours; a duty still to come is filed
+once either way. Because a backfilled duty replaces any plan you'd already
+uploaded for it, Save asks you to confirm first; unticked, it's the plain split.
+Its tile draws the duties back on a timeline over the picker — the upload at
+the foot: the last six months or so and everything still to come, rostered on the left and flown on the right, each duty a block at its
 time labelled with its code, a line at now and the flown side greyed after it;
 it scrolls, a week to the tile's height. A cursor stays fixed across the middle
 of it, with the time under it (UTC, to the quarter hour) shown above: it follows

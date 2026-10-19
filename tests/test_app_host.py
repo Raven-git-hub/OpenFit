@@ -19,6 +19,7 @@ Every test gets its own temp apps folder; nothing reads /data/apps.
 import json
 import math
 import os
+import re
 import shutil
 import textwrap
 from datetime import date, datetime, timedelta, timezone
@@ -825,6 +826,69 @@ def test_accept_is_only_for_a_file(kind, accept):
 def test_a_file_takes_no_options(options):
     with pytest.raises(ValueError, match="options is only for a select, not a file"):
         host.input("file", "import", kind="file", options=options)
+
+
+def test_a_file_input_carries_its_toggle():
+    toggle = {"key": "backfill", "label": "Backfill", "confirm": "Backfill <b>past</b> duties?"}
+    assert host.input("file", "upload", kind="file", accept=".ics", toggle=toggle) == {
+        "type": "input", "key": "file", "action": "upload", "label": None, "kind": "file", "unit": None,
+        "options": None, "accept": ".ics",
+        "toggle": {"key": "backfill", "label": "Backfill", "confirm": "Backfill <b>past</b> duties?"},
+    }
+    # confirm is optional: none, a null in the spec. The spec's toggle is
+    # its own copy, not the mapping given.
+    bare = {"key": "replace", "label": "Replace"}
+    spec = host.input("file", "upload", kind="file", toggle=bare)
+    assert spec["toggle"] == {"key": "replace", "label": "Replace", "confirm": None}
+    assert spec["toggle"] is not bare
+    assert host.input("file", "upload", kind="file", toggle=dict(bare, confirm=None))["toggle"] == spec["toggle"]
+    # ctx.input is the same builder.
+    assert host.Ctx(None).input("file", "upload", kind="file", toggle=bare) == spec
+
+
+def test_an_input_with_no_toggle_carries_no_toggle_key():
+    # The spec from before toggles, exactly: no key, not a null one.
+    for kwargs in ({"kind": "file", "accept": ".ics"}, {"kind": "file", "toggle": None}, {}, {"kind": "text"},
+                   {"kind": "select", "options": ["1"]}):
+        assert "toggle" not in host.input("k", "a", **kwargs), kwargs
+
+
+@pytest.mark.parametrize("kind", ["number", "text", "select"])
+@pytest.mark.parametrize("toggle", [{"key": "backfill", "label": "Backfill"}, {}, "backfill"])
+def test_a_toggle_is_only_for_a_file(kind, toggle):
+    options = ["1"] if kind == "select" else None
+    with pytest.raises(ValueError, match=f"a toggle is only for a file, not a {kind}"):
+        host.input("k", "a", kind=kind, options=options, toggle=toggle)
+
+
+@pytest.mark.parametrize(
+    "toggle, error, says",
+    [
+        # Not a mapping.
+        ("backfill", TypeError, "a file input's toggle must be a mapping"),
+        (["backfill", "Backfill"], TypeError, "a file input's toggle must be a mapping"),
+        (True, TypeError, "a file input's toggle must be a mapping"),
+        # A key and a label, each non-empty text.
+        ({"label": "Backfill"}, TypeError, "a file input's toggle's key must be non-empty text"),
+        ({"key": "", "label": "Backfill"}, ValueError, "a file input's toggle's key must be non-empty text"),
+        ({"key": 3, "label": "Backfill"}, TypeError, "a file input's toggle's key must be non-empty text"),
+        ({"key": "backfill"}, TypeError, "a file input's toggle's label must be non-empty text"),
+        ({"key": "backfill", "label": ""}, ValueError, "a file input's toggle's label must be non-empty text"),
+        ({"key": "backfill", "label": None}, TypeError, "a file input's toggle's label must be non-empty text"),
+        # Never the file's own key: the file is sent under it.
+        ({"key": "file", "label": "Backfill"}, ValueError, "a file input's toggle's key can't be the input's own"),
+        # confirm, if given, is text - and not empty.
+        ({"key": "backfill", "label": "Backfill", "confirm": 1}, TypeError, "a file input's toggle's confirm must be text"),
+        ({"key": "backfill", "label": "Backfill", "confirm": ""}, ValueError,
+         "a file input's toggle's confirm must be non-empty text"),
+        # Nothing else: a misspelt field is refused, not quietly ignored.
+        ({"key": "backfill", "label": "Backfill", "confrim": "Sure?"}, ValueError,
+         "a file input's toggle takes key, label, confirm - not 'confrim'"),
+    ],
+)
+def test_a_malformed_toggle_is_refused(toggle, error, says):
+    with pytest.raises(error, match=re.escape(says)):
+        host.input("file", "upload", kind="file", toggle=toggle)
 
 
 def test_a_file_upload_is_the_file_for_the_app_to_read(tmp_path):

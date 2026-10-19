@@ -341,6 +341,39 @@ timezone, and a destinations table (each port's city and IANA zone).
   synthetic (fake ports `ZZA`/`ZZB` and just the rules the tests need); the
   owner's real one lives only on their volume.
 
+## A file upload can carry a toggle — and confirm first
+
+A choice that goes with a file — *how* to file it — is a companion checkbox
+on the file input, not a second input or a second button:
+`ctx.input("file", "upload", kind="file", accept=".ics", toggle={"key":
+"backfill", "label": "Backfill", "confirm": "…"})`. The Roster app's
+**Backfill** is the reference.
+
+- **It arrives in the same payload.** `handle()` gets `{<input key>:
+  FileUpload, <toggle key>: True/False}` — a JSON bool, sent ticked or not.
+  Hold it to that: `payload.get("backfill") is True`, so a `"false"` string
+  from a hand-made call can't turn it on. A page from before the toggle
+  sends no payload at all, so a missing key means off.
+- **Off must be exactly what it was before.** The roster's matrix lives in
+  one pure function, `filed_as(end, now, backfill)`, which both the session
+  writes and `daily_hours()` read, so a past duty backfilled into the plan
+  is counted in the rostered hours too and the two can't drift. Off, it's
+  the plain clock split, key for key.
+- **Leave a paper trail.** What the toggle files differently should say so in
+  its summary — the roster's backfilled copy is `capture: "backfill"`, never
+  `"live"` — so a reconstructed record is always told from a captured one.
+- **Confirm when it can overwrite.** A `confirm` text makes the page ask
+  (its own modal, never the browser's `confirm()`) before it sends with the
+  box ticked; unticked, Save sends at once. Write it for the worst case, in
+  plain words — it's static, fixed at render, before the app has read the
+  file, so it can't count what's in it. Backfill's warns that a plan already
+  uploaded for those duties is replaced (a session of the same kind and start
+  is the same row).
+- **Put the upload at the foot.** A tile whose input feeds what it draws
+  reads better with the drawing first and the input under it: the roster's
+  panel is `ctx.panel(timeline, picker)`, and its empty states keep the
+  picker last too.
+
 ## Known limitations (as of PR #43)
 
 - Mobile caption truncation hides the `via <source>` provenance on phone-width
