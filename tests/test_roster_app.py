@@ -816,3 +816,189 @@ def test_a_one_way_duty_keeps_origin_and_destination():
     assert roster.trips([as_session(one_way)], HOME, open_end="2026-11-22T00:00:00Z") == [
         trip("2026-11-19T23:25:00Z", "2026-11-22T00:00:00Z", "CEB"),
     ]
+
+
+# ---------- trip cards: the Plan and Report rails ----------
+#
+# trip_cards() on its own: both lanes' duty sessions, as ctx.sessions()
+# gives them, as the rails' cards - a whole trip out of base and back
+# each, a day return included - here from HKG. Nothing draws them yet.
+
+
+def card(start, end, out, inbound, port, day=False):
+    return {"id": start, "start": start, "end": end, "out": out, "in": inbound, "port": port, "day": day}
+
+
+def test_an_out_and_back_trip_is_one_card():
+    out = flight("HKG-MEL", "2026-11-05T15:10:00Z", "2026-11-06T04:10:00Z", "CX105")
+    back = flight("MEL-HKG", "2026-11-08T02:00:00Z", "2026-11-08T13:00:00Z", "CX104")
+
+    # From the flight out's start to the flight home's end: both flight
+    # numbers, and the port away. Taken by start, whatever the order.
+    assert roster.trip_cards([back, out], [], HOME) == [
+        card("2026-11-05T15:10:00Z", "2026-11-08T13:00:00Z", "CX105", "CX104", "MEL"),
+    ]
+    # Flown, the same card.
+    assert roster.trip_cards([], [back, out], HOME) == roster.trip_cards([out, back], [], HOME)
+
+
+def test_an_integrated_pattern_is_one_card():
+    sectors = [
+        flight("HKG-BKK", "2026-11-05T01:00:00Z", "2026-11-05T04:00:00Z", "CX701"),
+        flight("BKK-SIN", "2026-11-06T03:00:00Z", "2026-11-06T05:30:00Z", "CX711"),
+        flight("SIN-HKG", "2026-11-07T06:00:00Z", "2026-11-07T10:00:00Z", "CX730"),
+    ]
+
+    # Out on the first, home on the last; the sector between is inside it,
+    # and the port is the first away - the band's label.
+    assert roster.trip_cards(sectors, [], HOME) == [
+        card("2026-11-05T01:00:00Z", "2026-11-07T10:00:00Z", "CX701", "CX730", "BKK"),
+    ]
+
+
+def test_a_day_return_is_a_card_of_its_own():
+    # Out to MNL and back in one duty, stored base to base under its first
+    # sector's code: no band, but a trip - one with no layover.
+    turn = as_session(filed(TURN_TITLE, TURN_DESCRIPTION))
+    assert (turn.summary["code"], turn.summary["dep"], turn.summary["arr"]) == ("CX903", "HKG", "HKG")
+
+    # Its flight home and the port it turned round at, read back from the
+    # description it was stored with - nothing new stored, nothing uploaded
+    # again.
+    assert roster.trip_cards([], [turn], HOME) == [
+        card("2026-11-19T23:25:00Z", "2026-11-20T07:00:00Z", "CX903", "CX902", "MNL", day=True),
+    ]
+    assert roster.trips([turn], HOME, open_end="2026-11-26T00:00:00Z") == []
+
+
+def test_a_day_returns_legs_fall_back_to_its_title():
+    # A description with no legs: the title's, as its route was read.
+    turn = as_session(filed(TURN_TITLE, "DUTY START: 20-Nov 07:25\nDUTY END: 20-Nov 15:00"))
+    [found] = roster.trip_cards([turn], [], HOME)
+    assert (found["out"], found["in"], found["port"], found["day"]) == ("CX903", "CX902", "MNL", True)
+
+    # A flight number joined to its carrier reads the same.
+    joined = duty("flight", "2026-11-20T01:00:00Z", "2026-11-20T09:00:00Z", "CX9101", dep="HKG", arr="HKG",
+                  label="20-Nov CX9101 HKG-ZZB / 20-Nov CX9102 ZZB-HKG", raw="")
+    [found] = roster.trip_cards([joined], [], HOME)
+    assert (found["out"], found["in"], found["port"]) == ("CX9101", "CX9102", "ZZB")
+
+    # Legs with no flight numbers: the port still, but no flight home to name.
+    bare = duty("flight", "2026-11-20T01:00:00Z", "2026-11-20T09:00:00Z", "CX903", dep="HKG", arr="HKG",
+                label="20-Nov CX903", raw="HKG-MNL\nMNL-HKG")
+    [found] = roster.trip_cards([bare], [], HOME)
+    assert (found["out"], found["in"], found["port"]) == ("CX903", None, "MNL")
+
+
+def test_a_duty_that_never_left_base_is_no_card():
+    # A turnback, a local training flight: base to base, no port away.
+    turnback = duty("flight", "2026-11-03T01:00:00Z", "2026-11-03T03:00:00Z", "CX100", dep="HKG", arr="HKG",
+                    label="03-Nov CX 100 HKG-HKG", raw="")
+    assert roster.trip_cards([turnback], [], HOME) == []
+    # Nor one whose legs can't be read back - another source's, with no
+    # description or title: no port to turn round at.
+    unread = duty("flight", "2026-11-03T01:00:00Z", "2026-11-03T03:00:00Z", "CX100", dep="HKG", arr="HKG")
+    assert roster.trip_cards([unread], [], HOME) == []
+
+    # And a trip open before it lost its way home, as trips() has it:
+    # dropped, the flight home after it closing nothing.
+    out = flight("HKG-MEL", "2026-11-01T15:00:00Z", "2026-11-02T04:00:00Z")
+    back = flight("MEL-HKG", "2026-11-04T02:00:00Z", "2026-11-04T13:00:00Z")
+    assert roster.trip_cards([out, turnback, back], [], HOME) == []
+    assert roster.trips([out, turnback, back], HOME) == []
+
+
+def test_a_trip_under_way_is_read_across_both_lanes():
+    out = flight("HKG-MEL", "2026-11-05T15:10:00Z", "2026-11-06T04:10:00Z", "CX105")
+    back = flight("MEL-HKG", "2026-11-08T02:00:00Z", "2026-11-08T13:00:00Z", "CX104")
+    whole = [card("2026-11-05T15:10:00Z", "2026-11-08T13:00:00Z", "CX105", "CX104", "MEL")]
+
+    # Flown out - filed complete - and still rostered home: one card, whole.
+    assert roster.trip_cards([back], [out], HOME) == whole
+    # The flight out in the plan too - uploaded before it flew, or
+    # backfilled - is the same duty, taken once; and so for a whole trip
+    # in both lanes.
+    assert roster.trip_cards([out, back], [out], HOME) == whole
+    assert roster.trip_cards([out, back], [out, back], HOME) == whole
+
+
+def test_a_duty_in_both_lanes_is_one_card():
+    # A day return flown, and backfilled into the plan: the same start,
+    # end, code and route - its capture apart - so one card, not two.
+    flown = as_session(filed(TURN_TITLE, TURN_DESCRIPTION))
+    planned = flown._replace(summary={**flown.summary, "capture": "backfill"})
+
+    assert roster.trip_cards([planned], [flown], HOME) == roster.trip_cards([], [flown], HOME)
+    assert len(roster.trip_cards([planned], [flown], HOME)) == 1
+
+
+def test_the_latest_trip_still_open_is_a_card_with_no_way_home_yet():
+    out = flight("HKG-MEL", "2026-11-20T15:00:00Z", "2026-11-21T04:00:00Z", "CX105")
+    reserve = duty("reserve", "2026-11-24T22:00:00Z", "2026-11-25T10:00:00Z", "R1E")
+
+    # Out, and the roster runs out before the flight home: a card still -
+    # one to plan for - its end and its flight home not known yet.
+    assert roster.trip_cards([out, reserve], [], HOME) == [
+        card("2026-11-20T15:00:00Z", None, "CX105", None, "MEL"),
+    ]
+
+    # One a later flight out of base overtakes lost its way home: dropped.
+    bkk = [flight("HKG-BKK", "2026-11-26T01:00:00Z", "2026-11-26T04:00:00Z", "CX701"),
+           flight("BKK-HKG", "2026-11-27T05:00:00Z", "2026-11-27T08:00:00Z", "CX700")]
+    bkk_card = card("2026-11-26T01:00:00Z", "2026-11-27T08:00:00Z", "CX701", "CX700", "BKK")
+    assert roster.trip_cards([out, *bkk], [], HOME) == [bkk_card]
+    # A flight into base with none open - out before the data starts - is
+    # nothing.
+    early_back = flight("MEL-HKG", "2026-11-04T02:00:00Z", "2026-11-04T13:00:00Z")
+    assert roster.trip_cards([early_back], bkk, HOME) == [bkk_card]
+
+
+def test_only_flights_with_a_route_and_an_end_make_a_card():
+    sessions = [
+        flight("HKG-MEL", "2026-11-01T15:00:00Z", "2026-11-02T04:00:00Z", "CX105"),
+        duty("reserve", "2026-11-02T22:00:00Z", "2026-11-03T10:00:00Z", "R1E"),
+        flight("MEL-HKG", "2026-11-04T02:00:00Z", "2026-11-04T13:00:00Z", "CX104"),
+        duty("sim", "2026-11-07T01:00:00Z", "2026-11-07T05:30:00Z", "A1534"),
+        # Out of base and back by road: a route, but not a flight.
+        duty("ground", "2026-11-08T01:00:00Z", "2026-11-08T03:00:00Z", "BUS", dep="HKG", arr="SZX"),
+        duty("ground", "2026-11-08T09:00:00Z", "2026-11-08T11:00:00Z", "BUS", dep="SZX", arr="HKG"),
+        # A flight whose title gave no route, and another source's still open.
+        duty("flight", "2026-11-09T01:00:00Z", "2026-11-09T04:00:00Z", "CX103"),
+        flight("HKG-BKK", "2026-11-10T01:00:00Z", None),
+    ]
+
+    assert roster.trip_cards(sessions, [], HOME) == [
+        card("2026-11-01T15:00:00Z", "2026-11-04T13:00:00Z", "CX105", "CX104", "MEL"),
+    ]
+
+
+def test_cards_are_in_order_and_a_cards_id_is_its_bands():
+    mel = [flight("HKG-MEL", "2026-11-10T15:00:00Z", "2026-11-11T04:00:00Z", "CX105"),
+           flight("MEL-HKG", "2026-11-13T02:00:00Z", "2026-11-13T13:00:00Z", "CX104")]
+    turn = as_session(filed(TURN_TITLE, TURN_DESCRIPTION))
+    bkk = [flight("HKG-BKK", "2026-11-22T01:00:00Z", "2026-11-22T04:00:00Z", "CX701"),
+           flight("BKK-HKG", "2026-11-23T05:00:00Z", "2026-11-23T08:00:00Z", "CX700")]
+
+    # Across both lanes, in any order: by start, a day return among them.
+    cards = roster.trip_cards([bkk[1], turn, mel[0]], [bkk[0], mel[1]], HOME)
+    assert [(c["start"], c["port"], c["day"]) for c in cards] == [
+        ("2026-11-10T15:00:00Z", "MEL", False),
+        ("2026-11-19T23:25:00Z", "MNL", True),
+        ("2026-11-22T01:00:00Z", "BKK", False),
+    ]
+    # The same trip on a rail and on the timeline has one id - the flight
+    # out's start - for a report to re-attach to either.
+    bands = roster.trips([*mel, turn, *bkk], HOME)
+    assert [c["id"] for c in cards if not c["day"]] == [t["id"] for t in bands]
+
+
+def test_the_sample_rosters_trip_is_one_card():
+    # The synthetic roster end to end: parsed, filed as its sessions would
+    # be, and carded from the config's home base. One trip, ZZA to ZZB and
+    # back; the reserve and the sim aren't trips.
+    found = roster.duties(roster.parse_events(sample()))
+    sessions = [as_session(d) for d in found]
+
+    assert roster.trip_cards([], sessions, roster._home_base()) == [
+        card("2025-11-05T15:10:00Z", "2025-11-08T13:00:00Z", "CX9101", "CX9102", "ZZB"),
+    ]

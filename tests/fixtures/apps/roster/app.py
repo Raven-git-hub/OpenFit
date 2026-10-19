@@ -37,6 +37,11 @@ greyed after it. Behind the blocks, each lane shades its trips away
 from home base (trips()): a flight out of base to the next flight back,
 any sectors between inside it - the layovers.
 
+The same trips, read from both lanes at once and with day returns among
+them, are the cards for the Plan and Report rails to come (trip_cards()):
+a whole trip out and back each - its flights out and home, its port,
+whether it was a day return. Nothing draws them yet.
+
 Uploading again replaces a duty of the same kind and start, and a day's
 figure; it removes nothing, so a duty taken off the roster keeps its
 row until another lands on its start.
@@ -47,8 +52,8 @@ hours - writes nothing; the host rolls back whatever was already filed.
 The parsing, labelling, routing and trip-finding are module functions -
 parse_events(), duties(), classify() (a flight's dep and arr its origin
 and final destination, first leg to last, the description's legs before
-the title's), bucket_for(), filed_as(), daily_hours(), trips() - pure,
-for a test to call on their own.
+the title's), bucket_for(), filed_as(), daily_hours(), trips(),
+trip_cards() - pure, for a test to call on their own.
 """
 
 import json
@@ -500,3 +505,104 @@ def trips(sessions, home_base, open_end=None):
         trip["end"] = max(open_end, out_end)
         found.append(trip)
     return found
+
+
+# ---------- trip cards: the Plan and Report rails ----------
+
+# A leg as a roster lists it, in a description or a title: its flight
+# number where given - a carrier and a number, apart or joined ("CX 902",
+# "CX9102") - then its route.
+_LEG = re.compile(r"(?:\b([A-Z][A-Z0-9]|\d[A-Z])\s?(\d{1,4})\s+)?([A-Z]{3})-([A-Z]{3})")
+
+
+def _legs(summary):
+    """A duty's legs read back from its stored summary, first to last:
+    [(flight_no, dep, arr)], flight_no None where the roster gave none.
+    From its description (raw), which lists every sector, else its title
+    (label) - where classify() read its route from."""
+    for text in (summary.get("raw"), summary.get("label")):
+        legs = [(carrier + number if carrier else None, dep, arr)
+                for carrier, number, dep, arr in _LEG.findall(text if isinstance(text, str) else "")]
+        if legs:
+            return legs
+    return []
+
+
+def _code(session):
+    return session.summary.get("code") or None
+
+
+def trip_cards(rostered, flown, home_base):
+    """Every trip out of `home_base` and back among the duties, in order:
+    a card each, for the Plan and Report rails.
+
+    `rostered` and `flown` are the two lanes' duty sessions, as
+    ctx.sessions() gives them; `home_base` an IATA code, the config's.
+    A card is a whole trip - out, away, back - so it's read from both
+    lanes at once: a trip under way, flown out and still rostered home,
+    is split across them. A duty in both - a backfilled plan, or one
+    uploaded before and after it flew: the same start, end, code, dep
+    and arr - is taken once, its flown copy.
+
+    Only flights make a trip, as for trips(): a session whose summary is
+    a flight's, with its route (dep and arr) and an end, taken by start.
+    Walking them:
+
+        a flight out of base to a port opens a trip, to that port - its
+        id, as a band's, the flight out's start;
+        a flight into base closes the open trip - with none open (out
+        before the data starts), it's nothing; any other flight is a
+        sector away, inside the trip;
+        a duty out of base and back in one - a day return - is a trip
+        of its own, its port the one it turned round at.
+
+    A flight out of base while a trip is open means that trip's way home
+    isn't in the data, so it's dropped - as trips() drops it. The latest
+    trip may still be open at the end: it's kept, its way home not
+    rostered yet.
+
+    Each a dict {id, start, end, out, in, port, day}: `start` the flight
+    out's, `end` the flight home's - None for a trip still open, not home
+    as far as the data knows; `out` and `in` those two duties' codes, the
+    flight numbers (`in` None while open); `port` the first port away -
+    the layover's; `day` True for a day return, its start, end and `out`
+    its one duty's.
+
+    A day return's duty is stored base to base with one code, its first
+    sector's, so its flight home and its turn-round port are read back
+    from its legs - its description, else its title: `port` the first
+    leg's arrival, `in` the last leg's flight number (None if the roster
+    gave none). One that never left base - a turnback, a local training
+    flight, a route of base to base alone - is no trip.
+    """
+    duties = {}
+    for s in (*rostered, *flown):
+        if s.end is None or s.summary.get("type") != "flight":
+            continue
+        dep, arr = s.summary.get("dep"), s.summary.get("arr")
+        if dep and arr:
+            # Flown last: a duty in both lanes is its flown copy.
+            duties[(s.start, s.end, s.summary.get("code"), dep, arr)] = s
+    flights = sorted(duties.values(), key=lambda s: s.start)
+
+    cards, trip = [], None
+    for f in flights:
+        dep, arr = f.summary["dep"], f.summary["arr"]
+        if dep == home_base:
+            # At base: whatever was open lost its way home.
+            trip = None
+            if arr != home_base:
+                trip = {"id": f.start, "start": f.start, "end": None,
+                        "out": _code(f), "in": None, "port": arr, "day": False}
+                continue
+            legs = _legs(f.summary)
+            if legs and legs[0][2] != home_base:
+                cards.append({"id": f.start, "start": f.start, "end": f.end,
+                              "out": _code(f), "in": legs[-1][0], "port": legs[0][2], "day": True})
+        elif arr == home_base and trip is not None:
+            trip["end"], trip["in"] = f.end, _code(f)
+            cards.append(trip)
+            trip = None
+    if trip is not None:
+        cards.append(trip)
+    return cards

@@ -592,7 +592,30 @@ own calls to its device API. Full direction:
   (its way home isn't in the data) and opens anew; base to base opens
   nothing; still open at the end → closed at `open_end` (UTC text),
   never before its flight out's end (`max`), or dropped when `None` →
-  `[{id, start, end, out_port}]`, in order). `handle()`: `upload` only;
+  `[{id, start, end, out_port}]`, in order) and `trip_cards(rostered,
+  flown, home_base)` (the cards for the Plan and Report rails to come —
+  nothing draws them yet: every trip out of base and back, day returns
+  included; its own function, so `trips()` and the bands stay as they
+  are. Read from both lanes at once, so a trip under way — flown out,
+  rostered home — is one card; a duty in both lanes (the same `start`,
+  `end`, `code`, `dep`, `arr`: backfilled, or uploaded before and after
+  it flew) taken once, its flown copy. The walk is `trips()`'s, over
+  flights alone (a `flight` with `dep`, `arr` and an end, by start): a
+  flight out of base to a port opens a trip, the next flight into base
+  closes it, a sector between is inside it, a flight into base with none
+  open is nothing, a flight out of base with one open drops it; and a
+  duty base to base is a **day return**, a trip of its own — its flight
+  home and turn-round port read back from its stored legs, `_legs()`
+  (`_LEG`: a leg's flight number where given, a carrier and a number,
+  apart or joined, then its `XXX-XXX` route), the description's (`raw`)
+  else the title's (`label`): `port` the first leg's arrival, `in` the
+  last leg's flight number (None if none given); no leg away from base (a
+  turnback, nothing to read) → no card. The latest trip still open at
+  the end is kept, `end` and `in` None (not home as far as the data
+  knows). → `[{id, start, end, out, in, port, day}]` in order — `id` the
+  flight out's start, a band's id for the same trip; `out`/`in` the
+  codes of the duties out and home; `port` the first port away; `day`
+  True for a day return, its one duty's start, end and `out`). `handle()`: `upload` only;
   `payload["file"]` decoded `utf-8-sig` (not text → "<name> isn't a text
   roster"); no duty (a file of days off, not iCalendar, empty) → "No
   duties found in <name>"; `backfill` `payload.get("backfill") is True`
@@ -1912,8 +1935,15 @@ same PR:
   `"backfill"` (`filed_as()`), with its rostered hours; for a roster
   uploaded after it started. Off is the plain split. Still to come: a
   count-aware confirm (after parsing) and an undo for a backfill.
+  Then the rails' engine landed (5a; no host change, nothing drawn):
+  the roster's `trip_cards()`, every trip out of base and back as a card
+  — day returns included, read back from their stored legs — from both
+  lanes at once, deduped, so a trip under way is one card; `render()`
+  unchanged. Next (5b): the `rail`/`rails` spec types and the page's
+  `railSpec()` on the `"frms"` focus group, the timeline untouched.
   Still to come for it: reading `destinations` (time-zone shifts), the
-  trip lists either side (planning, reports), their popups and PDF, the
+  trip lists either side (planning, reports — their engine has landed,
+  `trip_cards()`; the rails that draw them haven't), their popups and PDF, the
   report store (re-attached to a trip by its id), per-block or per-band
   detail on click or hover, and `base_tz` day gridlines and WOCL shading
   on the axis.
