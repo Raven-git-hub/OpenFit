@@ -3,7 +3,8 @@ The roster app's own logic, on its own: reading an .ics, picking out the
 duties, labelling them and routing them by the clock.
 
 The app (tests/fixtures/apps/roster/app.py) is loaded by path, as the
-host loads it - nothing added to sys.path - and its module functions
+host loads it - nothing added to sys.path - reading its rules from the
+config.json beside it (the fixture's, synthetic), and its module functions
 called directly, with a fixed `now`; its render() too, over a ctx of
 sessions written straight in, with a fixed today. What the host does
 with what it writes is test_app_actions.py's: the round trip through the
@@ -332,3 +333,105 @@ def test_render_with_nothing_in_the_window_asks_for_a_roster(conn):
     file_duty(conn, "duties_complete", "2026-04-14T01:00:00Z", "2026-04-14T09:00:00Z", "CX9101")
     conn.commit()
     assert drawn(conn)[0] == empty
+
+
+# ---------- the config drives the labels ----------
+#
+# classify() takes its types from the roster config, not from code. The
+# fixture's rules are CX->flight, R->reserve, A#->sim, else other, and the
+# tests above lean on them; here, that the rules really are the config's -
+# a different config labels differently - and that the flight-detail parse
+# (number, route, position) is the title's shape, airline-agnostic.
+
+
+def cfg(duty_types, default="other"):
+    return {"duty_types": duty_types, "default_type": default}
+
+
+def test_classify_takes_its_types_from_the_config():
+    # Another airline's prefix, read by the same engine: here QF is the
+    # flight, and its number/route/position parse just as a CX's would.
+    other_airline = cfg([{"type": "flight", "prefixes": ["QF"]}])
+    assert roster.classify("05-Nov QF123 ZZA-ZZB RP", other_airline) == {
+        "type": "flight", "code": "QF123", "flight_no": "QF123",
+        "dep": "ZZA", "arr": "ZZB", "position": "RP",
+    }
+    # And with no rule for it, a CX is just "other": nothing about the
+    # carrier is baked into the code.
+    assert roster.classify("05-Nov CX9101 ZZA-ZZB", other_airline) == {"type": "other", "code": "CX9101"}
+
+
+def test_a_regex_rule_matches_and_the_first_rule_wins():
+    rules = cfg([
+        {"type": "sim", "regex": r"^A\d"},
+        {"type": "reserve", "prefixes": ["A"]},   # also matches A1534, but sim is first
+    ])
+    assert roster.classify("12-Nov A1534", rules)["type"] == "sim"       # the regex, first
+    assert roster.classify("12-Nov AX", rules)["type"] == "reserve"      # no digit: the prefix
+
+
+def test_an_unmatched_code_takes_the_configs_default():
+    assert roster.classify("13-Nov ZZZ", cfg([], default="ground")) == {"type": "ground", "code": "ZZZ"}
+
+
+# ---------- the config must load ----------
+#
+# config.json is read once, beside app.py, when the module loads (as the
+# host loads it). A config that's missing or won't parse doesn't crash the
+# app or mislabel a duty: the module holds CONFIG None and a plain reason,
+# the tile shows it over the picker, and an upload is refused with it -
+# nothing written, nothing parsed.
+
+
+def load_with_config(tmp_path, config_text):
+    """A fresh copy of the app loaded from tmp_path, with config_text as its
+    config.json - or no config.json at all when config_text is None - so the
+    module-level load runs against it. Each load gets its own module name so
+    nothing is cached between cases."""
+    (tmp_path / "app.py").write_text((FIXTURES / "apps" / "roster" / "app.py").read_text())
+    if config_text is not None:
+        (tmp_path / "config.json").write_text(config_text)
+    spec = importlib.util.spec_from_file_location(f"roster_cfg_{tmp_path.name}", tmp_path / "app.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class FakeCtx:
+    """Only what render()'s and handle()'s config-missing paths touch."""
+    def input(self, *a, **k):
+        return {"input": True}
+
+    def empty(self, message):
+        return {"empty": message}
+
+    def panel(self, *children):
+        return {"panel": list(children)}
+
+
+@pytest.mark.parametrize("config_text, message", [
+    (None, "config.json is missing — reinstall the app with one"),
+    ("{ not json", None),                               # -> "config.json won't read: ..."
+    ('{"duty_types": "nope"}', "config.json needs a duty_types list"),
+    ('["not", "a", "dict"]', "config.json needs a duty_types list"),
+])
+def test_a_config_that_wont_load_is_caught_at_the_edge(tmp_path, config_text, message):
+    app = load_with_config(tmp_path, config_text)
+
+    assert app.CONFIG is None
+    if message is None:
+        assert app.CONFIG_ERROR.startswith("config.json won't read:")
+    else:
+        assert app.CONFIG_ERROR == message
+    # The tile says why, over its picker - it never reads a session.
+    assert app.render(FakeCtx(), {}) == {"panel": [{"empty": app.CONFIG_ERROR}, {"input": True}]}
+    # And an upload is refused in the same words, before anything is read.
+    with pytest.raises(ValueError) as refused:
+        app.handle(FakeCtx(), "upload", {})
+    assert str(refused.value) == app.CONFIG_ERROR
+
+
+def test_a_good_config_loads():
+    # The fixture's own config.json, loaded as the host loads it.
+    assert roster.CONFIG is not None and roster.CONFIG_ERROR is None
+    assert any(r.get("type") == "flight" for r in roster.CONFIG["duty_types"])

@@ -1,0 +1,13 @@
+{
+  "personal": { "home_base": "ZZA", "timezone": "UTC" },
+  "duty_types": [
+    { "type": "flight",  "prefixes": ["CX"] },
+    { "type": "sim",     "regex": "^A\\d" },
+    { "type": "reserve", "prefixes": ["R"] }
+  ],
+  "default_type": "other",
+  "destinations": {
+    "ZZA": { "city": "Test Alpha", "tz": "UTC" },
+    "ZZB": { "city": "Test Bravo", "tz": "UTC" }
+  }
+}

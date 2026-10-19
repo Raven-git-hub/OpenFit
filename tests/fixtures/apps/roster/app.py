@@ -39,6 +39,8 @@ duties(), classify(), bucket_for(), daily_hours() - pure, for a test to
 call on their own.
 """
 
+import json
+import os
 import re
 from datetime import date, datetime, timedelta, timezone
 from typing import NamedTuple
@@ -52,8 +54,28 @@ HOURS = {ROSTERED: "duty_hours_rostered", COMPLETE: "duty_hours_complete"}
 NON_UTC = "roster has a non-UTC time, which isn't supported yet: {}"
 
 
+# The roster config, read once from config.json beside this file (an
+# install file, changed by reinstalling or Update): the duty-code rules
+# and the owner's home base and timezone. app.py is the engine; the
+# airline- and person-specific reference lives in the config.
+_CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
+try:
+    with open(_CONFIG_PATH, encoding="utf-8") as _f:
+        CONFIG = json.load(_f)
+    if not isinstance(CONFIG, dict) or not isinstance(CONFIG.get("duty_types"), list):
+        CONFIG, CONFIG_ERROR = None, "config.json needs a duty_types list"
+    else:
+        CONFIG_ERROR = None
+except FileNotFoundError:
+    CONFIG, CONFIG_ERROR = None, "config.json is missing — reinstall the app with one"
+except (OSError, ValueError) as _e:
+    CONFIG, CONFIG_ERROR = None, f"config.json won't read: {_e}"
+
+
 def render(ctx, cfg):
     picker = ctx.input("file", "upload", label="Upload roster", kind="file", accept=".ics")
+    if CONFIG is None:
+        return ctx.panel(ctx.empty(CONFIG_ERROR), picker)
     # About six months back, and every duty still to come.
     since = (date.fromisoformat(ctx.today()) - timedelta(days=183)).isoformat()
     rostered = ctx.sessions(ROSTERED, since=since)
@@ -84,6 +106,8 @@ def _lane(sessions, **lane):
 def handle(ctx, action, payload):
     if action != "upload":
         raise ValueError(f"unknown action: {action!r}")
+    if CONFIG is None:
+        raise ValueError(CONFIG_ERROR)
     upload = payload.get("file")
     if not hasattr(upload, "text"):
         raise ValueError("Choose a roster .ics to upload")
@@ -260,37 +284,48 @@ def duties(events):
 
 
 _DAY = re.compile(r"\d{1,2}-[A-Za-z]{3}\s+")     # a title's leading day, "05-Nov "
-_FLIGHT = re.compile(r"CX\s*(\d+)")              # CX105, or CX 105
 _ROUTE = re.compile(r"([A-Z]{3})-([A-Z]{3})")    # HKG-MEL
 _POSITION = re.compile(r"[A-Z]{2,3}")            # RP, RQ, ...
 
 
-def classify(summary):
-    """What a duty is, from its title ("05-Nov CX105 HKG-MEL RP"): {type,
-    code}, and for a flight its flight_no, dep, arr and position where the
-    title has them. Best effort, never a refusal: a code it doesn't know
-    is "other"."""
+def _duty_type(code, config):
+    """The type a duty code falls under, by config's duty_types rules
+    (first match wins), else the default. A rule matches by `prefixes`
+    (the code starts with one) or by a `regex`."""
+    for rule in config.get("duty_types", []):
+        if "regex" in rule and re.match(rule["regex"], code):
+            return rule.get("type", "other")
+        if any(code.startswith(p) for p in rule.get("prefixes", [])):
+            return rule.get("type", "other")
+    return config.get("default_type", "other")
+
+
+def classify(summary, config=None):
+    """What a duty is, from its title ("05-Nov CX105 HKG-MEL RP") and the
+    roster config: {type, code}, and for a flight its flight_no, dep, arr
+    and position where the title gives them. The type is the config's
+    (airline-specific); the rest is the title's shape. Best effort, never
+    a refusal: a code no rule matches is the default type."""
+    config = CONFIG if config is None else config
     title = summary.strip()
     day = _DAY.match(title)
     if day:
         title = title[day.end():]
     tokens = title.split()
     code = tokens[0] if tokens else ""
-    flight = _FLIGHT.match(title)
-    if flight:
-        found = {"type": "flight", "code": "CX" + flight.group(1), "flight_no": "CX" + flight.group(1)}
-        rest = title[flight.end():].split()
-        route = next((m for m in map(_ROUTE.fullmatch, rest) if m), None)
+    found = {"type": _duty_type(code, config), "code": code}
+    if found["type"] == "flight" and tokens:
+        # "CX 105 HKG-MEL RP" or "QF123 SYD-HKG": the number may be its own
+        # token or joined to the carrier; the rest is route and position.
+        num = tokens[1] if len(tokens) > 1 and tokens[1].isdigit() else ""
+        found["flight_no"] = found["code"] = tokens[0] + num
+        rest = tokens[(2 if num else 1):]
+        route = next((t for t in rest if _ROUTE.fullmatch(t)), None)
         if route:
-            found["dep"], found["arr"] = route.groups()
+            found["dep"], found["arr"] = route.split("-")
         if rest and _POSITION.fullmatch(rest[-1]):
             found["position"] = rest[-1]
-        return found
-    if re.match(r"A\d", code):
-        return {"type": "sim", "code": code}
-    if code.startswith("R"):
-        return {"type": "reserve", "code": code}
-    return {"type": "other", "code": code}
+    return found
 
 
 def session_summary(duty):

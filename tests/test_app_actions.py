@@ -1294,7 +1294,7 @@ ROSTERED_HOURS = "app:roster:duty_hours_rostered"
 def install_roster(client):
     """Install the roster app through the Library, from its committed files."""
     folder = REAL_APPS / "roster"
-    files = {name: (folder / name).read_text() for name in ("app.yaml", "app.py")}
+    files = {name: (folder / name).read_text() for name in ("app.yaml", "app.py", "config.json")}
     resp = client.post("/api/apps", json={"files": files})
     assert resp.status_code == 201, resp.get_json()
 
@@ -1351,7 +1351,7 @@ def test_the_roster_app_installs_and_is_listed(client, apps_dir):
              {"key": "duty_hours_complete", "label": "Flown duty hours", "unit": "h",
               "category": "Roster", "grain": "daily", "range": [0, 24]},
          ],
-         "files": ["app.py", "app.yaml"]},
+         "files": ["app.py", "app.yaml", "config.json"]},
     ]
     # Nothing yet: it says so, over its picker.
     assert client.post("/api/app/roster/render").get_json() == {
