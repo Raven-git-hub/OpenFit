@@ -37,8 +37,10 @@ All or nothing: a refusal - no duties, a time not in UTC, a day over 24
 hours - writes nothing; the host rolls back whatever was already filed.
 
 The parsing, labelling, routing and trip-finding are module functions -
-parse_events(), duties(), classify(), bucket_for(), daily_hours(),
-trips() - pure, for a test to call on their own.
+parse_events(), duties(), classify() (a flight's dep and arr its origin
+and final destination, first leg to last, the description's legs before
+the title's), bucket_for(), daily_hours(), trips() - pure, for a test to
+call on their own.
 """
 
 import json
@@ -293,9 +295,9 @@ class Duty(NamedTuple):
     description: str        # its description, unescaped, verbatim
     type: str               # flight, reserve, sim or other
     code: str               # e.g. CX105, R1E, A1534
-    flight_no: str = None   # a flight's, when its title gives them
-    dep: str = None
-    arr: str = None
+    flight_no: str = None   # a flight's, when its roster gives them
+    dep: str = None         # its origin - the first leg's departure ...
+    arr: str = None         # ... and final destination, the last leg's arrival
     position: str = None
 
 
@@ -316,7 +318,8 @@ def duties(events):
             print(f"[roster] skipping {e['summary']!r}: it ends before it starts")
             continue
         summary = e["summary"].strip()
-        found.append(Duty(e["start"], e["end"], summary, e["description"], **classify(summary)))
+        found.append(Duty(e["start"], e["end"], summary, e["description"],
+                          **classify(summary, description=e["description"])))
     return found
 
 
@@ -337,12 +340,17 @@ def _duty_type(code, config):
     return config.get("default_type", "other")
 
 
-def classify(summary, config=None):
-    """What a duty is, from its title ("05-Nov CX105 HKG-MEL RP") and the
-    roster config: {type, code}, and for a flight its flight_no, dep, arr
-    and position where the title gives them. The type is the config's
-    (airline-specific); the rest is the title's shape. Best effort, never
-    a refusal: a code no rule matches is the default type."""
+def classify(summary, config=None, description=""):
+    """What a duty is, from its title ("05-Nov CX105 HKG-MEL RP"), its
+    description and the roster config: {type, code}, and for a flight its
+    flight_no, dep, arr and position where they're given. The type is the
+    config's (airline-specific); the code, flight_no and position are the
+    title's shape. dep and arr are the duty's origin and final destination
+    - the first leg's departure and the last leg's arrival - read from its
+    chain of legs: the description's, which lists every sector, else the
+    title's. So a day turn out and back in one duty ("CX 903 HKG-MNL / CX
+    902 MNL-HKG") is base to base. Best effort, never a refusal: a code no
+    rule matches is the default type."""
     config = CONFIG if config is None else config
     title = summary.strip()
     day = _DAY.match(title)
@@ -357,9 +365,9 @@ def classify(summary, config=None):
         num = tokens[1] if len(tokens) > 1 and tokens[1].isdigit() else ""
         found["flight_no"] = found["code"] = tokens[0] + num
         rest = tokens[(2 if num else 1):]
-        route = next((t for t in rest if _ROUTE.fullmatch(t)), None)
-        if route:
-            found["dep"], found["arr"] = route.split("-")
+        legs = _ROUTE.findall(description) or _ROUTE.findall(title)
+        if legs:
+            found["dep"], found["arr"] = legs[0][0], legs[-1][1]
         if rest and _POSITION.fullmatch(rest[-1]):
             found["position"] = rest[-1]
     return found
