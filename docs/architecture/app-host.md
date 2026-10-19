@@ -318,8 +318,9 @@ ctx.timeline(lanes, now=None, title=None, sync=None)
 # -> {"type": "timeline", "title": title, "now": "2026-10-19T00:00:00Z",
 #     "lanes": [{"label": "Rostered", "grey_after_now": False,
 #                "intervals": [{"start": "...Z", "end": "...Z", "label": "CX105"}, ...]},
-#               {"label": "Flown", "grey_after_now": True, "intervals": [...]}]}
-# with sync="frms", the same plus "sync": "frms"
+#               {"label": "Flown", "grey_after_now": True, "intervals": [...],
+#                "bands": [{"start": "...Z", "end": "...Z", "label": "MEL"}]}]}
+# a lane's "bands" only when it has any; with sync="frms", the same plus "sync": "frms"
 ```
 
 A generic two-lane interval timeline — a roster's plan against what was flown,
@@ -344,12 +345,21 @@ carries the times and the page owns every pixel, as with a line.
     `write_session()` — and the end is never before the start (the same
     instant is allowed). `label` is text or `None`: the short code drawn on the
     block, such as `CX105`.
+  - `bands`: optional, a list of `{start, end, label}` (`BAND_FIELDS`), each
+    a span shaded behind the lane's blocks — a trip away from base, its
+    flights drawn over it. Its ends are an interval's (`_band()` is
+    `_interval()`'s twin: both through `_span()`): both required, normalised
+    the same way, the end never before the start; `label` text or `None`,
+    the port (`MEL`), written small inside it. The host only carries the
+    spans: what one covers is the app's to work out (the roster's
+    `trips()`, below). A lane with none — absent, `None` or `[]` — carries
+    no `bands` key at all, so its spec is exactly the one from before bands.
 
-  A lane or an interval that isn't a dict raises `TypeError`; a field it
-  doesn't take raises `ValueError` (so a misspelt `gray_after_now` is said, not
-  ignored); a label that isn't text, a `grey_after_now` that isn't a bool, or
-  intervals that aren't a list raise `TypeError`; a missing end, a time that
-  isn't one, or an end before its start raise `ValueError`.
+  A lane, an interval or a band that isn't a dict raises `TypeError`; a field
+  it doesn't take raises `ValueError` (so a misspelt `gray_after_now` is said,
+  not ignored); a label that isn't text, a `grey_after_now` that isn't a bool,
+  or intervals or bands that aren't a list raise `TypeError`; a missing end, a
+  time that isn't one, or an end before its start raise `ValueError`.
 - **`now`** is a `datetime`, ISO-8601 text or `None`, normalised the same way:
   where the now line is drawn. `None` draws no line, and greys nothing.
 - **`title`** is optional text, drawn small above the timeline, as a line's is.
@@ -371,11 +381,23 @@ next. A block runs from its start to its end, never shorter than 18px
 (`TL_MIN_BLOCK_PX`), so a short duty stays legible and tappable; its label
 sits at its top, cut to fit. The now line crosses both lanes in `--accent`,
 and a `grey_after_now` lane is hatched grey from it down, under its blocks.
-The frame opens with the now line in the middle (with no `now`, the end in
-view), and a resize keeps the time at its top. Times are UTC; there are no day
-gridlines yet. A hand-built spec is drawn as far as it can be: two lanes at
-most, and an interval without both ends, in order, left out. No intervals at
-all shows "No data".
+A lane's bands (`.tl-band`) are drawn in its own column — a rostered trip on
+the left, a flown one on the right, side by side when plan and actual agree —
+first in it, so under the grey, the blocks and the lines, and never in the way
+of a tap (`pointer-events: none`). Each is placed on the blocks' scale, in the
+same layout pass, so a resize keeps it aligned: from its start for its true
+length (no floor). It's the lane's full width, so it shows either side of the
+blocks over it, a soft tint of `--layover` (amber, its own token in every
+theme: `#c07d18` light, `#e0a83a` dark) with a dashed edge. Its label
+(`.tl-band-label`) is placed past the block or blocks over its top edge — the
+flight out, which starts with the band — so it sits on the layover rather than
+under a block, cut off by the band if the layover's too short to hold it. The
+axis spans every block and band, so none is drawn off it. The frame opens
+with the now line in the middle (with no `now`, the end in view), and a
+resize keeps the time at its top. Times are UTC; there are no day gridlines
+yet. A hand-built spec is drawn as far as it can be: two lanes at most, and
+an interval or band without both ends, in order, left out (bands that aren't
+a list, none). Nothing to draw at all shows "No data".
 
 The frame's height is only known once the tile is on the page, which it isn't
 while `renderSpec()` builds it. So the timeline is laid out at a 240px
@@ -788,7 +810,27 @@ the rest of the tile and scrolls, laid out to whichever size the tile is
 (`sync="frms"`): a fixed cursor across its middle, the UTC time under it above
 the labels, following now until it's scrolled, with a Now button to come back —
 and any later FRMS panel naming the same group scrolls with it. A duty with no end, which only another source could
-file, is left out. The `duty_hours_*` metrics are still written on every
+file, is left out.
+
+Behind each lane's blocks, its **trips** away from home base
+(`CONFIG["personal"]["home_base"]`), each a band (`bands`, above) labelled
+with the port it flew out to. `trips(sessions, home_base, open_end=None)`, a
+pure module function, groups one lane's duties: only flights with a route
+(`dep` and `arr` in the summary) and an end count, taken by start — a reserve,
+a sim, a ground duty or a routeless flight never opens or closes one. A flight
+out of base opens a trip (from its start; `out_port` its `arr`; `id` its start,
+the trip's stable id across re-uploads, kept on the trip for a later report
+store and not put in the spec); the next flight into base closes it (at its
+end); any sector between is inside it, so `HKG-BKK, BKK-SIN, SIN-HKG` is one
+trip. A flight into base with no trip open (away before the data starts) is
+nothing; a flight out of base while one is open means that trip's way home
+isn't in the data, so it's dropped and the new one opens; a flight from base
+to base opens nothing. A trip still away at the end closes at `open_end` —
+never before its flight out has landed — or, with none, is dropped. The
+rostered lane's `open_end` is the end of the loaded roster (its latest duty's
+end), the flown lane's now (the same instant as the timeline's `now`): a trip
+flown out and not yet back runs to the now line — you're on the layover. A
+config with no `personal.home_base` shades no trips; the duties still draw. The `duty_hours_*` metrics are still written on every
 upload; the tile no longer reads them. A roster that's all over six months old
 is filed but draws as the empty state.
 

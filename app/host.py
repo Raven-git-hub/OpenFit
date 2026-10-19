@@ -101,13 +101,16 @@ the dicts directly):
         other kinds) - then the tile is drawn afresh; label and unit may
         be null
     {"type": "timeline", "title", "now", "lanes": [{"label", "grey_after_now",
-                                                    "intervals": [{"start", "end", "label"}, ...]}, ...],
+                                                    "intervals": [{"start", "end", "label"}, ...],
+                                                    "bands": [{"start", "end", "label"}, ...]}, ...],
      "sync"}
         one lane or two of time-blocks, side by side on one vertical
         time axis - lane 0 left and lighter, lane 1 right and darker -
         laid out by the page to its tile and scrolled: each block from
         its start to its end (UTC text), its label on it; a line at
         `now` (null: none), and a grey_after_now lane greyed below it.
+        `bands`, on a lane only when it has any, are spans shaded
+        behind that lane's blocks - a trip away, its label the port.
         `sync`, only when given, names a focus group: the page draws a
         fixed cursor at the frame's middle, the time under it (UTC, to
         the quarter hour) and a Now button, and every timeline of the
@@ -363,11 +366,12 @@ class FileUpload:
 
 
 # A timeline's lanes: one, or two side by side - lane 0 the left column,
-# lane 1 the right. What a lane and an interval take, and nothing else:
-# a misspelt field (gray_after_now) is refused, not quietly ignored.
+# lane 1 the right. What a lane, an interval and a band take, and nothing
+# else: a misspelt field (gray_after_now) is refused, not quietly ignored.
 TIMELINE_LANES = (1, 2)
-LANE_FIELDS = ("label", "grey_after_now", "intervals")
+LANE_FIELDS = ("label", "grey_after_now", "intervals", "bands")
 INTERVAL_FIELDS = ("start", "end", "label")
+BAND_FIELDS = ("start", "end", "label")
 
 
 def _fields(raw, fields, what):
@@ -381,23 +385,35 @@ def _fields(raw, fields, what):
     return raw
 
 
-def _interval(raw):
-    """One block on a lane, as the spec carries it: {start, end, label},
-    both ends iso_utc()'s UTC text."""
-    _fields(raw, INTERVAL_FIELDS, "a timeline interval")
+def _span(raw, fields, what):
+    """A span of a lane - `what`, an interval or a band - as the spec
+    carries it: {start, end, label}, both ends iso_utc()'s UTC text."""
+    _fields(raw, fields, what)
     if raw.get("start") is None or raw.get("end") is None:
-        # A block is drawn from its start to its end: an open one has no
-        # length to draw.
-        raise ValueError(f"a timeline interval needs a start and an end: {raw!r}")
-    start = _session_instant(raw["start"], "a timeline interval's start")
-    end = _session_instant(raw["end"], "a timeline interval's end")
+        # Drawn from its start to its end: an open one has no length to draw.
+        raise ValueError(f"{what} needs a start and an end: {raw!r}")
+    start = _session_instant(raw["start"], f"{what}'s start")
+    end = _session_instant(raw["end"], f"{what}'s end")
     # iso_utc()'s timestamps sort and compare as plain strings.
     if end < start:
-        raise ValueError(f"a timeline interval's end is before its start: {end} < {start}")
-    return {"start": start, "end": end, "label": _text_or_none(raw.get("label"), "label", "a timeline interval's")}
+        raise ValueError(f"{what}'s end is before its start: {end} < {start}")
+    return {"start": start, "end": end, "label": _text_or_none(raw.get("label"), "label", f"{what}'s")}
+
+
+def _interval(raw):
+    """One block on a lane."""
+    return _span(raw, INTERVAL_FIELDS, "a timeline interval")
+
+
+def _band(raw):
+    """One band on a lane: a span shaded behind its blocks."""
+    return _span(raw, BAND_FIELDS, "a timeline band")
 
 
 def _lane(raw):
+    """One lane as the spec carries it: {label, grey_after_now,
+    intervals}, and its bands only when it has any - so a lane without
+    is exactly the lane from before bands."""
     _fields(raw, LANE_FIELDS, "a timeline lane")
     grey = raw.get("grey_after_now", False)
     if not isinstance(grey, bool):
@@ -405,11 +421,19 @@ def _lane(raw):
     intervals = raw.get("intervals")
     if not isinstance(intervals, (list, tuple)):
         raise TypeError(f"a timeline lane's intervals must be a list: {intervals!r}")
-    return {
+    bands = raw.get("bands")
+    if bands is None:
+        bands = []
+    if not isinstance(bands, (list, tuple)):
+        raise TypeError(f"a timeline lane's bands must be a list: {bands!r}")
+    lane = {
         "label": _text_or_none(raw.get("label"), "label", "a timeline lane's"),
         "grey_after_now": grey,
         "intervals": [_interval(interval) for interval in intervals],
     }
+    if bands:
+        lane["bands"] = [_band(band) for band in bands]
+    return lane
 
 
 def timeline(lanes, now=None, title=None, sync=None):
@@ -430,6 +454,13 @@ def timeline(lanes, now=None, title=None, sync=None):
                         naive time taken to be UTC) - both required, the
                         end never before the start; `label` text or
                         None, a short code drawn on the block (CX105)
+        bands           optional: a list of {start, end, label}, each a
+                        span shaded behind the lane's blocks - a trip
+                        away from base, its flights drawn over it -
+                        its ends as an interval's, `label` text or None
+                        (the port, MEL), drawn small inside it. A lane
+                        without any (none, None or []) carries no
+                        "bands" key: the spec is the one from before
 
     `now` is a datetime or ISO-8601 text, the same way, or None: where
     the now line is drawn - none for None. `title` is text or None.
@@ -446,7 +477,9 @@ def timeline(lanes, now=None, title=None, sync=None):
 
     The host carries the times and draws nothing: the page lays the axis
     out to the tile it's in, as it does a line - a week of it to the
-    tile's height (less, in a short tile), the rest a scroll away. The
+    tile's height (less, in a short tile), the rest a scroll away - and
+    shades a band in its own lane, on the same scale as the blocks. What
+    a band spans is the app's to work out (the roster's trips()). The
     focus clock is the page's too - what's in focus, and whether it's
     following now, is never stored.
     Raises TypeError or ValueError for anything it can't draw.

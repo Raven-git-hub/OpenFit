@@ -154,6 +154,16 @@ in three different homes.
   the database — so `render()` never sees or returns it, and stays a pure
   function of the data. Two apps using one group name are synced, whether or
   not they meant to be: pick a name for the set of panels that belong together.
+- **Work out the spans yourself; the host just shades them.** A lane's `bands`
+  on `ctx.timeline()` are spans drawn behind its blocks — the host checks
+  their times and the page shades them, nothing more. What a band *means* is
+  the app's: the roster groups its own duty sessions into trips away from
+  home base (`trips()`, a pure module function its tests call directly — a
+  flight out of base to the next flight back, the sectors between inside it,
+  only flights counting) and hands each trip's start, end and port over as a
+  band. Anything the app needs beyond the drawing — the trip's stable id, for
+  a report to re-attach to later — stays on its own data, never in the spec.
+  A lane with no bands is the timeline from before them, key for key.
 - **The spec is a transient message, not a file.** Generated per render, drawn,
   and gone. Nothing in the app folder is the "display"; the only display-side file
   is the optional `app.js`.

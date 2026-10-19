@@ -5,7 +5,7 @@ import os
 import re
 import shutil
 import subprocess
-from datetime import date
+from datetime import date, datetime
 
 import pytest
 import yaml
@@ -3467,10 +3467,12 @@ TIMELINE_HARNESS = r"""
           blocks: kids(l, 'tl-block').map(b => b.textContent),
           futures: kids(l, 'tl-future').length})),
         nows: track ? kids(track, 'tl-now').length : 0,
+        bands: lanes.map(l => kids(l, 'tl-band').map(b => b.textContent)),
         laidOut: !!track && px(track.style.height)
           && lanes.every(l => kids(l, 'tl-block').every(b => px(b.style.top) && px(b.style.height)))
           && kids(track, 'tl-now').every(n => px(n.style.top))
-          && lanes.every(l => kids(l, 'tl-future').every(f => px(f.style.top))),
+          && lanes.every(l => kids(l, 'tl-future').every(f => px(f.style.top)))
+          && lanes.every(l => kids(l, 'tl-band').every(b => px(b.style.top) && px(b.style.height))),
         heights: lanes.map(l => kids(l, 'tl-block').map(b => parseFloat(b.style.height))),
         html: [box, ...box.querySelectorAll('*')].map(n => n._html).join(''),
         msg: (box.querySelector('.spec-msg') || {textContent:null}).textContent,
@@ -3664,6 +3666,96 @@ def test_a_timeline_replaced_is_let_go_of(client):
     assert r["last"] == [0, [1, 1]]
 
 
+def _ms(stamp):
+    """A UTC timestamp as the page's Date.parse() reads it: ms since the epoch."""
+    return datetime.fromisoformat(stamp).timestamp() * 1000
+
+
+# A lane's bands: TIMELINE's, with trips behind the blocks - on the left
+# one from the first block's start, its port written as markup to show
+# it's set as text, and one starting before any block and ending past
+# them all; on the right one out to now, unlabelled.
+BANDED = {**TIMELINE, "lanes": [
+    {**ROSTERED_LANE, "bands": [
+        {"start": "2026-10-10T01:00:00Z", "end": "2026-10-12T00:00:00Z", "label": "ZZB <b>"},
+        {"start": "2026-10-19T20:00:00Z", "end": "2026-10-23T00:00:00Z", "label": "ZZC"},
+    ]},
+    {**FLOWN_LANE, "bands": [{"start": "2026-10-10T01:00:00Z", "end": "2026-10-18T12:00:00Z", "label": None}]},
+]}
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
+def test_a_lanes_bands_are_shaded_behind_its_blocks(client):
+    page = _page(client)
+    r = _node(_timeline_script(page, f"""
+        const box = renderSpec({json.dumps(BANDED)}, 'Roster', 'roster');
+        r.built = look(box);
+        // At a height, as a browser gives it: a week to 480px.
+        const scroll = box.querySelector('.tl-scroll'), track = scroll.children[0];
+        scroll.clientHeight = 480;
+        scroll.isConnected = true;
+        observers[0].callback([]);
+        const lanes = kids(track, 'tl-lane');
+        r.order = lanes.map(l => l.children.map(c => c.className));
+        r.bands = lanes.map(l => kids(l, 'tl-band').map(b => ({{
+          top: parseFloat(b.style.top), height: parseFloat(b.style.height),
+          label: kids(b, 'tl-band-label').map(t => [t.textContent, parseFloat(t.style.top)])}})));
+        r.blocks = lanes.map(l => kids(l, 'tl-block').map(b => [parseFloat(b.style.top), parseFloat(b.style.height)]));
+        r.track = parseFloat(track.style.height);
+        r.plain = look(renderSpec({json.dumps(TIMELINE)}, 'Roster', 'roster'));
+    """))
+
+    built = r["built"]
+    # Each lane's bands in its own column, their labels as text; the
+    # blocks, the now line and the grey as without them.
+    assert built["bands"] == [["ZZB <b>", "ZZC"], [""]]
+    assert built["lanes"] == r["plain"]["lanes"]
+    assert built["track"] == ["tl-lane l0", "tl-lane l1", "tl-now"]
+    assert built["html"] == ""
+    assert built["laidOut"] is True
+    # First in each lane - so behind the grey and the blocks over them.
+    assert r["order"] == [
+        ["tl-band", "tl-band", "tl-block", "tl-block"],
+        ["tl-band", "tl-future", "tl-block", "tl-block", "tl-block"],
+    ]
+    # On the blocks' scale - a week to the frame - from the axis' start,
+    # the first block's: each band at its start, as long as it is (no
+    # floor). Its label past the block over its top edge - the flight
+    # out, which starts with it - or at its top with none there.
+    week = 7 * 86400000 / 480
+    at = lambda t: (_ms(t) - _ms("2026-10-10T01:00:00Z")) / week
+    span = lambda a, b: (_ms(b) - _ms(a)) / week
+    [cx9101, _] = r["blocks"][0]
+    [[mel, zzc], [flown]] = r["bands"]
+    assert mel == {"top": 0, "height": pytest.approx(span("2026-10-10T01:00:00Z", "2026-10-12T00:00:00Z")),
+                   "label": [["ZZB <b>", pytest.approx(cx9101[1])]]}
+    assert zzc == {"top": pytest.approx(at("2026-10-19T20:00:00Z")),
+                   "height": pytest.approx(span("2026-10-19T20:00:00Z", "2026-10-23T00:00:00Z")), "label": [["ZZC", 0]]}
+    assert flown == {"top": 0, "height": pytest.approx(span("2026-10-10T01:00:00Z", "2026-10-18T12:00:00Z")), "label": []}
+    # The axis runs on to the end of the last band, past the last block.
+    assert r["track"] == pytest.approx(at("2026-10-23T00:00:00Z"))
+    # A lane without bands draws none.
+    assert r["plain"]["bands"] == [[], []]
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
+def test_a_hand_built_band_is_drawn_as_far_as_it_can_be(client):
+    page = _page(client)
+    good = {"start": "2026-10-10T01:00:00Z", "end": "2026-10-10T02:00:00Z", "label": "OK"}
+    junk = {"type": "timeline", "lanes": [
+        {"intervals": [good], "bands": [good, {"start": "2026-10-10T03:00:00Z"}, None, "MEL",
+                                        {"start": "2026-10-10T05:00:00Z", "end": "2026-10-10T04:00:00Z"}]},
+        {"intervals": [good], "bands": "MEL"},
+    ]}
+    r = _node(_timeline_script(page, f"""
+        r.junk = look(renderSpec({json.dumps(junk)}, 'X', 'x'));
+    """))
+
+    # A band without both ends, in order, left out; bands not a list, none.
+    assert r["junk"]["bands"] == [["OK"], []]
+    assert r["junk"]["laidOut"] is True
+
+
 def test_tiles_drawn_afresh_let_go_of_their_timelines(client):
     page = _page(client)
     # Wherever Home's faces are replaced - Home painted, or one tile redrawn.
@@ -3686,6 +3778,23 @@ def test_the_timeline_tones_are_in_every_theme(client):
     # Coloured by lane: lane 0 the lighter tone, lane 1 the darker.
     assert ".tl-lane.l0 .tl-block{background:var(--timeline-a);color:var(--timeline-a-ink);}" in css
     assert ".tl-lane.l1 .tl-block{background:var(--timeline-b);color:var(--timeline-b-ink);}" in css
+
+
+def test_the_layover_tone_is_in_every_theme_and_tints_a_band(client):
+    page = _page(client)
+    css = page[: page.index("</style>")]
+    light = css[css.index(":root{") : css.index("@media (prefers-color-scheme:dark)")]
+    os_dark = css[css.index("@media (prefers-color-scheme:dark)") : css.index(':root[data-theme="dark"]{')]
+    toggle_dark = css[css.index(':root[data-theme="dark"]{') :]
+    toggle_dark = toggle_dark[: toggle_dark.index("}")]
+    # Amber, its own token in every theme - so a theme can retune it.
+    assert "--layover:#c07d18;" in light
+    assert "--layover:#e0a83a;" in os_dark and "--layover:#e0a83a;" in toggle_dark
+    # A soft tint of it, a dashed edge stronger; never in the way of a tap.
+    band = css[css.index(".tl-band{") :].split("}")[0]
+    assert "background:color-mix(in srgb,var(--layover) 14%,transparent)" in band
+    assert "border-top:1px dashed" in band and "border-bottom:1px dashed" in band
+    assert "pointer-events:none" in band
 
 
 # ---------- a synced timeline: the focus clock ----------
@@ -3838,6 +3947,34 @@ def test_a_synced_timeline_draws_a_cursor_a_readout_and_a_now_button(client):
     assert drawn["atCursor"] is None
     assert r["shown"]["atCursor"] == "2026-10-18T12:00:00.000Z"
     assert r["shown"]["nowBelowCursor"] == pytest.approx(0)
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
+def test_a_synced_timeline_with_bands_keeps_its_cursor_readout_and_now(client):
+    page = _page(client)
+    r = _node(_sync_script(page, f"""
+        const plain = renderSpec({json.dumps(SYNCED)}, 'Roster', 'roster');
+        const banded = renderSpec({json.dumps({**BANDED, "sync": "frms"})}, 'Roster', 'roster');
+        show(plain, 480); show(banded, 480);
+        // The same time under both cursors - the same axis start - and
+        // the same focus row, frame and cursor; only the bands added.
+        r.plain = synced(plain, {TIMELINE_T0}, 480);
+        r.banded = synced(banded, {TIMELINE_T0}, 480);
+        r.bands = look(banded).bands;
+        r.laidOut = look(banded).laidOut;
+        // Padded half a frame for the cursor, as the blocks are.
+        const sc = banded.querySelector('.tl-scroll');
+        r.first = [parseFloat(kids(kids(sc.children[0], 'tl-lane')[0], 'tl-band')[0].style.top),
+                   parseFloat(kids(kids(sc.children[0], 'tl-lane')[0], 'tl-block')[0].style.top)];
+    """))
+
+    assert r["banded"] == r["plain"]
+    assert r["banded"]["kids"] == ["t", "tl-focus", "tl-head", "tl-view"]
+    assert r["banded"]["view"] == ["tl-scroll", "tl-cursor"]
+    assert r["banded"]["readout"] == "Sun 18 Oct 12:00Z"
+    assert r["bands"] == [["ZZB <b>", "ZZC"], [""]]
+    assert r["laidOut"] is True
+    assert r["first"] == [240, 240]
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")

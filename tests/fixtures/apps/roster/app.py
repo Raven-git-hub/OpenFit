@@ -25,7 +25,9 @@ The tile reads the duties back (ctx.sessions()) - about six months of
 them, and all still to come - and draws them on a timeline under the
 picker: rostered on the left, flown on the right, each duty a block at
 its time and labelled with its code, a line at now and the flown side
-greyed after it.
+greyed after it. Behind the blocks, each lane shades its trips away
+from home base (trips()): a flight out of base to the next flight back,
+any sectors between inside it - the layovers.
 
 Uploading again replaces a duty of the same kind and start, and a day's
 figure; it removes nothing, so a duty taken off the roster keeps its
@@ -34,9 +36,9 @@ row until another lands on its start.
 All or nothing: a refusal - no duties, a time not in UTC, a day over 24
 hours - writes nothing; the host rolls back whatever was already filed.
 
-The parsing, labelling and routing are module functions - parse_events(),
-duties(), classify(), bucket_for(), daily_hours() - pure, for a test to
-call on their own.
+The parsing, labelling, routing and trip-finding are module functions -
+parse_events(), duties(), classify(), bucket_for(), daily_hours(),
+trips() - pure, for a test to call on their own.
 """
 
 import json
@@ -83,6 +85,16 @@ def render(ctx, cfg):
     if not rostered and not flown:
         return ctx.panel(ctx.empty("Upload your roster .ics"), picker)
 
+    # Once: the now line, and where a trip flown out and not yet back ends.
+    now = datetime.now(timezone.utc)
+    home_base = _home_base()
+    # A lane's trips, each a band behind its blocks: a rostered trip
+    # still away when the loaded roster runs out ends there; a flown one,
+    # out and not back, ends now - the layover you're on.
+    rostered_end = max((s.end for s in rostered if s.end is not None), default=None)
+    rostered_trips = trips(rostered, home_base, rostered_end)
+    flown_trips = trips(flown, home_base, _utc_text(now))
+
     # The plan on the left, what was flown on the right - greyed after
     # now, when nothing's flown yet. The picker on top; the timeline
     # takes the rest of the tile and scrolls, laid out to whatever size
@@ -90,10 +102,32 @@ def render(ctx, cfg):
     # group: the page keeps a cursor on it, and scrolls every timeline
     # of the group to one time.
     return ctx.panel(picker, ctx.timeline(
-        [_lane(rostered, label="Rostered"), _lane(flown, label="Flown", grey_after_now=True)],
-        now=datetime.now(timezone.utc),
+        [
+            _lane(rostered, label="Rostered", bands=[_band(t) for t in rostered_trips]),
+            _lane(flown, label="Flown", grey_after_now=True, bands=[_band(t) for t in flown_trips]),
+        ],
+        now=now,
         sync="frms",
     ))
+
+
+def _home_base():
+    """The owner's home base (IATA) from the config's personal block, or
+    None - a config without one shades no trips, its duties still drawn."""
+    personal = CONFIG.get("personal")
+    return personal.get("home_base") if isinstance(personal, dict) else None
+
+
+def _utc_text(moment):
+    """An aware datetime as a session's start and end are stored -
+    2025-11-05T15:10:00Z - so it compares with them as text."""
+    return moment.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _band(trip):
+    """A trip as a timeline band: its span, labelled with the port it
+    flew out to. Its id stays on the trip - not the timeline's."""
+    return {"start": trip["start"], "end": trip["end"], "label": trip["out_port"]}
 
 
 def _lane(sessions, **lane):
@@ -363,3 +397,63 @@ def daily_hours(duties, now):
         key = (HOURS[kind], start.date().isoformat())
         seconds[key] = seconds.get(key, 0) + (d.end - d.start).total_seconds()
     return {key: s / 3600 for key, s in seconds.items()}
+
+
+# ---------- trips ----------
+
+
+def trips(sessions, home_base, open_end=None):
+    """The trips away from `home_base` among a lane's duty sessions, in order.
+
+    `sessions` are one kind's duties as ctx.sessions() gives them
+    (Session tuples: .start and .end UTC text, .summary the duty's
+    dict); `home_base` an IATA code, the config's; `open_end` UTC text
+    - where a trip still away when the data runs out ends - or None.
+
+    Only flights make a trip: a session whose summary is a flight's,
+    with its route (dep and arr) and an end, taken by start. A reserve,
+    a sim, a ground duty, or a flight whose title gave no route, never
+    opens or closes one - it still draws, as a block. Walking them:
+
+        a flight out of base (dep home_base) opens a trip - from its
+        start, to the port it flew to (out_port), its id that start;
+        a flight into base (arr home_base) closes the open trip, at its
+        end - and with none open (away before the data starts), is
+        nothing; any other flight is a sector away, inside the trip.
+
+    So a pattern of sectors - out to one port, on to another, home from
+    a third - is one trip, the whole time away. A flight out of base
+    while a trip is open means that trip's way home isn't in the data:
+    it has no end, so it's dropped, and the new one opens. A flight from
+    base to base leaves nothing open.
+
+    A trip still open at the end closes at `open_end` - never before
+    its flight out has landed - or, with no `open_end`, is dropped: a
+    band needs an end to draw.
+
+    Each a dict {id, start, end, out_port}. `id` - the flight out's
+    start - is the trip's stable id: the same trip, uploaded again,
+    has the same one.
+    """
+    flights = sorted(
+        (s for s in sessions
+         if s.end is not None and s.summary.get("type") == "flight"
+         and s.summary.get("dep") and s.summary.get("arr")),
+        key=lambda s: s.start,
+    )
+    found, trip, out_end = [], None, None
+    for f in flights:
+        dep, arr = f.summary["dep"], f.summary["arr"]
+        if dep == home_base:
+            # At base: whatever was open lost its way home. Out again,
+            # unless it's straight back.
+            trip = None if arr == home_base else {"id": f.start, "start": f.start, "end": None, "out_port": arr}
+            out_end = f.end
+        elif arr == home_base and trip is not None:
+            trip["end"] = f.end
+            found.append(trip)
+            trip = None
+    if trip is not None and open_end is not None:
+        trip["end"] = max(open_end, out_end)
+        found.append(trip)
+    return found
