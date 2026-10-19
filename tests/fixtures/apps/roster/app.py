@@ -38,9 +38,12 @@ from home base (trips()): a flight out of base to the next flight back,
 any sectors between inside it - the layovers.
 
 The same trips, read from both lanes at once and with day returns among
-them, are the cards for the Plan and Report rails to come (trip_cards()):
-a whole trip out and back each - its flights out and home, its port,
-whether it was a day return. Nothing draws them yet.
+them, are the cards of the Plan and Report rails either side of the
+timeline (trip_cards()): a whole trip out and back each - its port, its
+flights out and home, its dates, a day return tagged. Every trip not
+over yet is on the Plan rail, beside the rostered lane; every trip home
+on the Report rail, beside the flown. Each rail shows five at a time,
+restacking as the timeline scrolls.
 
 Uploading again replaces a duty of the same kind and start, and a day's
 figure; it removes nothing, so a duty taken off the roster keeps its
@@ -131,7 +134,23 @@ def render(ctx, cfg):
         now=now,
         sync="frms",
     )
-    return ctx.panel(timeline, picker)
+    # Flanking it, the trips as cards, read from both lanes at once: the
+    # Plan rail beside the rostered lane - every trip not over yet, the
+    # one under way and the one not home as far as the roster runs among
+    # them - and the Report rail beside the flown, every trip home. Both
+    # in the FRMS group: they restack as the timeline scrolls.
+    cards = trip_cards(rostered, flown, home_base)
+    ahead = _utc_text(now)
+    plan = [_card(c) for c in cards if c["end"] is None or c["end"] > ahead]
+    report = [_card(c) for c in cards if c["end"] is not None and c["end"] <= ahead]
+    return ctx.panel(
+        ctx.rails(
+            timeline,
+            left=ctx.rail(plan, title="Plan", sync="frms"),
+            right=ctx.rail(report, title="Report", sync="frms"),
+        ),
+        picker,
+    )
 
 
 def _home_base():
@@ -151,6 +170,17 @@ def _band(trip):
     """A trip as a timeline band: its span, labelled with the port it
     flew out to. Its id stays on the trip - not the timeline's."""
     return {"start": trip["start"], "end": trip["end"], "label": trip["out_port"]}
+
+
+def _card(trip):
+    """A trip_cards() card as a rail card: its span, the port it's away
+    at, its flights out and home - a dash for one not known yet - and a
+    day return tagged. Its id is the trip's."""
+    return {
+        "id": trip["id"], "start": trip["start"], "end": trip["end"], "label": trip["port"],
+        "detail": f"{trip['out'] or '—'} · {trip['in'] or '—'}",
+        "tag": "Day" if trip["day"] else None,
+    }
 
 
 def _lane(sessions, **lane):
@@ -563,10 +593,13 @@ def trip_cards(rostered, flown, home_base):
 
     Each a dict {id, start, end, out, in, port, day}: `start` the flight
     out's, `end` the flight home's - None for a trip still open, not home
-    as far as the data knows; `out` and `in` those two duties' codes, the
-    flight numbers (`in` None while open); `port` the first port away -
-    the layover's; `day` True for a day return, its start, end and `out`
-    its one duty's.
+    as far as the data knows; `out` the flight out's code, its flight
+    number, and `in` the number of the flight that lands at base - the
+    last leg of the duty home, read back from its legs (one duty home
+    can fly two sectors, CEB-MNL / MNL-HKG, stored under the first's
+    code), else that duty's code - None while open; `port` the first
+    port away - the layover's; `day` True for a day return, its start,
+    end and `out` its one duty's.
 
     A day return's duty is stored base to base with one code, its first
     sector's, so its flight home and its turn-round port are read back
@@ -600,7 +633,10 @@ def trip_cards(rostered, flown, home_base):
                 cards.append({"id": f.start, "start": f.start, "end": f.end,
                               "out": _code(f), "in": legs[-1][0], "port": legs[0][2], "day": True})
         elif arr == home_base and trip is not None:
-            trip["end"], trip["in"] = f.end, _code(f)
+            # In: the flight that lands at base - its duty's last leg's,
+            # where the roster numbers it - not the duty's first sector's.
+            legs = _legs(f.summary)
+            trip["end"], trip["in"] = f.end, (legs[-1][0] if legs else None) or _code(f)
             cards.append(trip)
             trip = None
     if trip is not None:

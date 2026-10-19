@@ -1169,11 +1169,148 @@ def test_a_timelines_sync_is_a_groups_name(sync):
         host.timeline([{"intervals": []}], sync=sync)
 
 
+# ---------- rails: cards beside a timeline ----------
+
+TIMELINE_STUB = {"type": "timeline", "title": None, "now": None, "lanes": []}
+
+
+def rail_card(start, end=None, label=None, detail=None, tag=None, id=None):
+    return {"id": id, "start": start, "end": end, "label": label, "detail": detail, "tag": tag}
+
+
+def test_rail_spec_with_cards():
+    spec = host.rail(
+        [
+            # Its times as a timeline's: any zone or a datetime, each UTC
+            # to the second; every text field optional.
+            {"id": "2026-11-05T15:10:00Z", "start": "2026-11-05T23:10:00+08:00",
+             "end": datetime(2026, 11, 8, 13, 0, 30, 999, tzinfo=timezone.utc),
+             "label": "MEL", "detail": "CX105 · CX104"},
+            {"start": datetime(2026, 11, 20, 1, 0), "end": "2026-11-20T09:00:00Z", "label": "MNL", "tag": "Day"},
+            # No end: still open - not home as far as the data knows.
+            {"start": "2026-11-25T01:00:00Z", "end": None, "label": "BKK"},
+            {"start": "2026-11-30T01:00:00Z"},
+        ],
+        title="Plan",
+    )
+
+    assert spec == {"type": "rail", "title": "Plan", "cards": [
+        rail_card("2026-11-05T15:10:00Z", "2026-11-08T13:00:30Z", "MEL", "CX105 · CX104", id="2026-11-05T15:10:00Z"),
+        rail_card("2026-11-20T01:00:00Z", "2026-11-20T09:00:00Z", "MNL", tag="Day"),
+        rail_card("2026-11-25T01:00:00Z", None, "BKK"),
+        rail_card("2026-11-30T01:00:00Z"),
+    ]}
+    assert json.loads(json.dumps(spec, allow_nan=False)) == spec
+    # A tuple of cards, as of intervals; none at all is still a rail.
+    assert host.rail(({"start": "2026-11-30T01:00:00Z"},))["cards"] == [rail_card("2026-11-30T01:00:00Z")]
+    assert host.rail([]) == {"type": "rail", "title": None, "cards": []}
+
+
+def test_a_rail_reads_a_focus_group_by_name():
+    cards = [{"start": "2026-11-30T01:00:00Z", "label": "MEL"}]
+    plain = host.rail(cards, title="Plan")
+
+    # Named, the spec carries the group's name, as a timeline's does;
+    # not named - None or empty - no key at all.
+    assert host.rail(cards, title="Plan", sync="frms") == {**plain, "sync": "frms"}
+    for unnamed in (None, ""):
+        assert host.rail(cards, title="Plan", sync=unnamed) == plain
+        assert "sync" not in host.rail(cards, sync=unnamed)
+
+
+@pytest.mark.parametrize(
+    "cards, error, says",
+    [
+        ("MEL", TypeError, "a rail's cards must be a list"),
+        ({"start": "2026-11-30T01:00:00Z"}, TypeError, "a rail's cards must be a list"),
+        (["MEL"], TypeError, "a rail card must be a mapping"),
+        ([{"label": "MEL"}], ValueError, "a rail card needs a start"),
+        ([{"start": None}], ValueError, "a rail card needs a start"),
+        ([{"start": "tomorrow"}], ValueError, "a rail card's start must be a datetime or ISO-8601 timestamp"),
+        ([{"start": "2026-11-30T01:00:00Z", "end": date(2026, 12, 1)}], ValueError,
+         "a rail card's end must be a datetime or ISO-8601 timestamp"),
+        ([{"start": "2026-11-30T01:00:00Z", "end": "2026-11-30T00:59:59Z"}], ValueError,
+         "a rail card's end is before its start"),
+        # Compared once normalised: 09:00 in Hong Kong is 01:00 UTC, before 01:30.
+        ([{"start": "2026-11-30T01:30:00Z", "end": "2026-11-30T09:00:00+08:00"}], ValueError,
+         "a rail card's end is before its start"),
+        ([{"start": "2026-11-30T01:00:00Z", "label": 105}], TypeError, "a rail card's label must be text"),
+        ([{"start": "2026-11-30T01:00:00Z", "detail": ["CX105"]}], TypeError, "a rail card's detail must be text"),
+        ([{"start": "2026-11-30T01:00:00Z", "tag": True}], TypeError, "a rail card's tag must be text"),
+        ([{"start": "2026-11-30T01:00:00Z", "id": 1}], TypeError, "a rail card's id must be text"),
+        # A misspelt field is refused, not ignored.
+        ([{"start": "2026-11-30T01:00:00Z", "port": "MEL"}], ValueError,
+         "a rail card takes id, start, end, label, detail, tag - not 'port'"),
+    ],
+)
+def test_a_rail_refuses_a_card_it_cant_draw(cards, error, says):
+    with pytest.raises(error, match=says):
+        host.rail(cards)
+
+
+@pytest.mark.parametrize(
+    "kwargs, error, says",
+    [
+        ({"title": 3}, TypeError, "a rail's title must be text"),
+        ({"sync": 3}, TypeError, "a rail's sync must be text, a focus group's name"),
+        ({"sync": ["frms"]}, TypeError, "a rail's sync must be text, a focus group's name"),
+    ],
+)
+def test_a_rails_title_and_sync_are_text(kwargs, error, says):
+    with pytest.raises(error, match=says):
+        host.rail([], **kwargs)
+
+
+def test_rails_frame_a_timeline_verbatim_between_two_rails():
+    timeline = host.timeline([
+        {"label": "Rostered", "intervals": [block("2026-11-05T15:10:00Z", "2026-11-06T04:10:00Z", "CX105")],
+         "bands": [block("2026-11-05T15:10:00Z", "2026-11-08T13:00:00Z", "MEL")]},
+        {"label": "Flown", "grey_after_now": True, "intervals": []},
+    ], now="2026-10-19T00:00:00Z", sync="frms")
+    plan = host.rail([{"start": "2026-11-05T15:10:00Z", "end": "2026-11-08T13:00:00Z", "label": "MEL"}],
+                     title="Plan", sync="frms")
+    report = host.rail([], title="Report", sync="frms")
+
+    spec = host.rails(timeline, left=plan, right=report)
+
+    # The timeline as it was built - the same spec, untouched - with a
+    # rail either side.
+    assert spec == {"type": "rails", "left": plan, "timeline": timeline, "right": report}
+    assert spec["timeline"] is timeline
+    assert json.loads(json.dumps(spec, allow_nan=False)) == spec
+    # Either rail may be left out: null on that side.
+    assert host.rails(timeline) == {"type": "rails", "left": None, "timeline": timeline, "right": None}
+    assert host.rails(timeline, right=report)["left"] is None
+    # On the ctx, as the other builders are.
+    assert host.Ctx.rails(timeline, left=plan) == {**host.rails(timeline), "left": plan}
+    assert host.Ctx.rail([], title="Plan") == host.rail([], title="Plan")
+
+
+@pytest.mark.parametrize(
+    "args, kwargs, error, says",
+    [
+        ((None,), {}, TypeError, r"a rails frame's timeline must be a timeline spec \(ctx.timeline\(\)\)"),
+        (([{"intervals": []}],), {}, TypeError, "a rails frame's timeline must be a timeline spec"),
+        (({"type": "panel", "children": []},), {}, ValueError,
+         "a rails frame's timeline must be a timeline spec .* not 'panel'"),
+        ((TIMELINE_STUB,), {"left": [{"start": "2026-11-05T15:10:00Z"}]}, TypeError,
+         r"a rails frame's left must be a rail spec \(ctx.rail\(\)\)"),
+        ((TIMELINE_STUB,), {"right": TIMELINE_STUB}, ValueError,
+         "a rails frame's right must be a rail spec .* not 'timeline'"),
+        ((TIMELINE_STUB,), {"left": "Plan"}, TypeError, "a rails frame's left must be a rail spec"),
+    ],
+)
+def test_rails_refuse_a_part_that_isnt_the_spec_it_should_be(args, kwargs, error, says):
+    with pytest.raises(error, match=says):
+        host.rails(*args, **kwargs)
+
+
 def test_the_ctx_carries_the_builders(conn):
     ctx = host.Ctx(conn)
     assert ctx.panel(ctx.number(1), ctx.line([1]), ctx.input("k", "a"), ctx.empty())["type"] == "panel"
     assert ctx.input("f", "a", kind="file", accept=".csv")["accept"] == ".csv"
     assert ctx.panel(ctx.timeline([{"intervals": []}]))["children"][0]["type"] == "timeline"
+    assert ctx.rails(ctx.timeline([{"intervals": []}]), left=ctx.rail([]))["left"]["type"] == "rail"
 
 
 def test_render_app_passes_today_and_a_copy_of_cfg(conn, apps_dir):

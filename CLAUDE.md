@@ -360,6 +360,23 @@ own calls to its device API. Full direction:
   `TypeError` — `None` or `""` adds no key, so an unsynced spec is
   exactly the one from before `sync`; the host only carries the name, the
   focus clock is the page's, below),
+  `rail(cards, title=None, sync=None)` → `{"type": "rail", title, cards:
+  [{id, start, end, label, detail, tag}]}`, plus `sync` only when given (a
+  column of fixed-size cards — a trip each, the roster's — the page shows
+  five at a time and restacks by the focus time: `cards` a list or tuple
+  (else `TypeError`) of dicts of only `RAIL_CARD_FIELDS` (`_card()`, via
+  `_fields()`: not a dict `TypeError`, another field `ValueError`) —
+  `start` required (`ValueError`, "a rail card needs a start") and `end`
+  optional (`None`: open — not home as far as the data knows), each
+  normalised by `_session_instant()`, `end >= start` (as those strings),
+  `id`/`label`/`detail`/`tag` text or `None` (else `TypeError`), all six
+  keys always in the spec; `title` text or `None`; `sync` a focus group's
+  name, as a timeline's — `None`/`""` no key — which the rail only reads),
+  `rails(timeline, left=None, right=None)` → `{"type": "rails", left,
+  timeline, right}` (a timeline flanked by rails: `timeline` a timeline
+  spec, carried verbatim — the same dict, never re-checked — and
+  `left`/`right` rail specs or `None`; `_of_type()`: not a dict
+  `TypeError`, another `type` `ValueError`),
   `empty(message)`; the host's own is `{"type": "error", "message"}`. `render_app(app, conn, cfg=None,
   today=None)` calls `render(ctx, dict(cfg or {}))` (the ctx made for
   `app`) — `cfg` the
@@ -523,7 +540,8 @@ own calls to its device API. Full direction:
   the round trip by `tests/test_app_actions.py`, against the synthetic
   `tests/fixtures/rosters/sample.ics` — fake flights and ports). Its
   `app.yaml`: id `roster`, name "Roster", `sizes: [{ w: 2, h: 1 }, { w: 2,
-  h: 2 }]`, `reads: [duty_hours_rostered, duty_hours_complete]`, and
+  h: 2 }, { w: 4, h: 2 }, { w: 4, h: 3 }]` (the 4-wide ones room for its
+  rails), `reads: [duty_hours_rostered, duty_hours_complete]`, and
   `metrics:` those two — "Rostered duty hours"/"Flown duty hours", `h`,
   Roster, daily, `range: [0, 24]`. Config-driven: three files, `app.yaml`,
   `app.py` (the engine) and `config.json` (the reference it reads — the
@@ -593,8 +611,8 @@ own calls to its device API. Full direction:
   nothing; still open at the end → closed at `open_end` (UTC text),
   never before its flight out's end (`max`), or dropped when `None` →
   `[{id, start, end, out_port}]`, in order) and `trip_cards(rostered,
-  flown, home_base)` (the cards for the Plan and Report rails to come —
-  nothing draws them yet: every trip out of base and back, day returns
+  flown, home_base)` (the cards of the Plan and Report rails —
+  `render()`'s, below: every trip out of base and back, day returns
   included; its own function, so `trips()` and the bands stay as they
   are. Read from both lanes at once, so a trip under way — flown out,
   rostered home — is one card; a duty in both lanes (the same `start`,
@@ -613,8 +631,11 @@ own calls to its device API. Full direction:
   turnback, nothing to read) → no card. The latest trip still open at
   the end is kept, `end` and `in` None (not home as far as the data
   knows). → `[{id, start, end, out, in, port, day}]` in order — `id` the
-  flight out's start, a band's id for the same trip; `out`/`in` the
-  codes of the duties out and home; `port` the first port away; `day`
+  flight out's start, a band's id for the same trip; `out` the code of
+  the duty out; `in` the flight that lands at base — the last leg of the
+  duty home, read back by `_legs()` (one duty home can fly `CEB-MNL /
+  MNL-HKG`, stored under its first sector's code), else that duty's code;
+  `port` the first port away; `day`
   True for a day return, its one duty's start, end and `out`). `handle()`: `upload` only;
   `payload["file"]` decoded `utf-8-sig` (not text → "<name> isn't a text
   roster"); no duty (a file of days off, not iCalendar, empty) → "No
@@ -640,8 +661,8 @@ own calls to its device API. Full direction:
   confirm: "Backfill past duties into your rostered plan? They're also
   recorded as flown, and any plan you already uploaded for those duties
   is replaced."}`), a roster all older than that included; else
-  `panel(timeline, picker)` — the upload at the tile's foot — the
-  `timeline` lane 0 "Rostered" (`duties_rostered`), lane 1 "Flown"
+  `panel(rails(timeline, left=Plan, right=Report), picker)` — the upload
+  at the tile's foot — the `timeline` lane 0 "Rostered" (`duties_rostered`), lane 1 "Flown"
   (`duties_complete`, `grey_after_now`), each session an interval of its
   `start`/`end` labelled with `summary["code"]` (`""` for none; a session
   with no end, only another source's, left out — `_lane()`), and each
@@ -655,8 +676,18 @@ own calls to its device API. Full direction:
   a later FRMS panel naming it scrolls with the roster, by time). The
   timeline fills the rest of the tile
   and scrolls, laid out to its size by the page (`render()` isn't told
-  it). The `duty_hours_*` metrics are still written; the tile no longer
-  reads them (`app.yaml`'s `reads` still names them).
+  it). Either side of it, a rail (`ctx.rails()`): `trip_cards(rostered,
+  flown, home base)` split at the same `now` (`_utc_text(now)`) — **Plan**,
+  the left, every card with `end` None or after now (the trip under way
+  and the one not home as far as the roster runs among them), and
+  **Report**, the right, every card home by then — each `ctx.rail(...,
+  title="Plan"|"Report", sync="frms")` of `_card()`s: `{id, start, end,
+  label: port, detail: "<out> · <in>" (a missing one "—"), tag: "Day" for
+  a day return}`; no home base, no cards. The page shows five a side,
+  restacking as the timeline scrolls, and drops the rails in a tile under
+  4 wide (the 4×2/4×3 sizes are theirs). The `duty_hours_*` metrics are
+  still written; the tile no longer reads them (`app.yaml`'s `reads`
+  still names them).
 - `app/home_layout.py` — the Home tab's layout, one `settings` row
   (`LAYOUT_KEY` `home_layout`, no migration): `{"tabs": [{id, name,
   mode: "flow", subtitle, items: [{instance_id, app_id, size: {w, h},
@@ -1204,7 +1235,40 @@ own calls to its device API. Full direction:
   `ours`, the `scrollTop` it set, read back) passes; any other is the
   user's — the group's focus to the quarter hour under its cursor,
   `following` false. Now: `setFocus(group, tlSnap(Date.now()), true)`.
-  `.tl-view > .tl-scroll` has `overflow-anchor: none`), `empty`/`error` (muted, centred; error under
+  `.tl-view > .tl-scroll` has `overflow-anchor: none`), `rails`
+  (`railsSpec(s, name, appId)`: `.spec-rails`, a flex row of four columns —
+  a rail, the timeline's two lanes, a rail: `s.timeline` drawn by
+  `renderSpec()` exactly as alone, first (so a synced one starts its group
+  as alone), then a `railSpec()` each side (a side that isn't a rail spec:
+  none), told `above`, the rows over the timeline's frame (`t`,
+  `tl-focus`) it mirrors with spacers (`.rail-sp`), so its heading sits in
+  the lanes' heading row and its cards start level with the frame; the
+  timeline takes what the rails leave (`clamp(84px, 22cqi, 156px)` each);
+  `@container (max-width:399px)` or `(max-height:239px)` drop the rails
+  (`display: none`), the timeline then the whole tile, pixel for pixel as
+  without them — every roster tile 2 wide; nothing in `timelineSpec()`,
+  the focus clock or a `.tl-*` rule changed for them), `rail`
+  (`railSpec(s, above)`: a `.rail-head` (title, `\u00a0` for none, and a
+  `.rail-count` `2–6/9` while not all show) over `.rail-cards`, a list of
+  `.rail-card`s, each `RAIL_CARD_PX` (58) tall, `RAIL_GAP_PX` (6) apart —
+  `.rc-label`, a `.rc-tag`, `.rc-when` (`fmtCardDays()`, UTC: `05 Nov – 08
+  Nov`, `05 Nov`, `from 05 Nov`), `.rc-detail`, `data-id` its id, all as
+  text — an amber (`--layover`) left edge, the one in focus `.at`
+  (`aria-current`) tinted as a band; none → "None"; cards sorted by start,
+  a hand-built one without a start, or with a bad or earlier end, left
+  out. Which show is `railWindow(cards, focusMs, fit)` → `{start, count,
+  at}`: from the first not over at the focus (open, or ending after it),
+  `count` `min(fit, RAIL_MAX 5, n)`, held at the list's ends (`start ≤ n −
+  count`), `at` the card the focus is in. `fit` the whole cards
+  `.rail-cards`' height holds — `RAIL_MAX` until measured, then on a
+  `requestAnimationFrame` and every `ResizeObserver` callback, no height
+  keeping the last. Synced (`s.sync`), it reads `focusGroup(name).focusMs`
+  and joins the group's `members` with a `show` that restacks (only when
+  the window or `at` changes), so a scroll by hand, Now and the follow
+  tick all restack it — it never calls `setFocus()`; unsynced, the time it
+  was drawn at. It sits in `timelines` as `{scroll: its list, observer,
+  group, show}`, so `releaseTimelines()` lets it go with its tile),
+  `empty`/`error` (muted, centred; error under
   "Couldn't render <name>"), any other type an error tile. A spec is drawn
   for its app — `renderSpec(spec, name, appId)`, the id threaded from the
   tile (`paintTiles()`, `repaintTile()`) through a panel to its input. No apps → a note pointing to ＋ Add Application (or the apps
@@ -1939,11 +2003,20 @@ same PR:
   the roster's `trip_cards()`, every trip out of base and back as a card
   — day returns included, read back from their stored legs — from both
   lanes at once, deduped, so a trip under way is one card; `render()`
-  unchanged. Next (5b): the `rail`/`rails` spec types and the page's
-  `railSpec()` on the `"frms"` focus group, the timeline untouched.
+  unchanged. Then the rails landed (5b; no migration, no route change):
+  two spec types — `rail` (fixed-size cards, five at a time, the window
+  from the first not over at the focus time, held at the list's ends) and
+  `rails` (a timeline carried verbatim, a rail either side) — the page's
+  `railSpec()`/`railsSpec()`, a rail a read-only member of the timeline's
+  focus group (restacked by every move of its time, never moving it),
+  four columns that drop to the bare timeline in a tile too small for
+  them, and the roster's `render()` splitting `trip_cards()` at now into
+  Plan (left) and Report (right), with two 4-wide sizes for the room;
+  `trip_cards()`' `in` now the leg that lands at base (5a's review).
+  Purely additive: nothing in `timeline()`, `timelineSpec()`, the
+  bands, the cursor, the focus clock or a `.tl-*` rule changed.
   Still to come for it: reading `destinations` (time-zone shifts), the
-  trip lists either side (planning, reports — their engine has landed,
-  `trip_cards()`; the rails that draw them haven't), their popups and PDF, the
+  cards' popups and PDF, the
   report store (re-attached to a trip by its id), per-block or per-band
   detail on click or hover, and `base_tz` day gridlines and WOCL shading
   on the axis.

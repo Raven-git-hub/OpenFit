@@ -276,6 +276,8 @@ the dicts itself.
 | `ctx.panel(*children)` or `ctx.panel([children])` | `{"type": "panel", "children": [...]}` | Its children stacked in order. A number keeps its height and a line takes the rest. |
 | `ctx.input(key, action, label=None, kind="number", unit=None, options=None, accept=None, toggle=None)` | `{"type": "input", "key", "action", "label", "kind", "unit", "options", "accept"}`, plus `"toggle"` only when given | A field under its label (small, uppercase), its unit and a **Save** button beside it. `kind` is one of `INPUT_KINDS`: `"number"` (the default), `"text"`, `"select"` — a dropdown of `options`, a non-empty list of non-empty strings, required for a select and refused for the other kinds (`options` is `null` in their specs) — or `"file"`, a file picker offering `accept`'s hints (`".txt,.csv"`, `"text/plain"`: optional non-empty text, refused for the other kinds — `accept` is `null` in their specs, and in a file's without one). Save, or Enter, sends `action` to the app's `handle()` with the payload `{key: what was entered}` (a number for kind `"number"`, text as typed for `"text"`, the chosen option's string as written for `"select"`, and for `"file"` the file picked, a `FileUpload` — Save only, sent multipart), and the tile is redrawn from the fresh spec the reply carries; a refusal shows under the field, which keeps what was entered. A blank field, or a number that isn't one, says so and sends nothing; so does a select still on its "Choose…" placeholder, a picker with no file picked ("Choose a file.") or one over 25 MB ("File too large (max 25 MB)."). A file input can carry a companion **toggle**, `{key, label, confirm}` (only for a file — any other kind's is refused; see [A file input's toggle](#writing-apps-as-sources)): a checkbox and its label in the row before Save, its checked state sent in the payload under its own `key` beside the file, and — ticked, with a `confirm` — the page's own modal asking that first, nothing sent unless it's confirmed; a spec with none has no `toggle` key, the one from before toggles. The host doesn't check a select's value is one of its options (the action route remembers no render), nor what a file holds: `handle()` does. In a panel it sits at the foot. In Configure it's inert, like the rest of the face. See [Writing](#writing-apps-as-sources) and `docs/architecture/input-primitives.md`. |
 | `ctx.timeline(lanes, now=None, title=None, sync=None)` | `{"type": "timeline", "title", "now", "lanes": [{"label", "grey_after_now", "intervals": [{"start", "end", "label"}, ...]}, ...]}`, plus `"sync"` only when given | One lane or two of time-blocks side by side on one vertical time axis, in a frame that scrolls — lane 0 the left column in the lighter tone, lane 1 the right in the darker — under the lanes' labels; a line at `now`, and a `grey_after_now` lane greyed below it. With `sync`, a focus group's name, it's drawn around the group's focus clock: a fixed cursor, the time under it and a Now button, every timeline of the group scrolling to one time. See [the timeline builder](#the-timeline-builder), below. |
+| `ctx.rail(cards, title=None, sync=None)` | `{"type": "rail", "title", "cards": [{"id", "start", "end", "label", "detail", "tag"}, ...]}`, plus `"sync"` only when given | A column of fixed-size cards under its title, stacked from the top — five at most, the window moving with the focus time. With `sync`, it reads that focus group's time and restacks as it moves. See [the rail builders](#the-rail-builders), below. |
+| `ctx.rails(timeline, left=None, right=None)` | `{"type": "rails", "left", "timeline", "right"}` | A timeline drawn exactly as it is alone, a rail either side: four columns, a rail, the two lanes, a rail. In a tile too small for them, the timeline alone. See [the rail builders](#the-rail-builders), below. |
 | `ctx.empty(message=None)` | `{"type": "empty", "message"}` | Muted, centred text (default "No data yet"). |
 | (the host's) | `{"type": "error", "message"}` | Muted, centred: "Couldn't render <app name>" over the message. |
 
@@ -448,6 +450,85 @@ readout, no button, the now line centred on opening as above.
   carries a **Now** tag on the greyed lane, just under the line, where the grey
   starts. It's `--accent`, like the cursor: the two lines meet while the group
   follows, and part once it's scrolled.
+
+### The rail builders
+
+```python
+ctx.rail(cards, title=None, sync=None)
+# -> {"type": "rail", "title": "Plan", "sync": "frms", "cards": [
+#       {"id": "2026-11-05T15:10:00Z", "start": "2026-11-05T15:10:00Z", "end": "2026-11-08T13:00:00Z",
+#        "label": "MEL", "detail": "CX105 · CX104", "tag": None}, ...]}
+# with no sync (or ""), no "sync" key
+
+ctx.rails(timeline, left=None, right=None)
+# -> {"type": "rails", "left": <a rail spec or None>, "timeline": <the timeline spec, as given>,
+#     "right": <a rail spec or None>}
+```
+
+A rail is a column of cards beside a timeline — a roster's trips, the plan on
+one side and the reports on the other — that restacks as the timeline is
+scrolled. The host carries the cards; the page lays them out and picks which
+show.
+
+- **`cards`** is a list (or tuple) of dicts of only `RAIL_CARD_FIELDS`:
+  - `start`: required, a `datetime` or ISO-8601 text, normalised as a
+    session's times are (UTC, whole seconds, naive taken as UTC);
+  - `end`: the same, or `None` for a card still open (a trip not home as far
+    as the data knows); never before the start;
+  - `id`: text or `None`, the card's stable id (a trip's: its flight out's
+    start, as its band's) — carried, never drawn;
+  - `label`: text or `None`, its headline (the port, `MEL`);
+  - `detail`: text or `None`, a line under it (`CX105 · CX104`);
+  - `tag`: text or `None`, a small mark beside the label (`Day`).
+
+  Every key is in the spec, `None` where not given. A card that isn't a dict
+  raises `TypeError`; a field it doesn't take `ValueError` (a misspelt `port`
+  is said, not ignored); a missing start, a time that isn't one or an end
+  before its start `ValueError`; a text field that isn't text `TypeError`.
+- **`title`** is optional text, the rail's heading (`Plan`).
+- **`sync`** is optional text, a focus group's name, as a timeline's; `None`
+  or `""` adds no key.
+- **`rails(timeline, left, right)`**: `timeline` a timeline spec
+  (`ctx.timeline()`), carried verbatim — the same dict, not re-checked or
+  copied — and `left`/`right` rail specs or `None`. A part that isn't a dict
+  raises `TypeError`; a spec of another type `ValueError`.
+
+**How it's drawn.** A rails frame (`railsSpec()`) is four columns: a rail, the
+timeline's two lanes, a rail. The timeline is drawn by `renderSpec()` exactly
+as it is on its own — its DOM node for node, its cursor, readout, Now, bands
+and focus clock untouched — and takes what the rails leave; each rail is
+`clamp(84px, 22cqi, 156px)` wide. A rail mirrors the rows over the
+timeline's frame with spacers (its title's line, its focus row), so the rail's
+heading sits in the lanes' heading row — Plan · Rostered · Flown · Report —
+and its cards start level with the frame. **In a tile too small for them** —
+under 400px wide or 240px tall inside (`@container`) — the rails are left out
+and the timeline has the tile, exactly as it's drawn without them (a 2-wide
+roster tile is pixel-identical to one from before rails).
+
+A rail (`railSpec()`) is its heading over a list of **fixed-size cards**, 58px
+tall (`RAIL_CARD_PX`), 6px apart (`RAIL_GAP_PX`), whatever they hold: the
+label, its tag, the card's days in UTC (`05 Nov – 08 Nov`; within one day,
+`05 Nov`; open, `from 05 Nov`) and the detail line, all as text, with an amber
+(`--layover`) edge — a trip, as a band is. They're in time order (by start)
+and **hug the top** of the rail. At most **five** show (`RAIL_MAX`), or as
+many whole cards as the rail's height holds; which ones is
+`railWindow(cards, focusMs, fit)`: from the first card not over at the focus
+time (open, or ending after it), and those after it — **clamped** at the
+list's ends, so near the end it stays on the last five rather than emptying,
+and before the first it starts at the first. The card the focus is in is
+tinted as a band (`.at`), and the heading counts the window (`2–6/9`) while
+not every card shows. A rail with no cards says "None".
+
+**Synced**, a rail reads its focus group's time and joins the group as a
+member beside its timelines, so every move of the focus — a timeline scrolled
+by hand, Now, the follow tick — restacks it. It only ever reads the time: it
+never scrolls anything or moves the focus, and nothing on a card is clickable
+yet. Unsynced, it's drawn for the time it's drawn at. Its height is measured
+as a timeline's is: five first, then on the next frame and on every resize (a
+`ResizeObserver`, let go of with its tile by `releaseTimelines()`); with no
+height, the last layout stands. A hand-built rail is drawn as far as it can
+be: a card without a start, or with an end that isn't one or comes before it,
+is left out; a frame's side that isn't a rail is none.
 
 **Errors never fail the page.** `render_app()` catches anything `render()`
 raises and logs it with the traceback (`[apps] <id>: render failed`). It also
@@ -804,7 +885,7 @@ library alone: the host only carries the file.
 ```yaml
 id: roster
 name: Roster
-sizes: [{ w: 2, h: 1 }, { w: 2, h: 2 }]
+sizes: [{ w: 2, h: 1 }, { w: 2, h: 2 }, { w: 4, h: 2 }, { w: 4, h: 3 }]
 reads: [duty_hours_rostered, duty_hours_complete]
 metrics:
   - { key: duty_hours_rostered, label: Rostered duty hours, unit: h, category: Roster, grain: daily, range: [0, 24] }
@@ -846,7 +927,7 @@ payload at all — it's exactly the plain clock split from before.
 Its tile reads the duties back: `ctx.sessions()` of both kinds since about six
 months before today (183 days, by the day a duty starts in UTC), and every duty
 still to come. With none, it's `empty("Upload your roster .ics")` over the
-picker. Otherwise it's a timeline (`ctx.timeline()`, above) over the picker —
+picker. Otherwise it's a timeline (`ctx.timeline()`, above), between its rails (below), over the picker —
 the upload at the tile's foot: rostered duties in the left lane, flown ones in the
 right with `grey_after_now`, each a block from its start to its end labelled
 with its code, and the now line at the time of the render. The timeline fills
@@ -875,7 +956,26 @@ never before its flight out has landed — or, with none, is dropped. The
 rostered lane's `open_end` is the end of the loaded roster (its latest duty's
 end), the flown lane's now (the same instant as the timeline's `now`): a trip
 flown out and not yet back runs to the now line — you're on the layover. A
-config with no `personal.home_base` shades no trips; the duties still draw. The `duty_hours_*` metrics are still written on every
+config with no `personal.home_base` shades no trips; the duties still draw.
+
+**The Plan and Report rails** flank the timeline (`ctx.rails()`, above). The
+cards are `trip_cards(rostered, flown, home_base)`: every trip out of base and
+back, read from both lanes at once (a duty in both taken once, its flown copy),
+so a trip under way — flown out, rostered home — is one card; a duty out of
+base and back in one (a day return) a card of its own, its port and flight home
+read back from its legs; the latest trip not home yet kept, open. A card's `in`
+is the flight that lands at base: the last leg of the duty home, where the
+roster numbers it (one duty home can fly `CEB-MNL / MNL-HKG`, stored under its
+first sector's code), else that duty's code. They're split at the render's now:
+**Plan**, beside the rostered lane, every trip with no end or ending after now
+(the one you're on among them); **Report**, beside the flown, every trip home.
+Each card's label is its port, its detail its flights out and home (`CX105 ·
+CX104`, a dash for one not known yet), a day return tagged `Day`, its id the
+trip's — the band's id for the same trip, for a report to re-attach to. Both
+rails are in `"frms"`, so they restack as the timeline scrolls. They need room:
+the 4×2 and 4×3 sizes are for them, and in a 2-wide tile they're left out.
+
+The `duty_hours_*` metrics are still written on every
 upload; the tile no longer reads them. A roster that's all over six months old
 is filed but draws as the empty state.
 

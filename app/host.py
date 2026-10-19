@@ -123,6 +123,19 @@ the dicts directly):
         the quarter hour) and a Now button, and every timeline of the
         group scrolls to the one focus time - following now until one
         is scrolled
+    {"type": "rail", "title", "cards": [{"id", "start", "end", "label", "detail", "tag"}, ...],
+     "sync"}
+        a column of fixed-size cards - a trip each - at most five at
+        once, stacked from the top: the first card not yet over at the
+        focus time and the ones after it, held at the list's ends. A
+        card's end may be null (still open); its dates the page's to
+        write. `sync`, only when given, names the focus group it reads:
+        it restacks whenever that group's time moves, and never moves it
+    {"type": "rails", "left": rail, "timeline": timeline, "right": rail}
+        a timeline flanked by rails - four columns: a rail, the
+        timeline's two lanes, a rail - the timeline carried verbatim and
+        drawn as it is alone, either rail null for none; left out in a
+        tile too small to hold them
     {"type": "empty", "message"}
     {"type": "error", "message"}
         the host's, when a render fails - never an app's to return
@@ -562,6 +575,106 @@ def timeline(lanes, now=None, title=None, sync=None):
     return spec
 
 
+# A rail's cards: what one takes, and nothing else - a misspelt field is
+# refused, as a lane's is.
+RAIL_CARD_FIELDS = ("id", "start", "end", "label", "detail", "tag")
+
+
+def _card(raw):
+    """One card on a rail, as the spec carries it: {id, start, end, label,
+    detail, tag} - start iso_utc()'s UTC text, end the same or None."""
+    what = "a rail card"
+    _fields(raw, RAIL_CARD_FIELDS, what)
+    if raw.get("start") is None:
+        raise ValueError(f"{what} needs a start: {raw!r}")
+    start = _session_instant(raw["start"], f"{what}'s start")
+    end = raw.get("end")
+    if end is not None:
+        end = _session_instant(end, f"{what}'s end")
+        # iso_utc()'s timestamps sort and compare as plain strings.
+        if end < start:
+            raise ValueError(f"{what}'s end is before its start: {end} < {start}")
+    card = {"id": None, "start": start, "end": end, "label": None, "detail": None, "tag": None}
+    for field in ("id", "label", "detail", "tag"):
+        card[field] = _text_or_none(raw.get(field), field, f"{what}'s")
+    return card
+
+
+def rail(cards, title=None, sync=None):
+    """A column of fixed-size cards - a trip each, in the roster's - that
+    restacks as a focus group's time moves.
+
+    `cards` is a list of dicts, each:
+
+        id      text or None: the card's stable id (a trip's: its flight
+                out's start), carried for the page, never drawn
+        start   a datetime or ISO-8601 text, stored as a session's are
+                (UTC to the second, a naive time taken to be UTC) -
+                required
+        end     the same, or None for one still open (a trip not home
+                as far as the data knows); never before the start
+        label   text or None: its headline (the port, MEL)
+        detail  text or None: a line under it (the flights, CX105 · CX104)
+        tag     text or None: a small mark beside the label (Day)
+
+    The page draws them in time order (by start), at most five at once,
+    stacked from the top of the rail, and works out which five from the
+    time in focus: the first card not yet over at that time, and the
+    ones after it - the window held at the list's ends, so a rail with
+    five or more always shows five (fewer, in a frame too short to hold
+    them). A card's dates are the page's to write, from its start and
+    end, in UTC.
+
+    `title` is text or None: the rail's heading (Plan). `sync` is text
+    or None, a focus group's name, as a timeline's: given, the rail
+    reads that group's focus time and restacks whenever it moves - it
+    never moves it - and the spec carries it; None (or an empty name)
+    adds no key, and the rail is drawn for the time it's drawn at.
+    Raises TypeError or ValueError for anything it can't draw.
+    """
+    if not isinstance(cards, (list, tuple)):
+        raise TypeError(f"a rail's cards must be a list: {cards!r}")
+    if title is not None and not isinstance(title, str):
+        raise TypeError(f"a rail's title must be text: {title!r}")
+    if sync is not None and not isinstance(sync, str):
+        raise TypeError(f"a rail's sync must be text, a focus group's name: {sync!r}")
+    spec = {"type": "rail", "title": title, "cards": [_card(card) for card in cards]}
+    if sync:
+        spec["sync"] = sync
+    return spec
+
+
+def _of_type(spec, kind, what, builder):
+    """`spec`, if it's a spec of type `kind`: TypeError for one that isn't a
+    mapping, ValueError for another type."""
+    if not isinstance(spec, dict):
+        raise TypeError(f"{what} must be a {kind} spec ({builder}): {spec!r}")
+    if spec.get("type") != kind:
+        raise ValueError(f"{what} must be a {kind} spec ({builder}), not {spec.get('type')!r}")
+    return spec
+
+
+def rails(timeline, left=None, right=None):
+    """A timeline flanked by rails: four columns - a rail, the timeline's
+    two lanes, a rail.
+
+    `timeline` is a timeline spec (ctx.timeline()), carried verbatim -
+    drawn exactly as it is on its own. `left` and `right` are rail specs
+    (ctx.rail()) or None, the rail beside each side of it: a plan beside
+    the rostered lane, reports beside the flown. The rails only read
+    the focus time; the timeline keeps its own. In a tile too small to
+    hold them the page leaves them out, and the timeline has the tile.
+    Raises TypeError or ValueError for a part that isn't the spec it
+    should be.
+    """
+    _of_type(timeline, "timeline", "a rails frame's timeline", "ctx.timeline()")
+    sides = {
+        side: None if given is None else _of_type(given, "rail", f"a rails frame's {side}", "ctx.rail()")
+        for side, given in (("left", left), ("right", right))
+    }
+    return {"type": "rails", "left": sides["left"], "timeline": timeline, "right": sides["right"]}
+
+
 def empty(message=None):
     """Nothing to show, and why."""
     return {"type": "empty", "message": message or "No data yet"}
@@ -585,6 +698,8 @@ class Ctx:
     panel = staticmethod(panel)
     input = staticmethod(input)
     timeline = staticmethod(timeline)
+    rail = staticmethod(rail)
+    rails = staticmethod(rails)
     empty = staticmethod(empty)
 
     def __init__(self, conn, today=None, app=None):
