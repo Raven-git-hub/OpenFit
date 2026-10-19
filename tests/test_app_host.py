@@ -866,10 +866,150 @@ def test_input_spec_rejects_what_it_cant_draw(args, kwargs, error):
         host.input(*args, **kwargs)
 
 
+HKT = timezone(timedelta(hours=8))
+
+
+def block(start, end, label=None):
+    return {"start": start, "end": end, "label": label}
+
+
+def test_timeline_spec_with_two_lanes():
+    spec = host.timeline(
+        [
+            {"label": "Rostered", "intervals": [
+                # ISO text in any zone, or a datetime - aware, or naive
+                # and so UTC - each stored as UTC to the second.
+                {"start": "2026-10-19T09:10:00+08:00", "end": datetime(2026, 10, 19, 14, 10, 30, 999, tzinfo=timezone.utc),
+                 "label": "CX105"},
+                {"start": datetime(2026, 10, 21, 22, 0), "end": "2026-10-22T10:00:00Z", "label": "R1E"},
+            ]},
+            {"label": "Flown", "grey_after_now": True, "intervals": [
+                {"start": "2026-10-17T01:00:00Z", "end": "2026-10-17T01:00:00Z", "label": "A1534"},   # no length: fine
+                {"start": datetime(2026, 10, 18, 9, 0, tzinfo=HKT), "end": "2026-10-18T05:00:00Z"},   # no label
+            ]},
+        ],
+        now=datetime(2026, 10, 19, 8, 0, tzinfo=HKT),
+        title="Duties",
+    )
+
+    assert spec == {"type": "timeline", "title": "Duties", "now": "2026-10-19T00:00:00Z", "lanes": [
+        {"label": "Rostered", "grey_after_now": False, "intervals": [
+            block("2026-10-19T01:10:00Z", "2026-10-19T14:10:30Z", "CX105"),
+            block("2026-10-21T22:00:00Z", "2026-10-22T10:00:00Z", "R1E"),
+        ]},
+        {"label": "Flown", "grey_after_now": True, "intervals": [
+            block("2026-10-17T01:00:00Z", "2026-10-17T01:00:00Z", "A1534"),
+            block("2026-10-18T01:00:00Z", "2026-10-18T05:00:00Z"),
+        ]},
+    ]}
+    # Plain JSON, as a render's spec must be.
+    assert json.loads(json.dumps(spec, allow_nan=False)) == spec
+
+
+def test_timeline_spec_with_one_lane_and_nothing_optional():
+    # A tuple of lanes, a tuple of intervals; no label, no now, no title -
+    # each null - and the lane not greyed.
+    assert host.timeline(({"intervals": ({"start": "2026-10-19T01:00:00Z", "end": "2026-10-19T02:00:00Z"},)},)) == {
+        "type": "timeline", "title": None, "now": None, "lanes": [
+            {"label": None, "grey_after_now": False, "intervals": [block("2026-10-19T01:00:00Z", "2026-10-19T02:00:00Z")]},
+        ],
+    }
+    # A lane may be empty: nothing flown yet is still a lane. Labels are
+    # kept as written, an empty one included.
+    assert host.timeline([{"label": "", "intervals": []}], now="2026-10-19T00:00:00Z")["lanes"] == [
+        {"label": "", "grey_after_now": False, "intervals": []},
+    ]
+
+
+@pytest.mark.parametrize("count", [0, 3, 4])
+def test_a_timeline_has_one_lane_or_two(count):
+    with pytest.raises(ValueError, match=f"a timeline has one lane or two, not {count}"):
+        host.timeline([{"intervals": []}] * count)
+
+
+@pytest.mark.parametrize("lanes", [None, {"intervals": []}, "lanes", 2])
+def test_a_timelines_lanes_are_a_list(lanes):
+    with pytest.raises(TypeError, match="a timeline's lanes must be a list"):
+        host.timeline(lanes)
+
+
+def test_a_timeline_intervals_end_cant_be_before_its_start():
+    with pytest.raises(ValueError, match="a timeline interval's end is before its start"):
+        host.timeline([{"intervals": [{"start": "2026-10-19T02:00:00Z", "end": "2026-10-19T01:59:59Z"}]}])
+    # Compared once normalised: 09:00 in Hong Kong is 01:00 UTC, before 01:30.
+    with pytest.raises(ValueError, match="end is before its start"):
+        host.timeline([{"intervals": [{"start": "2026-10-19T01:30:00Z", "end": "2026-10-19T09:00:00+08:00"}]}])
+
+
+@pytest.mark.parametrize(
+    "interval",
+    [
+        {"start": "2026-10-19T01:00:00Z"},                   # an end is required: no open blocks
+        {"start": "2026-10-19T01:00:00Z", "end": None},
+        {"end": "2026-10-19T01:00:00Z"},
+        {"start": None, "end": "2026-10-19T01:00:00Z"},
+    ],
+)
+def test_a_timeline_interval_needs_both_ends(interval):
+    with pytest.raises(ValueError, match="a timeline interval needs a start and an end"):
+        host.timeline([{"intervals": [interval]}])
+
+
+@pytest.mark.parametrize(
+    "start, says",
+    [
+        ("tomorrow", "a timeline interval's start must be a datetime or ISO-8601 timestamp"),
+        (date(2026, 10, 19), "a timeline interval's start must be a datetime or ISO-8601 timestamp"),
+        (1760835600, "a timeline interval's start must be a datetime or ISO-8601 timestamp"),
+    ],
+)
+def test_a_timeline_intervals_times_are_times(start, says):
+    with pytest.raises(ValueError, match=says):
+        host.timeline([{"intervals": [{"start": start, "end": "2026-10-19T01:00:00Z"}]}])
+
+
+@pytest.mark.parametrize("now", ["now", date(2026, 10, 19), 0])
+def test_a_timelines_now_is_a_time_or_none(now):
+    with pytest.raises(ValueError, match="a timeline's now must be a datetime or ISO-8601 timestamp"):
+        host.timeline([{"intervals": []}], now=now)
+
+
+@pytest.mark.parametrize(
+    "lane, error, says",
+    [
+        ("Rostered", TypeError, "a timeline lane must be a mapping"),
+        ([], TypeError, "a timeline lane must be a mapping"),
+        ({"label": "Rostered"}, TypeError, "a timeline lane's intervals must be a list"),
+        ({"intervals": "CX105"}, TypeError, "a timeline lane's intervals must be a list"),
+        ({"intervals": [], "label": 3}, TypeError, "a timeline lane's label must be text"),
+        ({"intervals": [], "grey_after_now": 1}, TypeError, "grey_after_now must be True or False"),
+        ({"intervals": [], "grey_after_now": "yes"}, TypeError, "grey_after_now must be True or False"),
+        # A misspelt field is refused, not ignored.
+        ({"intervals": [], "gray_after_now": True}, ValueError, "a timeline lane takes label, grey_after_now, intervals - not 'gray_after_now'"),
+        ({"intervals": ["CX105"]}, TypeError, "a timeline interval must be a mapping"),
+        ({"intervals": [("2026-10-19T01:00:00Z", "2026-10-19T02:00:00Z")]}, TypeError, "a timeline interval must be a mapping"),
+        ({"intervals": [{"start": "2026-10-19T01:00:00Z", "end": "2026-10-19T02:00:00Z", "label": 105}]},
+         TypeError, "a timeline interval's label must be text"),
+        ({"intervals": [{"start": "2026-10-19T01:00:00Z", "end": "2026-10-19T02:00:00Z", "code": "CX105"}]},
+         ValueError, "a timeline interval takes start, end, label - not 'code'"),
+    ],
+)
+def test_a_timeline_refuses_a_lane_or_interval_it_cant_draw(lane, error, says):
+    with pytest.raises(error, match=says):
+        host.timeline([lane])
+
+
+@pytest.mark.parametrize("title", [3, ["Duties"], True])
+def test_a_timelines_title_is_text(title):
+    with pytest.raises(TypeError, match="a timeline's title must be text"):
+        host.timeline([{"intervals": []}], title=title)
+
+
 def test_the_ctx_carries_the_builders(conn):
     ctx = host.Ctx(conn)
     assert ctx.panel(ctx.number(1), ctx.line([1]), ctx.input("k", "a"), ctx.empty())["type"] == "panel"
     assert ctx.input("f", "a", kind="file", accept=".csv")["accept"] == ".csv"
+    assert ctx.panel(ctx.timeline([{"intervals": []}]))["children"][0]["type"] == "timeline"
 
 
 def test_render_app_passes_today_and_a_copy_of_cfg(conn, apps_dir):

@@ -1142,7 +1142,7 @@ TAB_PARTS = [
     "toggleConfigure", "GRIP", "tileControls", "moveTile", "createTab", "renameTab", "deleteTarget",
     "deleteTab", "newTabId", "tabNameProblem", "openTabEditor", "GEAR", "PANEL_TABS", "panelShown",
     "showTab", "showPanel", "markTabs", "OPENING_TAB", "tabButtons", "openingTab",
-    "cfgByApp", "tileCfg", "configFields", "openTileConfig", "repaintTile",
+    "cfgByApp", "tileCfg", "configFields", "openTileConfig", "repaintTile", "timelines", "releaseTimelines",
 ]
 # ... and the strip's own wiring, as the page has it.
 TAB_WIRING = [
@@ -3131,6 +3131,274 @@ def test_the_file_sender_reaches_the_action_route_through_the_api_block(client):
     assert "fetch(url, {method:'POST', body:form})" in send_form
     assert "Content-Type" not in send_form
     assert page.count("sendForm(") == 2
+
+
+# ---------- the timeline element ----------
+#
+# A timeline is one lane or two of time-blocks on one vertical time axis,
+# laid out by the page to the viewport it scrolls in. The structure is
+# the page's own renderer, run under node over the stand-in DOM. Its
+# pixels aren't: the stand-in has no layout - every height is 0 - so the
+# renderer falls back to TL_FALLBACK_PX, and only that the layout ran,
+# and the floor a short block is held to, are checked here. The layout
+# itself is a real browser's to check.
+
+TIMELINE_PARTS = [
+    "el", "SPECS", "renderSpec", "specMsg",
+    "TL_VIEW_MS", "TL_MIN_WEEK_PX", "TL_MIN_BLOCK_PX", "TL_FALLBACK_PX", "timelines", "timelineSpec", "releaseTimelines",
+]
+
+TIMELINE_HARNESS = r"""
+    // The frame after this one, and a resize: each noted, run when the
+    // test says.
+    const frames = [];
+    const requestAnimationFrame = f => { frames.push(f); return frames.length; };
+    const observers = [];
+    class ResizeObserver {
+      constructor(callback){ this.callback = callback; this.observed = []; this.disconnected = 0; observers.push(this); }
+      observe(target){ this.observed.push(target); }
+      disconnect(){ this.disconnected++; }
+    }
+    // What the other specs draw with, which these tests don't look at.
+    const sparkline = () => mk('div'), specInput = () => mk('div'), fmtSpecValue = v => String(v);
+
+    const kids = (n, cls) => n.children.filter(c => (c.className || '').split(/\s+/).includes(cls));
+    const px = v => typeof v==='string' && /px$/.test(v) && Number.isFinite(parseFloat(v));
+    // A timeline as drawn: its parts, its lanes' blocks and overlays, and
+    // whether every position the layout sets was set.
+    const look = box => {
+      const scroll = box.querySelector('.tl-scroll');
+      const track = scroll && kids(scroll, 'tl-track')[0];
+      const lanes = track ? kids(track, 'tl-lane') : [];
+      const head = box.querySelector('.tl-head');
+      return {
+        cls: box.className, kids: box.children.map(c => c.className),
+        title: (kids(box, 't')[0] || {textContent:null}).textContent,
+        head: head ? head.children.map(h => h.textContent) : null,
+        track: track ? track.children.map(c => c.className) : null,
+        lanes: lanes.map(l => ({cls:l.className, left:l.style.left, width:l.style.width,
+          blocks: kids(l, 'tl-block').map(b => b.textContent),
+          futures: kids(l, 'tl-future').length})),
+        nows: track ? kids(track, 'tl-now').length : 0,
+        laidOut: !!track && px(track.style.height)
+          && lanes.every(l => kids(l, 'tl-block').every(b => px(b.style.top) && px(b.style.height)))
+          && kids(track, 'tl-now').every(n => px(n.style.top))
+          && lanes.every(l => kids(l, 'tl-future').every(f => px(f.style.top))),
+        heights: lanes.map(l => kids(l, 'tl-block').map(b => parseFloat(b.style.height))),
+        html: [box, ...box.querySelectorAll('*')].map(n => n._html).join(''),
+        msg: (box.querySelector('.spec-msg') || {textContent:null}).textContent,
+      };
+    };
+    const r = {};
+"""
+
+
+def _timeline_script(page, scenario):
+    return (
+        MINI_DOM + "\n".join(_js(page, n) for n in TIMELINE_PARTS) + TIMELINE_HARNESS
+        + scenario + "\nconsole.log(JSON.stringify(r));"
+    )
+
+
+ROSTERED_LANE = {"label": "Rostered", "grey_after_now": False, "intervals": [
+    {"start": "2026-10-10T01:00:00Z", "end": "2026-10-10T14:00:00Z", "label": "CX9101 <b>"},
+    {"start": "2026-10-19T22:00:00Z", "end": "2026-10-22T10:00:00Z", "label": "R1E"},   # two and a half days
+]}
+FLOWN_LANE = {"label": "Flown", "grey_after_now": True, "intervals": [
+    {"start": "2026-10-10T01:00:00Z", "end": "2026-10-10T14:00:00Z", "label": "CX9101"},
+    {"start": "2026-10-12T01:00:00Z", "end": "2026-10-12T01:30:00Z", "label": "A1534"},  # half an hour
+    {"start": "2026-10-14T01:00:00Z", "end": "2026-10-14T05:00:00Z", "label": None},
+]}
+TIMELINE = {"type": "timeline", "title": "Duties <i>", "now": "2026-10-18T12:00:00Z",
+            "lanes": [ROSTERED_LANE, FLOWN_LANE]}
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
+def test_a_timeline_draws_two_lanes_of_blocks_a_now_line_and_the_greyed_future(client):
+    page = _page(client)
+    r = _node(_timeline_script(page, f"""
+        const box = renderSpec({json.dumps(TIMELINE)}, 'Roster', 'roster');
+        r.built = look(box);
+        r.observed = observers.map(o => o.observed.map(t => t.className));
+        // The next frame lays it out again - at the fallback still, with
+        // no height to measure here - and so does a resize.
+        r.frames = frames.length;
+        frames.splice(0).forEach(f => f());
+        box.querySelector('.tl-scroll').isConnected = true;
+        observers[0].callback([]);
+        r.relaid = look(box);
+        r.min = TL_MIN_BLOCK_PX;
+        r.inPanel = renderSpec({{type:'panel', children:[{{type:'empty', message:'x'}}, {json.dumps(TIMELINE)}]}}, 'Roster', 'roster')
+          .children.map(c => c.className);
+    """))
+
+    built = r["built"]
+    # Its title, the lanes' headings over a scrolling frame; in the frame
+    # the track, a lane each - lane 0 the left half, lane 1 the right - and
+    # the now line across both.
+    assert built["cls"] == "spec-timeline"
+    assert built["kids"] == ["t", "tl-head", "tl-scroll"]
+    assert built["title"] == "Duties <i>"
+    assert built["head"] == ["Rostered", "Flown"]
+    assert built["track"] == ["tl-lane l0", "tl-lane l1", "tl-now"]
+    assert built["lanes"] == [
+        {"cls": "tl-lane l0", "left": "0%", "width": "50%", "blocks": ["CX9101 <b>", "R1E"], "futures": 0},
+        {"cls": "tl-lane l1", "left": "50%", "width": "50%", "blocks": ["CX9101", "A1534", ""], "futures": 1},
+    ]
+    assert built["nows"] == 1
+    # Every one of an app's strings set as text, never markup.
+    assert built["html"] == ""
+    # Laid out at once, at the fallback height - no height to measure -
+    # without a throw; a short block held to the floor, a long one not.
+    assert built["laidOut"] is True
+    [rostered, flown] = built["heights"]
+    assert flown[1] == r["min"]
+    assert rostered[1] > r["min"]
+    # And again on the next frame, and on a resize, the observer watching
+    # the frame.
+    assert r["frames"] == 1
+    assert r["observed"] == [["tl-scroll"]]
+    assert r["relaid"] == built
+    # In a panel, it's one of the children.
+    assert r["inPanel"] == ["spec-msg", "spec-timeline"]
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
+def test_a_timeline_is_laid_out_to_its_viewport_and_opens_on_now(client):
+    page = _page(client)
+    r = _node(_timeline_script(page, f"""
+        const box = renderSpec({json.dumps(TIMELINE)}, 'Roster', 'roster');
+        const scroll = box.querySelector('.tl-scroll'), track = scroll.children[0];
+        // The viewport given a height, as a browser would, and resized.
+        const at = h => {{
+          scroll.clientHeight = h;
+          scroll.isConnected = true;
+          observers[0].callback([]);
+          return {{track: parseFloat(track.style.height), block: parseFloat(kids(track.children[1], 'tl-block')[0].style.height),
+                  now: parseFloat(kids(track, 'tl-now')[0].style.top), top: scroll.scrollTop}};
+        }};
+        r.built = at(0);
+        r.tall = at(480);
+        r.hidden = at(0);
+        r.short = at(62);
+        r.fallback = TL_FALLBACK_PX;
+    """))
+
+    # Built, before it's on the page: laid out at the fallback, nothing
+    # scrolled; hidden (no height), the last layout stands.
+    assert "top" not in r["built"]   # undefined: never set
+    assert r["hidden"] == r["tall"]
+    # A week to the viewport's height: twice the height, twice the axis
+    # and every block on it (this one long enough to clear the floor).
+    assert r["tall"]["track"] == pytest.approx(r["built"]["track"] * 480 / r["fallback"])
+    assert r["tall"]["block"] == pytest.approx(r["built"]["block"] * 480 / r["fallback"])
+    # Its first real height opens it on now, mid-viewport.
+    assert r["tall"]["now"] - r["tall"]["top"] == pytest.approx(240)
+    # A viewport shorter than a week's least (a 2x1 tile's) keeps that
+    # scale - less than a week in view, further to scroll - and the time
+    # at its top through the resize.
+    assert r["short"]["track"] == pytest.approx(r["built"]["track"])
+    assert r["short"]["block"] == pytest.approx(r["built"]["block"])
+    assert r["short"]["top"] / r["short"]["track"] == pytest.approx(r["tall"]["top"] / r["tall"]["track"])
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
+def test_a_timeline_with_no_now_has_no_line_and_greys_nothing(client):
+    page = _page(client)
+    one = {"type": "timeline", "title": None, "now": None, "lanes": [FLOWN_LANE]}
+    unlabelled = {"type": "timeline", "now": "2026-10-18T12:00:00Z",
+                  "lanes": [{**ROSTERED_LANE, "label": None}, {**FLOWN_LANE, "label": ""}]}
+    r = _node(_timeline_script(page, f"""
+        r.one = look(renderSpec({json.dumps(one)}, 'Roster', 'roster'));
+        r.unlabelled = look(renderSpec({json.dumps(unlabelled)}, 'Roster', 'roster'));
+    """))
+
+    # One lane, the whole width; no now, so no line - and nothing greyed,
+    # grey_after_now or not, with no now to grey after.
+    assert r["one"]["kids"] == ["tl-head", "tl-scroll"]
+    assert r["one"]["track"] == ["tl-lane l0"]
+    assert r["one"]["lanes"] == [
+        {"cls": "tl-lane l0", "left": "0%", "width": "100%", "blocks": ["CX9101", "A1534", ""], "futures": 0},
+    ]
+    assert r["one"]["nows"] == 0
+    assert r["one"]["laidOut"] is True
+    # No title, no headings: neither drawn.
+    assert r["unlabelled"]["kids"] == ["tl-scroll"]
+    assert r["unlabelled"]["nows"] == 1
+    assert [lane["futures"] for lane in r["unlabelled"]["lanes"]] == [0, 1]
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
+def test_a_hand_built_timeline_is_drawn_as_far_as_it_can_be(client):
+    page = _page(client)
+    good = {"start": "2026-10-10T01:00:00Z", "end": "2026-10-10T02:00:00Z", "label": "OK"}
+    junk = {"type": "timeline", "now": "not a time", "lanes": [
+        {"intervals": [good, {"start": "2026-10-10T03:00:00Z"}, {"start": "2026-10-10T05:00:00Z", "end": "2026-10-10T04:00:00Z"},
+                       None, "CX105", {"start": 5, "end": 6}]},
+        "a lane",
+        {"intervals": [good]},
+    ]}
+    r = _node(_timeline_script(page, f"""
+        r.junk = look(renderSpec({json.dumps(junk)}, 'X', 'x'));
+        r.none = look(renderSpec({{type:'timeline', title:'Duties', lanes:[{{intervals:[]}}, {{intervals:[]}}]}}, 'X', 'x'));
+        r.noLanes = look(renderSpec({{type:'timeline'}}, 'X', 'x'));
+    """))
+
+    # Two lanes at most; an interval without both ends, in order, left
+    # out; a now that isn't a time, no line.
+    assert [lane["blocks"] for lane in r["junk"]["lanes"]] == [["OK"], []]
+    assert r["junk"]["nows"] == 0
+    # Nothing to draw: said, under its title.
+    assert r["none"]["kids"] == ["t", "spec-msg"]
+    assert (r["none"]["title"], r["none"]["msg"]) == ("Duties", "No data")
+    assert r["noLanes"]["msg"] == "No data"
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
+def test_a_timeline_replaced_is_let_go_of(client):
+    page = _page(client)
+    r = _node(_timeline_script(page, f"""
+        const a = renderSpec({json.dumps(TIMELINE)}, 'Roster', 'roster');
+        const b = renderSpec({json.dumps(TIMELINE)}, 'Roster', 'roster');
+        a.querySelector('.tl-scroll').isConnected = true;
+        b.querySelector('.tl-scroll').isConnected = false;   // its tile drawn afresh
+        r.before = timelines.size;
+        releaseTimelines();
+        r.after = timelines.size;
+        r.disconnected = observers.map(o => o.disconnected);
+        // A resize reaching one that's gone lets it go too.
+        a.querySelector('.tl-scroll').isConnected = false;
+        observers[0].callback([]);
+        r.last = [timelines.size, observers.map(o => o.disconnected)];
+    """))
+
+    assert (r["before"], r["after"]) == (2, 1)
+    assert r["disconnected"] == [0, 1]
+    assert r["last"] == [0, [1, 1]]
+
+
+def test_tiles_drawn_afresh_let_go_of_their_timelines(client):
+    page = _page(client)
+    # Wherever Home's faces are replaced - Home painted, or one tile redrawn.
+    paint = _js_function(page, "paintHome")
+    assert paint.endswith("\n    }\n    releaseTimelines();   // the faces just replaced")
+    tile = _js_function(page, "repaintTile")
+    assert tile.index("tile.replaceChildren(renderSpec(spec, t.name, appId));") < tile.index("releaseTimelines();")
+
+
+def test_the_timeline_tones_are_in_every_theme(client):
+    page = _page(client)
+    css = page[: page.index("</style>")]
+    light = css[css.index(":root{") : css.index("@media (prefers-color-scheme:dark)")]
+    os_dark = css[css.index("@media (prefers-color-scheme:dark)") : css.index(':root[data-theme="dark"]{')]
+    toggle_dark = css[css.index(':root[data-theme="dark"]{') :]
+    toggle_dark = toggle_dark[: toggle_dark.index("}")]
+    for block in (light, os_dark, toggle_dark):
+        for token in ("--timeline-a:", "--timeline-a-ink:", "--timeline-b:", "--timeline-b-ink:"):
+            assert token in block, token
+    # Coloured by lane: lane 0 the lighter tone, lane 1 the darker.
+    assert ".tl-lane.l0 .tl-block{background:var(--timeline-a);color:var(--timeline-a-ink);}" in css
+    assert ".tl-lane.l1 .tl-block{background:var(--timeline-b);color:var(--timeline-b-ink);}" in css
 
 
 # ---------- an uninstalled app's data: Remove data ----------

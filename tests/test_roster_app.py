@@ -4,8 +4,10 @@ duties, labelling them and routing them by the clock.
 
 The app (tests/fixtures/apps/roster/app.py) is loaded by path, as the
 host loads it - nothing added to sys.path - and its module functions
-called directly, with a fixed `now`. What the host does with what it
-writes is test_app_actions.py's: the round trip through the action route.
+called directly, with a fixed `now`; its render() too, over a ctx of
+sessions written straight in, with a fixed today. What the host does
+with what it writes is test_app_actions.py's: the round trip through the
+action route.
 
 tests/fixtures/rosters/sample.ics is a synthetic roster - fake flights
 and ports - in a Cathay-style export's shape: CRLF lines, a folded and
@@ -18,6 +20,9 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
+
+import host
+from plugins.base import iso_utc, write_session
 
 FIXTURES = Path(__file__).parent / "fixtures"
 SAMPLE = FIXTURES / "rosters" / "sample.ics"
@@ -251,3 +256,79 @@ def test_a_duty_twice_in_the_file_counts_once():
 
     assert len(duties) == 2
     assert roster.daily_hours(duties, now) == {("duty_hours_complete", "2025-11-19"): 4.0}
+
+
+# ---------- the tile ----------
+#
+# render() over a ctx of sessions written straight in, as the host would
+# have filed them, with today fixed: what it draws, and how far back.
+
+TODAY = date(2026, 10, 15)
+PICKER = {
+    "type": "input", "key": "file", "action": "upload", "label": "Upload roster",
+    "kind": "file", "unit": None, "options": None, "accept": ".ics",
+}
+
+
+def file_duty(conn, kind, start, end, code, source="app:roster"):
+    write_session(conn, source, kind, start, end, {"capture": "live", "type": "other", "code": code})
+
+
+def drawn(conn):
+    """render()'s spec, and the instants either side of it."""
+    before = datetime.now(timezone.utc).replace(microsecond=0)
+    spec = roster.render(host.Ctx(conn, today=TODAY), {})
+    return spec, before, datetime.now(timezone.utc)
+
+
+def test_render_draws_the_rostered_and_the_flown_on_a_timeline(conn):
+    # About six months back - 183 days before today, from that day's
+    # first second - and everything still to come.
+    file_duty(conn, "duties_complete", "2026-04-14T23:59:59Z", "2026-04-15T08:00:00Z", "CX9100")   # a day too early
+    file_duty(conn, "duties_complete", "2026-04-15T00:00:00Z", "2026-04-15T04:30:00Z", "A1534")
+    file_duty(conn, "duties_complete", "2026-10-10T01:00:00Z", "2026-10-10T14:00:00Z", "CX9101")
+    file_duty(conn, "duties_rostered", "2026-10-20T22:00:00Z", "2026-10-21T10:00:00Z", "R1E")
+    file_duty(conn, "duties_rostered", "2099-11-05T15:10:00Z", "2099-11-06T04:10:00Z", "CX9102")
+    # Another source's duty with no end: nothing to draw a block of.
+    file_duty(conn, "duties_rostered", "2026-10-22T00:00:00Z", None, "R2E", source="webhook")
+    conn.commit()
+
+    spec, before, after = drawn(conn)
+
+    # The picker on top; the timeline under it, rostered then flown, each
+    # duty a block labelled with its code; the line at now, the render's
+    # own; the flown side greyed after it.
+    [picker, timeline] = spec["children"]
+    assert spec["type"] == "panel" and picker == PICKER
+    assert iso_utc(before) <= timeline["now"] <= iso_utc(after)
+    assert timeline == {"type": "timeline", "title": None, "now": timeline["now"], "lanes": [
+        {"label": "Rostered", "grey_after_now": False, "intervals": [
+            {"start": "2026-10-20T22:00:00Z", "end": "2026-10-21T10:00:00Z", "label": "R1E"},
+            {"start": "2099-11-05T15:10:00Z", "end": "2099-11-06T04:10:00Z", "label": "CX9102"},
+        ]},
+        {"label": "Flown", "grey_after_now": True, "intervals": [
+            {"start": "2026-04-15T00:00:00Z", "end": "2026-04-15T04:30:00Z", "label": "A1534"},
+            {"start": "2026-10-10T01:00:00Z", "end": "2026-10-10T14:00:00Z", "label": "CX9101"},
+        ]},
+    ]}
+
+
+def test_a_duty_with_no_code_is_a_block_with_no_label(conn):
+    write_session(conn, "app:roster", "duties_complete", "2026-10-10T01:00:00Z", "2026-10-10T02:00:00Z", {})
+    conn.commit()
+
+    [_, timeline] = drawn(conn)[0]["children"]
+
+    assert timeline["lanes"][1]["intervals"] == [
+        {"start": "2026-10-10T01:00:00Z", "end": "2026-10-10T02:00:00Z", "label": ""},
+    ]
+
+
+def test_render_with_nothing_in_the_window_asks_for_a_roster(conn):
+    empty = {"type": "panel", "children": [{"type": "empty", "message": "Upload your roster .ics"}, PICKER]}
+    assert drawn(conn)[0] == empty
+
+    # A roster flown before the window is still nothing to draw.
+    file_duty(conn, "duties_complete", "2026-04-14T01:00:00Z", "2026-04-14T09:00:00Z", "CX9101")
+    conn.commit()
+    assert drawn(conn)[0] == empty

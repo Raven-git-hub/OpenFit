@@ -283,6 +283,23 @@ own calls to its device API. Full direction:
   (`ValueError`, "accept is only for a file"), whose specs — and a file's
   without one — carry `accept: None`;
   `docs/architecture/input-primitives.md`),
+  `timeline(lanes, now=None, title=None)` → `{"type": "timeline", title,
+  now, lanes: [{label, grey_after_now, intervals: [{start, end,
+  label}]}]}` (a generic two-lane interval timeline — a plan beside the
+  actual — whose pixels are all the page's: `lanes` a list or tuple of 1
+  or 2 (`TIMELINE_LANES`; else `ValueError`, not a list `TypeError`), in
+  visual order, lane 0 left and lighter, lane 1 right and darker, coloured
+  by index (no colour field); each lane a dict of only `LANE_FIELDS` —
+  `label` text or `None`, `grey_after_now` a bool (default `False`; `True`
+  for a lane with nothing after `now`, greyed below it), `intervals` a
+  list (required, `[]` for an empty lane) of dicts of only
+  `INTERVAL_FIELDS` — `start` and `end` both required (no open blocks, unlike
+  `write_session()`) and normalised by `_session_instant()` to `iso_utc()`
+  text, `end >= start` (compared as those strings), `label` text or `None`;
+  a lane or interval not a dict `TypeError`, an unknown field (a misspelt
+  `gray_after_now`) `ValueError` (`_fields()`), a missing end, a time that
+  isn't one or an end before its start `ValueError`; `now` normalised the
+  same way or `None` (no line); `title` text or `None`, else `TypeError`),
   `empty(message)`; the host's own is `{"type": "error", "message"}`. `render_app(app, conn, cfg=None,
   today=None)` calls `render(ctx, dict(cfg or {}))` (the ctx made for
   `app`) — `cfg` the
@@ -476,13 +493,20 @@ own calls to its device API. Full direction:
   code, label, raw, [flight_no, dep, arr, position]}`; then each
   `(metric, day)` total once, `ctx.write_metric(…, date=day)` — a day
   over the declared 24 h refused as "<day>: <why>". All or nothing (the
-  route rolls back). `render()`: `empty("Upload your roster .ics")` over
-  the picker (`input` `file`/`upload`, kind `"file"`, `accept` `.ics`,
-  "Upload roster") before any data; else the flown hours (all
-  `duty_hours_complete`, summed, to a tenth) as a `number` (unit `h`, no
-  label) captioned "flown · N days · rostered X h · M days" over the
-  picker — one line of text and no sparkline, so a 2×1 tile has room for
-  the picker (`render()` isn't told its size).
+  route rolls back). `render()` reads the duties back, both kinds through
+  `ctx.sessions(kind, since=…)`, `since` 183 days before `ctx.today()`
+  (about six months, by the start's UTC date) and no `until` (every duty
+  to come): none → `empty("Upload your roster .ics")` over the picker
+  (`input` `file`/`upload`, kind `"file"`, `accept` `.ics`, "Upload
+  roster"), a roster all older than that included; else the picker over a
+  `timeline` — lane 0 "Rostered" (`duties_rostered`), lane 1 "Flown"
+  (`duties_complete`, `grey_after_now`), each session an interval of its
+  `start`/`end` labelled with `summary["code"]` (`""` for none; a session
+  with no end, only another source's, left out — `_lane()`), `now`
+  `datetime.now(timezone.utc)`. The timeline fills the rest of the tile
+  and scrolls, laid out to its size by the page (`render()` isn't told
+  it). The `duty_hours_*` metrics are still written; the tile no longer
+  reads them (`app.yaml`'s `reads` still names them).
 - `app/home_layout.py` — the Home tab's layout, one `settings` row
   (`LAYOUT_KEY` `home_layout`, no migration): `{"tabs": [{id, name,
   mode: "flow", subtitle, items: [{instance_id, app_id, size: {w, h},
@@ -538,7 +562,9 @@ own calls to its device API. Full direction:
   /api/home-layout` (`{ok: true}`, or 400 storing nothing).
 - `app/templates/index.html` — the data console, one self-contained page
   (vanilla JS, no build step, no external calls or web fonts; every colour/font/
-  radius in its `CUSTOMISE OPENFIT HERE` token block). Under the top bar
+  radius in its `CUSTOMISE OPENFIT HERE` token block — the timeline's two lane
+  tones, `--timeline-a`/`--timeline-b`, and the ink each takes,
+  `--timeline-a-ink`/`--timeline-b-ink`, in all three theme blocks). Under the top bar
   (date, a `settings` button, the theme toggle) sits the original angled tab
   strip: Home's tabs (far left, one per tab of the layout, drawn by
   `paintTabStrip()` into `#layoutTabs`, a `display: contents` region — until
@@ -926,7 +952,34 @@ own calls to its device API. Full direction:
   field held meanwhile, then `{ok, spec}` → `repaintTile(appId, spec)`, or
   `{ok: false}` → its `error` in the message line, the field kept as
   typed (a file still picked); drawn with no app id, Save is off; in Configure the face is
-  inert, its input with it), `empty`/`error` (muted, centred; error under
+  inert, its input with it), `timeline` (`timelineSpec(s)`: its `title`
+  over the lanes' labels (`.tl-head`, a heading a lane, drawn if any lane
+  has one) over a frame (`.tl-scroll`, `overflow-y: auto`, filling the rest
+  of the tile — in a panel, what its siblings leave) holding the axis
+  (`.tl-track`, `position: relative`, its height the axis'): a `.tl-lane`
+  column a lane (`.l0` left half and `--timeline-a`/`--timeline-a-ink`,
+  `.l1` right half and `--timeline-b`/`--timeline-b-ink`; one lane the
+  whole width), each interval an absolutely placed `.tl-block` with its
+  label as text; a `.tl-now` rule across both in `--accent` when `now` is
+  set; and in a `grey_after_now` lane, with a `now`, a `.tl-future` hatch
+  from it down, under the blocks. The axis runs from the earliest start to
+  the latest end (or `now`); `TL_VIEW_MS`, a week, fills the frame's
+  height (`px = max(height, TL_MIN_WEEK_PX 240) / week`, so a frame under
+  240px — a 2×1's — shows less than a week and scrolls further, never
+  squeezing a week until every block is at the floor), each block `top =
+  (start − t0)·px`, `height = max(TL_MIN_BLOCK_PX 18, length·px)`, and the
+  track as tall as the axis or its last block. The page builds it detached,
+  so the layout runs at `TL_FALLBACK_PX` (240) at once, then in a
+  `requestAnimationFrame` and on every `ResizeObserver` callback on the
+  frame, at its `clientHeight`; no height once laid out (Home behind
+  Data) keeps the last layout. The first real layout scrolls `now` to the
+  middle (none: the end into view); after that the time at the top is kept
+  (`onscroll`), through a resize. Each observer is in `timelines` and let
+  go of by `releaseTimelines()` — called at the end of `paintHome()` and
+  `repaintTile()`, and by the observer finding its frame gone —
+  disconnecting any whose frame `!isConnected`. A hand-built spec draws
+  what it can: two lanes at most, an interval without both ends in order
+  dropped; no intervals → "No data"), `empty`/`error` (muted, centred; error under
   "Couldn't render <name>"), any other type an error tile. A spec is drawn
   for its app — `renderSpec(spec, name, appId)`, the id threaded from the
   tile (`paintTiles()`, `repaintTile()`) through a panel to its input. No apps → a note pointing to ＋ Add Application (or the apps
@@ -1614,6 +1667,19 @@ same PR:
   `derived.session_rows()` so the route and the ctx share it (the route's
   output byte-for-byte unchanged); the data the roster timeline and
   sleep analysis build on.
+  Then the timeline display primitive landed (no migration, no route
+  change): `ctx.timeline(lanes, now, title)`, one lane or two of
+  intervals on one vertical time axis — the host validating and
+  normalising, the page laying it out to its tile (a week to the frame's
+  height, never under 240px to the week; an 18px block floor; a now line;
+  a `grey_after_now` lane greyed after it; scrolled, opening on now) and
+  measuring after attach (a `requestAnimationFrame`, a `ResizeObserver`
+  released with its tile) — and the `roster` app's tile, its centre
+  column: rostered against flown over about six months and all to come.
+  Still to come for it: the trip lists either side (planning, reports),
+  their popups and PDF, grouping duties into trips (the layover
+  definition, `dep`/`arr`), per-block detail on click or hover, and
+  `base_tz` day gridlines and WOCL shading on the axis.
   Still to come for write-back: an app replacing its own sessions and
   metrics over a date range (so a re-planned roster's dropped duties go),
   the rostered↔flown per-duty matching (needs a derived duty key — the

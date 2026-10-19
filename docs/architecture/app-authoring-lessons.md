@@ -131,7 +131,8 @@ in three different homes.
   spec, computed from the dataset (via `ctx`) plus this instance's config. It holds
   no state, keeps no session, makes no outbound call.
 - **The host draws the spec.** The app computes; the host renders from a fixed
-  vocabulary of display primitives (`number`, `line`, `panel`, `empty`, `error`).
+  vocabulary of display primitives (`number`, `line`, `panel`, `input`, `timeline`,
+  `empty`, `error`).
   Keep the vocabulary tight — add a primitive only when a real app needs it.
 - **The spec is a transient message, not a file.** Generated per render, drawn,
   and gone. Nothing in the app folder is the "display"; the only display-side file

@@ -273,6 +273,7 @@ the dicts itself.
 | `ctx.line(points, title=None)` | `{"type": "line", "points": [[date, value], ...], "title"}` | A sparkline with its title above it. See [the line builder](#the-line-builder), below. |
 | `ctx.panel(*children)` or `ctx.panel([children])` | `{"type": "panel", "children": [...]}` | Its children stacked in order. A number keeps its height and a line takes the rest. |
 | `ctx.input(key, action, label=None, kind="number", unit=None, options=None, accept=None)` | `{"type": "input", "key", "action", "label", "kind", "unit", "options", "accept"}` | A field under its label (small, uppercase), its unit and a **Save** button beside it. `kind` is one of `INPUT_KINDS`: `"number"` (the default), `"text"`, `"select"` — a dropdown of `options`, a non-empty list of non-empty strings, required for a select and refused for the other kinds (`options` is `null` in their specs) — or `"file"`, a file picker offering `accept`'s hints (`".txt,.csv"`, `"text/plain"`: optional non-empty text, refused for the other kinds — `accept` is `null` in their specs, and in a file's without one). Save, or Enter, sends `action` to the app's `handle()` with the payload `{key: what was entered}` (a number for kind `"number"`, text as typed for `"text"`, the chosen option's string as written for `"select"`, and for `"file"` the file picked, a `FileUpload` — Save only, sent multipart), and the tile is redrawn from the fresh spec the reply carries; a refusal shows under the field, which keeps what was entered. A blank field, or a number that isn't one, says so and sends nothing; so does a select still on its "Choose…" placeholder, a picker with no file picked ("Choose a file.") or one over 25 MB ("File too large (max 25 MB)."). The host doesn't check a select's value is one of its options (the action route remembers no render), nor what a file holds: `handle()` does. In a panel it sits at the foot. In Configure it's inert, like the rest of the face. See [Writing](#writing-apps-as-sources) and `docs/architecture/input-primitives.md`. |
+| `ctx.timeline(lanes, now=None, title=None)` | `{"type": "timeline", "title", "now", "lanes": [{"label", "grey_after_now", "intervals": [{"start", "end", "label"}, ...]}, ...]}` | One lane or two of time-blocks side by side on one vertical time axis, in a frame that scrolls — lane 0 the left column in the lighter tone, lane 1 the right in the darker — under the lanes' labels; a line at `now`, and a `grey_after_now` lane greyed below it. See [the timeline builder](#the-timeline-builder), below. |
 | `ctx.empty(message=None)` | `{"type": "empty", "message"}` | Muted, centred text (default "No data yet"). |
 | (the host's) | `{"type": "error", "message"}` | Muted, centred: "Couldn't render <app name>" over the message. |
 
@@ -307,6 +308,75 @@ line, and so do two dated points with a day missing between them. A point
 with a gap on both sides is drawn as a dot. No points shows "No data", and a
 single point is a dot. The page also draws a hand-built spec whose points
 are `{date, value}` objects or bare numbers.
+
+### The timeline builder
+
+```python
+ctx.timeline(lanes, now=None, title=None)
+# -> {"type": "timeline", "title": title, "now": "2026-10-19T00:00:00Z",
+#     "lanes": [{"label": "Rostered", "grey_after_now": False,
+#                "intervals": [{"start": "...Z", "end": "...Z", "label": "CX105"}, ...]},
+#               {"label": "Flown", "grey_after_now": True, "intervals": [...]}]}
+```
+
+A generic two-lane interval timeline — a roster's plan against what was flown,
+or a night's planned sleep against the sleep a device saw — where the host
+carries the times and the page owns every pixel, as with a line.
+
+- **`lanes`** is a list (or tuple) of one lane or two, in the order drawn:
+  lane 0 is the left column, in the lighter tone (`--timeline-a`, a plan),
+  and lane 1 the right, in the darker (`--timeline-b`, the actual). One lane
+  takes the whole width, in lane 0's tone. The colour is by lane index; there's
+  no colour field. Any other count raises `ValueError`, and lanes that aren't a
+  list raise `TypeError`. Each lane is a dict of:
+  - `label`: text or `None`, the column's heading;
+  - `grey_after_now`: `True` or `False` (the default) — `True` for a lane
+    that has nothing after `now`, like the flown side of a roster, whose
+    column is greyed from the now line down;
+  - `intervals`: a list of `{start, end, label}`, required (`[]` for an empty
+    lane). `start` and `end` are each a `datetime` or ISO-8601 text,
+    normalised as a session's times are (`_session_instant()`: UTC, whole
+    seconds, a naive time taken as UTC, written `YYYY-MM-DDTHH:MM:SSZ`). Both
+    are required — the timeline has no open-ended blocks, unlike
+    `write_session()` — and the end is never before the start (the same
+    instant is allowed). `label` is text or `None`: the short code drawn on the
+    block, such as `CX105`.
+
+  A lane or an interval that isn't a dict raises `TypeError`; a field it
+  doesn't take raises `ValueError` (so a misspelt `gray_after_now` is said, not
+  ignored); a label that isn't text, a `grey_after_now` that isn't a bool, or
+  intervals that aren't a list raise `TypeError`; a missing end, a time that
+  isn't one, or an end before its start raise `ValueError`.
+- **`now`** is a `datetime`, ISO-8601 text or `None`, normalised the same way:
+  where the now line is drawn. `None` draws no line, and greys nothing.
+- **`title`** is optional text, drawn small above the timeline, as a line's is.
+
+**How it's drawn.** The axis runs from the earliest start to the latest end
+(or `now`, if that's later), down the tile. The timeline fills what's left of
+its tile (in a panel, the space its siblings leave) with a frame that scrolls,
+and lays the axis out to the frame's height: a week fills it
+(`TL_VIEW_MS`), so a longer span scrolls and a rest of days is real empty axis
+you scroll past. A frame shorter than 240px (`TL_MIN_WEEK_PX` — a 2×1 tile's)
+keeps that scale and shows less than a week, scrolling further, rather than
+squeezing a week into it until every block is at the floor and runs into the
+next. A block runs from its start to its end, never shorter than 18px
+(`TL_MIN_BLOCK_PX`), so a short duty stays legible and tappable; its label
+sits at its top, cut to fit. The now line crosses both lanes in `--accent`,
+and a `grey_after_now` lane is hatched grey from it down, under its blocks.
+The frame opens with the now line in the middle (with no `now`, the end in
+view), and a resize keeps the time at its top. Times are UTC; there are no day
+gridlines yet. A hand-built spec is drawn as far as it can be: two lanes at
+most, and an interval without both ends, in order, left out. No intervals at
+all shows "No data".
+
+The frame's height is only known once the tile is on the page, which it isn't
+while `renderSpec()` builds it. So the timeline is laid out at a 240px
+fallback (`TL_FALLBACK_PX`) as it's built, then again on the next animation
+frame and on every resize, at the height it has, by a `ResizeObserver` on the
+frame. That observer is disconnected once its tile is drawn afresh
+(`releaseTimelines()`, called wherever Home's faces are replaced, and by the
+observer itself on finding its frame gone). With no height at all — Home behind
+another tab — the last layout stands.
 
 **Errors never fail the page.** `render_app()` catches anything `render()`
 raises and logs it with the traceback (`[apps] <id>: render failed`). It also
@@ -655,10 +725,20 @@ summary)`: `kind` `duties_complete` if it had ended at upload, else
 `position`. Then each kind's hours a day (by the UTC date a duty starts,
 summed first, then one `ctx.write_metric(…, date=day)` a day), held to the
 declared 0–24. A time with a `TZID` or none (floating) refuses the upload, as
-does a file with no duty; the route rolls back whatever was filed. Its tile
-is the flown hours with one line of caption — the days flown, the rostered
-hours and days — over the picker, and no sparkline: the two fit a 2×1 tile,
-a line beside them wouldn't, and `render()` isn't told its tile's size.
+does a file with no duty; the route rolls back whatever was filed.
+
+Its tile reads the duties back: `ctx.sessions()` of both kinds since about six
+months before today (183 days, by the day a duty starts in UTC), and every duty
+still to come. With none, it's `empty("Upload your roster .ics")` over the
+picker. Otherwise it's the picker on top and, under it, a timeline
+(`ctx.timeline()`, above): rostered duties in the left lane, flown ones in the
+right with `grey_after_now`, each a block from its start to its end labelled
+with its code, and the now line at the time of the render. The timeline fills
+the rest of the tile and scrolls, laid out to whichever size the tile is
+(`render()` isn't told it). A duty with no end, which only another source could
+file, is left out. The `duty_hours_*` metrics are still written on every
+upload; the tile no longer reads them. A roster that's all over six months old
+is filed but draws as the empty state.
 
 ## Installing an app
 

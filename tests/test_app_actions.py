@@ -1470,31 +1470,97 @@ def test_reupload_replaces_same_duty(client, conn, apps_dir, upload_dir):
     assert len(rows(conn)) == 4
 
 
-def test_the_roster_app_shows_flown_against_rostered(client, conn, apps_dir, upload_dir):
+def ics_at(moment):
+    """A datetime as an .ics UTC time: 20251105T151000Z."""
+    return moment.strftime("%Y%m%dT%H%M%SZ")
+
+
+def stamp(moment):
+    """A datetime as a session's stored timestamp: 2025-11-05T15:10:00Z."""
+    return moment.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def drawn_now(before, after, spec):
+    """The timeline's now, checked to be the render's: between the two
+    instants either side of the request, as a session's time is stored."""
+    assert stamp(before) <= spec["now"] <= stamp(after), (before, spec["now"], after)
+    return spec["now"]
+
+
+def test_the_roster_app_shows_rostered_against_flown_on_a_timeline(client, conn, apps_dir, upload_dir):
     install_roster(client)
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    hours = timedelta(hours=1)
+    duties = [
+        # Flown: forty days ago and three; and one over six months ago,
+        # filed, but before the tile's window.
+        ("CX9102 ZZB-ZZA", now - timedelta(days=200), 11 * hours),
+        ("A1534", now - timedelta(days=40), 4.5 * hours),
+        ("CX 9101 ZZA-ZZB RP", now - timedelta(days=3), 13 * hours),
+        # Rostered: two days ahead.
+        ("R1E", now + timedelta(days=2), 12 * hours),
+    ]
 
-    resp = upload_roster(client, sample_roster(2025))
-    # The upload's reply is the tile, drawn afresh: the flown hours, and
-    # under them their days and the rostered hours and theirs, over the
-    # picker. One line of text, so it fits a 2x1 tile.
-    flown = {"type": "number", "value": 40.5, "label": None, "unit": "h",
-             "caption": "flown · 4 days · rostered 0 h · 0 days"}
-    assert resp.get_json() == {"ok": True, "spec": {"type": "panel", "children": [flown, ROSTER_PICKER]}}
+    before = datetime.now(timezone.utc)
+    resp = upload_roster(client, roster_ics(*((t, ics_at(a), ics_at(a + d)) for t, a, d in duties)))
+    after = datetime.now(timezone.utc)
 
-    assert upload_roster(client, roster_ics(("05-Dec R1E", "20991205T000000Z", "20991205T100000Z"))).status_code == 200
-    flown["caption"] = "flown · 4 days · rostered 10 h · 1 day"
-    assert client.post("/api/app/roster/render").get_json() == {"type": "panel", "children": [flown, ROSTER_PICKER]}
+    # The upload's reply is the tile, drawn afresh: the picker, over the
+    # timeline - rostered on the left, flown on the right and greyed
+    # after now - each duty a block of its start and end, labelled with
+    # its code, oldest first.
+    block = lambda i: {"start": stamp(duties[i][1]), "end": stamp(duties[i][1] + duties[i][2]),
+                       "label": ["CX9102", "A1534", "CX9101", "R1E"][i]}
+    [picker, timeline] = resp.get_json()["spec"]["children"]
+    assert picker == ROSTER_PICKER
+    assert timeline == {"type": "timeline", "title": None, "now": drawn_now(before, after, timeline), "lanes": [
+        {"label": "Rostered", "grey_after_now": False, "intervals": [block(3)]},
+        {"label": "Flown", "grey_after_now": True, "intervals": [block(1), block(2)]},
+    ]}
+    # The same tile from the render route.
+    before = datetime.now(timezone.utc)
+    again = client.post("/api/app/roster/render").get_json()
+    after = datetime.now(timezone.utc)
+    assert again["children"][0] == ROSTER_PICKER
+    assert again["children"][1] == {**timeline, "now": drawn_now(before, after, again["children"][1])}
+
+    # The hours a day are filed as they were: the display is all that changed.
+    assert [(r[2], r[3]) for r in rows(conn)] == [
+        (FLOWN, 11.0), (FLOWN, 4.5), (FLOWN, 13.0), (ROSTERED_HOURS, 12.0),
+    ]
 
 
 def test_the_roster_app_with_only_a_roster_to_come_has_flown_nothing(client, conn, apps_dir, upload_dir):
     install_roster(client)
 
-    resp = upload_roster(client, sample_roster(2099))
+    spec = upload_roster(client, sample_roster(2099)).get_json()["spec"]
 
+    # Every duty still to come, however far ahead; nothing flown - an
+    # empty lane, still drawn, greyed after now.
+    [picker, timeline] = spec["children"]
+    assert picker == ROSTER_PICKER
+    rostered, flown = timeline["lanes"]
+    assert [(i["start"], i["end"], i["label"]) for i in rostered["intervals"]] == [
+        ("2099-11-05T15:10:00Z", "2099-11-06T04:10:00Z", "CX9101"),
+        ("2099-11-08T02:00:00Z", "2099-11-08T13:00:00Z", "CX9102"),
+        ("2099-11-09T22:00:00Z", "2099-11-10T10:00:00Z", "R1E"),
+        ("2099-11-12T01:00:00Z", "2099-11-12T05:30:00Z", "A1534"),
+    ]
+    assert (rostered["label"], rostered["grey_after_now"]) == ("Rostered", False)
+    assert flown == {"label": "Flown", "grey_after_now": True, "intervals": []}
+
+
+def test_a_roster_flown_over_six_months_ago_draws_as_the_empty_state(client, conn, apps_dir, upload_dir):
+    install_roster(client)
+
+    resp = upload_roster(client, sample_roster(2020))
+
+    # Filed - every duty, and its hours - but all of it before the tile's
+    # window, about six months back: nothing to draw, so the tile asks
+    # for a roster, as before the first.
+    assert len(duty_rows(conn)) == 4
     assert resp.get_json()["spec"] == {"type": "panel", "children": [
-        {"type": "number", "value": 0, "label": None, "unit": "h",
-         "caption": "flown · 0 days · rostered 40.5 h · 4 days"},
-        ROSTER_PICKER,
+        {"type": "empty", "message": "Upload your roster .ics"}, ROSTER_PICKER,
     ]}
 
 

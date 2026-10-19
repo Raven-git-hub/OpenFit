@@ -69,6 +69,15 @@
   --tile-guide:color-mix(in srgb, var(--border) 35%, transparent);
   --spark:var(--accent);
 
+  /* timeline - an interval timeline's two lanes, one hue: lane 0 (the
+     left, a plan - rostered) the lighter tone, lane 1 (the right, the
+     actual - flown) the darker, each with the ink that reads on it. Its
+     now line is --accent; the greyed future and the frame, the neutrals. */
+  --timeline-a:#b4a8f0;
+  --timeline-a-ink:var(--ink);
+  --timeline-b:#5a47c9;
+  --timeline-b-ink:var(--accent-ink);
+
   --radius:14px;
   --radius-sm:9px;
   --shadow:0 1px 2px rgba(20,28,27,.06), 0 8px 24px rgba(20,28,27,.05);
@@ -99,6 +108,10 @@
     --good:#46c06e;
     --warn:#e0a83a;
     --crit:#ea6a63;
+    --timeline-a:#b3a9f4;
+    --timeline-a-ink:var(--accent-ink);
+    --timeline-b:#5d4ecc;
+    --timeline-b-ink:var(--ink);
     --shadow:0 1px 2px rgba(0,0,0,.3), 0 10px 30px rgba(0,0,0,.35);
   }
 }
@@ -123,6 +136,10 @@
   --good:#46c06e;
   --warn:#e0a83a;
   --crit:#ea6a63;
+  --timeline-a:#b3a9f4;
+  --timeline-a-ink:var(--accent-ink);
+  --timeline-b:#5d4ecc;
+  --timeline-b-ink:var(--ink);
   --shadow:0 1px 2px rgba(0,0,0,.3), 0 10px 30px rgba(0,0,0,.35);
 }
 
@@ -632,6 +649,44 @@ h5 + .dnote{margin-top:0;}
 .spec-line .dot{position:absolute;width:6px;height:6px;margin:-3px 0 0 -3px;border-radius:50%;background:var(--spark);}
 .spec-line .dot.end{width:8px;height:8px;margin:-4px 0 0 -4px;box-shadow:0 0 0 2px var(--surface);}
 .spec-line .plot > .spec-msg{position:absolute;inset:0;}
+/* timeline: one lane or two of time-blocks on one vertical time axis,
+   under their headings, in a frame that scrolls it - a week to the
+   frame's height (timelineSpec lays it out). Lane 0 left, in the lighter
+   tone; lane 1 right, in the darker; the now line across both in the
+   accent; a grey_after_now lane hatched grey from it down. The heading
+   row keeps the same scrollbar gutter as the frame, so each heading sits
+   over its lane. */
+.spec-timeline{display:flex;flex-direction:column;gap:4px;min-height:0;min-width:0;}
+.spec-panel > .spec-timeline{flex:1 1 0;}
+.spec-timeline .t{font-size:10.5px;text-transform:uppercase;letter-spacing:.8px;color:var(--muted);font-weight:600;}
+.tl-head, .tl-scroll{scrollbar-gutter:stable;scrollbar-width:thin;}
+.tl-head{display:flex;overflow:hidden;padding:0 1px;}
+.tl-lh{
+  flex:1 1 0;min-width:0;padding:0 4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+  font-size:10.5px;text-transform:uppercase;letter-spacing:.8px;color:var(--muted);font-weight:600;
+}
+.tl-scroll{
+  position:relative;flex:1 1 0;min-height:24px;overflow-x:hidden;overflow-y:auto;overscroll-behavior:contain;
+  border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--inset);
+}
+.tl-track{position:relative;width:100%;}
+.tl-lane{position:absolute;top:0;bottom:0;}
+.tl-lane + .tl-lane{border-left:1px solid var(--border);}
+.tl-block{
+  position:absolute;left:3px;right:3px;overflow:hidden;border-radius:4px;padding:1px 5px;
+  font:600 11px/16px var(--font-mono);white-space:nowrap;text-overflow:ellipsis;
+  /* a hairline of the frame between blocks a short duty's floor runs together */
+  box-shadow:0 0 0 1px var(--inset);
+}
+.tl-lane.l0 .tl-block{background:var(--timeline-a);color:var(--timeline-a-ink);}
+.tl-lane.l1 .tl-block{background:var(--timeline-b);color:var(--timeline-b-ink);}
+.tl-future{
+  position:absolute;left:0;right:0;bottom:0;pointer-events:none;
+  background:repeating-linear-gradient(135deg,
+    color-mix(in srgb,var(--muted) 24%,transparent) 0 5px, color-mix(in srgb,var(--surface-2) 55%,transparent) 5px 10px);
+}
+.tl-now{position:absolute;left:0;right:0;height:0;margin-top:-1px;border-top:2px solid var(--accent);z-index:1;pointer-events:none;}
+.tl-now::before{content:"";position:absolute;left:0;top:-4px;width:6px;height:6px;border-radius:50%;background:var(--accent);}
 /* panel: its children, stacked */
 .spec-panel{display:flex;flex-direction:column;gap:12px;}
 .spec-panel > .spec-line{flex:1;}
@@ -2976,6 +3031,7 @@ h5 + .dnote{margin-top:0;}
     }else{
       paintTiles(box, home.tiles, home.configuring);
     }
+    releaseTimelines();   // the faces just replaced
   }
 
   /* tiles: [{app_id, name, spec, w, h, sizes}], w/h in cells. Each spans
@@ -3018,6 +3074,7 @@ h5 + .dnote{margin-top:0;}
     const controls = tile.querySelector(':scope > .tile-cfg');
     tile.replaceChildren(renderSpec(spec, t.name, appId));
     if(controls) tile.appendChild(controls);
+    releaseTimelines();   // the face just replaced
   }
 
   /* ---- the sub-header: the subtitle, and Configure ---- */
@@ -3539,6 +3596,7 @@ h5 + .dnote{margin-top:0;}
       return box;
     },
     input: (s, name, appId) => specInput(s, appId),
+    timeline: s => timelineSpec(s),
     empty: s => specMsg(null, s.message || 'No data yet'),
     error: (s, name) => specMsg("Couldn't render "+(name || 'this app'), s.message),
   };
@@ -3698,6 +3756,130 @@ h5 + .dnote{margin-top:0;}
       + `trend of ${vals.length} value${vals.length===1 ? '' : 's'}, `
       + `between ${fmtSpecValue(lo)} and ${fmtSpecValue(hi)}`);
     return line;
+  }
+
+  /* A timeline: one lane or two of time-blocks on one vertical time
+     axis, from the earliest start to the latest end (or now, if later)
+     - lane 0 on the left, in the lighter tone, lane 1 on the right, in
+     the darker - under the lanes' headings. The axis is laid out to the
+     viewport it scrolls in (.tl-scroll): a week (TL_VIEW_MS) fills its
+     height, so a longer span scrolls, and a gap - days of rest - is real
+     empty axis. A block runs from its start to its end, never shorter
+     than TL_MIN_BLOCK_PX, so a short one stays legible; the now line
+     crosses both lanes, and a grey_after_now lane is greyed from it
+     down. A viewport shorter than TL_MIN_WEEK_PX (a 2x1 tile's) shows
+     less than a week, at that scale, and scrolls further: squeezed to a
+     week, its blocks would all be at the floor, running into each other
+     over the gaps between them. Everything an app sent is set as text.
+
+     The viewport's height is only known once the timeline is on the
+     page, which it isn't while renderSpec() builds it: it's laid out at
+     TL_FALLBACK_PX first, so it's whole from the start, then on the
+     next frame and on every resize (a ResizeObserver, let go of with its
+     tile - releaseTimelines()) at the height it has. The first real
+     layout scrolls the now line to the middle (with no now, the end into
+     view); after that a resize keeps the time at the top where it is,
+     and with no height at all - Home hidden behind another tab - the
+     last layout stands. */
+  const TL_VIEW_MS = 7 * 86400000;   // the span of axis one viewport's height shows: a week
+  const TL_MIN_WEEK_PX = 240;        // ... but never less than this to the week: a shorter viewport shows less
+  const TL_MIN_BLOCK_PX = 18;        // a block's least height: a short duty stays legible, and tappable
+  const TL_FALLBACK_PX = 240;        // the viewport's height until it has one: built detached, or no layout
+  const timelines = new Set();       // the timelines drawn, each {scroll, observer}: see releaseTimelines()
+  function timelineSpec(s){
+    const ms = t => { const v = typeof t==='string' ? Date.parse(t) : NaN; return Number.isFinite(v) ? v : null; };
+    const text = v => v!=null && v!=='' ? String(v) : '';
+    // A hand-built spec is drawn as far as it can be: two lanes at most,
+    // and an interval without both ends, in order, left out.
+    const lanes = (Array.isArray(s.lanes) ? s.lanes : []).slice(0, 2).map(raw => {
+      const l = raw!==null && typeof raw==='object' ? raw : {};
+      const blocks = (Array.isArray(l.intervals) ? l.intervals : []).map(i => {
+        const iv = i!==null && typeof i==='object' ? i : {};
+        return {a: ms(iv.start), b: ms(iv.end), label: text(iv.label)};
+      }).filter(b => b.a!==null && b.b!==null && b.b >= b.a);
+      return {label: text(l.label), grey: l.grey_after_now===true, blocks};
+    });
+    const now = ms(s.now);
+    const box = el('div','spec-timeline');
+    if(s.title!=null && s.title!==''){ const t = el('div','t'); t.textContent = s.title; box.appendChild(t); }
+    const all = lanes.flatMap(l => l.blocks);
+    if(!all.length){ box.appendChild(specMsg(null, 'No data')); return box; }
+    const t0 = all.reduce((m, b) => Math.min(m, b.a), Infinity);
+    const t1 = all.reduce((m, b) => Math.max(m, b.b), now===null ? -Infinity : now);
+
+    if(lanes.some(l => l.label)){
+      const head = el('div','tl-head');
+      lanes.forEach(l => { const h = el('div','tl-lh'); h.textContent = l.label; head.appendChild(h); });
+      box.appendChild(head);
+    }
+    const scroll = el('div','tl-scroll');
+    scroll.tabIndex = 0;   // scrolled from the keyboard too
+    scroll.setAttribute('role','region');
+    scroll.setAttribute('aria-label', (s.title ? s.title+': ' : '') + 'timeline, '
+      + lanes.map((l, i) => `${l.label || 'lane '+(i+1)} ${l.blocks.length}`).join(', '));
+    const track = el('div','tl-track');
+    const cols = lanes.map((l, i) => {
+      const col = el('div','tl-lane l'+i);
+      col.style.left = (i * 100 / lanes.length)+'%';
+      col.style.width = (100 / lanes.length)+'%';
+      // Under the blocks: one held to the floor can run on past now, and
+      // stays readable over the grey.
+      const future = l.grey && now!==null ? col.appendChild(el('div','tl-future')) : null;
+      const blocks = l.blocks.map(b => {
+        const n = el('div','tl-block');
+        n.textContent = b.label;
+        return col.appendChild(n);
+      });
+      track.appendChild(col);
+      return {l, blocks, future};
+    });
+    const line = now!==null ? track.appendChild(el('div','tl-now')) : null;
+    scroll.appendChild(track);
+    box.appendChild(scroll);
+
+    let laidH = 0, laidPx = 0;   // the viewport height it's laid out for, and its scale (px a ms): 0 before any
+    let topMs = null;   // the time at the viewport's top, as last scrolled: null before a real layout
+    const layout = () => {
+      const h = scroll.clientHeight || 0;
+      if(!h && laidH) return;   // hidden, or gone: the last layout stands
+      const viewH = h || TL_FALLBACK_PX, px = Math.max(viewH, TL_MIN_WEEK_PX) / TL_VIEW_MS;
+      if(viewH!==laidH){
+        let bottom = (t1 - t0) * px;
+        cols.forEach(c => c.l.blocks.forEach((b, i) => {
+          const top = (b.a - t0) * px, height = Math.max(TL_MIN_BLOCK_PX, (b.b - b.a) * px);
+          c.blocks[i].style.top = top+'px';
+          c.blocks[i].style.height = height+'px';
+          bottom = Math.max(bottom, top + height);
+        }));
+        track.style.height = bottom+'px';
+        if(now!==null){
+          const y = (now - t0) * px;
+          line.style.top = y+'px';
+          cols.forEach(c => { if(c.future) c.future.style.top = Math.max(0, y)+'px'; });
+        }
+        laidH = viewH;
+        laidPx = px;
+      }
+      if(!h) return;            // no real height yet: nothing to scroll
+      if(topMs===null) topMs = now!==null ? now - viewH/2/px : t1 - viewH/px;
+      scroll.scrollTop = (topMs - t0) * px;
+    };
+    scroll.onscroll = () => { if(scroll.clientHeight && laidPx) topMs = t0 + scroll.scrollTop / laidPx; };
+    layout();
+    if(typeof requestAnimationFrame==='function') requestAnimationFrame(layout);
+    if(typeof ResizeObserver==='function'){
+      const t = {scroll, observer: new ResizeObserver(() => { if(scroll.isConnected) layout(); else releaseTimelines(); })};
+      t.observer.observe(scroll);
+      timelines.add(t);
+    }
+    return box;
+  }
+  /* Lets go of the timelines no longer on the page - their tile drawn
+     afresh, or Home painted anew - disconnecting each one's
+     ResizeObserver, so none keeps a replaced tile alive. Called wherever
+     Home's faces are replaced (paintHome, repaintTile). */
+  function releaseTimelines(){
+    timelines.forEach(t => { if(!t.scroll.isConnected){ t.observer.disconnect(); timelines.delete(t); } });
   }
 
   /* =========================================================
