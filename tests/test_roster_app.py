@@ -359,10 +359,16 @@ def test_render_draws_the_rostered_and_the_flown_on_a_timeline(conn):
 
     # The timeline, rostered then flown, each duty a block labelled with
     # its code; the line at now, the render's own; the flown side greyed
-    # after it; in the FRMS focus group. The upload at the foot, under it
-    # - its picker carrying the Backfill toggle and its confirm.
-    [timeline, picker] = spec["children"]
+    # after it; in the FRMS focus group - flanked by the rails, in a
+    # rails frame. The upload at the foot, under it - its picker carrying
+    # the Backfill toggle and its confirm.
+    [frame, picker] = spec["children"]
     assert spec["type"] == "panel" and picker == PICKER
+    timeline = frame["timeline"]
+    # No flight among them, so no trip: two empty rails, either side.
+    assert frame == {"type": "rails", "timeline": timeline,
+                     "left": {"type": "rail", "title": "Plan", "cards": [], "sync": "frms"},
+                     "right": {"type": "rail", "title": "Report", "cards": [], "sync": "frms"}}
     assert iso_utc(before) <= timeline["now"] <= iso_utc(after)
     assert timeline == {"type": "timeline", "title": None, "now": timeline["now"], "sync": "frms", "lanes": [
         {"label": "Rostered", "grey_after_now": False, "intervals": [
@@ -380,12 +386,13 @@ def test_the_upload_is_at_the_tiles_foot_in_every_state(conn):
     # Nothing yet: the ask, then the picker.
     [ask, picker] = drawn(conn)[0]["children"]
     assert ask["type"] == "empty" and picker == PICKER
-    # Duties: the timeline, then the picker - the upload last, under it,
-    # with its Backfill toggle and the confirm it asks.
+    # Duties: the timeline in its rails frame, then the picker - the
+    # upload last, under it, with its Backfill toggle and the confirm it
+    # asks.
     file_duty(conn, "duties_rostered", "2099-11-05T15:10:00Z", "2099-11-06T04:10:00Z", "CX9102")
     conn.commit()
-    [timeline, picker] = drawn(conn)[0]["children"]
-    assert timeline["type"] == "timeline" and picker == PICKER
+    [frame, picker] = drawn(conn)[0]["children"]
+    assert frame["type"] == "rails" and frame["timeline"]["type"] == "timeline" and picker == PICKER
     assert picker["toggle"] == roster.BACKFILL
     assert picker["toggle"]["confirm"].startswith("Backfill past duties into your rostered plan?")
 
@@ -394,9 +401,9 @@ def test_a_duty_with_no_code_is_a_block_with_no_label(conn):
     write_session(conn, "app:roster", "duties_complete", "2026-10-10T01:00:00Z", "2026-10-10T02:00:00Z", {})
     conn.commit()
 
-    [timeline, _] = drawn(conn)[0]["children"]
+    [frame, _] = drawn(conn)[0]["children"]
 
-    assert timeline["lanes"][1]["intervals"] == [
+    assert frame["timeline"]["lanes"][1]["intervals"] == [
         {"start": "2026-10-10T01:00:00Z", "end": "2026-10-10T02:00:00Z", "label": ""},
     ]
 
@@ -425,7 +432,8 @@ def test_render_shades_each_lanes_trips_behind_its_blocks(conn):
 
     spec, before, after = drawn(conn)
 
-    [timeline, _] = spec["children"]
+    [frame, _] = spec["children"]
+    timeline = frame["timeline"]
     rostered, flown = timeline["lanes"]
     # Each lane its own trips, a band each from the flight out's start
     # to the flight home's end, labelled with the port it flew out to;
@@ -443,6 +451,57 @@ def test_render_shades_each_lanes_trips_behind_its_blocks(conn):
     # The blocks are as they were: every duty, the flights among them.
     assert [i["label"] for i in rostered["intervals"]] == ["CX9101", "CX9102", "R1E", "CX9105", "R2E"]
     assert [i["label"] for i in flown["intervals"]] == ["CX9101", "CX9102", "CX9103"]
+
+
+def test_render_flanks_the_timeline_with_the_plan_and_report_rails(conn):
+    # The fixture's home base is ZZA. Home before now: a trip flown out
+    # and back, and a day return - out and back in one duty, its legs in
+    # its title.
+    file_flight(conn, "duties_complete", "2026-10-01T01:00:00Z", "2026-10-01T14:00:00Z", "CX9101", "ZZA-ZZB")
+    file_flight(conn, "duties_complete", "2026-10-03T02:00:00Z", "2026-10-03T13:00:00Z", "CX9102", "ZZB-ZZA")
+    write_session(conn, "app:roster", "duties_complete", "2026-10-08T01:00:00Z", "2026-10-08T09:00:00Z",
+                  {"capture": "live", "type": "flight", "code": "CX9105", "flight_no": "CX9105", "dep": "ZZA",
+                   "arr": "ZZA", "label": "08-Oct CX 9105 ZZA-ZZD / 08-Oct CX 9106 ZZD-ZZA", "raw": ""})
+    # Under way: flown out, its way home still rostered - one trip across
+    # both lanes. Then one rostered out and back, and one out the roster
+    # runs out before it's home.
+    file_flight(conn, "duties_complete", "2026-10-12T01:00:00Z", "2026-10-12T14:00:00Z", "CX9103", "ZZA-ZZC")
+    file_flight(conn, "duties_rostered", "2099-11-01T02:00:00Z", "2099-11-01T13:00:00Z", "CX9104", "ZZC-ZZA")
+    file_flight(conn, "duties_rostered", "2099-11-05T15:10:00Z", "2099-11-06T04:10:00Z", "CX9101", "ZZA-ZZB")
+    file_flight(conn, "duties_rostered", "2099-11-08T02:00:00Z", "2099-11-08T13:00:00Z", "CX9102", "ZZB-ZZA")
+    file_flight(conn, "duties_rostered", "2099-11-20T01:00:00Z", "2099-11-20T12:00:00Z", "CX9107", "ZZA-ZZD")
+    conn.commit()
+
+    [frame, picker] = drawn(conn)[0]["children"]
+
+    # The timeline, carried as it's drawn alone, between the two rails -
+    # both in the FRMS focus group, so they restack as it scrolls.
+    assert frame["type"] == "rails" and picker == PICKER
+    assert frame["timeline"]["type"] == "timeline" and frame["timeline"]["sync"] == "frms"
+    plan, report = frame["left"], frame["right"]
+    assert (plan["type"], plan["title"], plan["sync"]) == ("rail", "Plan", "frms")
+    assert (report["type"], report["title"], report["sync"]) == ("rail", "Report", "frms")
+
+    def rail_card(start, end, label, detail, tag=None):
+        return {"id": start, "start": start, "end": end, "label": label, "detail": detail, "tag": tag}
+
+    # Plan, beside the rostered lane: every trip not over yet - the one
+    # under way, then the one to come, then the one not home as far as
+    # the roster runs, its way home a dash. Each its port over its
+    # flights out and home; its id the trip's, its band's.
+    assert plan["cards"] == [
+        rail_card("2026-10-12T01:00:00Z", "2099-11-01T13:00:00Z", "ZZC", "CX9103 · CX9104"),
+        rail_card("2099-11-05T15:10:00Z", "2099-11-08T13:00:00Z", "ZZB", "CX9101 · CX9102"),
+        rail_card("2099-11-20T01:00:00Z", None, "ZZD", "CX9107 · —"),
+    ]
+    # Report, beside the flown: every trip home, the day return tagged.
+    assert report["cards"] == [
+        rail_card("2026-10-01T01:00:00Z", "2026-10-03T13:00:00Z", "ZZB", "CX9101 · CX9102"),
+        rail_card("2026-10-08T01:00:00Z", "2026-10-08T09:00:00Z", "ZZD", "CX9105 · CX9106", tag="Day"),
+    ]
+    # The same trips the timeline shades, by id.
+    [_, flown] = frame["timeline"]["lanes"]
+    assert [b["start"] for b in flown["bands"]] == ["2026-10-01T01:00:00Z", "2026-10-12T01:00:00Z"]
 
 
 def test_render_with_nothing_in_the_window_asks_for_a_roster(conn):
@@ -559,10 +618,13 @@ def test_a_config_with_no_home_base_shades_no_trips(tmp_path, conn):
     file_flight(conn, "duties_complete", "2026-10-03T02:00:00Z", "2026-10-03T13:00:00Z", "CX9102", "ZZB-ZZA")
     conn.commit()
 
-    [timeline, _] = app.render(host.Ctx(conn, today=TODAY), {})["children"]
+    [frame, _] = app.render(host.Ctx(conn, today=TODAY), {})["children"]
+    timeline = frame["timeline"]
 
     assert [len(lane["intervals"]) for lane in timeline["lanes"]] == [0, 2]
     assert not any("bands" in lane for lane in timeline["lanes"])
+    # Nor a card, on either rail.
+    assert (frame["left"]["cards"], frame["right"]["cards"]) == ([], [])
 
 
 def test_a_good_config_loads():
@@ -822,7 +884,8 @@ def test_a_one_way_duty_keeps_origin_and_destination():
 #
 # trip_cards() on its own: both lanes' duty sessions, as ctx.sessions()
 # gives them, as the rails' cards - a whole trip out of base and back
-# each, a day return included - here from HKG. Nothing draws them yet.
+# each, a day return included - here from HKG. render() splits them into
+# the Plan and Report rails (above).
 
 
 def card(start, end, out, inbound, port, day=False):
@@ -854,6 +917,29 @@ def test_an_integrated_pattern_is_one_card():
     assert roster.trip_cards(sectors, [], HOME) == [
         card("2026-11-05T01:00:00Z", "2026-11-07T10:00:00Z", "CX701", "CX730", "BKK"),
     ]
+
+
+def test_a_trips_flight_home_is_the_leg_that_lands_at_base():
+    # Out to MNL; home a day later on one duty of two sectors, CEB-MNL
+    # then MNL-HKG, stored under its first sector's code.
+    out = flight("HKG-MNL", "2026-11-05T01:00:00Z", "2026-11-05T04:00:00Z", "CX907")
+    home = duty("flight", "2026-11-07T01:00:00Z", "2026-11-07T09:00:00Z", "CX913", dep="CEB", arr="HKG",
+                label="07-Nov CX 913 CEB-MNL / 07-Nov CX 906 MNL-HKG",
+                raw="07-Nov CX 913 CEB-MNL  33G 09:00 - 10:30\n07-Nov CX 906 MNL-HKG  33G 12:00 - 14:00\n")
+
+    # In is the flight that lands at base - its last leg's number, read
+    # back from the description - not the duty's code.
+    assert roster.trip_cards([out, home], [], HOME) == [
+        card("2026-11-05T01:00:00Z", "2026-11-07T09:00:00Z", "CX907", "CX906", "MNL"),
+    ]
+    # Its title's legs, with no description to read.
+    titled = home._replace(summary={**home.summary, "raw": ""})
+    assert roster.trip_cards([out, titled], [], HOME)[0]["in"] == "CX906"
+    # Legs with no flight numbers, or none to read: the duty's code.
+    bare = home._replace(summary={**home.summary, "label": "07-Nov CX913", "raw": "CEB-MNL\nMNL-HKG"})
+    assert roster.trip_cards([out, bare], [], HOME)[0]["in"] == "CX913"
+    unread = home._replace(summary={"type": "flight", "code": "CX913", "dep": "CEB", "arr": "HKG"})
+    assert roster.trip_cards([out, unread], [], HOME)[0]["in"] == "CX913"
 
 
 def test_a_day_return_is_a_card_of_its_own():

@@ -1353,7 +1353,7 @@ def test_the_roster_app_installs_and_is_listed(client, apps_dir):
 
     assert client.get("/api/apps").get_json() == [
         {"id": "roster", "name": "Roster", "default_size": {"w": 2, "h": 1},
-         "sizes": [{"w": 2, "h": 1}, {"w": 2, "h": 2}],
+         "sizes": [{"w": 2, "h": 1}, {"w": 2, "h": 2}, {"w": 4, "h": 2}, {"w": 4, "h": 3}],
          "reads": ["duty_hours_rostered", "duty_hours_complete"], "config": [],
          "metrics": [
              {"key": "duty_hours_rostered", "label": "Rostered duty hours", "unit": "h",
@@ -1599,8 +1599,9 @@ def test_a_backfilled_duty_draws_in_the_rostered_lane(client, conn, apps_dir, up
     spec = upload_roster(client, roster_ics(("R1E", ics_at(start), ics_at(end))), payload={"backfill": True}).get_json()["spec"]
 
     # The past duty on both sides: flown, and in the plan beside it.
-    [timeline, picker] = spec["children"]
+    [frame, picker] = spec["children"]
     assert picker == ROSTER_PICKER
+    timeline = frame["timeline"]
     block = {"start": stamp(start), "end": stamp(end), "label": "R1E"}
     assert [lane["intervals"] for lane in timeline["lanes"]] == [[block], [block]]
 
@@ -1643,29 +1644,38 @@ def test_the_roster_app_shows_rostered_against_flown_on_a_timeline(client, conn,
     # The upload's reply is the tile, drawn afresh: the timeline -
     # rostered on the left, flown on the right and greyed after now -
     # each duty a block of its start and end, labelled with its code,
-    # oldest first - in the FRMS focus group, over the picker at the
-    # tile's foot. Behind the flown blocks, a band: three days ago out of
-    # base (ZZA) to ZZB, and not back - away, on the layover, until now.
+    # oldest first - in the FRMS focus group, between its rails, over
+    # the picker at the tile's foot. Behind the flown blocks, a band:
+    # three days ago out of base (ZZA) to ZZB, and not back - away, on
+    # the layover, until now.
     block = lambda i: {"start": stamp(duties[i][1]), "end": stamp(duties[i][1] + duties[i][2]),
                        "label": ["CX9102", "A1534", "CX9101", "R1E"][i]}
-    [timeline, picker] = resp.get_json()["spec"]["children"]
+    [frame, picker] = resp.get_json()["spec"]["children"]
     assert picker == ROSTER_PICKER
+    timeline = frame["timeline"]
     now_drawn = drawn_now(before, after, timeline)
     assert timeline == {"type": "timeline", "title": None, "now": now_drawn, "sync": "frms", "lanes": [
         {"label": "Rostered", "grey_after_now": False, "intervals": [block(3)]},
         {"label": "Flown", "grey_after_now": True, "intervals": [block(1), block(2)],
          "bands": [{"start": stamp(duties[2][1]), "end": now_drawn, "label": "ZZB"}]},
     ]}
+    # That trip, not home, is a card on the Plan rail - its way home a
+    # dash - and nothing's home yet to report.
+    assert frame["left"] == {"type": "rail", "title": "Plan", "sync": "frms", "cards": [
+        {"id": stamp(duties[2][1]), "start": stamp(duties[2][1]), "end": None, "label": "ZZB",
+         "detail": "CX9101 · —", "tag": None},
+    ]}
+    assert frame["right"] == {"type": "rail", "title": "Report", "sync": "frms", "cards": []}
     # The same tile from the render route - the band to its own now.
     before = datetime.now(timezone.utc)
     again = client.post("/api/app/roster/render").get_json()
     after = datetime.now(timezone.utc)
     assert again["children"][1] == ROSTER_PICKER
-    now_again = drawn_now(before, after, again["children"][0])
+    now_again = drawn_now(before, after, again["children"][0]["timeline"])
     rostered, flown = timeline["lanes"]
-    assert again["children"][0] == {**timeline, "now": now_again, "lanes": [
+    assert again["children"][0] == {**frame, "timeline": {**timeline, "now": now_again, "lanes": [
         rostered, {**flown, "bands": [{**flown["bands"][0], "end": now_again}]},
-    ]}
+    ]}}
 
     # The hours a day are filed as they were: the display is all that changed.
     assert [(r[2], r[3]) for r in rows(conn)] == [
@@ -1680,8 +1690,9 @@ def test_the_roster_app_with_only_a_roster_to_come_has_flown_nothing(client, con
 
     # Every duty still to come, however far ahead; nothing flown - an
     # empty lane, still drawn, greyed after now, and with no trip.
-    [timeline, picker] = spec["children"]
+    [frame, picker] = spec["children"]
     assert picker == ROSTER_PICKER
+    timeline = frame["timeline"]
     rostered, flown = timeline["lanes"]
     assert [(i["start"], i["end"], i["label"]) for i in rostered["intervals"]] == [
         ("2099-11-05T15:10:00Z", "2099-11-06T04:10:00Z", "CX9101"),
@@ -1695,6 +1706,9 @@ def test_the_roster_app_with_only_a_roster_to_come_has_flown_nothing(client, con
     # at home, no part of it.
     assert rostered["bands"] == [{"start": "2099-11-05T15:10:00Z", "end": "2099-11-08T13:00:00Z", "label": "ZZB"}]
     assert flown == {"label": "Flown", "grey_after_now": True, "intervals": []}
+    # The same trip, a card to plan for; none to report.
+    assert [(c["label"], c["detail"]) for c in frame["left"]["cards"]] == [("ZZB", "CX9101 · CX9102")]
+    assert frame["right"]["cards"] == []
 
 
 def test_a_roster_flown_over_six_months_ago_draws_as_the_empty_state(client, conn, apps_dir, upload_dir):
