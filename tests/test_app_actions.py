@@ -1659,13 +1659,13 @@ def test_the_roster_app_shows_rostered_against_flown_on_a_timeline(client, conn,
         {"label": "Flown", "grey_after_now": True, "intervals": [block(1), block(2)],
          "bands": [{"start": stamp(duties[2][1]), "end": now_drawn, "label": "ZZB"}]},
     ]}
-    # That trip, not home, is a card on the Plan rail - its way home a
-    # dash - and nothing's home yet to report.
-    assert frame["left"] == {"type": "rail", "title": "Plan", "sync": "frms", "cards": [
-        {"id": stamp(duties[2][1]), "start": stamp(duties[2][1]), "end": None, "label": "ZZB",
-         "detail": "CX9101 · —", "tag": None},
+    # That trip, not home, is a card on the Plan rail - no flight home
+    # yet - and nothing's home yet to report.
+    assert frame["left"] == {"type": "rail", "side": "plan", "title": "Plan", "sync": "frms", "cards": [
+        {"id": stamp(duties[2][1]), "start": stamp(duties[2][1]), "end": None,
+         "out": "CX9101", "in": None, "port": "ZZB"},
     ]}
-    assert frame["right"] == {"type": "rail", "title": "Report", "sync": "frms", "cards": []}
+    assert frame["right"] == {"type": "rail", "side": "report", "title": "Report", "sync": "frms", "cards": []}
     # The same tile from the render route - the band to its own now.
     before = datetime.now(timezone.utc)
     again = client.post("/api/app/roster/render").get_json()
@@ -1707,7 +1707,7 @@ def test_the_roster_app_with_only_a_roster_to_come_has_flown_nothing(client, con
     assert rostered["bands"] == [{"start": "2099-11-05T15:10:00Z", "end": "2099-11-08T13:00:00Z", "label": "ZZB"}]
     assert flown == {"label": "Flown", "grey_after_now": True, "intervals": []}
     # The same trip, a card to plan for; none to report.
-    assert [(c["label"], c["detail"]) for c in frame["left"]["cards"]] == [("ZZB", "CX9101 · CX9102")]
+    assert [(c["out"], c["in"], c["port"]) for c in frame["left"]["cards"]] == [("CX9101", "CX9102", "ZZB")]
     assert frame["right"]["cards"] == []
 
 

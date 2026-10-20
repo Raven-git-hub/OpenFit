@@ -367,8 +367,8 @@ def test_render_draws_the_rostered_and_the_flown_on_a_timeline(conn):
     timeline = frame["timeline"]
     # No flight among them, so no trip: two empty rails, either side.
     assert frame == {"type": "rails", "timeline": timeline,
-                     "left": {"type": "rail", "title": "Plan", "cards": [], "sync": "frms"},
-                     "right": {"type": "rail", "title": "Report", "cards": [], "sync": "frms"}}
+                     "left": {"type": "rail", "side": "plan", "title": "Plan", "cards": [], "sync": "frms"},
+                     "right": {"type": "rail", "side": "report", "title": "Report", "cards": [], "sync": "frms"}}
     assert iso_utc(before) <= timeline["now"] <= iso_utc(after)
     assert timeline == {"type": "timeline", "title": None, "now": timeline["now"], "sync": "frms", "lanes": [
         {"label": "Rostered", "grey_after_now": False, "intervals": [
@@ -475,29 +475,31 @@ def test_render_flanks_the_timeline_with_the_plan_and_report_rails(conn):
     [frame, picker] = drawn(conn)[0]["children"]
 
     # The timeline, carried as it's drawn alone, between the two rails -
-    # both in the FRMS focus group, so they restack as it scrolls.
+    # both in the FRMS focus group, so they restack as it scrolls: Plan
+    # looking ahead of the cursor, Report back.
     assert frame["type"] == "rails" and picker == PICKER
     assert frame["timeline"]["type"] == "timeline" and frame["timeline"]["sync"] == "frms"
     plan, report = frame["left"], frame["right"]
-    assert (plan["type"], plan["title"], plan["sync"]) == ("rail", "Plan", "frms")
-    assert (report["type"], report["title"], report["sync"]) == ("rail", "Report", "frms")
+    assert (plan["type"], plan["side"], plan["title"], plan["sync"]) == ("rail", "plan", "Plan", "frms")
+    assert (report["type"], report["side"], report["title"], report["sync"]) == ("rail", "report", "Report", "frms")
 
-    def rail_card(start, end, label, detail, tag=None):
-        return {"id": start, "start": start, "end": end, "label": label, "detail": detail, "tag": tag}
+    def rail_card(start, end, out, inbound, port):
+        return {"id": start, "start": start, "end": end, "out": out, "in": inbound, "port": port}
 
     # Plan, beside the rostered lane: every trip not over yet - the one
     # under way, then the one to come, then the one not home as far as
-    # the roster runs, its way home a dash. Each its port over its
-    # flights out and home; its id the trip's, its band's.
+    # the roster runs, no flight home yet. Each its flights out and home
+    # and its port, as the trip has them; its id the trip's, its band's.
     assert plan["cards"] == [
-        rail_card("2026-10-12T01:00:00Z", "2099-11-01T13:00:00Z", "ZZC", "CX9103 · CX9104"),
-        rail_card("2099-11-05T15:10:00Z", "2099-11-08T13:00:00Z", "ZZB", "CX9101 · CX9102"),
-        rail_card("2099-11-20T01:00:00Z", None, "ZZD", "CX9107 · —"),
+        rail_card("2026-10-12T01:00:00Z", "2099-11-01T13:00:00Z", "CX9103", "CX9104", "ZZC"),
+        rail_card("2099-11-05T15:10:00Z", "2099-11-08T13:00:00Z", "CX9101", "CX9102", "ZZB"),
+        rail_card("2099-11-20T01:00:00Z", None, "CX9107", None, "ZZD"),
     ]
-    # Report, beside the flown: every trip home, the day return tagged.
+    # Report, beside the flown: every trip home - a day return like any,
+    # its port the one it turned round at.
     assert report["cards"] == [
-        rail_card("2026-10-01T01:00:00Z", "2026-10-03T13:00:00Z", "ZZB", "CX9101 · CX9102"),
-        rail_card("2026-10-08T01:00:00Z", "2026-10-08T09:00:00Z", "ZZD", "CX9105 · CX9106", tag="Day"),
+        rail_card("2026-10-01T01:00:00Z", "2026-10-03T13:00:00Z", "CX9101", "CX9102", "ZZB"),
+        rail_card("2026-10-08T01:00:00Z", "2026-10-08T09:00:00Z", "CX9105", "CX9106", "ZZD"),
     ]
     # The same trips the timeline shades, by id.
     [_, flown] = frame["timeline"]["lanes"]

@@ -735,10 +735,12 @@ h5 + .dnote{margin-top:0;}
    alone, taking what the rails leave; each rail mirrors the rows over
    the timeline's frame with spacers, so its heading sits in the lanes'
    heading row and its cards start level with the frame. A card is a
-   fixed size whatever it holds - its label, a tag, its dates, a detail
-   line - stacked from the rail's top; the one the focus time is in is
-   tinted as a band is. In a tile too small to hold them, the rails are
-   left out and the timeline has the tile to itself. */
+   fixed size whatever it holds, four corners - the flight out and the
+   port across its top, the flight home and the day it left across its
+   foot - stacked from the rail's top; the head, the card at the cursor's
+   end of the window (Plan's top, Report's bottom), outlined in the
+   accent. In a tile too small to hold them, the rails are left out and
+   the timeline has the tile to itself. */
 .spec-rails{display:flex;gap:8px;min-height:0;min-width:0;}
 .spec-panel > .spec-rails{flex:1 1 0;}
 .spec-rails > .spec-timeline{flex:1 1 0;}
@@ -748,32 +750,24 @@ h5 + .dnote{margin-top:0;}
 .spec-rail{display:flex;flex-direction:column;gap:4px;min-height:0;min-width:0;}
 .rail-sp{min-height:20px;}
 .rail-sp.t{min-height:0;font-size:10.5px;}
-.rail-head{display:flex;align-items:baseline;gap:4px;min-width:0;padding:0 2px;}
-.rail-title{
-  flex:1 1 auto;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+.rail-head{
+  min-width:0;padding:0 2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
   font-size:10.5px;text-transform:uppercase;letter-spacing:.8px;color:var(--muted);font-weight:600;
 }
-.rail-count{flex:none;font:500 9.5px/1 var(--font-mono);color:var(--muted);font-variant-numeric:tabular-nums;}
 .rail-cards{display:flex;flex-direction:column;flex:1 1 0;min-height:0;overflow:hidden;}
 .rail-none{padding:4px 2px;font-size:11.5px;color:var(--muted);}
 .rail-card{
-  flex:none;display:flex;flex-direction:column;justify-content:center;min-width:0;overflow:hidden;
-  padding:4px 7px 4px 6px;border:1px solid var(--border);border-left:3px solid var(--layover);
+  flex:none;display:grid;grid-template-columns:minmax(0,1fr) auto;grid-template-rows:1fr 1fr;
+  align-items:center;column-gap:6px;min-width:0;overflow:hidden;
+  padding:4px 8px 4px 7px;border:1px solid var(--border);border-left:3px solid var(--layover);
   border-radius:var(--radius-sm);background:var(--inset);
 }
-.rail-card.at{
-  border-color:color-mix(in srgb,var(--layover) 60%,transparent);border-left-color:var(--layover);
-  background:color-mix(in srgb,var(--layover) 14%,var(--inset));
-}
-.rc-top{display:flex;align-items:center;gap:5px;min-width:0;}
-.rc-label, .rc-when, .rc-detail{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;}
-.rc-label{flex:0 1 auto;font:700 14px/18px var(--font-display);color:var(--ink);}
-.rc-tag{
-  flex:none;padding:0 4px;border-radius:4px;font:700 9px/14px var(--font-body);text-transform:uppercase;letter-spacing:.5px;
-  background:color-mix(in srgb,var(--layover) 22%,transparent);color:color-mix(in srgb,var(--layover) 80%,var(--ink));
-}
-.rc-when{font:500 10.5px/14px var(--font-mono);color:var(--muted);}
-.rc-detail{font:600 10.5px/14px var(--font-mono);color:var(--ink-2);}
+.rail-card.head{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent);}
+.rc-out, .rc-in, .rc-port, .rc-day{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;}
+.rc-out{font:600 11.5px/16px var(--font-mono);color:var(--ink);}
+.rc-in{font:500 11.5px/16px var(--font-mono);color:var(--muted);}
+.rc-port{justify-self:end;font:800 17px/20px var(--font-display);letter-spacing:.3px;color:var(--ink);}
+.rc-day{justify-self:end;font:500 10.5px/16px var(--font-mono);color:var(--muted);}
 /* panel: its children, stacked */
 .spec-panel{display:flex;flex-direction:column;gap:12px;}
 .spec-panel > .spec-line{flex:1;}
@@ -4257,18 +4251,23 @@ h5 + .dnote{margin-top:0;}
 
   /* A rail: a column of fixed-size cards (RAIL_CARD_PX tall, RAIL_GAP_PX
      apart) - a trip each, in the roster's - stacked from the top under
-     its heading. Its cards are in time order (by start), and at most
-     RAIL_MAX show at once - fewer in a column too short to hold them:
-     as many whole cards as fit. Which ones, railWindow() works out from
-     the time in focus, so the stack moves as that time does: cards over
-     by then drop off the top, the next come in at the foot, and at
-     either end of the list the window holds, full. A synced rail
-     (s.sync) reads its focus group's time and is one of the group's
-     members, beside its timelines, so every move of the focus - a
-     timeline scrolled by hand, Now, the follow tick - restacks it; it
-     never moves the focus itself. Unsynced, its time is the one it was
-     drawn at. The card the focus is in is marked (.at), and the heading
-     counts the window (2–6/9) while there are more cards than show.
+     its heading. A card is four corners: the flight out and the port
+     (the layover's, or a day return's turn-round) across its top, the
+     flight home - a dash for none - and the day it left (its start's,
+     UTC) across its foot. Its cards are in time order (by start), and at
+     most RAIL_MAX show at once - fewer in a column too short to hold
+     them: as many whole cards as fit. Which ones, railWindow() works out
+     from the time in focus and the rail's side (s.side), so the stack
+     moves as that time does: a plan rail looks ahead of it - the trips
+     over by then drop off its top - and a report rail back - the latest
+     over by then at its foot, older ones above it - and at either end of
+     the list the window holds, full. The head, the card at the cursor's
+     end of the window - a plan rail's top, a report rail's bottom - is
+     outlined (.head). A synced rail (s.sync) reads its focus group's
+     time and is one of the group's members, beside its timelines, so
+     every move of the focus - a timeline scrolled by hand, Now, the
+     follow tick - restacks it; it never moves the focus itself.
+     Unsynced, its time is the one it was drawn at.
 
      Its height is only known once it's on the page: it's drawn for
      RAIL_MAX first, then measured on the next frame and on every resize
@@ -4281,29 +4280,37 @@ h5 + .dnote{margin-top:0;}
   const RAIL_MAX = 5;        // the most cards a rail shows at once
   const RAIL_CARD_PX = 58;   // a card's height: fixed, whatever it holds
   const RAIL_GAP_PX = 6;     // the gap between two cards
-  /* Which of a rail's cards show, with the focus at focusMs and room for
-     `fit`: the first not over yet at focusMs (open, or ending after it)
-     and those after it, the window held at the list's ends so it's as
-     full as the cards allow - {start, count, at}: the first shown, how
-     many, and the one the focus is in (started by then, not over; -1
-     for none). `cards` are {a, b}, start and end in ms (b null: open),
+  /* Which of a rail's cards show, with the focus at focusMs, room for
+     `fit` and the rail's side - {start, count, head}: the first shown,
+     how many (fit, held to RAIL_MAX and the cards there are), and which
+     of those is the head (-1 with none shown). A plan rail ("plan", and
+     anything that isn't "report") looks ahead: from the first card not
+     over at focusMs (open, or ending after it), held at the list's end -
+     the head its top card. A report rail looks back: up to the latest
+     card over by focusMs, held full at the list's start - the head its
+     bottom card. `cards` are {a, b}, start and end in ms (b null: open),
      by start. */
-  function railWindow(cards, focusMs, fit){
+  function railWindow(cards, focusMs, fit, side){
     const n = cards.length, count = Math.max(0, Math.min(fit, RAIL_MAX, n));
+    if(!count) return {start: 0, count: 0, head: -1};
+    if(side==='report'){
+      let j = -1;   // the latest over by the focus
+      cards.forEach((c, k) => { if(c.b!==null && c.b <= focusMs) j = k; });
+      j = Math.max(j, count - 1);
+      return {start: j - count + 1, count, head: count - 1};
+    }
     const next = cards.findIndex(c => c.b===null || c.b > focusMs);
-    const start = Math.max(0, Math.min(next < 0 ? n : next, n - count));
-    const at = cards.findIndex(c => c.a <= focusMs && (c.b===null || focusMs < c.b));
-    return {start, count, at};
+    return {start: Math.max(0, Math.min(next < 0 ? n : next, n - count)), count, head: 0};
   }
-  /* A card's days, in UTC: 05 Nov – 08 Nov; within one, 05 Nov; open, from 05 Nov. */
-  function fmtCardDays(a, b){
-    const day = ms => { const d = new Date(ms); return `${String(d.getUTCDate()).padStart(2, '0')} ${TL_MONTHS[d.getUTCMonth()]}`; };
-    if(b===null) return 'from '+day(a);
-    return new Date(a).toISOString().slice(0, 10)===new Date(b).toISOString().slice(0, 10) ? day(a) : `${day(a)} – ${day(b)}`;
+  /* A card's day, the one it left, in UTC: 05 Nov. */
+  function fmtCardDay(ms){
+    const d = new Date(ms);
+    return `${String(d.getUTCDate()).padStart(2, '0')} ${TL_MONTHS[d.getUTCMonth()]}`;
   }
   function railSpec(s, above){
     const ms = t => { const v = typeof t==='string' ? Date.parse(t) : NaN; return Number.isFinite(v) ? v : null; };
     const text = v => v!=null && v!=='' ? String(v) : '';
+    const side = s.side==='report' ? 'report' : 'plan';
     // A hand-built rail is drawn as far as it can be: a card without a
     // start, or with an end that isn't one or comes before it, left out.
     const cards = [];
@@ -4311,7 +4318,7 @@ h5 + .dnote{margin-top:0;}
       const c = raw!==null && typeof raw==='object' ? raw : {};
       const a = ms(c.start), b = c.end==null ? null : ms(c.end);
       if(a===null || (c.end!=null && (b===null || b < a))) return;
-      cards.push({a, b, id: text(c.id), label: text(c.label), detail: text(c.detail), tag: text(c.tag)});
+      cards.push({a, b, id: text(c.id), out: text(c.out), in: text(c.in), port: text(c.port)});
     });
     cards.sort((x, y) => x.a - y.a);
     const box = el('div','spec-rail');
@@ -4321,25 +4328,24 @@ h5 + .dnote{margin-top:0;}
       if(row==='t') sp.textContent = ' ';
     });
     const head = box.appendChild(el('div','rail-head'));
-    const title = head.appendChild(el('div','rail-title'));
-    title.textContent = text(s.title) || ' ';   // a line, titled or not
-    const count = head.appendChild(el('div','rail-count'));
+    head.textContent = text(s.title) || ' ';   // a line, titled or not
     const list = box.appendChild(el('div','rail-cards'));
     list.style.gap = RAIL_GAP_PX+'px';
     list.setAttribute('role','list');
     list.setAttribute('aria-label', (s.title ? s.title+': ' : '') + `${cards.length} card${cards.length===1 ? '' : 's'}`);
     if(!cards.length){ list.appendChild(el('div','rail-none')).textContent = 'None'; }
-    const card = (c, at) => {
-      const n = el('div','rail-card' + (at ? ' at' : ''));
+    const card = (c, isHead) => {
+      const n = el('div','rail-card' + (isHead ? ' head' : ''));
       n.setAttribute('role','listitem');
-      if(at) n.setAttribute('aria-current','true');
+      if(isHead) n.setAttribute('aria-current','true');
       n.style.height = RAIL_CARD_PX+'px';
       if(c.id) n.dataset.id = c.id;
-      const top = n.appendChild(el('div','rc-top'));
-      top.appendChild(el('div','rc-label')).textContent = c.label;
-      if(c.tag) top.appendChild(el('div','rc-tag')).textContent = c.tag;
-      n.appendChild(el('div','rc-when')).textContent = fmtCardDays(c.a, c.b);
-      if(c.detail) n.appendChild(el('div','rc-detail')).textContent = c.detail;
+      // Its corners in reading order, so the grid places them: out and
+      // the port across the top, in and the day across the foot.
+      n.appendChild(el('div','rc-out')).textContent = c.out || '—';
+      n.appendChild(el('div','rc-port')).textContent = c.port;
+      n.appendChild(el('div','rc-in')).textContent = c.in || '—';
+      n.appendChild(el('div','rc-day')).textContent = fmtCardDay(c.a);
       return n;
     };
 
@@ -4349,13 +4355,11 @@ h5 + .dnote{margin-top:0;}
     let shown = null;       // the window drawn, so a move within it redraws nothing
     const show = () => {
       if(!cards.length) return;
-      const w = railWindow(cards, group ? group.focusMs : drawnAt, fit);
-      const key = [w.start, w.count, w.at].join(':');
+      const w = railWindow(cards, group ? group.focusMs : drawnAt, fit, side);
+      const key = w.start+':'+w.count;
       if(key===shown) return;
       shown = key;
-      count.textContent = !w.count || w.count===cards.length ? ''
-        : (w.count===1 ? `${w.start+1}` : `${w.start+1}–${w.start+w.count}`) + `/${cards.length}`;
-      list.replaceChildren(...cards.slice(w.start, w.start + w.count).map((c, i) => card(c, w.start + i===w.at)));
+      list.replaceChildren(...cards.slice(w.start, w.start + w.count).map((c, i) => card(c, i===w.head)));
     };
     const layout = () => {
       const h = list.clientHeight || 0;

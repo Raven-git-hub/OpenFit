@@ -276,7 +276,7 @@ the dicts itself.
 | `ctx.panel(*children)` or `ctx.panel([children])` | `{"type": "panel", "children": [...]}` | Its children stacked in order. A number keeps its height and a line takes the rest. |
 | `ctx.input(key, action, label=None, kind="number", unit=None, options=None, accept=None, toggle=None)` | `{"type": "input", "key", "action", "label", "kind", "unit", "options", "accept"}`, plus `"toggle"` only when given | A field under its label (small, uppercase), its unit and a **Save** button beside it. `kind` is one of `INPUT_KINDS`: `"number"` (the default), `"text"`, `"select"` — a dropdown of `options`, a non-empty list of non-empty strings, required for a select and refused for the other kinds (`options` is `null` in their specs) — or `"file"`, a file picker offering `accept`'s hints (`".txt,.csv"`, `"text/plain"`: optional non-empty text, refused for the other kinds — `accept` is `null` in their specs, and in a file's without one). Save, or Enter, sends `action` to the app's `handle()` with the payload `{key: what was entered}` (a number for kind `"number"`, text as typed for `"text"`, the chosen option's string as written for `"select"`, and for `"file"` the file picked, a `FileUpload` — Save only, sent multipart), and the tile is redrawn from the fresh spec the reply carries; a refusal shows under the field, which keeps what was entered. A blank field, or a number that isn't one, says so and sends nothing; so does a select still on its "Choose…" placeholder, a picker with no file picked ("Choose a file.") or one over 25 MB ("File too large (max 25 MB)."). A file input can carry a companion **toggle**, `{key, label, confirm}` (only for a file — any other kind's is refused; see [A file input's toggle](#writing-apps-as-sources)): a checkbox and its label in the row before Save, its checked state sent in the payload under its own `key` beside the file, and — ticked, with a `confirm` — the page's own modal asking that first, nothing sent unless it's confirmed; a spec with none has no `toggle` key, the one from before toggles. The host doesn't check a select's value is one of its options (the action route remembers no render), nor what a file holds: `handle()` does. In a panel it sits at the foot. In Configure it's inert, like the rest of the face. See [Writing](#writing-apps-as-sources) and `docs/architecture/input-primitives.md`. |
 | `ctx.timeline(lanes, now=None, title=None, sync=None)` | `{"type": "timeline", "title", "now", "lanes": [{"label", "grey_after_now", "intervals": [{"start", "end", "label"}, ...]}, ...]}`, plus `"sync"` only when given | One lane or two of time-blocks side by side on one vertical time axis, in a frame that scrolls — lane 0 the left column in the lighter tone, lane 1 the right in the darker — under the lanes' labels; a line at `now`, and a `grey_after_now` lane greyed below it. With `sync`, a focus group's name, it's drawn around the group's focus clock: a fixed cursor, the time under it and a Now button, every timeline of the group scrolling to one time. See [the timeline builder](#the-timeline-builder), below. |
-| `ctx.rail(cards, title=None, sync=None)` | `{"type": "rail", "title", "cards": [{"id", "start", "end", "label", "detail", "tag"}, ...]}`, plus `"sync"` only when given | A column of fixed-size cards under its title, stacked from the top — five at most, the window moving with the focus time. With `sync`, it reads that focus group's time and restacks as it moves. See [the rail builders](#the-rail-builders), below. |
+| `ctx.rail(cards, side, title=None, sync=None)` | `{"type": "rail", "side", "title", "cards": [{"id", "start", "end", "out", "in", "port"}, ...]}`, plus `"sync"` only when given | A column of fixed-size cards under its title, stacked from the top — four corners each, five at most, the window moving with the focus time: ahead of it on a `"plan"` rail, back from it on a `"report"` rail, the head outlined. With `sync`, it reads that focus group's time and restacks as it moves. See [the rail builders](#the-rail-builders), below. |
 | `ctx.rails(timeline, left=None, right=None)` | `{"type": "rails", "left", "timeline", "right"}` | A timeline drawn exactly as it is alone, a rail either side: four columns, a rail, the two lanes, a rail. In a tile too small for them, the timeline alone. See [the rail builders](#the-rail-builders), below. |
 | `ctx.empty(message=None)` | `{"type": "empty", "message"}` | Muted, centred text (default "No data yet"). |
 | (the host's) | `{"type": "error", "message"}` | Muted, centred: "Couldn't render <app name>" over the message. |
@@ -454,10 +454,10 @@ readout, no button, the now line centred on opening as above.
 ### The rail builders
 
 ```python
-ctx.rail(cards, title=None, sync=None)
-# -> {"type": "rail", "title": "Plan", "sync": "frms", "cards": [
+ctx.rail(cards, side, title=None, sync=None)
+# -> {"type": "rail", "side": "plan", "title": "Plan", "sync": "frms", "cards": [
 #       {"id": "2026-11-05T15:10:00Z", "start": "2026-11-05T15:10:00Z", "end": "2026-11-08T13:00:00Z",
-#        "label": "MEL", "detail": "CX105 · CX104", "tag": None}, ...]}
+#        "out": "CX105", "in": "CX104", "port": "MEL"}, ...]}
 # with no sync (or ""), no "sync" key
 
 ctx.rails(timeline, left=None, right=None)
@@ -477,14 +477,20 @@ show.
     as the data knows); never before the start;
   - `id`: text or `None`, the card's stable id (a trip's: its flight out's
     start, as its band's) — carried, never drawn;
-  - `label`: text or `None`, its headline (the port, `MEL`);
-  - `detail`: text or `None`, a line under it (`CX105 · CX104`);
-  - `tag`: text or `None`, a small mark beside the label (`Day`).
+  - `out`: text or `None`, the flight out (`CX105`);
+  - `in`: text or `None`, the flight home (`CX104`) — `None` while it isn't
+    known, an open trip's;
+  - `port`: text or `None`, the port away — the layover's, or a day
+    return's turn-round (`MEL`).
 
   Every key is in the spec, `None` where not given. A card that isn't a dict
-  raises `TypeError`; a field it doesn't take `ValueError` (a misspelt `port`
-  is said, not ignored); a missing start, a time that isn't one or an end
-  before its start `ValueError`; a text field that isn't text `TypeError`.
+  raises `TypeError`; a field it doesn't take `ValueError` (a misspelt
+  `inbound` is said, not ignored); a missing start, a time that isn't one or
+  an end before its start `ValueError`; a text field that isn't text
+  `TypeError`.
+- **`side`** is required: `"plan"`, a rail that looks ahead of the focus
+  time, or `"report"`, one that looks back from it (`RAIL_SIDES`). Anything
+  else raises `ValueError`.
 - **`title`** is optional text, the rail's heading (`Plan`).
 - **`sync`** is optional text, a focus group's name, as a timeline's; `None`
   or `""` adds no key.
@@ -505,19 +511,31 @@ under 400px wide or 240px tall inside (`@container`) — the rails are left out
 and the timeline has the tile, exactly as it's drawn without them (a 2-wide
 roster tile is pixel-identical to one from before rails).
 
-A rail (`railSpec()`) is its heading over a list of **fixed-size cards**, 58px
-tall (`RAIL_CARD_PX`), 6px apart (`RAIL_GAP_PX`), whatever they hold: the
-label, its tag, the card's days in UTC (`05 Nov – 08 Nov`; within one day,
-`05 Nov`; open, `from 05 Nov`) and the detail line, all as text, with an amber
-(`--layover`) edge — a trip, as a band is. They're in time order (by start)
-and **hug the top** of the rail. At most **five** show (`RAIL_MAX`), or as
-many whole cards as the rail's height holds; which ones is
-`railWindow(cards, focusMs, fit)`: from the first card not over at the focus
-time (open, or ending after it), and those after it — **clamped** at the
-list's ends, so near the end it stays on the last five rather than emptying,
-and before the first it starts at the first. The card the focus is in is
-tinted as a band (`.at`), and the heading counts the window (`2–6/9`) while
-not every card shows. A rail with no cards says "None".
+A rail (`railSpec()`) is its heading — the title alone — over a list of
+**fixed-size cards**, 58px tall (`RAIL_CARD_PX`), 6px apart (`RAIL_GAP_PX`),
+whatever they hold. A card is **four corners**: top-left the flight out
+(mono), top-right the port (the display face, the prominent one), bottom-left
+the flight home (mono, muted; `—` for none — an open trip), bottom-right the
+day it left (its start's, UTC: `05 Nov`). All as text, with an amber
+(`--layover`) edge — a trip, as a band is; a day return is a card like any,
+its port the one it turned round at. They're in time order (by start) and
+**hug the top** of the rail. At most **five** show (`RAIL_MAX`), or as many
+whole cards as the rail's height holds; which ones is `railWindow(cards,
+focusMs, fit, side)`, by the rail's side:
+
+- **Plan** looks ahead: from the first card not over at the focus time (open,
+  or ending after it), and those after it — trips over by then drop off the
+  top. Its **head** is its top card.
+- **Report** looks back: up to the latest card over by the focus time (its
+  end at or before it), and those before it — the latest home at the foot,
+  older trips above it, and scrolling back brings older ones in. Its
+  **head** is its bottom card.
+
+Each is **clamped** at the list's ends, so it stays full: Plan near the end
+stays on the last five, Report near the start on the first five (the head
+there is still the end card). The head — the trip at the cursor's end of the
+window — is outlined in the accent (`.head`: its border and a 1px ring). A
+rail with no cards says "None".
 
 **Synced**, a rail reads its focus group's time and joins the group as a
 member beside its timelines, so every move of the focus — a timeline scrolled
@@ -969,10 +987,13 @@ roster numbers it (one duty home can fly `CEB-MNL / MNL-HKG`, stored under its
 first sector's code), else that duty's code. They're split at the render's now:
 **Plan**, beside the rostered lane, every trip with no end or ending after now
 (the one you're on among them); **Report**, beside the flown, every trip home.
-Each card's label is its port, its detail its flights out and home (`CX105 ·
-CX104`, a dash for one not known yet), a day return tagged `Day`, its id the
-trip's — the band's id for the same trip, for a report to re-attach to. Both
-rails are in `"frms"`, so they restack as the timeline scrolls. They need room:
+Each card is the trip's flights out and home and its port, straight through
+(`_card()`: `{id, start, end, out, in, port}`; `in` `None` while it isn't
+known, drawn as a dash), a day return like any, its id the trip's — the
+band's id for the same trip, for a report to re-attach to. Plan is
+`ctx.rail(plan, "plan", …)`, looking ahead of the cursor; Report is
+`ctx.rail(report, "report", …)`, looking back. Both rails are in `"frms"`, so
+they restack as the timeline scrolls. They need room:
 the 4×2 and 4×3 sizes are for them, and in a 2-wide tile they're left out.
 
 The `duty_hours_*` metrics are still written on every

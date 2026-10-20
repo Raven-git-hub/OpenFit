@@ -39,10 +39,11 @@ any sectors between inside it - the layovers.
 
 The same trips, read from both lanes at once and with day returns among
 them, are the cards of the Plan and Report rails either side of the
-timeline (trip_cards()): a whole trip out and back each - its port, its
-flights out and home, its dates, a day return tagged. Every trip not
-over yet is on the Plan rail, beside the rostered lane; every trip home
-on the Report rail, beside the flown. Each rail shows five at a time,
+timeline (trip_cards()): a whole trip out and back each - its flights
+out and home, its port (a day return's, its turn-round) and the day it
+left. Every trip not over yet is on the Plan rail, beside the rostered
+lane, looking ahead of the cursor; every trip home on the Report rail,
+beside the flown, looking back. Each rail shows five at a time,
 restacking as the timeline scrolls.
 
 Uploading again replaces a duty of the same kind and start, and a day's
@@ -137,8 +138,9 @@ def render(ctx, cfg):
     # Flanking it, the trips as cards, read from both lanes at once: the
     # Plan rail beside the rostered lane - every trip not over yet, the
     # one under way and the one not home as far as the roster runs among
-    # them - and the Report rail beside the flown, every trip home. Both
-    # in the FRMS group: they restack as the timeline scrolls.
+    # them - looking ahead of the cursor; and the Report rail beside the
+    # flown, every trip home, looking back. Both in the FRMS group: they
+    # restack as the timeline scrolls.
     cards = trip_cards(rostered, flown, home_base)
     ahead = _utc_text(now)
     plan = [_card(c) for c in cards if c["end"] is None or c["end"] > ahead]
@@ -146,8 +148,8 @@ def render(ctx, cfg):
     return ctx.panel(
         ctx.rails(
             timeline,
-            left=ctx.rail(plan, title="Plan", sync="frms"),
-            right=ctx.rail(report, title="Report", sync="frms"),
+            left=ctx.rail(plan, "plan", title="Plan", sync="frms"),
+            right=ctx.rail(report, "report", title="Report", sync="frms"),
         ),
         picker,
     )
@@ -173,14 +175,10 @@ def _band(trip):
 
 
 def _card(trip):
-    """A trip_cards() card as a rail card: its span, the port it's away
-    at, its flights out and home - a dash for one not known yet - and a
-    day return tagged. Its id is the trip's."""
-    return {
-        "id": trip["id"], "start": trip["start"], "end": trip["end"], "label": trip["port"],
-        "detail": f"{trip['out'] or '—'} · {trip['in'] or '—'}",
-        "tag": "Day" if trip["day"] else None,
-    }
+    """A trip_cards() card as a rail card: its span, its flights out and
+    home (None while it isn't known: the page draws a dash) and the port
+    it's away at - a day return's, its turn-round. Its id is the trip's."""
+    return {key: trip[key] for key in ("id", "start", "end", "out", "in", "port")}
 
 
 def _lane(sessions, **lane):

@@ -4292,28 +4292,29 @@ def test_a_synced_timelines_cursor_and_now_line_are_the_accent(client):
 # ---------- rails: Plan and Report beside a synced timeline ----------
 #
 # A rails frame draws its timeline exactly as it's drawn alone, with a
-# rail of fixed-size cards either side. A rail shows at most five of its
-# cards, stacked from its top - the first not over at the focus time and
-# the ones after it, held at the list's ends - and restacks whenever its
-# focus group's time moves, which it only ever reads. Under node, over
-# the stand-in DOM, with the clock held still as for the focus clock.
+# rail of fixed-size cards either side - each card four corners: the
+# flight out and the port over the flight home and the day it left. A
+# rail shows at most five of its cards, stacked from its top, and which
+# by its side: a plan rail looks ahead of the focus time - the first
+# card not over and on, its top card the head - and a report rail back -
+# the latest card over at its foot, the head - each held full at the
+# list's ends. It restacks whenever its focus group's time moves, which
+# it only ever reads. Under node, over the stand-in DOM, with the clock
+# held still as for the focus clock.
 
-RAILS_PARTS = SYNC_PARTS + ["RAIL_MAX", "RAIL_CARD_PX", "RAIL_GAP_PX", "railWindow", "fmtCardDays", "railSpec", "railsSpec"]
+RAILS_PARTS = SYNC_PARTS + ["RAIL_MAX", "RAIL_CARD_PX", "RAIL_GAP_PX", "railWindow", "fmtCardDay", "railSpec", "railsSpec"]
 
 RAILS_HARNESS = r"""
-    // A rail as drawn: its rows, heading and count, and its cards - each
-    // its label [tag] and dates, then its detail; > for the one in focus.
+    // A rail as drawn: its rows, its heading, and its cards - each its
+    // corners in reading order (out, port, in, day); > for the head.
     const rail = box => {
       const list = box.querySelector('.rail-cards');
-      const part = (c, cls) => (c.querySelector('.'+cls) || {textContent: null}).textContent;
       return {
         rows: box.children.map(c => c.className),
-        title: box.querySelector('.rail-title').textContent,
-        count: box.querySelector('.rail-count').textContent,
+        title: box.querySelector('.rail-head').textContent,
         none: (list.querySelector('.rail-none') || {textContent: null}).textContent,
-        cards: kids(list, 'rail-card').map(c => (c.classList.contains('at') ? '>' : '') + part(c, 'rc-label')
-          + (part(c, 'rc-tag')!==null ? ' ['+part(c, 'rc-tag')+']' : '') + ' ' + part(c, 'rc-when')
-          + (part(c, 'rc-detail')!==null ? ' / '+part(c, 'rc-detail') : '')),
+        cards: kids(list, 'rail-card').map(c => (c.classList.contains('head') ? '>' : '')
+          + c.children.map(x => x.textContent).join(' ')),
       };
     };
     // The rail's cards given a height and put on the page, and laid out for it.
@@ -4335,23 +4336,24 @@ def _rails_script(page, scenario):
     )
 
 
-def _trip(start, end, port, out, inbound, tag=None):
-    return {"id": start, "start": start, "end": end, "label": port, "detail": f"{out} · {inbound}", "tag": tag}
+def _trip(start, end, port, out, inbound):
+    return {"id": start, "start": start, "end": end, "out": out, "in": inbound, "port": port}
 
 
 # Seven trips to plan - the first under way at the clock's now (12:00Z,
 # Sunday 18 October 2026), the last not home yet - given out of order,
-# and six to report, all home.
-PLAN = {"type": "rail", "title": "Plan", "sync": "frms", "cards": [
+# and seven to report, all home.
+PLAN = {"type": "rail", "side": "plan", "title": "Plan", "sync": "frms", "cards": [
     _trip("2026-10-21T01:00:00Z", "2026-10-23T13:00:00Z", "YVR", "CX888", "CX889"),
     _trip("2026-10-17T01:00:00Z", "2026-10-19T13:00:00Z", "BLR", "CX601", "CX602"),
     _trip("2026-10-25T01:00:00Z", "2026-10-27T13:00:00Z", "DEL", "CX695", "CX694"),
     _trip("2026-10-29T01:00:00Z", "2026-10-31T13:00:00Z", "JFK", "CX840", "CX841"),
-    _trip("2026-11-02T01:00:00Z", "2026-11-02T09:00:00Z", "MNL", "CX903", "CX902", tag="Day"),
+    _trip("2026-11-02T01:00:00Z", "2026-11-02T09:00:00Z", "MNL", "CX903", "CX902"),
     _trip("2026-11-05T01:00:00Z", "2026-11-08T13:00:00Z", "CDG", "CX261", "CX260"),
-    _trip("2026-11-12T01:00:00Z", None, "ZRH", "CX383", "—"),
+    _trip("2026-11-12T01:00:00Z", None, "ZRH", "CX383", None),
 ]}
-REPORT = {"type": "rail", "title": "Report", "sync": "frms", "cards": [
+REPORT = {"type": "rail", "side": "report", "title": "Report", "sync": "frms", "cards": [
+    _trip("2026-08-28T01:00:00Z", "2026-08-30T13:00:00Z", "HND", "CX548", "CX549"),
     _trip("2026-09-10T01:00:00Z", "2026-09-12T13:00:00Z", "MEL", "CX105", "CX104"),
     _trip("2026-09-20T01:00:00Z", "2026-09-22T13:00:00Z", "BKK", "CX701", "CX700"),
     _trip("2026-09-28T01:00:00Z", "2026-09-30T13:00:00Z", "LHR", "CX255", "CX254"),
@@ -4361,56 +4363,64 @@ REPORT = {"type": "rail", "title": "Report", "sync": "frms", "cards": [
 ]}
 RAILS = {"type": "rails", "left": PLAN, "timeline": SYNCED, "right": REPORT}
 
+# Each card's corners as drawn: out, port, in - a dash for none - and the
+# day it left.
 PLAN_CARDS = {
-    "BLR": "BLR 17 Oct – 19 Oct / CX601 · CX602", "YVR": "YVR 21 Oct – 23 Oct / CX888 · CX889",
-    "DEL": "DEL 25 Oct – 27 Oct / CX695 · CX694", "JFK": "JFK 29 Oct – 31 Oct / CX840 · CX841",
-    "MNL": "MNL [Day] 02 Nov / CX903 · CX902", "CDG": "CDG 05 Nov – 08 Nov / CX261 · CX260",
-    "ZRH": "ZRH from 12 Nov / CX383 · —",
+    "BLR": "CX601 BLR CX602 17 Oct", "YVR": "CX888 YVR CX889 21 Oct", "DEL": "CX695 DEL CX694 25 Oct",
+    "JFK": "CX840 JFK CX841 29 Oct", "MNL": "CX903 MNL CX902 02 Nov", "CDG": "CX261 CDG CX260 05 Nov",
+    "ZRH": "CX383 ZRH — 12 Nov",
 }
 REPORT_CARDS = {
-    "MEL": "MEL 10 Sep – 12 Sep / CX105 · CX104", "BKK": "BKK 20 Sep – 22 Sep / CX701 · CX700",
-    "LHR": "LHR 28 Sep – 30 Sep / CX255 · CX254", "SIN": "SIN 03 Oct – 05 Oct / CX711 · CX710",
-    "NRT": "NRT 08 Oct – 10 Oct / CX500 · CX501", "SYD": "SYD 12 Oct – 14 Oct / CX101 · CX100",
+    "HND": "CX548 HND CX549 28 Aug", "MEL": "CX105 MEL CX104 10 Sep", "BKK": "CX701 BKK CX700 20 Sep",
+    "LHR": "CX255 LHR CX254 28 Sep", "SIN": "CX711 SIN CX710 03 Oct", "NRT": "CX500 NRT CX501 08 Oct",
+    "SYD": "CX101 SYD CX100 12 Oct",
 }
 
 
-def _cards(table, ports, at=None):
-    return [(">" if port == at else "") + table[port] for port in ports]
+def _cards(table, ports, head=None):
+    return [(">" if port == head else "") + table[port] for port in ports]
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
-def test_a_rails_window_is_the_next_cards_held_at_the_lists_ends(client):
+def test_a_rails_window_looks_ahead_on_plan_and_back_on_report(client):
     page = _page(client)
     r = _node(_rails_script(page, """
         // Seven cards of ten ms each, twenty apart; the last open.
         const cards = [0, 20, 40, 60, 80, 100, 120].map(a => ({a, b: a===120 ? null : a + 10}));
-        const at = (focus, fit, list) => railWindow(list || cards, focus, fit);
-        r.before = at(-5, 5);        // before them all: the first five
-        r.inOne = at(25, 5);         // in the second
-        r.atItsEnd = at(30, 5);      // the second just over: from the third
-        r.between = at(35, 5);
-        r.atEnd = at(105, 5);        // in the sixth: held, the last five
-        r.inOpen = at(500, 5);       // in the open one, long after
-        r.short = at(500, 3);        // room for three
-        r.none = at(25, 0);          // room for none
-        r.capped = at(25, 9);        // room for nine: never more than RAIL_MAX
-        r.few = at(500, 5, cards.slice(0, 2));   // fewer than fit, all over
-        r.empty = at(25, 5, []);
+        const at = (side, focus, fit, list) => railWindow(list || cards, focus, fit, side);
+        const both = (focus, fit, list) => [at('plan', focus, fit, list), at('report', focus, fit, list)];
+        r.before = both(-5, 5);       // before them all
+        r.inOne = both(25, 5);        // in the second, the first over
+        r.atItsEnd = both(30, 5);     // the second just over
+        r.mid = both(95, 5);          // the fifth over, in none
+        r.inSixth = both(105, 5);
+        r.inOpen = both(500, 5);      // long after, in the open one
+        r.short = [both(500, 3), both(55, 3), both(75, 3)];
+        r.none = both(25, 0);         // room for none
+        r.capped = both(500, 9);      // room for nine: never more than RAIL_MAX
+        r.few = both(500, 5, cards.slice(0, 2));
+        r.empty = both(25, 5, []);
+        r.otherSide = at('sideways', 25, 5);   // anything but report looks ahead
         r.max = RAIL_MAX;
     """))
 
+    w = lambda start, count, head: {"start": start, "count": count, "head": head}
     assert r["max"] == 5
-    assert r["before"] == {"start": 0, "count": 5, "at": -1}
-    assert r["inOne"] == {"start": 1, "count": 5, "at": 1}
-    assert r["atItsEnd"] == {"start": 2, "count": 5, "at": -1}
-    assert r["between"] == {"start": 2, "count": 5, "at": -1}
-    assert r["atEnd"] == {"start": 2, "count": 5, "at": 5}
-    assert r["inOpen"] == {"start": 2, "count": 5, "at": 6}
-    assert r["short"] == {"start": 4, "count": 3, "at": 6}
-    assert r["none"]["count"] == 0
-    assert r["capped"] == {"start": 1, "count": 5, "at": 1}
-    assert r["few"] == {"start": 0, "count": 2, "at": -1}
-    assert r["empty"] == {"start": 0, "count": 0, "at": -1}
+    # Plan: from the first not over, held at the list's end, the head its
+    # top card. Report: up to the latest over, held full at the list's
+    # start, the head its bottom card - the open card never over.
+    assert r["before"] == [w(0, 5, 0), w(0, 5, 4)]
+    assert r["inOne"] == [w(1, 5, 0), w(0, 5, 4)]
+    assert r["atItsEnd"] == [w(2, 5, 0), w(0, 5, 4)]
+    assert r["mid"] == [w(2, 5, 0), w(0, 5, 4)]
+    assert r["inSixth"] == [w(2, 5, 0), w(0, 5, 4)]
+    assert r["inOpen"] == [w(2, 5, 0), w(1, 5, 4)]
+    assert r["short"] == [[w(4, 3, 0), w(3, 3, 2)], [w(3, 3, 0), w(0, 3, 2)], [w(4, 3, 0), w(1, 3, 2)]]
+    assert r["none"] == [w(0, 0, -1), w(0, 0, -1)]
+    assert r["capped"] == [w(2, 5, 0), w(1, 5, 4)]
+    assert r["few"] == [w(0, 2, 0), w(0, 2, 1)]
+    assert r["empty"] == [w(0, 0, -1), w(0, 0, -1)]
+    assert r["otherSide"] == w(1, 5, 0)
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
@@ -4432,8 +4442,12 @@ def test_a_rails_frame_draws_its_timeline_as_it_is_alone_between_two_rails(clien
         r.group = [new Date(g.focusMs).toISOString(), g.following, g.members.size, timelines.size, focusGroups.size];
         const list = box.querySelector('.rail-cards'), card = box.querySelector('.rail-card');
         r.list = [list.attrs.role, list.attrs['aria-label'], list.style.gap];
-        r.card = [card.attrs.role, card.attrs['aria-current'], card.dataset.id, card.style.height];
+        r.card = [card.attrs.role, card.attrs['aria-current'], card.dataset.id, card.style.height,
+                  card.children.map(c => c.className)];
+        r.heads = box.querySelectorAll('.rail-card.head').map(c => [c.dataset.id, c.attrs['aria-current']]);
+        r.current = box.querySelectorAll('.rail-card').filter(c => c.attrs['aria-current']).length;
         r.heights = [...new Set(box.querySelectorAll('.rail-card').map(c => c.style.height))];
+        r.counts = box.querySelectorAll('.rail-count').length;
         r.html = [box, ...box.querySelectorAll('*')].map(n => n._html).join('');
     """))
 
@@ -4445,19 +4459,21 @@ def test_a_rails_frame_draws_its_timeline_as_it_is_alone_between_two_rails(clien
     assert r["centre"]["laidOut"] is True
     # Each rail mirrors the rows over the timeline's frame - its title's
     # line, its focus row - so its heading is in the lanes' heading row
-    # and its cards start level with the frame.
+    # and its cards start level with the frame; the heading its title
+    # alone, no count.
     assert r["left"]["rows"] == r["right"]["rows"] == ["rail-sp t", "rail-sp", "rail-head", "rail-cards"]
-    # Five at most, stacked from the top, in time order: the plan from the
-    # trip under way - in focus - on; the reports the latest five, the
-    # window held at the list's end. The headings count the window.
-    assert r["left"]["title"] == "Plan" and r["left"]["count"] == "1–5/7"
-    assert r["left"]["cards"] == _cards(PLAN_CARDS, ["BLR", "YVR", "DEL", "JFK", "MNL"], at="BLR")
-    assert r["right"]["title"] == "Report" and r["right"]["count"] == "2–6/6"
-    assert r["right"]["cards"] == _cards(REPORT_CARDS, ["BKK", "LHR", "SIN", "NRT", "SYD"])
+    assert (r["left"]["title"], r["right"]["title"], r["counts"]) == ("Plan", "Report", 0)
+    # Five at most, stacked from the top, in time order. Plan from the
+    # trip under way on, the head its top card; Report up to the latest
+    # home, the head its bottom card, older trips above it.
+    assert r["left"]["cards"] == _cards(PLAN_CARDS, ["BLR", "YVR", "DEL", "JFK", "MNL"], head="BLR")
+    assert r["right"]["cards"] == _cards(REPORT_CARDS, ["BKK", "LHR", "SIN", "NRT", "SYD"], head="SYD")
+    assert r["heads"] == [["2026-10-17T01:00:00Z", "true"], ["2026-10-12T01:00:00Z", "true"]]
+    assert r["current"] == 2
     assert r["group"] == ["2026-10-18T12:00:00.000Z", True, 4, 4, 1]
     assert r["list"] == ["list", "Plan: 7 cards", "6px"]
-    # A card a fixed size, the one in focus said so, its id carried.
-    assert r["card"] == ["listitem", "true", "2026-10-17T01:00:00Z", "58px"]
+    # A card a fixed size, its four corners in reading order, its id carried.
+    assert r["card"] == ["listitem", "true", "2026-10-17T01:00:00Z", "58px", ["rc-out", "rc-port", "rc-in", "rc-day"]]
     assert r["heights"] == ["58px"]
     # Everything an app sent set as text.
     assert r["html"] == ""
@@ -4471,18 +4487,21 @@ def test_rails_restack_as_the_focus_moves_and_never_move_it(client):
         const [L, tl, R] = box.children;
         show(tl, 480);
         showRail(L, 424); showRail(R, 424);
-        const both = () => [rail(L), rail(R)];
+        const both = () => [rail(L).cards, rail(R).cards];
         const g = focusGroups.get('frms');
         r.opened = [both(), new Date(g.focusMs).toISOString(), g.following];
         const to = iso => scrollTo(tl, (Date.parse(iso) - {TIMELINE_T0}) * 480 / WEEK);
         // The timeline scrolled by hand, ahead: the plan restacks - the
-        // trips over by then off the top, the window held at its end.
+        // trips over by then off the top, the window held at its end; the
+        // reports, looking back, stay on the latest five home.
         to('2026-10-26T05:40:00Z');
         r.ahead = both();
-        // Back, into September: the reports restack; the plan from its first.
-        to('2026-09-21T00:00:00Z');
+        // Back, into SYD's trip: NRT the latest home, at the foot - SYD,
+        // not home yet then, off it - and MEL come in at the top.
+        to('2026-10-12T06:00:00Z');
         r.back = both();
-        to('2026-09-01T00:00:00Z');
+        // Further, into LHR's trip: held full at the list's start.
+        to('2026-09-29T00:00:00Z');
         r.further = both();
         // Now: every member back on now, the rails with them.
         tl.querySelector('.tl-nowbtn').onclick();
@@ -4493,26 +4512,27 @@ def test_rails_restack_as_the_focus_moves_and_never_move_it(client):
         r.ticked = [both(), new Date(g.focusMs).toISOString(), g.following];
     """))
 
-    [left, right], focus, following = r["opened"]
+    [plan, report], focus, following = r["opened"]
     assert (focus, following) == ("2026-10-18T12:00:00.000Z", True)
-    assert left["cards"] == _cards(PLAN_CARDS, ["BLR", "YVR", "DEL", "JFK", "MNL"], at="BLR")
-    assert right["cards"] == _cards(REPORT_CARDS, ["BKK", "LHR", "SIN", "NRT", "SYD"])
+    assert plan == _cards(PLAN_CARDS, ["BLR", "YVR", "DEL", "JFK", "MNL"], head="BLR")
+    assert report == _cards(REPORT_CARDS, ["BKK", "LHR", "SIN", "NRT", "SYD"], head="SYD")
 
-    [left, right] = r["ahead"]
-    assert (left["count"], left["cards"]) == ("3–7/7", _cards(PLAN_CARDS, ["DEL", "JFK", "MNL", "CDG", "ZRH"], at="DEL"))
-    assert right == r["opened"][0][1]
+    [plan, report] = r["ahead"]
+    assert plan == _cards(PLAN_CARDS, ["DEL", "JFK", "MNL", "CDG", "ZRH"], head="DEL")
+    assert report == r["opened"][0][1]
 
-    [left, right] = r["back"]
-    assert (left["count"], left["cards"]) == ("1–5/7", _cards(PLAN_CARDS, ["BLR", "YVR", "DEL", "JFK", "MNL"]))
-    assert (right["count"], right["cards"]) == ("2–6/6", _cards(REPORT_CARDS, ["BKK", "LHR", "SIN", "NRT", "SYD"], at="BKK"))
-    [left, right] = r["further"]
-    assert (right["count"], right["cards"]) == ("1–5/6", _cards(REPORT_CARDS, ["MEL", "BKK", "LHR", "SIN", "NRT"]))
+    [plan, report] = r["back"]
+    assert plan == r["opened"][0][0]
+    assert report == _cards(REPORT_CARDS, ["MEL", "BKK", "LHR", "SIN", "NRT"], head="NRT")
+    [plan, report] = r["further"]
+    assert report == _cards(REPORT_CARDS, ["HND", "MEL", "BKK", "LHR", "SIN"], head="SIN")
 
     assert r["now"] == r["opened"][0]
 
-    [left, right], focus, following = r["ticked"]
+    [plan, report], focus, following = r["ticked"]
     assert (focus, following) == ("2026-10-19T13:00:00.000Z", True)
-    assert (left["count"], left["cards"]) == ("2–6/7", _cards(PLAN_CARDS, ["YVR", "DEL", "JFK", "MNL", "CDG"]))
+    assert plan == _cards(PLAN_CARDS, ["YVR", "DEL", "JFK", "MNL", "CDG"], head="YVR")
+    assert report == r["opened"][0][1]
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
@@ -4520,29 +4540,34 @@ def test_a_rail_shows_as_many_whole_cards_as_fit(client):
     page = _page(client)
     r = _node(_rails_script(page, f"""
         const box = renderSpec({json.dumps(RAILS)}, 'Roster', 'roster');
-        const [L, tl] = box.children;
+        const [L, tl, R] = box.children;
         show(tl, 480);
         // Built off the page: drawn for five, until it's measured.
-        r.built = rail(L).cards.length;
-        const at = h => {{ showRail(L, h); return [rail(L).count, rail(L).cards.length]; }};
-        r.three = at(3 * RAIL_CARD_PX + 2 * RAIL_GAP_PX);
-        r.two = at(3 * RAIL_CARD_PX + 2 * RAIL_GAP_PX - 1);
+        r.built = [rail(L).cards.length, rail(R).cards.length];
+        const three = 3 * RAIL_CARD_PX + 2 * RAIL_GAP_PX;
+        const at = h => {{ showRail(L, h); return rail(L).cards; }};
+        r.three = at(three);
+        r.two = at(three - 1);
         // No height - Home behind another tab - and the last layout stands.
         r.hidden = at(0);
-        r.tall = at(2000);
-        // Three, at the list's end: held, the last three.
-        showRail(L, 3 * RAIL_CARD_PX + 2 * RAIL_GAP_PX);
+        r.tall = at(2000).length;
+        // Three on each side: Plan from the trip under way, Report the
+        // latest three home - the head at its foot.
+        showRail(L, three); showRail(R, three);
+        r.shortReport = rail(R).cards;
+        // At the plan's end: held, the last three, the head its top.
         scrollTo(tl, (Date.parse('2026-11-20T00:00:00Z') - {TIMELINE_T0}) * 480 / WEEK);
-        r.end = rail(L);
+        r.end = rail(L).cards;
         r.frames = frames.length;
     """))
 
-    assert r["built"] == 5
-    assert r["three"] == ["1–3/7", 3]
-    assert r["two"] == ["1–2/7", 2]
-    assert r["hidden"] == ["1–2/7", 2]
-    assert r["tall"] == ["1–5/7", 5]
-    assert (r["end"]["count"], r["end"]["cards"]) == ("5–7/7", _cards(PLAN_CARDS, ["MNL", "CDG", "ZRH"], at="ZRH"))
+    assert r["built"] == [5, 5]
+    assert r["three"] == _cards(PLAN_CARDS, ["BLR", "YVR", "DEL"], head="BLR")
+    assert r["two"] == _cards(PLAN_CARDS, ["BLR", "YVR"], head="BLR")
+    assert r["hidden"] == r["two"]
+    assert r["tall"] == 5
+    assert r["shortReport"] == _cards(REPORT_CARDS, ["SIN", "NRT", "SYD"], head="SYD")
+    assert r["end"] == _cards(PLAN_CARDS, ["MNL", "CDG", "ZRH"], head="MNL")
     # Measured again on the next frame, as a timeline is.
     assert r["frames"] >= 3
 
@@ -4550,22 +4575,27 @@ def test_a_rail_shows_as_many_whole_cards_as_fit(client):
 @pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
 def test_a_hand_built_rail_is_drawn_as_far_as_it_can_be(client):
     page = _page(client)
-    junk = {"type": "rail", "title": None, "cards": [
-        {"id": "a", "start": "2026-10-20T00:00:00Z", "end": "2026-10-21T00:00:00Z", "label": "<b>A</b>",
-         "detail": "<i>d</i>", "tag": "<u>t</u>"},
-        {"label": "no start"}, {"start": "not a time"}, {"start": "2026-10-20T00:00:00Z", "end": "not a time"},
+    junk = {"type": "rail", "side": "plan", "title": None, "cards": [
+        {"id": "a", "start": "2026-10-20T00:00:00Z", "end": "2026-10-21T00:00:00Z",
+         "out": "<b>CX1</b>", "in": "<i>CX2</i>", "port": "<u>P</u>"},
+        {"out": "no start"}, {"start": "not a time"}, {"start": "2026-10-20T00:00:00Z", "end": "not a time"},
         {"start": "2026-10-20T00:00:00Z", "end": "2026-10-19T00:00:00Z"}, None, "card", 5,
-        {"start": "2026-10-16T00:00:00Z", "end": None, "label": "Open"},
+        {"start": "2026-10-16T00:00:00Z", "end": None, "port": "Open"},
         {"start": "2026-10-17T00:00:00Z", "end": "2026-10-17T06:00:00Z"},
     ]}
     r = _node(_rails_script(page, f"""
         // Unsynced: drawn for the time it's drawn at - the clock, 12:07:30Z
         // on 18 October - and no focus group started for it.
-        const box = renderSpec({json.dumps(junk)}, 'X', 'x');
+        const junk = {json.dumps(junk)};
+        const box = renderSpec(junk, 'X', 'x');
         r.junk = rail(box);
         r.html = [box, ...box.querySelectorAll('*')].map(n => n._html).join('');
         r.groups = [focusGroups.size, timers.length];
-        r.none = rail(renderSpec({{type: 'rail', title: 'Report', cards: []}}, 'X', 'x'));
+        // The same cards looking back: the latest over by then at the foot,
+        // held full; a side that's neither, ahead.
+        r.report = rail(renderSpec({{...junk, side: 'report'}}, 'X', 'x')).cards;
+        r.sideways = rail(renderSpec({{...junk, side: 'sideways'}}, 'X', 'x')).cards;
+        r.none = rail(renderSpec({{type: 'rail', side: 'report', title: 'Report', cards: []}}, 'X', 'x'));
         r.bare = rail(renderSpec({{type: 'rail'}}, 'X', 'x'));
         // A frame's side that isn't a rail is none; a frame's timeline that
         // isn't one is drawn as renderSpec draws it, the rails beside it.
@@ -4573,28 +4603,27 @@ def test_a_hand_built_rail_is_drawn_as_far_as_it_can_be(client):
           .children.map(c => c.className);
         const odd = renderSpec({{type: 'rails', left: {{type: 'rail', cards: []}}, timeline: null}}, 'X', 'x');
         r.odd = [odd.children.map(c => c.className), rail(odd.children[0]).rows];
-        r.days = [fmtCardDays(Date.parse('2026-12-31T22:00:00Z'), Date.parse('2027-01-01T03:00:00Z')),
-                  fmtCardDays(Date.parse('2026-11-02T01:00:00Z'), Date.parse('2026-11-02T23:59:59Z')),
-                  fmtCardDays(Date.parse('2026-11-02T01:00:00Z'), null)];
+        r.days = [fmtCardDay(Date.parse('2026-12-31T22:00:00Z')), fmtCardDay(Date.parse('2027-01-01T03:00:00Z'))];
     """))
 
-    # Only the cards it can place, in time order; the one in focus marked.
-    # The rest left out - no start, a time that isn't one, an end before
-    # its start, not a card - and every text as text.
-    # A card with no label is still a card: its days.
-    assert r["junk"]["cards"] == [">Open from 16 Oct", " 17 Oct", "<b>A</b> [<u>t</u>] 20 Oct – 21 Oct / <i>d</i>"]
-    assert r["junk"]["count"] == ""
+    # Only the cards it can place, in time order, the head its top - the
+    # rest left out: no start, a time that isn't one, an end before its
+    # start, not a card. A missing flight a dash, a missing port nothing;
+    # every text as text.
+    assert r["junk"]["cards"] == [">— Open — 16 Oct", "—  — 17 Oct", "<b>CX1</b> <u>P</u> <i>CX2</i> 20 Oct"]
     assert r["junk"]["title"] == " "
     assert r["junk"]["rows"] == ["rail-head", "rail-cards"]
     assert r["html"] == ""
     assert r["groups"] == [0, 0]
+    assert r["report"] == ["— Open — 16 Oct", "—  — 17 Oct", "><b>CX1</b> <u>P</u> <i>CX2</i> 20 Oct"]
+    assert r["sideways"] == r["junk"]["cards"]
     # No cards: said, under its heading.
     assert (r["none"]["title"], r["none"]["none"], r["none"]["cards"]) == ("Report", "None", [])
     assert (r["bare"]["none"], r["bare"]["cards"]) == ("None", [])
     assert r["sides"] == ["spec-timeline"]
     assert r["odd"] == [["spec-rail", "spec-msg"], ["rail-head", "rail-cards"]]
-    # A card's days, in UTC.
-    assert r["days"] == ["31 Dec – 01 Jan", "02 Nov", "from 02 Nov"]
+    # A card's day, the one it left, in UTC.
+    assert r["days"] == ["31 Dec", "01 Jan"]
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
@@ -4634,13 +4663,20 @@ def test_the_rails_are_left_out_of_a_tile_too_small_to_hold_them(client):
     assert ".spec-panel > .spec-rails{flex:1 1 0;}" in css
     assert ".spec-rails > .spec-timeline{flex:1 1 0;}" in css
     assert ".spec-rails > .spec-rail{flex:none;width:clamp(84px, 22cqi, 156px);}" in css
-    # Every colour a token: a card's edge and the one in focus the bands'
-    # amber, its surface the frame's.
+    # Every colour a token: a card's edge the bands' amber, its surface
+    # the frame's, the head outlined in the accent.
     rails = css[css.index("/* rails: a timeline flanked") : css.index("/* panel: its children, stacked */")]
     assert not re.search(r"#[0-9a-fA-F]{3,8}\b|rgba?\(", rails)
     assert "border-left:3px solid var(--layover);" in rails
-    assert "background:color-mix(in srgb,var(--layover) 14%,var(--inset));" in rails
     assert "background:var(--inset);" in rails
+    assert ".rail-card.head{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent);}" in rails
+    # Four corners: a two-by-two grid, the port in the display face.
+    assert "display:grid;grid-template-columns:minmax(0,1fr) auto;grid-template-rows:1fr 1fr;" in rails
+    assert "var(--font-display)" in rails[rails.index(".rc-port{") :].split("}")[0]
+    # No count, no tint by the cursor, no range or tag.
+    for gone in ("rail-count", ".at", "rc-label", "rc-tag", "rc-when", "rc-detail"):
+        assert gone not in rails, gone
+    assert "rail-count" not in page and "fmtCardDays" not in page
 
 
 # ---------- an uninstalled app's data: Remove data ----------

@@ -360,16 +360,18 @@ own calls to its device API. Full direction:
   `TypeError` — `None` or `""` adds no key, so an unsynced spec is
   exactly the one from before `sync`; the host only carries the name, the
   focus clock is the page's, below),
-  `rail(cards, title=None, sync=None)` → `{"type": "rail", title, cards:
-  [{id, start, end, label, detail, tag}]}`, plus `sync` only when given (a
-  column of fixed-size cards — a trip each, the roster's — the page shows
-  five at a time and restacks by the focus time: `cards` a list or tuple
+  `rail(cards, side, title=None, sync=None)` → `{"type": "rail", side,
+  title, cards: [{id, start, end, out, in, port}]}`, plus `sync` only when
+  given (a column of fixed-size cards — a trip each, the roster's, four
+  corners — the page shows five at a time and restacks by the focus time:
+  `side` one of `RAIL_SIDES`, `"plan"` (looks ahead) or `"report"` (looks
+  back), else `ValueError`; `cards` a list or tuple
   (else `TypeError`) of dicts of only `RAIL_CARD_FIELDS` (`_card()`, via
   `_fields()`: not a dict `TypeError`, another field `ValueError`) —
   `start` required (`ValueError`, "a rail card needs a start") and `end`
   optional (`None`: open — not home as far as the data knows), each
   normalised by `_session_instant()`, `end >= start` (as those strings),
-  `id`/`label`/`detail`/`tag` text or `None` (else `TypeError`), all six
+  `id`/`out`/`in`/`port` text or `None` (else `TypeError`), all six
   keys always in the spec; `title` text or `None`; `sync` a focus group's
   name, as a timeline's — `None`/`""` no key — which the rail only reads),
   `rails(timeline, left=None, right=None)` → `{"type": "rails", left,
@@ -680,12 +682,14 @@ own calls to its device API. Full direction:
   flown, home base)` split at the same `now` (`_utc_text(now)`) — **Plan**,
   the left, every card with `end` None or after now (the trip under way
   and the one not home as far as the roster runs among them), and
-  **Report**, the right, every card home by then — each `ctx.rail(...,
-  title="Plan"|"Report", sync="frms")` of `_card()`s: `{id, start, end,
-  label: port, detail: "<out> · <in>" (a missing one "—"), tag: "Day" for
-  a day return}`; no home base, no cards. The page shows five a side,
-  restacking as the timeline scrolls, and drops the rails in a tile under
-  4 wide (the 4×2/4×3 sizes are theirs). The `duty_hours_*` metrics are
+  **Report**, the right, every card home by then — `ctx.rail(plan,
+  "plan", title="Plan", sync="frms")` and `ctx.rail(report, "report",
+  title="Report", sync="frms")` of `_card()`s, the trip's `{id, start,
+  end, out, in, port}` straight through (`in` None while open — the page's
+  dash; a day return like any, its port the turn-round's); no home base,
+  no cards. The page shows five a side, restacking as the timeline
+  scrolls — Plan ahead of the cursor, Report back — and drops the rails in
+  a tile under 4 wide (the 4×2/4×3 sizes are theirs). The `duty_hours_*` metrics are
   still written; the tile no longer reads them (`app.yaml`'s `reads`
   still names them).
 - `app/home_layout.py` — the Home tab's layout, one `settings` row
@@ -1248,23 +1252,30 @@ own calls to its device API. Full direction:
   (`display: none`), the timeline then the whole tile, pixel for pixel as
   without them — every roster tile 2 wide; nothing in `timelineSpec()`,
   the focus clock or a `.tl-*` rule changed for them), `rail`
-  (`railSpec(s, above)`: a `.rail-head` (title, `\u00a0` for none, and a
-  `.rail-count` `2–6/9` while not all show) over `.rail-cards`, a list of
-  `.rail-card`s, each `RAIL_CARD_PX` (58) tall, `RAIL_GAP_PX` (6) apart —
-  `.rc-label`, a `.rc-tag`, `.rc-when` (`fmtCardDays()`, UTC: `05 Nov – 08
-  Nov`, `05 Nov`, `from 05 Nov`), `.rc-detail`, `data-id` its id, all as
-  text — an amber (`--layover`) left edge, the one in focus `.at`
-  (`aria-current`) tinted as a band; none → "None"; cards sorted by start,
-  a hand-built one without a start, or with a bad or earlier end, left
-  out. Which show is `railWindow(cards, focusMs, fit)` → `{start, count,
-  at}`: from the first not over at the focus (open, or ending after it),
-  `count` `min(fit, RAIL_MAX 5, n)`, held at the list's ends (`start ≤ n −
-  count`), `at` the card the focus is in. `fit` the whole cards
+  (`railSpec(s, above)`: a `.rail-head` (its title alone, `\u00a0` for
+  none — no count) over `.rail-cards`, a list of `.rail-card`s, each
+  `RAIL_CARD_PX` (58) tall, `RAIL_GAP_PX` (6) apart, a 2×2 grid of four
+  corners in reading order — `.rc-out` (top-left, mono), `.rc-port`
+  (top-right, the display face, the prominent one), `.rc-in` (bottom-left,
+  mono, muted; `—` for none, as `.rc-out`), `.rc-day` (bottom-right,
+  `fmtCardDay()` of its start, UTC: `05 Nov`) — `data-id` its id, all as
+  text, an amber (`--layover`) left edge; the head `.head` (`aria-current`),
+  outlined in the accent (`border-color` and a 1px `box-shadow`); none →
+  "None"; cards sorted by start, a hand-built one without a start, or with
+  a bad or earlier end, left out. Which show is `railWindow(cards, focusMs,
+  fit, side)` → `{start, count, head}`, `count` `min(fit, RAIL_MAX 5, n)`
+  (none: `{0, 0, -1}`): `side` `s.side` (`"report"`, else `"plan"`); plan
+  from the first not over at the focus (open, or ending after it), held at
+  the list's end (`start ≤ n − count`), `head` 0, its top card; report up
+  to `j`, the latest over by the focus (an end, `≤` it), held full at the
+  list's start (`j ≥ count − 1`), `start` `j − count + 1`, `head` `count −
+  1`, its bottom card — the head on a held end the end card, whatever the
+  cursor's in. `fit` the whole cards
   `.rail-cards`' height holds — `RAIL_MAX` until measured, then on a
   `requestAnimationFrame` and every `ResizeObserver` callback, no height
   keeping the last. Synced (`s.sync`), it reads `focusGroup(name).focusMs`
   and joins the group's `members` with a `show` that restacks (only when
-  the window or `at` changes), so a scroll by hand, Now and the follow
+  the window changes), so a scroll by hand, Now and the follow
   tick all restack it — it never calls `setFocus()`; unsynced, the time it
   was drawn at. It sits in `timelines` as `{scroll: its list, observer,
   group, show}`, so `releaseTimelines()` lets it go with its tile),
@@ -2004,8 +2015,11 @@ same PR:
   — day returns included, read back from their stored legs — from both
   lanes at once, deduped, so a trip under way is one card; `render()`
   unchanged. Then the rails landed (5b; no migration, no route change):
-  two spec types — `rail` (fixed-size cards, five at a time, the window
-  from the first not over at the focus time, held at the list's ends) and
+  two spec types — `rail` (fixed-size cards, five at a time — four
+  corners, out and port over in and the day it left; side-aware, Plan
+  from the first trip not over at the focus time, its top card the head,
+  Report back from the latest home, its bottom card the head, each held
+  full at the list's ends, the head outlined in the accent) and
   `rails` (a timeline carried verbatim, a rail either side) — the page's
   `railSpec()`/`railsSpec()`, a rail a read-only member of the timeline's
   focus group (restacked by every move of its time, never moving it),
