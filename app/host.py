@@ -123,14 +123,17 @@ the dicts directly):
         the quarter hour) and a Now button, and every timeline of the
         group scrolls to the one focus time - following now until one
         is scrolled
-    {"type": "rail", "title", "cards": [{"id", "start", "end", "label", "detail", "tag"}, ...],
+    {"type": "rail", "side", "title", "cards": [{"id", "start", "end", "out", "in", "port"}, ...],
      "sync"}
-        a column of fixed-size cards - a trip each - at most five at
-        once, stacked from the top: the first card not yet over at the
-        focus time and the ones after it, held at the list's ends. A
-        card's end may be null (still open); its dates the page's to
-        write. `sync`, only when given, names the focus group it reads:
-        it restacks whenever that group's time moves, and never moves it
+        a column of fixed-size cards - a trip each, four corners: out
+        and port over in and its departure day - at most five at once,
+        stacked from the top, the window by the focus time and `side`:
+        "plan" from the first card not over and on, its top card the
+        head; "report" back from the latest card over, its bottom card
+        the head - held full at the list's ends, the head outlined. A
+        card's end may be null (still open), its in null (a dash).
+        `sync`, only when given, names the focus group it reads: it
+        restacks whenever that group's time moves, and never moves it
     {"type": "rails", "left": rail, "timeline": timeline, "right": rail}
         a timeline flanked by rails - four columns: a rail, the
         timeline's two lanes, a rail - the timeline carried verbatim and
@@ -576,13 +579,14 @@ def timeline(lanes, now=None, title=None, sync=None):
 
 
 # A rail's cards: what one takes, and nothing else - a misspelt field is
-# refused, as a lane's is.
-RAIL_CARD_FIELDS = ("id", "start", "end", "label", "detail", "tag")
+# refused, as a lane's is. And a rail's side: which way its window looks.
+RAIL_CARD_FIELDS = ("id", "start", "end", "out", "in", "port")
+RAIL_SIDES = ("plan", "report")
 
 
 def _card(raw):
-    """One card on a rail, as the spec carries it: {id, start, end, label,
-    detail, tag} - start iso_utc()'s UTC text, end the same or None."""
+    """One card on a rail, as the spec carries it: {id, start, end, out,
+    in, port} - start iso_utc()'s UTC text, end the same or None."""
     what = "a rail card"
     _fields(raw, RAIL_CARD_FIELDS, what)
     if raw.get("start") is None:
@@ -594,13 +598,13 @@ def _card(raw):
         # iso_utc()'s timestamps sort and compare as plain strings.
         if end < start:
             raise ValueError(f"{what}'s end is before its start: {end} < {start}")
-    card = {"id": None, "start": start, "end": end, "label": None, "detail": None, "tag": None}
-    for field in ("id", "label", "detail", "tag"):
+    card = {"id": None, "start": start, "end": end, "out": None, "in": None, "port": None}
+    for field in ("id", "out", "in", "port"):
         card[field] = _text_or_none(raw.get(field), field, f"{what}'s")
     return card
 
 
-def rail(cards, title=None, sync=None):
+def rail(cards, side, title=None, sync=None):
     """A column of fixed-size cards - a trip each, in the roster's - that
     restacks as a focus group's time moves.
 
@@ -610,20 +614,28 @@ def rail(cards, title=None, sync=None):
                 out's start), carried for the page, never drawn
         start   a datetime or ISO-8601 text, stored as a session's are
                 (UTC to the second, a naive time taken to be UTC) -
-                required
+                required; its day is drawn, the departure date
         end     the same, or None for one still open (a trip not home
                 as far as the data knows); never before the start
-        label   text or None: its headline (the port, MEL)
-        detail  text or None: a line under it (the flights, CX105 · CX104)
-        tag     text or None: a small mark beside the label (Day)
+        out     text or None: the flight out (CX105)
+        in      text or None: the flight home (CX104) - a dash for none
+        port    text or None: the port away, the layover's or the
+                turn-round's (MEL) - the card's prominent corner
 
-    The page draws them in time order (by start), at most five at once,
-    stacked from the top of the rail, and works out which five from the
-    time in focus: the first card not yet over at that time, and the
-    ones after it - the window held at the list's ends, so a rail with
-    five or more always shows five (fewer, in a frame too short to hold
-    them). A card's dates are the page's to write, from its start and
-    end, in UTC.
+    The page draws each card as four corners - out and port across its
+    top, in and its day across its foot - in time order (by start), at
+    most five at once, stacked from the top of the rail, and works out
+    which from the time in focus, by its `side`:
+
+        "plan"    looks ahead: the first card not over at that time and
+                  the ones after it, the top card the head
+        "report"  looks back: the latest card over by then and the ones
+                  before it, the bottom card the head
+
+    - the window held full at the list's ends, so a rail with five or
+    more always shows five (fewer, in a frame too short to hold them).
+    The head, the trip at the cursor's edge of the window, is outlined.
+    Any other side raises ValueError.
 
     `title` is text or None: the rail's heading (Plan). `sync` is text
     or None, a focus group's name, as a timeline's: given, the rail
@@ -634,11 +646,13 @@ def rail(cards, title=None, sync=None):
     """
     if not isinstance(cards, (list, tuple)):
         raise TypeError(f"a rail's cards must be a list: {cards!r}")
+    if not isinstance(side, str) or side not in RAIL_SIDES:
+        raise ValueError(f"a rail's side is {' or '.join(map(repr, RAIL_SIDES))}, not {side!r}")
     if title is not None and not isinstance(title, str):
         raise TypeError(f"a rail's title must be text: {title!r}")
     if sync is not None and not isinstance(sync, str):
         raise TypeError(f"a rail's sync must be text, a focus group's name: {sync!r}")
-    spec = {"type": "rail", "title": title, "cards": [_card(card) for card in cards]}
+    spec = {"type": "rail", "side": side, "title": title, "cards": [_card(card) for card in cards]}
     if sync:
         spec["sync"] = sync
     return spec

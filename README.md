@@ -301,7 +301,8 @@ time-blocks on a scrolling time axis, with a now line: a plan beside what
 happened, each lane optionally with bands shaded behind its blocks — and, named
 into a sync group, a fixed cursor with the UTC time under it and a Now button,
 every timeline of the group scrolling to one time), `rail` (a column of
-fixed-size cards, five at a time, that restacks as its sync group's time moves)
+fixed-size cards, five at a time, that restacks as its sync group's time moves
+— looking ahead of it, or back)
 and `rails` (a timeline drawn as it is, with a rail either side) and
 `empty`. An app that fails to load is logged and
 left out, and one whose `render()` fails shows as an error tile, never a
@@ -479,11 +480,13 @@ back runs to the roster's end; a flown one you're still away on runs to now.
 The timeline is in the
 FRMS sync group, so later FRMS panels will scroll with it, by time. Either side
 of it are two rails of trip cards, each a whole trip out of base and back — its
-port, its dates, its flights out and home, a day return tagged: **Plan**, beside
-the rostered lane, every trip not over yet (the one you're on among them), and
-**Report**, beside the flown, every trip home. Each rail shows five at a time,
-from the trip under the cursor on, and restacks as you scroll the timeline —
-held at either end of its list. The rails need a wide tile (4×2 or 4×3): in a
+flights out and home on the left, its port and the day it left on the right:
+**Plan**, beside the rostered lane, every trip not over yet (the one you're on
+among them), and **Report**, beside the flown, every trip home. Each rail shows
+five at a time and restacks as you scroll the timeline: Plan looks ahead of the
+cursor, its next trip at the top, and Report looks back, the latest trip home
+at the bottom — each held full at either end of its list, the trip nearest the
+cursor outlined. The rails need a wide tile (4×2 or 4×3): in a
 narrower or shorter one they're left out and the timeline is exactly as before.
 Uploading again replaces a duty with the same start and
 the same day's hours, but removes nothing: a duty dropped from a later roster
