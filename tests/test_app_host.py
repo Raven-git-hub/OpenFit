@@ -1317,6 +1317,106 @@ def test_rails_refuse_a_part_that_isnt_the_spec_it_should_be(args, kwargs, error
         host.rails(*args, **kwargs)
 
 
+# ---------- grid: one tile split into sub-panels ----------
+
+EMPTY = {"type": "empty", "message": "Coming soon"}
+
+
+def grid_cell(x, y, w, h, spec=EMPTY):
+    return {"x": x, "y": y, "w": w, "h": h, "spec": spec}
+
+
+def test_a_grid_lays_sub_panels_on_its_cells():
+    roster = host.panel(host.empty("Upload your roster .ics"))
+    cells = [
+        grid_cell(0, 0, 3, 2, host.empty("Circadian — coming soon")),
+        grid_cell(3, 0, 3, 2, host.empty("Coming soon")),
+        grid_cell(0, 2, 2, 2, roster),
+        grid_cell(2, 2, 4, 2, host.empty("Coming soon")),
+    ]
+
+    spec = host.grid(6, 4, cells)
+
+    # FRMS's four: each its corner, its size and its spec, in the order
+    # given - the spec carried as it was built.
+    assert spec == {"type": "grid", "cols": 6, "rows": 4, "cells": [
+        {"x": 0, "y": 0, "w": 3, "h": 2, "spec": {"type": "empty", "message": "Circadian — coming soon"}},
+        {"x": 3, "y": 0, "w": 3, "h": 2, "spec": {"type": "empty", "message": "Coming soon"}},
+        {"x": 0, "y": 2, "w": 2, "h": 2, "spec": {"type": "panel", "children": [
+            {"type": "empty", "message": "Upload your roster .ics"}]}},
+        {"x": 2, "y": 2, "w": 4, "h": 2, "spec": {"type": "empty", "message": "Coming soon"}},
+    ]}
+    assert spec["cells"][2]["spec"] is roster
+    assert json.loads(json.dumps(spec, allow_nan=False)) == spec
+    # A tuple of cells, as of a rail's cards; a grid of one cell, the
+    # whole of it.
+    assert host.grid(1, 1, (grid_cell(0, 0, 1, 1),)) == {"type": "grid", "cols": 1, "rows": 1,
+                                                          "cells": [grid_cell(0, 0, 1, 1)]}
+
+
+def test_a_grids_cells_may_leave_some_uncovered():
+    # A cell none covers is left empty: a gap, not a refusal - and a grid
+    # of none at all is still a grid.
+    assert host.grid(6, 4, [grid_cell(0, 0, 1, 1), grid_cell(5, 3, 1, 1)])["cells"] == [
+        grid_cell(0, 0, 1, 1), grid_cell(5, 3, 1, 1),
+    ]
+    assert host.grid(2, 2, []) == {"type": "grid", "cols": 2, "rows": 2, "cells": []}
+    # Side by side, edge to edge, isn't an overlap.
+    assert len(host.grid(2, 1, [grid_cell(0, 0, 1, 1), grid_cell(1, 0, 1, 1)])["cells"]) == 2
+
+
+@pytest.mark.parametrize(
+    "cols, rows, cells, error, says",
+    [
+        # A tile's own most is six cells either way; a bool or a string isn't a number.
+        (0, 4, [], ValueError, "a grid's cols must be a whole number from 1 to 6: 0"),
+        (7, 4, [], ValueError, "a grid's cols must be a whole number from 1 to 6: 7"),
+        (True, 4, [], ValueError, "a grid's cols must be a whole number from 1 to 6: True"),
+        ("6", 4, [], ValueError, "a grid's cols must be a whole number from 1 to 6: '6'"),
+        (6, 0, [], ValueError, "a grid's rows must be a whole number from 1 to 6: 0"),
+        (6, 7, [], ValueError, "a grid's rows must be a whole number from 1 to 6: 7"),
+        (6, True, [], ValueError, "a grid's rows must be a whole number from 1 to 6: True"),
+        (6, "6", [], ValueError, "a grid's rows must be a whole number from 1 to 6: '6'"),
+        (6, 4, "cells", TypeError, "a grid's cells must be a list: 'cells'"),
+        (6, 4, grid_cell(0, 0, 1, 1), TypeError, "a grid's cells must be a list"),
+        (6, 4, ["cell"], TypeError, "a grid cell must be a dict: 'cell'"),
+        # Each of x, y, w and h a whole number - none missing.
+        (6, 4, [{"y": 0, "w": 1, "h": 1, "spec": EMPTY}], TypeError, "a grid cell's x must be a whole number: None"),
+        (6, 4, [{"x": 0, "w": 1, "h": 1, "spec": EMPTY}], TypeError, "a grid cell's y must be a whole number: None"),
+        (6, 4, [{"x": 0, "y": 0, "h": 1, "spec": EMPTY}], TypeError, "a grid cell's w must be a whole number: None"),
+        (6, 4, [{"x": 0, "y": 0, "w": 1, "spec": EMPTY}], TypeError, "a grid cell's h must be a whole number: None"),
+        (6, 4, [grid_cell(0.0, 0, 1, 1)], TypeError, "a grid cell's x must be a whole number: 0.0"),
+        (6, 4, [grid_cell(0, 0, 1.5, 1)], TypeError, "a grid cell's w must be a whole number: 1.5"),
+        (6, 4, [grid_cell(0, False, 1, 1)], TypeError, "a grid cell's y must be a whole number: False"),
+        (6, 4, [grid_cell(0, 0, 1, True)], TypeError, "a grid cell's h must be a whole number: True"),
+        # Inside the grid: no corner off it, none empty, no edge past its own.
+        (6, 4, [grid_cell(5, 0, 2, 1)], ValueError, "a grid cell must lie inside the 6x4 grid"),
+        (6, 4, [grid_cell(0, 3, 1, 2)], ValueError, "a grid cell must lie inside the 6x4 grid"),
+        (6, 4, [grid_cell(-1, 0, 1, 1)], ValueError, "a grid cell must lie inside the 6x4 grid"),
+        (6, 4, [grid_cell(0, -1, 1, 1)], ValueError, "a grid cell must lie inside the 6x4 grid"),
+        (6, 4, [grid_cell(0, 0, 0, 1)], ValueError, "a grid cell must lie inside the 6x4 grid"),
+        (6, 4, [grid_cell(0, 0, 1, 0)], ValueError, "a grid cell must lie inside the 6x4 grid"),
+        # Its spec a spec.
+        (6, 4, [grid_cell(0, 0, 1, 1, "Coming soon")], TypeError, "a grid cell's spec must be a spec: 'Coming soon'"),
+        (6, 4, [grid_cell(0, 0, 1, 1, None)], TypeError, "a grid cell's spec must be a spec: None"),
+        (6, 4, [grid_cell(0, 0, 1, 1, {"message": "Coming soon"})], TypeError, "a grid cell's spec must be a spec"),
+        (6, 4, [grid_cell(0, 0, 1, 1, {"type": 3})], TypeError, "a grid cell's spec must be a spec"),
+        # Never two on one cell: the second overlapping the first by one.
+        (6, 4, [grid_cell(0, 0, 3, 2), grid_cell(2, 1, 2, 2)], ValueError, "grid cells overlap: "),
+        (6, 4, [grid_cell(0, 0, 1, 1), grid_cell(0, 0, 1, 1)], ValueError, "grid cells overlap: "),
+    ],
+)
+def test_a_grid_refuses_what_it_cant_lay_out(cols, rows, cells, error, says):
+    with pytest.raises(error, match=re.escape(says)):
+        host.grid(cols, rows, cells)
+
+
+def test_the_ctx_carries_the_grid():
+    # Bound on the ctx as the other builders are: the module's own.
+    assert host.Ctx.grid is host.grid
+    assert host.Ctx.grid(1, 1, [grid_cell(0, 0, 1, 1)]) == host.grid(1, 1, [grid_cell(0, 0, 1, 1)])
+
+
 def test_the_ctx_carries_the_builders(conn):
     ctx = host.Ctx(conn)
     assert ctx.panel(ctx.number(1), ctx.line([1]), ctx.input("k", "a"), ctx.empty())["type"] == "panel"

@@ -139,6 +139,10 @@ the dicts directly):
         timeline's two lanes, a rail - the timeline carried verbatim and
         drawn as it is alone, either rail null for none; left out in a
         tile too small to hold them
+    {"type": "grid", "cols", "rows", "cells": [{"x", "y", "w", "h", "spec"}, ...]}
+        a tile split into sub-panels, each drawn as a tile of its own on
+        the Home grid's cells; x, y from 0; cells inside the grid, never
+        overlapping
     {"type": "empty", "message"}
     {"type": "error", "message"}
         the host's, when a render fails - never an app's to return
@@ -689,6 +693,43 @@ def rails(timeline, left=None, right=None):
     return {"type": "rails", "left": sides["left"], "timeline": timeline, "right": sides["right"]}
 
 
+def grid(cols, rows, cells):
+    """A tile split into sub-panels: `cols` by `rows` cells, each sub-panel
+    drawn as a tile of its own.
+
+    `cols` and `rows` are whole numbers, 1 to 6 (a tile's own most). `cells`
+    is a list of {x, y, w, h, spec}: a sub-panel `w` cells wide and `h` high,
+    its top-left corner at column `x`, row `y`, counted from 0, and `spec`
+    the spec drawn in it - sized to the sub-panel as it would be to a tile.
+    Sub-panels lie inside the grid and never overlap; cells none covers are
+    left empty. Raises TypeError or ValueError for anything it can't lay out.
+    """
+    for what, n in (("cols", cols), ("rows", rows)):
+        if not isinstance(n, int) or isinstance(n, bool) or not 1 <= n <= 6:
+            raise ValueError(f"a grid's {what} must be a whole number from 1 to 6: {n!r}")
+    if not isinstance(cells, (list, tuple)):
+        raise TypeError(f"a grid's cells must be a list: {cells!r}")
+    taken, out = set(), []
+    for cell in cells:
+        if not isinstance(cell, dict):
+            raise TypeError(f"a grid cell must be a dict: {cell!r}")
+        x, y, w, h = (cell.get(k) for k in ("x", "y", "w", "h"))
+        for k, v in (("x", x), ("y", y), ("w", w), ("h", h)):
+            if not isinstance(v, int) or isinstance(v, bool):
+                raise TypeError(f"a grid cell's {k} must be a whole number: {v!r}")
+        if x < 0 or y < 0 or w < 1 or h < 1 or x + w > cols or y + h > rows:
+            raise ValueError(f"a grid cell must lie inside the {cols}x{rows} grid: {cell!r}")
+        spec = cell.get("spec")
+        if not isinstance(spec, dict) or not isinstance(spec.get("type"), str):
+            raise TypeError(f"a grid cell's spec must be a spec: {spec!r}")
+        area = {(i, j) for i in range(x, x + w) for j in range(y, y + h)}
+        if area & taken:
+            raise ValueError(f"grid cells overlap: {cell!r}")
+        taken |= area
+        out.append({"x": x, "y": y, "w": w, "h": h, "spec": spec})
+    return {"type": "grid", "cols": cols, "rows": rows, "cells": out}
+
+
 def empty(message=None):
     """Nothing to show, and why."""
     return {"type": "empty", "message": message or "No data yet"}
@@ -714,6 +755,7 @@ class Ctx:
     timeline = staticmethod(timeline)
     rail = staticmethod(rail)
     rails = staticmethod(rails)
+    grid = staticmethod(grid)
     empty = staticmethod(empty)
 
     def __init__(self, conn, today=None, app=None):

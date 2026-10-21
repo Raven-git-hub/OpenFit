@@ -813,6 +813,18 @@ h5 + .dnote{margin-top:0;}
 /* panel: its children, stacked */
 .spec-panel{display:flex;flex-direction:column;gap:12px;}
 .spec-panel > .spec-line{flex:1;}
+/* grid: a tile split into sub-panels, each drawn as a tile of its own on
+   the Home grid's own cells and gap - the tile itself drops its face
+   (kept in Configure, where it's moved and sized whole). Each sub-panel
+   is a size container, so a spec in it sizes to it as to a tile. */
+.spec-grid{display:grid;gap:var(--tile-gap);min-width:0;min-height:0;}
+.tiles:not(.configuring) .tile:has(> .spec-grid){background:none;border-color:transparent;box-shadow:none;padding:0;}
+.spec-cell{
+  background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow);
+  padding:16px 18px;min-width:0;min-height:0;overflow:hidden;
+  display:flex;flex-direction:column;container-type:size;
+}
+.spec-cell > *{flex:1;min-height:0;}
 /* input: a label over a field, its unit and Save - at a panel's foot -
    and a refusal under them */
 .spec-input{display:flex;flex-direction:column;justify-content:center;gap:5px;min-width:0;}
@@ -3826,6 +3838,19 @@ h5 + .dnote{margin-top:0;}
     timeline: s => timelineSpec(s),
     rail: s => railSpec(s, []),
     rails: (s, name, appId) => railsSpec(s, name, appId),
+    grid: (s, name, appId) => {
+      const box = el('div','spec-grid');
+      box.style.gridTemplateColumns = `repeat(${s.cols}, minmax(0, 1fr))`;
+      box.style.gridTemplateRows = `repeat(${s.rows}, minmax(0, 1fr))`;
+      (Array.isArray(s.cells) ? s.cells : []).forEach(c => {
+        const cell = el('div','spec-cell');
+        cell.style.gridColumn = `${c.x + 1} / span ${c.w}`;
+        cell.style.gridRow = `${c.y + 1} / span ${c.h}`;
+        cell.appendChild(renderSpec(c.spec, name, appId));
+        box.appendChild(cell);
+      });
+      return box;
+    },
     empty: s => specMsg(null, s.message || 'No data yet'),
     error: (s, name) => specMsg("Couldn't render "+(name || 'this app'), s.message),
   };

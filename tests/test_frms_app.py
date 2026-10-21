@@ -283,11 +283,48 @@ def file_duty(conn, kind, start, end, code, source="app:frms"):
     write_session(conn, source, kind, start, end, {"capture": "live", "type": "other", "code": code})
 
 
+def _roster_cell(spec):
+    """The roster panel's spec in render()'s grid: the sub-panel at x 0, y 2."""
+    [cell] = [c for c in spec["cells"] if (c["x"], c["y"]) == (0, 2)]
+    return cell["spec"]
+
+
 def drawn(conn):
-    """render()'s spec, and the instants either side of it."""
+    """render()'s roster panel, and the instants either side of it."""
     before = datetime.now(timezone.utc).replace(microsecond=0)
-    spec = frms.render(host.Ctx(conn, today=TODAY), {})
+    spec = _roster_cell(frms.render(host.Ctx(conn, today=TODAY), {}))
     return spec, before, datetime.now(timezone.utc)
+
+
+def test_the_tile_is_four_sub_panels_on_a_six_by_four_grid(conn):
+    file_duty(conn, "duties_rostered", "2099-11-05T15:10:00Z", "2099-11-06T04:10:00Z", "CX9102")
+    conn.commit()
+
+    spec = frms.render(host.Ctx(conn, today=TODAY), {})
+
+    # The whole tile, its cells: circadian top-left, a placeholder
+    # top-right, the roster bottom-left at 2x2, a placeholder beside it -
+    # the roster panel the one _roster() draws, as it was alone.
+    assert (spec["type"], spec["cols"], spec["rows"]) == ("grid", 6, 4)
+    assert [(c["x"], c["y"], c["w"], c["h"]) for c in spec["cells"]] == [
+        (0, 0, 3, 2), (3, 0, 3, 2), (0, 2, 2, 2), (2, 2, 4, 2),
+    ]
+    [circadian, top_right, roster, bottom_right] = [c["spec"] for c in spec["cells"]]
+    assert circadian == {"type": "empty", "message": "Circadian — coming soon"}
+    assert top_right == bottom_right == {"type": "empty", "message": "Coming soon"}
+    assert roster["type"] == "panel" and roster["children"][0]["type"] == "rails"
+    assert _roster_cell(spec) is roster
+    # Every cell of the six by four covered, once.
+    covered = [(x, y) for c in spec["cells"]
+               for x in range(c["x"], c["x"] + c["w"]) for y in range(c["y"], c["y"] + c["h"])]
+    assert sorted(covered) == [(x, y) for x in range(6) for y in range(4)]
+    # Laid out the same before any duty: the roster's sub-panel asks for one.
+    conn.execute("DELETE FROM sessions")
+    conn.commit()
+    empty = frms.render(host.Ctx(conn, today=TODAY), {})
+    assert [{k: c[k] for k in "xywh"} for c in empty["cells"]] == [{k: c[k] for k in "xywh"} for c in spec["cells"]]
+    assert _roster_cell(empty) == {"type": "panel", "children": [
+        {"type": "empty", "message": "Upload your roster .ics"}, PICKER]}
 
 
 def test_render_draws_the_rostered_and_the_flown_on_a_timeline(conn):
@@ -536,6 +573,9 @@ class FakeCtx:
     def panel(self, *children):
         return {"panel": list(children)}
 
+    def grid(self, cols, rows, cells):
+        return {"cols": cols, "rows": rows, "cells": cells}
+
 
 @pytest.mark.parametrize("config_text, message", [
     (None, "config.json is missing — reinstall the app with one"),
@@ -552,7 +592,7 @@ def test_a_config_that_wont_load_is_caught_at_the_edge(tmp_path, config_text, me
     else:
         assert app.CONFIG_ERROR == message
     # The tile says why, over its picker - it never reads a session.
-    assert app.render(FakeCtx(), {}) == {"panel": [{"empty": app.CONFIG_ERROR}, {"input": True}]}
+    assert _roster_cell(app.render(FakeCtx(), {})) == {"panel": [{"empty": app.CONFIG_ERROR}, {"input": True}]}
     # And an upload is refused in the same words, before anything is read.
     with pytest.raises(ValueError) as refused:
         app.handle(FakeCtx(), "upload", {})
@@ -567,7 +607,7 @@ def test_a_config_with_no_home_base_shades_no_trips(tmp_path, conn):
     file_flight(conn, "duties_complete", "2026-10-03T02:00:00Z", "2026-10-03T13:00:00Z", "CX9102", "ZZB-ZZA")
     conn.commit()
 
-    [frame, _] = app.render(host.Ctx(conn, today=TODAY), {})["children"]
+    [frame, _] = _roster_cell(app.render(host.Ctx(conn, today=TODAY), {}))["children"]
     timeline = frame["timeline"]
 
     assert [len(lane["intervals"]) for lane in timeline["lanes"]] == [0, 2]
