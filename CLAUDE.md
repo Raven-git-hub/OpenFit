@@ -391,9 +391,36 @@ own calls to its device API. Full direction:
   `y` ≥ 0, `w`, `h` ≥ 1, `x + w ≤ cols`, `y + h ≤ rows`, else
   `ValueError`), and `spec` a spec (a dict with a string `type`, else
   `TypeError`), carried verbatim; no two on one cell (`ValueError`,
-  "grid cells overlap"); a cell none covers left empty; each cell
-  carried as those five keys, in order),
-  `empty(message)`; the host's own is `{"type": "error", "message"}`. `render_app(app, conn, cfg=None,
+  "grid cells overlap"); a cell none covers left empty; a cell of only
+  those five keys (`GRID_CELL_FIELDS`, `_fields()`: another, a misspelt
+  `wdith`, `ValueError`); each cell carried as those five keys, in order),
+  `strips(lanes, now=None, sync=None)` → `{"type": "strips", now, lanes:
+  [{kind, label, clock, spans: [{start, end, tone, label, place, tz}],
+  troughs}]}`, plus `sync` only when given (lanes of tinted spans on one
+  horizontal time axis, a day across, the circadian panel's: `lanes` a
+  list or tuple (else `TypeError`) of 1–3 (`STRIP_LANES`, else
+  `ValueError`), top to bottom, each of only `STRIP_LANE_FIELDS`
+  (`_fields()`) — `kind` `"sky"` or `"duty"` (`STRIP_KINDS`, which says
+  its spans' tones: a sky's `day`/`night`/`none`, a duty's
+  `day`/`night`/`wocl`; else `ValueError`); `spans` a list or tuple
+  (required, else `TypeError`) of only `STRIP_SPAN_FIELDS` — `start` and
+  `end` both required and normalised by `_session_instant()`, `end >=
+  start` (as those strings), `tone` its kind's (else `ValueError`),
+  `label` text or `None` and only on a duty lane (a sky's →
+  `ValueError`), `place`/`tz` text or `None` (else `TypeError`);
+  `troughs` optional, a list or tuple (else `TypeError`) of instants,
+  each normalised (else `ValueError`) — the dashed curve; `label` text or
+  `None`, the lane's tag; `clock` a bool (default `False`, else
+  `TypeError`), the tag the place and its local time under the cursor
+  instead — so no `label` with it (`ValueError`); every lane carried as
+  those five keys and every span as its six, `None` where not given;
+  `now` normalised the same way or `None`; `sync` a focus group's name,
+  text or `None` (else `TypeError`), `None`/`""` no key — a timeline's
+  rules),
+  `empty(message)`, and `error(message)` → `{"type": "error",
+  "message"}` — the host's own for a render that fails, and an app's
+  (`ctx.error`, bound on `Ctx` with the builders) for a part of its tile
+  that failed, a sub-panel, so the rest is drawn. `render_app(app, conn, cfg=None,
   today=None)` calls `render(ctx, dict(cfg or {}))` (the ctx made for
   `app`) — `cfg` the
   instance's config, passed as given (the app owns its fallbacks,
@@ -557,13 +584,23 @@ own calls to its device API. Full direction:
   against the synthetic `tests/fixtures/rosters/sample.ics` — fake
   flights and ports). The whole FRMS suite is this one app: one tile, one
   `config.json`, drawn as four sub-panels on a 6×4 `ctx.grid()` —
-  circadian top-left (x 0, y 0, 3×2, `empty("Circadian — coming
-  soon")`), a placeholder top-right (x 3, y 0, 3×2, `empty("Coming
-  soon")`), the roster panel bottom-left (x 0, y 2, 2×2, `_roster(ctx)`)
-  and a placeholder beside it (x 2, y 2, 4×2, `empty("Coming soon")`):
-  `render()` is the layout, `_roster()` the roster panel — the timeline
-  and its rails — its spec the one the whole tile was before the grid;
-  the tests read it at x 0, y 2 (`_roster_cell()`). Its `app.yaml`: id `frms`
+  the circadian panel top-left (x 0, y 0, 3×2, `_circadian(ctx)`, three
+  strips — below), a placeholder top-right (x 3, y 0, 3×2,
+  `empty("Coming soon")`), the roster panel bottom-left (x 0, y 2, 2×2,
+  `_roster(ctx)`) and a placeholder beside it (x 2, y 2, 4×2,
+  `empty("Coming soon")`): `render()` is the layout, `_roster()` the
+  roster panel — the timeline and its rails — its spec the one the whole
+  tile was before the grid; the tests read it at x 0, y 2
+  (`_roster_cell()`) and the circadian panel at x 0, y 0
+  (`_circadian_cell()`). Each panel is built through `_panel(ctx,
+  build)`: `build(ctx)`, or — should it raise — `[apps] frms: the
+  <panel> panel failed` and the traceback printed, as the host logs a
+  failed render, and `ctx.error(str(e))` (its type's name for an
+  exception with no message) in its place: a fault in one panel is an
+  error in its own sub-panel, the others drawn as ever (the placeholders
+  aren't built, so need none). The circadian panel and the roster's
+  timeline and rails are one focus group, `"frms"`: scrolling either
+  scrolls the other, to one time. Its `app.yaml`: id `frms`
   (so it files under `app:frms`, session ids `app:frms:<kind>:<start>`),
   name "FRMS", `sizes: [{ w: 6, h: 4 }]` — the one size, so no picker —
   and `reads: [duties_rostered, duties_complete]`; no `metrics:` (its
@@ -716,11 +753,29 @@ own calls to its device API. Full direction:
   scrolls — Plan ahead of the cursor, Report back — the compact card in
   its 2×2 sub-panel, as in a 2×2 tile (the rails dropped, the timeline
   alone, when a small screen shrinks the cells under 310px inside).
+  **The circadian panel** (`_circadian(ctx)`, `tests/test_frms_app.py`):
+  `empty(CONFIG_ERROR)` with no config; both kinds read back as the
+  roster panel reads them (`since` 183 days before `ctx.today()`) and,
+  none, `empty("Upload your roster .ics")`; else `circadian(rostered,
+  flown, now, start, end)` — `now` `datetime.now(timezone.utc)`, `start`
+  midnight UTC of that `since`, `end` the latest duty end or `now`,
+  whichever is later, plus a day — drawn as `ctx.strips([local, home,
+  duties], now=now, sync="frms")`, the engine's keys mapped, never passed
+  through: `local` a sky lane, `clock: True`, `troughs` the engine's,
+  each `location` span `{start, end, tone, place, tz}` — `place` its
+  `port` (`""` for none), `tz` that port's `destinations` `tz` when it's
+  non-empty text (else `None`); `home` a sky lane, `label` `"Home"`, the
+  `body` spans' `{start, end, tone}`; `duties` a duty lane, each `duties`
+  piece `{start, end, tone, label}`, `label` its `code` on a duty's first
+  piece and `None` on the pieces that continue it (the previous piece's
+  `code` and `end` this one's `code` and `start`) — so a duty clipped at
+  the window's start labels its first piece in it, and the page draws a
+  code once. The fixture's config has no positions, so its circadian
+  panel is the engine's `ValueError` ("home base ZZA needs a lat and lon
+  in config.json's destinations") as an error in its sub-panel.
   **The circadian engine** (`tests/test_frms_circadian.py`), the panel
-  top-left's calculations, pure module functions after the trip cards
-  that nothing calls yet — `render()` unchanged, the sub-panel still
-  `empty("Circadian — coming soon")`; drawing them is a later brick (a
-  host strip spec). Stdlib (`math`, `zoneinfo`, `bisect`); each public
+  top-left's calculations, pure module functions after the trip cards,
+  called by `_circadian()`. Stdlib (`math`, `zoneinfo`, `bisect`); each public
   one takes `config=None` → `CONFIG` (`_config()`: neither a dict →
   `ValueError(CONFIG_ERROR)`); every instant an aware datetime or UTC
   text in (`_utc()`: naive → `ValueError`), compared as aware UTC
@@ -834,7 +889,12 @@ own calls to its device API. Full direction:
   tones, `--timeline-a`/`--timeline-b`, and the ink each takes,
   `--timeline-a-ink`/`--timeline-b-ink`, its bands' amber,
   `--layover` (`#c07d18` light, `#e0a83a` dark), and its day lines'
-  `--grid` (`--muted` at 22% light, 26% dark), in all three theme
+  `--grid` (`--muted` at 22% light, 26% dark); the strips' tones,
+  `--sky-day`/`--sky-night` (`#cfe4f8`/`#5b4fa8` light,
+  `#2f6496`/`#2c2458` dark), the curve's `--curve` (`#1d2433`,
+  `#f3f6f8`), a duty's `--duty-day`/`--duty-night`/`--duty-wocl`
+  (`#3aa76d`/`#d99a2b`/`#d64545`, `#38b26f`/`#e0a83a`/`#e5534b`) and the
+  code on it, `--duty-ink` (`#ffffff`, `#0d1214`) — in all three theme
   blocks). Under the top bar
   (date, a `settings` button, the theme toggle) sits the original angled tab
   strip: Home's tabs (far left, one per tab of the layout, drawn by
@@ -1419,9 +1479,9 @@ own calls to its device API. Full direction:
   timeline or rail in one joins its focus group as at the top of a tile,
   and leaves with it; cells not a list → none. Out of Configure the
   tile drops its face (`.tiles:not(.configuring) .tile:has(>
-  .spec-grid)`: no background, shadow or padding, its border
-  transparent), so the tracks land on Home's own cells (within a pixel:
-  the transparent border keeps its width), and each `.spec-cell` wears
+  .spec-grid)`: no background, shadow or padding, and `border-width: 0`
+  — its pixel gone too), so the tracks land exactly on Home's own cells,
+  and each `.spec-cell` wears
   a tile's face — the `.tile` rule's background, border, radius,
   shadow, `16px 18px` padding, flex column — and is a size container
   (`container-type: size`), so every container query and `cqi` size
@@ -1429,6 +1489,57 @@ own calls to its device API. Full direction:
   Configure the tile keeps its dashed face and controls and is moved
   and sized whole. Its CSS a block of its own after the panel's; the
   `.tile` and `.tile > *` rules untouched),
+  `strips` (`stripsSpec(s)`, after `releaseTimelines()`: a timeline on
+  its side, its synced path mirrored line for line, horizontally — a
+  `.spec-strips` of the timeline's own focus row (`.tl-focus st-focus`:
+  `.tl-readout` and a `btn sm tl-nowbtn`, as a timeline's, synced only)
+  over a `.st-view` holding `.st-scroll` (`overflow-x: auto`, `tabIndex`
+  0) — its `.st-track` a CSS grid, the first lane `minmax(0,1fr)`, each
+  after it a 45px row (`grid-auto-rows`), 3px apart — then `.st-tags`
+  (an overlay on the same rows, its `bottom` the scrollbar's height,
+  `offsetHeight − clientHeight`, so level with the lanes under a
+  scrollbar that takes room) and, synced, `.st-cursor` (a fixed
+  `--accent` line down the middle, 2px solid). The axis runs from the
+  earliest span's start to the latest end, or `now`; `ST_VIEW_MS`, a
+  day, fills the viewport's width (`px = width / day`), the track padded
+  half a viewport each end, so `scrollLeft = (focusMs − t0)·px` puts the
+  focus under the cursor. A lane (`.st-lane st-<kind>`, three at most,
+  `ST_MAX_LANES`) holds its spans (`.st-span st-t-<tone>`, `ST_TONES`,
+  an unknown tone `none`; placed `left`/`width`, no text), a duty
+  span's label a `.st-code` of its own at its start (over the pieces
+  after it, `--duty-ink`), and with two troughs or more an SVG
+  `.st-curve` path, a point an hour (`ST_CURVE_STEP_MS`), `−cos` between
+  troughs, the lane's height; the tones `--sky-day`/`--sky-night`, a
+  hatch in `--grid` for `none`, a duty's inset 6px top and bottom in
+  `--duty-day`/`--duty-night`/`--duty-wocl`, **no radius, nothing
+  between** — a duty's pieces tessellate; `.st-now` a 2px dotted
+  `--accent` line tagged Now (`.st-now-tag`). A tag (`.st-tag`, a mono
+  pill on a translucent surface) a lane: its `label`, or a clock lane's
+  `clockAt()` — the span under the cursor's `place` and its time in its
+  `tz` (`Intl.DateTimeFormat('en-GB', {timeZone, hour, minute, hourCycle:
+  'h23', timeZoneName: 'shortOffset'})`, `GMT` said `UTC`, a bare one
+  `UTC+0`: `LHR 01:00 UTC+1`), the place alone for a zone `Intl` refuses,
+  `—` where nothing is known; synced only (no cursor, no clock).
+  Synced, a member of the group as a timeline is — `{scroll, observer,
+  group, show}` in `group.members` and `timelines` — `show(rescroll)`
+  redrawing the readout, Now and the clock tag and, but for the one
+  scrolled by hand, `toFocus()`; its `onscroll` the user's (not `own()`)
+  → `setFocus(group, onMark(at) ?? tlSnap(at), false, t)` and
+  `unsettled`. Steps by the timeline's `TL_MARK_MS`, so the two rest on
+  one mark: a `wheel` (`{passive: false}`; not a `ctrlKey` pinch) taking
+  `deltaX` or `deltaY`, whichever is bigger, accumulated per gesture as
+  the timeline's (`TL_NOTCH_PX`, `TL_GESTURE_MS`), and `onkeydown`
+  →/↓ on, ←/↑ back (no modifier), each `step()` to the next 6h mark from
+  `midMs()` (`t0 + scrollLeft/px`); any other scroll of the user's
+  settled on the nearest at `onscrollend`. Laid out at 480px detached,
+  then in a `requestAnimationFrame` and every `ResizeObserver` callback,
+  at its `clientWidth`/`clientHeight` (a height change redraws the
+  curve); no width keeps the last. Unsynced: no focus row, cursor or
+  clock tag, not scrolled to a time, still in `timelines`. Hand-built: a
+  kind not `duty` a sky, a span without both ends in order dropped;
+  nothing → "Nothing to draw yet". Its CSS a commented block after the
+  grid's; no `.tl-*`/`.rail-*` rule, nor `timelineSpec()`, the rails or
+  the focus clock, changed),
   `empty`/`error` (muted, centred; error under
   "Couldn't render <name>"), any other type an error tile. A spec is drawn
   for its app — `renderSpec(spec, name, appId)`, the id threaded from the
@@ -2227,12 +2338,31 @@ same PR:
   against the body clock, and the curve's troughs — pure, drawn nowhere
   yet. Deploy: rebuild the image (for `tzdata`); updating `app.py`
   changes nothing on screen.
-  Still to come for it: drawing the circadian panel (its sub-panel a
-  placeholder now; a host strip spec, then `render()` wired to
-  `circadian()`), personalising `cbt_min` from sleep data, and the two
-  other sub-panels, a sub-panel's error isolated on the
-  server (a `render()` that raises is still the whole tile's error),
-  reading `destinations` (time-zone shifts), the
+  Then the strips spec landed, and the circadian panel drawn with it (no
+  migration, no route change): `ctx.strips(lanes, now, sync)`, up to
+  three lanes of tinted spans on one horizontal time axis, a day across
+  — a sky's day, night and not known, a duty's day, night and WOCL
+  pieces butting square, its code once, a dashed curve of troughs, a
+  tag a lane, a clock lane's the place and its local time under the
+  cursor — drawn by the page as a synced timeline on its side, so it
+  joins a focus group both ways (by time, never pixels; the timeline's
+  6h marks); FRMS's top-left panel `circadian()` through it, in
+  `"frms"`, so scrolling it scrolls the roster's timeline and rails and
+  the other way round; each FRMS panel built through `_panel()`, a
+  fault in one an error in its own sub-panel (`ctx.error`, now on the
+  ctx). With it, the #79 follow-ups: the grid's tile drops its border
+  (`border-width: 0`), so the sub-panels sit exactly on Home's cells; a
+  grid cell refuses an unknown key; and `test_frms_app.py` reads its
+  sample without 3.13's `Path.read_text(newline=)`, so the suite runs
+  on the image's 3.12. Purely additive in the page: nothing in the
+  timeline, rails or focus clock changed. Deploy: rebuild the image
+  first, then Update FRMS (on the old image the circadian panel draws
+  "Unknown spec type: strips" — in its sub-panel alone).
+  Still to come for it: personalising `cbt_min` from sleep data, the two
+  other sub-panels, a sub-panel's error isolated by the host itself (an
+  app's own `try` does it today; a `render()` that raises is still the
+  whole tile's error), reading `destinations` for the time-zone shifts
+  beyond the clock tag, the
   cards' popups and PDF, the
   report store (re-attached to a trip by its id), per-block or per-band
   detail on click or hover, and home-local (`base_tz`) day lines and

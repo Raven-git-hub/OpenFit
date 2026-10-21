@@ -5271,9 +5271,10 @@ def test_a_grids_sub_panels_wear_a_tiles_face_and_the_tile_drops_its_own(client)
     block = block[: block.index("/* input:")]
     assert ".spec-grid{display:grid;gap:var(--tile-gap);min-width:0;min-height:0;}" in block
     # The tile's own face dropped - out of Configure only, where the tile
-    # keeps its dashed face and controls and is moved and sized whole.
+    # keeps its dashed face and controls and is moved and sized whole -
+    # its border with it, not just made clear, so its pixel goes too.
     assert (".tiles:not(.configuring) .tile:has(> .spec-grid)"
-            "{background:none;border-color:transparent;box-shadow:none;padding:0;}") in block
+            "{background:none;border-width:0;box-shadow:none;padding:0;}") in block
     assert css.count(":has(> .spec-grid)") == 1
     assert (".spec-cell{\n"
             "  background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow);\n"
@@ -5307,14 +5308,13 @@ def test_a_two_by_two_sub_panel_draws_as_a_two_by_two_tile(client):
 
     def sub_panel(w, h, cols, rows, cell):
         """A w x h sub-panel's content box in a cols x rows tile at a cell
-        size: the tile's span, less its border - its face dropped, so no
-        padding - split into even tracks with the Home grid's gap, less
+        size: the tile's span - its face dropped, so no padding and no
+        border - split into even tracks with the Home grid's gap, less
         the sub-panel's own padding and border."""
         dropped = _decls(css[0], ".tiles:not(.configuring) .tile:has(> .spec-grid)")
-        assert dropped["padding"] == "0"
-        border = _px(_decls(css[0], ".tile")["border"].split()[0])
-        inner_w = cols * cell + (cols - 1) * gap - 2 * border
-        inner_h = rows * cell + (rows - 1) * gap - 2 * border
+        assert (dropped["padding"], dropped["border-width"]) == ("0", "0")
+        inner_w = cols * cell + (cols - 1) * gap
+        inner_h = rows * cell + (rows - 1) * gap
         track_w, track_h = (inner_w - (cols - 1) * gap) / cols, (inner_h - (rows - 1) * gap) / rows
         pad_y, pad_x = (_px(v) for v in _decls(css[0], ".spec-cell")["padding"].split())
         own = _px(_decls(css[0], ".spec-cell")["border"].split()[0])
@@ -5322,10 +5322,10 @@ def test_a_two_by_two_sub_panel_draws_as_a_two_by_two_tile(client):
 
     for cell in (_px(root["--tile-cell-max"]), _px(root["--tile-cell-min"])):
         roster, tile = sub_panel(2, 2, 6, 4, cell), _tile_content(css, 2, 2, cell)
-        # The roster's sub-panel, on FRMS's 6x4 grid, within a pixel of a
-        # real 2x2 tile's - the tile's border, transparent, still takes
-        # its pixel - and on the same side of every rule a 2x2 answers to.
-        assert all(0 <= t - r <= 1 for r, t in zip(roster, tile)), (roster, tile)
+        # The roster's sub-panel, on FRMS's 6x4 grid, exactly a real 2x2
+        # tile's - each track a Home cell, the gaps Home's - and so on the
+        # same side of every rule a 2x2 answers to.
+        assert roster == pytest.approx(tile), (roster, tile)
         assert shown(*roster) == shown(*tile)
         assert _rail_width(css, roster[0]) == _rail_width(css, tile[0])
         assert _styled(css, ".rail-card", width=_rail_width(css, roster[0]))["height"] \
@@ -5333,7 +5333,7 @@ def test_a_two_by_two_sub_panel_draws_as_a_two_by_two_tile(client):
     # At full size (334 x 338 inside a real 2x2): the rails shown, each at
     # its min, with the compact card.
     roster = sub_panel(2, 2, 6, 4, _px(root["--tile-cell-max"]))
-    assert roster == (pytest.approx(333 + 1 / 3), 337)
+    assert roster == (pytest.approx(334), pytest.approx(338))
     assert shown(*roster) and _rail_width(css, roster[0]) == 84
     assert _styled(css, ".rail-card", width=84)["height"] == "46px"
 
@@ -5401,6 +5401,434 @@ def test_a_grids_sub_panels_draw_their_specs_as_at_the_top_of_a_tile(client):
     assert r["released"] == [0, 0]
     assert r["noCells"] == 0
     assert r["odd"] == ["Couldn't render XUnknown spec type: nope", "Fine"]
+
+
+# ---------- strips: the circadian panel's lanes, a day across ----------
+#
+# A strips spec is lanes of tinted spans on one horizontal time axis, a
+# day to the viewport's width: a sky lane's day, night and not known
+# (hatched), a duty lane's pieces butting square, its code once at its
+# start, a dashed curve of the troughs over the first lane, a tag
+# top-left of each lane - the clock lane's the place and its local time
+# under the cursor. Synced, it's drawn around its group's focus clock as
+# a synced timeline is, on its side - a fixed cursor down the middle, the
+# timeline's focus row over it - and scrolls with the group's timelines
+# both ways, by time. Under node, over the stand-in DOM, the clock held
+# as for the focus clock.
+
+STRIPS_PARTS = RAILS_PARTS + ["ST_VIEW_MS", "ST_CURVE_STEP_MS", "ST_MAX_LANES", "ST_TONES", "stripsSpec"]
+
+STRIPS_HARNESS = r"""
+    // The curve's SVG, as the page makes it.
+    document.createElementNS = (ns, tag) => { const n = mk(tag); n.ns = ns; return n; };
+    const DAY = 86400000;
+    // The strips' viewport given a width and a height and put on the
+    // page, as a browser would, and laid out for them.
+    const showStrips = (box, w, h) => {
+      const sc = box.querySelector('.st-scroll');
+      sc.clientWidth = w; sc.clientHeight = h; sc.isConnected = true;
+      observers.find(o => o.observed.includes(sc)).callback([]);
+      return sc;
+    };
+    // Scrolled by hand: the browser moves it, then tells it.
+    const scrollStrips = (box, left) => { const sc = box.querySelector('.st-scroll'); sc.scrollLeft = left; sc.onscroll(); };
+    // Strips as drawn, laid out w wide from their axis' start t0: the
+    // focus row, the tags and the time under the cursor.
+    const strip = (box, t0, w) => {
+      const sc = box.querySelector('.st-scroll');
+      const btn = box.querySelector('.tl-nowbtn');
+      return {
+        readout: (box.querySelector('.tl-readout') || {textContent: null}).textContent,
+        nowBtn: btn ? btn.hidden : null,
+        tags: box.querySelectorAll('.st-tag').map(t => t.textContent),
+        left: sc.scrollLeft,
+        atCursor: sc.scrollLeft===undefined ? null : new Date(t0 + sc.scrollLeft / (w / DAY)).toISOString(),
+      };
+    };
+    // A wheel event, or a key, as a browser sends it to the strips - then,
+    // if it scrolled, the scroll event that fires - and where it left the
+    // group: how far it moved, in 6h marks, and the focus.
+    const MARK6 = 6 * 3600000;
+    let stPrevented = 0;
+    const stWhere = (sc, before, w) => {
+      const g = focusGroups.get('frms');
+      return {moved: (sc.scrollLeft - before) / (MARK6 * w / DAY),
+              focus: new Date(g.focusMs).toISOString().slice(5, 16), following: g.following};
+    };
+    const stWheel = (box, w, deltaY, timeStamp, more) => {
+      const sc = box.querySelector('.st-scroll'), before = sc.scrollLeft;
+      const e = {deltaX: 0, deltaY, deltaMode: 0, timeStamp, ctrlKey: false, preventDefault(){ stPrevented++; }, ...(more || {})};
+      sc.listeners.wheel.forEach(l => l.f(e));
+      if(sc.scrollLeft!==before) sc.onscroll();
+      return stWhere(sc, before, w);
+    };
+    const stKey = (box, w, k, more) => {
+      const sc = box.querySelector('.st-scroll'), before = sc.scrollLeft;
+      sc.onkeydown({key: k, preventDefault(){ stPrevented++; }, ...(more || {})});
+      if(sc.scrollLeft!==before) sc.onscroll();
+      return stWhere(sc, before, w);
+    };
+"""
+
+
+def _strips_script(page, scenario):
+    return (
+        MINI_DOM + "\n".join(_js(page, n) for n in STRIPS_PARTS) + TIMELINE_HARNESS + SYNC_HARNESS + RAILS_HARNESS
+        + STRIPS_HARNESS + scenario + "\nconsole.log(JSON.stringify(r));"
+    )
+
+
+def _st(start, end, tone, label=None, place=None, tz=None):
+    return {"start": start, "end": end, "tone": tone, "label": label, "place": place, "tz": tz}
+
+
+def _days(first, last, tones=("day", "night")):
+    """Half-day spans from 00:00Z on the 16th of October 2026 for `first`..`last` days, alternating tones."""
+    out = []
+    for i in range(first * 2, last * 2):
+        day, half = 16 + i // 2, "00" if i % 2 == 0 else "12"
+        end_day, end_half = (day, "12") if half == "00" else (day + 1, "00")
+        out.append(_st(f"2026-10-{day}T{half}:00:00Z", f"2026-10-{end_day}T{end_half}:00:00Z", tones[i % 2]))
+    return out
+
+
+# The circadian panel's three, as FRMS draws them, over the 16th to the
+# 30th of October 2026 - the clock's now (12:00Z on the 18th) among them.
+# Where you are: not known, then London (summer time to the 25th), Hong
+# Kong, London again (winter time), and a port whose zone isn't one.
+LOCAL_LANE = {"kind": "sky", "label": None, "clock": True,
+              "troughs": [f"2026-10-{d}T20:00:00Z" for d in range(16, 30)], "spans": [
+    _st("2026-10-16T00:00:00Z", "2026-10-17T00:00:00Z", "none", place=""),
+    _st("2026-10-17T00:00:00Z", "2026-10-24T00:00:00Z", "day", place="LHR", tz="Europe/London"),
+    _st("2026-10-24T00:00:00Z", "2026-10-27T00:00:00Z", "night", place="HKG", tz="Asia/Hong_Kong"),
+    _st("2026-10-27T00:00:00Z", "2026-10-29T00:00:00Z", "day", place="LHR", tz="Europe/London"),
+    _st("2026-10-29T00:00:00Z", "2026-10-30T00:00:00Z", "night", place="XXX <b>", tz="Not/AZone"),
+]}
+HOME_LANE = {"kind": "sky", "label": "Home <b>", "clock": False, "troughs": [], "spans": _days(0, 14)}
+# Two duties, each in pieces that butt: CX101 three, its code on the
+# first; CX100 two.
+DUTY_LANE = {"kind": "duty", "label": None, "clock": False, "troughs": [], "spans": [
+    _st("2026-10-18T13:00:00Z", "2026-10-18T18:00:00Z", "night", label="CX101"),
+    _st("2026-10-18T18:00:00Z", "2026-10-18T22:00:00Z", "wocl"),
+    _st("2026-10-18T22:00:00Z", "2026-10-18T22:30:00Z", "day"),
+    _st("2026-10-22T21:00:00Z", "2026-10-22T22:00:00Z", "wocl", label="CX100 <i>"),
+    _st("2026-10-22T22:00:00Z", "2026-10-23T06:30:00Z", "day"),
+]}
+STRIPS = {"type": "strips", "now": "2026-10-18T12:00:00Z", "sync": "frms", "lanes": [LOCAL_LANE, HOME_LANE, DUTY_LANE]}
+STRIPS_T0 = "Date.parse('2026-10-16T00:00:00Z')"
+
+
+def test_the_strips_tones_are_tokens_in_every_theme_and_a_dutys_pieces_butt_square(client):
+    page = _page(client)
+    css = page[: page.index("</style>")]
+    light = css[css.index(":root{") : css.index("@media (prefers-color-scheme:dark)")]
+    os_dark = css[css.index("@media (prefers-color-scheme:dark)") : css.index(':root[data-theme="dark"]{')]
+    toggle_dark = css[css.index(':root[data-theme="dark"]{') :]
+    toggle_dark = toggle_dark[: toggle_dark.index("}")]
+    tones = {
+        "--sky-day": ("#cfe4f8", "#2f6496"), "--sky-night": ("#5b4fa8", "#2c2458"),
+        "--curve": ("#1d2433", "#f3f6f8"), "--duty-day": ("#3aa76d", "#38b26f"),
+        "--duty-night": ("#d99a2b", "#e0a83a"), "--duty-wocl": ("#d64545", "#e5534b"),
+        "--duty-ink": ("#ffffff", "#0d1214"),
+    }
+    for token, (day, dark) in tones.items():
+        assert f"{token}:{day};" in light, token
+        assert f"{token}:{dark};" in os_dark and f"{token}:{dark};" in toggle_dark, token
+
+    # The strips' own block: every colour a token, none spelt out.
+    block = css[css.index("/* strips: lanes of tinted spans") :]
+    block = block[: block.index("/* input:")]
+    assert not re.search(r"#[0-9a-fA-F]{3,8}\b|rgba?\(", block)
+    rules = _css_rules(page)[0]
+    # Each tone its token, on its lane's kind.
+    for selector, token in ((".st-sky .st-t-day", "--sky-day"), (".st-sky .st-t-night", "--sky-night"),
+                            (".st-duty .st-t-day", "--duty-day"), (".st-duty .st-t-night", "--duty-night"),
+                            (".st-duty .st-t-wocl", "--duty-wocl")):
+        assert _decls(rules, selector)["background"] == f"var({token})", selector
+    assert "var(--grid)" in _decls(rules, ".st-sky .st-t-none")["background"]
+    # A duty's pieces butt square: no rule naming a span or a tone rounds
+    # one - only the code is laid over them, in the duty ink.
+    duty = _decls(rules, ".st-duty .st-span")
+    assert (duty["top"], duty["bottom"]) == ("6px", "6px") and "border-radius" not in duty
+    for sels, body in re.findall(r"([^{}]+)\{([^{}]*)\}", rules):
+        if re.search(r"\.st-(span|t-)", sels):
+            assert "border-radius" not in body and "margin" not in body, sels
+    assert _decls(rules, ".st-code")["color"] == "var(--duty-ink)"
+    # The first lane takes the height the others leave, each after it a
+    # 45px row - the tags over them on the same rows.
+    track = _decls(rules, ".st-track")
+    assert (track["grid-template-rows"], track["grid-auto-rows"]) == ("minmax(0,1fr)", "45px")
+    assert _decls(rules, ".st-tags")["grid-auto-rows"] == "45px"
+    # The cursor solid, the now line dotted - both the accent; the curve dashed.
+    assert _decls(rules, ".st-cursor")["border-left"] == "2px solid var(--accent)"
+    assert _decls(rules, ".st-now")["border-left"] == "2px dotted var(--accent)"
+    curve = _decls(rules, ".st-curve path")
+    assert (curve["stroke"], curve["stroke-dasharray"], curve["fill"]) == ("var(--curve)", "6 5", "none")
+    # Drawn by its own renderer.
+    assert "    strips: s => stripsSpec(s)," in _js(page, "SPECS")
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
+def test_strips_draw_their_lanes_and_join_the_focus_group_as_a_timeline_does(client):
+    page = _page(client)
+    unsynced = {k: v for k, v in STRIPS.items() if k != "sync"}
+    r = _node(_strips_script(page, f"""
+        // Unsynced first: no group, no clock - no focus row, no cursor,
+        // no clock tag - but still let go of with its tile.
+        const plain = renderSpec({json.dumps(unsynced)}, 'FRMS', 'frms');
+        r.plain = [plain.children.map(c => c.className), plain.querySelector('.st-view').children.map(c => c.className),
+                   plain.querySelectorAll('.st-tag').map(t => t.children.length), focusGroups.size, timers.length,
+                   timelines.size];
+
+        const box = renderSpec({json.dumps(STRIPS)}, 'FRMS', 'frms');
+        r.kids = box.children.map(c => c.className);
+        r.focus = box.children[0].children.map(c => [c.tag, c.className]);
+        r.view = box.querySelector('.st-view').children.map(c => c.className);
+        const track = box.querySelector('.st-track');
+        r.track = track.children.map(c => c.className);
+        r.nowTag = track.children[3].children.map(c => [c.className, c.textContent]);
+        const lanes = kids(track, 'st-lane');
+        r.lanes = lanes.map(l => l.children.map(c => c.className || c.attrs.class));
+        // The curve: an SVG path over the first lane, a point an hour.
+        const path = lanes[0].querySelector('path');
+        r.curve = [lanes[0].querySelector('svg').ns, path.attrs.d.split(/[ML]/).filter(Boolean).length];
+        // Laid out at the fallback width, off the page: every span, code
+        // and the now line placed, the track as wide as the axis.
+        r.laidOut = [track.style.width, ...lanes.flatMap(l => l.children.filter(c => c.tag==='div').map(c => px(c.style.left)
+                     && (c.className==='st-code' || px(c.style.width))))].every(Boolean)
+                     && px(track.children[3].style.left);
+        r.html = [box, ...box.querySelectorAll('*')].map(n => n._html).join('');
+
+        // A member of its group, as a timeline is.
+        const g = focusGroups.get('frms');
+        const sc = box.querySelector('.st-scroll');
+        const m = [...g.members].find(x => x.scroll===sc);
+        r.member = [Object.keys(m), m.group===g, timelines.has(m), typeof m.show, observers.filter(o => o.observed.includes(sc)).length];
+        r.group = [focusGroups.size, g.members.size, new Date(g.focusMs).toISOString(), g.following];
+        r.drawn = strip(box, {STRIPS_T0}, 480);
+        const tagRows = box.querySelector('.st-tags');
+        r.tagsBottom = [tagRows.style.bottom];
+        // On the page with a scrollbar that takes room under the track -
+        // 10px of the viewport's 210: the tags' rows kept clear of it, so
+        // level with the lanes'.
+        sc.offsetHeight = 210;
+        showStrips(box, 480, 200);
+        r.tagsBottom.push(tagRows.style.bottom);
+        r.shown = strip(box, {STRIPS_T0}, 480);
+        // Its tile drawn afresh - it, and the unsynced one, off the page:
+        // let go of, observers and all.
+        sc.isConnected = false;
+        plain.querySelector('.st-scroll').isConnected = false;
+        releaseTimelines();
+        r.released = [g.members.size, timelines.size, observers.map(o => o.disconnected)];
+
+        // Hand-built: drawn as far as it can be - three lanes at most, a
+        // span with no end, or ending before it starts, left out, a tone
+        // it doesn't know hatched as not known; nothing at all, said.
+        const odd = renderSpec({{type: 'strips', lanes: [
+          {{kind: 'sky', spans: [{{start: '2026-10-18T00:00:00Z', end: '2026-10-18T06:00:00Z', tone: 'pink'}},
+                                 {{start: '2026-10-18T06:00:00Z', tone: 'day'}},
+                                 {{start: '2026-10-18T06:00:00Z', end: '2026-10-18T05:00:00Z', tone: 'day'}}]}},
+          {{kind: 'nope', spans: 'x'}}, {{kind: 'duty'}}, {{kind: 'sky'}},
+        ]}}, 'X', 'x');
+        r.odd = [odd.querySelectorAll('.st-lane').map(l => l.className),
+                 odd.querySelectorAll('.st-span').map(s => s.className), odd.children.map(c => c.className)];
+        r.none = [renderSpec({{type: 'strips', lanes: 'x'}}, 'X', 'x').textContent,
+                  renderSpec({{type: 'strips', lanes: [{{kind: 'sky', spans: []}}]}}, 'X', 'x').textContent];
+    """))
+
+    # Unsynced: the viewport and its tags alone - the Home tag, no clock
+    # tag - no group started, no clock; in timelines, to be let go of.
+    assert r["plain"] == [["st-view"], ["st-scroll", "st-tags"], [0, 1, 0], 0, 0, 1]
+
+    # Synced: the timeline's focus row over the viewport - its readout and
+    # Now button - and over the track the tags and the cursor.
+    assert r["kids"] == ["tl-focus st-focus", "st-view"]
+    assert r["focus"] == [["div", "tl-readout"], ["button", "btn sm tl-nowbtn"]]
+    assert r["view"] == ["st-scroll", "st-tags", "st-cursor"]
+    # The three lanes, a sky, a sky and the duties, then the now line,
+    # tagged Now.
+    assert r["track"] == ["st-lane st-sky", "st-lane st-sky", "st-lane st-duty", "st-now"]
+    assert r["nowTag"] == [["st-now-tag", "Now"]]
+    # Each span by its tone; the curve over the first lane; a duty's two
+    # codes, after its five pieces.
+    assert r["lanes"][0] == ["st-span st-t-none", "st-span st-t-day", "st-span st-t-night", "st-span st-t-day",
+                             "st-span st-t-night", "st-curve"]
+    assert r["lanes"][1] == ["st-span st-t-day", "st-span st-t-night"] * 14
+    assert r["lanes"][2] == ["st-span st-t-night", "st-span st-t-wocl", "st-span st-t-day", "st-span st-t-wocl",
+                             "st-span st-t-day", "st-code", "st-code"]
+    # From the first trough to the last, a point an hour: 13 days of them.
+    assert r["curve"] == ["http://www.w3.org/2000/svg", 13 * 24 + 1]
+    assert r["laidOut"] is True
+    assert r["html"] == ""
+    # In the group as a timeline is - {scroll, observer, group, show} - the
+    # group started on now, following.
+    assert r["member"] == [["scroll", "observer", "group", "show"], True, True, "function", 1]
+    assert r["group"] == [1, 1, "2026-10-18T12:00:00.000Z", True]
+    # Off the page, nothing's scrolled; given a width, the group's time is
+    # under the cursor, the readout says it, and following, Now is hidden.
+    assert r["drawn"]["atCursor"] is None
+    assert r["tagsBottom"] == ["0px", "10px"]
+    assert r["shown"]["atCursor"] == "2026-10-18T12:00:00.000Z"
+    assert (r["shown"]["readout"], r["shown"]["nowBtn"]) == ("Sun 18 Oct 12:00Z", True)
+    assert r["released"] == [0, 0, [1, 1]]
+    # Hand-built.
+    assert r["odd"] == [["st-lane st-sky", "st-lane st-sky", "st-lane st-duty"], ["st-span st-t-none"], ["st-view"]]
+    assert r["none"] == ["Nothing to draw yet", "Nothing to draw yet"]
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
+def test_strips_and_a_timeline_of_one_group_scroll_each_other_by_time(client):
+    page = _page(client)
+    r = _node(_strips_script(page, f"""
+        const tl = renderSpec({json.dumps(SYNCED)}, 'Roster', 'roster');
+        const st = renderSpec({json.dumps(STRIPS)}, 'FRMS', 'frms');
+        // A week down a 480px frame; a day across a 600px one.
+        show(tl, 480);
+        const ss = showStrips(st, 600, 200);
+        const g = focusGroups.get('frms');
+        const both = () => [synced(tl, {TIMELINE_T0}, 480), strip(st, {STRIPS_T0}, 600)];
+        r.opened = both().map(x => x.atCursor);
+        // Their own scrolls, told - to the focus they were put on - pass.
+        ss.onscroll(); tl.querySelector('.tl-scroll').onscroll();
+        r.echo = [g.following, new Date(g.focusMs).toISOString()];
+
+        // The strips scrolled by hand to 05:40Z on Tuesday 20 October:
+        // the group's focus moves to the quarter hour under their cursor,
+        // and the timeline - a week down, another scale - is scrolled to
+        // that time and its readout says it; the strips stay put.
+        const left = (Date.parse('2026-10-20T05:40:00Z') - {STRIPS_T0}) * 600 / DAY;
+        scrollStrips(st, left);
+        const [a, b] = both();
+        r.byStrips = [new Date(g.focusMs).toISOString(), g.following, a.atCursor, a.readout, a.nowBtn.hidden,
+                      b.left===left, b.readout, b.nowBtn];
+        // The timeline's own scroll there, told: passes.
+        tl.querySelector('.tl-scroll').onscroll();
+        r.tlEcho = new Date(g.focusMs).toISOString();
+
+        // The timeline scrolled by hand to 03:00Z on Thursday 22 October:
+        // the strips follow, by their scale; the timeline isn't scrolled
+        // again - it's where the hand put it.
+        const top = (Date.parse('2026-10-22T03:00:00Z') - {TIMELINE_T0}) * 480 / WEEK;
+        scrollTo(tl, top);
+        const [c, d] = both();
+        r.byTimeline = [new Date(g.focusMs).toISOString(), c.top===top, d.atCursor, d.readout, d.tags[0]];
+        // The strips' own scroll to it, told: passes.
+        ss.onscroll();
+        r.stEcho = new Date(g.focusMs).toISOString();
+        // Now, on the strips: both back on now, following.
+        st.querySelector('.tl-nowbtn').onclick();
+        r.now = [g.following, ...both().map(x => x.atCursor), synced(tl, {TIMELINE_T0}, 480).nowBtn.hidden];
+    """))
+
+    assert r["opened"] == ["2026-10-18T12:00:00.000Z", "2026-10-18T12:00:00.000Z"]
+    assert r["echo"] == [True, "2026-10-18T12:00:00.000Z"]
+    focus, following, tl_at, tl_readout, tl_now_hidden, st_stayed, st_readout, st_now_hidden = r["byStrips"]
+    assert (focus, following) == ("2026-10-20T05:30:00.000Z", False)
+    assert (tl_at, tl_readout, tl_now_hidden) == ("2026-10-20T05:30:00.000Z", "Tue 20 Oct 05:30Z", False)
+    assert (st_stayed, st_readout, st_now_hidden) == (True, "Tue 20 Oct 05:30Z", False)
+    assert r["tlEcho"] == "2026-10-20T05:30:00.000Z"
+    # The clock tag over London, a summer-time day: 03:00Z is 04:00 there.
+    assert r["byTimeline"] == ["2026-10-22T03:00:00.000Z", True, "2026-10-22T03:00:00.000Z", "Thu 22 Oct 03:00Z",
+                               "LHR 04:00 UTC+1"]
+    assert r["stEcho"] == "2026-10-22T03:00:00.000Z"
+    assert r["now"] == [True, "2026-10-18T12:00:00.000Z", "2026-10-18T12:00:00.000Z", True]
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
+def test_a_wheel_notch_either_way_or_an_arrow_key_steps_the_strips_six_hours(client):
+    page = _page(client)
+    r = _node(_strips_script(page, f"""
+        const tl = renderSpec({json.dumps(SYNCED)}, 'Roster', 'roster');
+        const st = renderSpec({json.dumps(STRIPS)}, 'FRMS', 'frms');
+        show(tl, 480);
+        const sc = showStrips(st, 480, 200);
+        r.listeners = sc.listeners.wheel.map(l => l.options);
+        // On now, a mark (12:00Z): a notch down, then another after a pause.
+        r.down = [stWheel(st, 480, 100, 1000), stWheel(st, 480, 100, 2000)];
+        // Sideways - a trackpad's swipe, a tilt wheel - steps too: right on,
+        // left back (turned back, a new gesture: at once).
+        r.sideways = [stWheel(st, 480, 0, 3000, {{deltaX: 100}}), stWheel(st, 480, 0, 3010, {{deltaX: -10}})];
+        // The timeline rests on the same mark.
+        r.timeline = synced(tl, {TIMELINE_T0}, 480).atCursor;
+        // The four arrows: right and down on, left and up back; a
+        // modified arrow and the other keys aren't its.
+        r.keys = [stKey(st, 480, 'ArrowRight'), stKey(st, 480, 'ArrowDown'), stKey(st, 480, 'ArrowLeft'),
+                  stKey(st, 480, 'ArrowUp'), stKey(st, 480, 'ArrowRight', {{shiftKey: true}}).moved,
+                  stKey(st, 480, 'PageDown').moved];
+        r.prevented = stPrevented;
+        // A pinch is the browser's: not stepped, not prevented.
+        r.pinch = stWheel(st, 480, 50, 9000, {{ctrlKey: true}});
+        r.preventedAfter = stPrevented;
+        // Off a mark - Now on 12:15Z - a notch on to the next mark, 18:00Z;
+        // back, to the last, 12:00Z.
+        clock = Date.parse('2026-10-18T12:20:00Z');
+        st.querySelector('.tl-nowbtn').onclick(); sc.onscroll();
+        r.offOn = stWheel(st, 480, 100, 20000).focus;
+        st.querySelector('.tl-nowbtn').onclick(); sc.onscroll();
+        r.offBack = stWheel(st, 480, -100, 21000).focus;
+        // Dragged by hand to 14:40Z on Monday 19 October: the quarter
+        // hour under the cursor until the drag ends - then the nearest
+        // mark, 12:00Z, for the whole group; that settle's own end moves
+        // nothing.
+        const end = () => {{ const before = sc.scrollLeft; sc.onscrollend(); if(sc.scrollLeft!==before) sc.onscroll(); return sc.scrollLeft!==before; }};
+        scrollStrips(st, (Date.parse('2026-10-19T14:40:00Z') - {STRIPS_T0}) * 480 / DAY);
+        const g = focusGroups.get('frms');
+        r.dragged = new Date(g.focusMs).toISOString().slice(5, 16);
+        r.settled = [end(), new Date(g.focusMs).toISOString().slice(5, 16), synced(tl, {TIMELINE_T0}, 480).atCursor, end()];
+    """))
+
+    step = lambda n, focus, following=False: {"moved": pytest.approx(n), "focus": focus, "following": following}
+    assert r["listeners"] == [{"passive": False}]
+    assert r["down"] == [step(1, "10-18T18:00"), step(1, "10-19T00:00")]
+    assert r["sideways"] == [step(1, "10-19T06:00"), step(-1, "10-19T00:00")]
+    assert r["timeline"] == "2026-10-19T00:00:00.000Z"
+    assert r["keys"] == [step(1, "10-19T06:00"), step(1, "10-19T12:00"), step(-1, "10-19T06:00"),
+                         step(-1, "10-19T00:00"), 0, 0]
+    assert r["prevented"] == 4 + 4
+    assert r["pinch"] == step(0, "10-19T00:00") and r["preventedAfter"] == r["prevented"]
+    assert (r["offOn"], r["offBack"]) == ("10-18T18:00", "10-18T12:00")
+    assert r["dragged"] == "10-19T14:30"
+    assert r["settled"] == [True, "10-19T12:00", "2026-10-19T12:00:00.000Z", False]
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
+def test_a_dutys_code_is_drawn_once_and_the_clock_tag_tells_the_time_where_you_are(client):
+    page = _page(client)
+    r = _node(_strips_script(page, f"""
+        const st = renderSpec({json.dumps(STRIPS)}, 'FRMS', 'frms');
+        showStrips(st, 480, 200);
+        const lanes = st.querySelectorAll('.st-lane');
+        // The pieces: their tone, and nothing written in them.
+        r.pieces = kids(lanes[2], 'st-span').map(s => [s.className, s.textContent, s.children.length]);
+        r.lefts = kids(lanes[2], 'st-span').map(s => s.style.left);
+        r.codes = kids(lanes[2], 'st-code').map(c => [c.textContent, c.style.left]);
+        // No sky lane writes a code.
+        r.skyCodes = [lanes[0], lanes[1]].map(l => kids(l, 'st-code').length);
+        r.tags = st.querySelectorAll('.st-tag').map(t => [t.textContent, t.children.length]);
+        // The clock tag as the focus moves - by the group, from anywhere.
+        const g = focusGroups.get('frms');
+        const at = iso => {{ setFocus(g, Date.parse(iso), false); return st.querySelectorAll('.st-tag').map(t => t.textContent); }};
+        r.clock = ['2026-10-23T00:00:00Z', '2026-10-25T00:00:00Z', '2026-10-28T00:00:00Z', '2026-10-16T06:00:00Z',
+                   '2026-10-29T06:00:00Z', '2026-11-02T00:00:00Z'].map(at);
+    """))
+
+    # Five pieces, each only its tone - no text in one - butting.
+    assert r["pieces"] == [["st-span st-t-night", "", 0], ["st-span st-t-wocl", "", 0], ["st-span st-t-day", "", 0],
+                           ["st-span st-t-wocl", "", 0], ["st-span st-t-day", "", 0]]
+    # One code a duty, as text, at its first piece's start.
+    assert r["codes"] == [["CX101", r["lefts"][0]], ["CX100 <i>", r["lefts"][3]]]
+    assert r["skyCodes"] == [0, 0]
+    # The clock tag, on now (12:00Z on the 18th, London on summer time);
+    # Home's as given, as text; the duty lane, none.
+    assert r["tags"] == [["LHR 13:00 UTC+1", 1], ["Home <b>", 1], ["", 0]]
+    # The place and its local time under the cursor, through the zone: on
+    # summer time, in Hong Kong, back on winter time; a dash where it's not
+    # known; the place alone for a zone the browser can't read.
+    assert [tags[0] for tags in r["clock"]] == [
+        "LHR 01:00 UTC+1", "HKG 08:00 UTC+8", "LHR 00:00 UTC+0", "—", "XXX <b>", "—",
+    ]
+    assert {tags[1] for tags in r["clock"]} == {"Home <b>"}
 
 
 # ---------- an uninstalled app's data: Remove data ----------

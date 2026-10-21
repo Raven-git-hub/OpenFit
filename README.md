@@ -305,8 +305,11 @@ every timeline of the group scrolling to one time), `rail` (a column of
 fixed-size cards, five at a time, that restacks as its sync group's time moves
 — looking ahead of it, or back)
 `rails` (a timeline drawn as it is, with a rail either side), `grid` (a tile
-split into sub-panels, each drawn as a tile of its own on Home's cells) and
-`empty`. An app that fails to load is logged and
+split into sub-panels, each drawn as a tile of its own on Home's cells),
+`strips` (up to three lanes of tinted spans on a horizontal axis a day across
+— day and night, a duty's pieces — that, named into a sync group, scrolls with
+the group's timelines both ways, by time), `empty` and `error` (for a part of
+a tile that failed). An app that fails to load is logged and
 left out, and one whose `render()` fails shows as an error tile, never a
 broken page.
 
@@ -442,8 +445,10 @@ just finished from how many minutes it lasted, is the example.
 The **FRMS** app (`tests/fixtures/apps/frms/`) puts the two together. It's
 the whole FRMS suite as one app — one tile, 6 wide by 4 tall (its only size),
 and one `config.json` — drawn as four sub-panels, each like a tile of its own:
-its roster panel, the timeline and rails below, 2×2 at the bottom left, beside
-three placeholders — a circadian panel top-left and two more to come.
+its roster panel, the timeline and rails below, 2×2 at the bottom left, its
+circadian panel (below) 3×2 at the top left, and two placeholders, more panels
+to come. A panel that fails shows its error in its own sub-panel; the others
+are drawn as ever.
 All its code is in its one `app.py`, by design. You upload a duty roster's
 `.ics` export, and the app — not OpenFit — reads it.
 Every event with real times is a work duty (an all-day one is a day off or
@@ -500,13 +505,18 @@ cursor outlined.
 Uploading again replaces a duty with the same start, but removes nothing: a
 duty dropped from a later roster keeps its row for now. Both kinds file under
 the Roster category: OpenFit keeps operational context like this because you do — it
-doesn't decide what counts as health data. The circadian panel's engine is in
-the app already, though nothing draws it yet: from your home base's time zone
-(the body clock — never adjusted to where you've flown), a `cbt_min` (the body
-clock's low, 04:00 home time unless the config says) and each destination's
-`lat`/`lon` in the config, it works out day and night where you are and at
-home, the body clock's low window (WOCL, 02:00–06:00 home time), and each duty
-cut into pieces of day, night and WOCL against the body clock.
+doesn't decide what counts as health data. The circadian panel: from your home
+base's time zone (the body clock — never adjusted to where you've flown), a
+`cbt_min` (the body clock's low, 04:00 home time unless the config says) and
+each destination's `lat`/`lon` in the config, the app works out day and night
+where you are and at home, the body clock's low window (WOCL, 02:00–06:00 home
+time), and each duty cut into pieces of day, night and WOCL against the body
+clock — and draws them as three strips, a day across: where you are, blue by
+day and purple by night, the body clock's curve dashed over it and its tag the
+port and its local time under the cursor (`LHR 01:00 UTC+1`); home, by day
+and night; and the duties, green by day, amber by night and red in the WOCL,
+each duty's flight number once. It scrolls with the roster's timeline and
+rails, and they with it, to the same time.
 
 An app isn't limited to OpenFit's metrics: it can **invent its own**. Declare
 what you invent, write what exists — a built-in metric is just written, while a

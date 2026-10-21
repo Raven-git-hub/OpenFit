@@ -145,7 +145,10 @@ grid's cells — FRMS its first user, the roster panel 2×2 bottom-left beside
 three placeholders. Then FRMS's circadian engine: sun times from date and
 position (NOAA), where the crew member is over time, home-base day/night and
 WOCL, duties cut into day/night/WOCL pieces against the body clock, the
-curve's troughs — pure functions, drawn by a later brick. Next: the rest of the
+curve's troughs — pure functions, drawn by a later brick. Then the strips spec —
+lanes of tinted spans on a horizontal day-wide axis, synced to a focus group
+both ways — and FRMS's circadian panel drawn with it, scrolling with the
+roster; each FRMS panel isolated from the others' faults. Next: the rest of the
 Library (the writes ticker, now apps write back; alerts;
 Browse / Build / Create are still placeholders), and the grid pass (free cell
 placement, a second layout mode on the same sizes).

@@ -3,10 +3,16 @@
 The FRMS suite is this one app: one tile, 6 wide by 4 tall (app.yaml's
 only size), one config.json. render() draws the tile as four sub-panels
 on a 6x4 grid (ctx.grid()), each drawn as a tile of its own: circadian
-top-left (3x2), the roster bottom-left (2x2) - the timeline and its Plan
-and Report rails - and two more to come, top-right (3x2) and
-bottom-right (4x2). All but the roster are placeholders until they're
-built.
+top-left (3x2) - three strips, a day across - the roster bottom-left
+(2x2) - the timeline and its Plan and Report rails - and two more to
+come, top-right (3x2) and bottom-right (4x2), placeholders until
+they're built. The circadian strips and the roster's timeline and rails
+are one focus group, "frms": scroll either and the other follows, to the
+same time.
+
+Each panel is built on its own (_panel()): one that raises - a config
+without the positions the circadian panel needs, say - is an error in
+its own sub-panel, logged, and the others are drawn as ever.
 
 All of the app's code lives in this one file, by design: the host
 imports app.py by its path - nothing added to sys.path, so a module
@@ -71,24 +77,32 @@ and final destination, first leg to last, the description's legs before
 the title's), bucket_for(), filed_as(), trips(), trip_cards() - pure,
 for a test to call on their own.
 
-The circadian panel's engine is here too, pure module functions nothing
-draws yet (the panel is still a placeholder): sun_times() - a day's
-sunrise and sunset at a position, from NOAA's sunrise equation, or "day"
-or "night" when the sun doesn't set or rise; daylight() - day and night
-there over a window; body_clock() - the home time zone, its WOCL (02:00
-to 06:00 home local) and the troughs of the body clock's curve (cbt_min,
-home local); curve_value() - the curve at an instant, -1 at a trough and
-+1 midway; locations() - where the crew member is; location_strip() -
-day and night there; body_strip() - day and night at home base;
-duty_pieces() - each duty cut into wocl, night and day pieces; and
-circadian(), all of them at once. The body clock is home base's, always -
-no acclimatisation, by design - and a duty's pieces are coloured against
-it alone, never the sun where it's flown. Where you are comes from the
-flown duties over by now and the rostered ones ending after it - never a
-past rostered one, so a past with nothing flown is unknown, not the plan:
-from the moment a duty starts you're at its final destination - a
-flight's arr (where you were, without one), home base for any other
-duty. Times come back as UTC text, every span half-open.
+The circadian panel (_circadian()) draws, over the roster panel's
+window - about six months back to a day past the last duty, or now -
+three strips (ctx.strips()), in the FRMS focus group: where the crew
+member is, day or night there, the body clock's dashed curve over it and
+its tag the port under the cursor and its local time (its destinations
+tz); day or night at home base, tagged Home; and the duties, each cut
+into day, night and WOCL pieces, its code once, on its first piece.
+
+Its engine is pure module functions, for a test to call on their own:
+sun_times() - a day's sunrise and sunset at a position, from NOAA's
+sunrise equation, or "day" or "night" when the sun doesn't set or rise;
+daylight() - day and night there over a window; body_clock() - the home
+time zone, its WOCL (02:00 to 06:00 home local) and the troughs of the
+body clock's curve (cbt_min, home local); curve_value() - the curve at
+an instant, -1 at a trough and +1 midway; locations() - where the crew
+member is; location_strip() - day and night there; body_strip() - day
+and night at home base; duty_pieces() - each duty cut into wocl, night
+and day pieces; and circadian(), all of them at once. The body clock is
+home base's, always - no acclimatisation, by design - and a duty's
+pieces are coloured against it alone, never the sun where it's flown.
+Where you are comes from the flown duties over by now and the rostered
+ones ending after it - never a past rostered one, so a past with nothing
+flown is unknown, not the plan: from the moment a duty starts you're at
+its final destination - a flight's arr (where you were, without one),
+home base for any other duty. Times come back as UTC text, every span
+half-open.
 """
 
 import bisect
@@ -96,6 +110,7 @@ import json
 import math
 import os
 import re
+import traceback
 from datetime import date, datetime, time, timedelta, timezone
 from typing import NamedTuple
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -133,11 +148,70 @@ except (OSError, ValueError) as _e:
 
 def render(ctx, cfg):
     return ctx.grid(6, 4, [
-        {"x": 0, "y": 0, "w": 3, "h": 2, "spec": ctx.empty("Circadian — coming soon")},
+        {"x": 0, "y": 0, "w": 3, "h": 2, "spec": _panel(ctx, _circadian)},
         {"x": 3, "y": 0, "w": 3, "h": 2, "spec": ctx.empty("Coming soon")},
-        {"x": 0, "y": 2, "w": 2, "h": 2, "spec": _roster(ctx)},
+        {"x": 0, "y": 2, "w": 2, "h": 2, "spec": _panel(ctx, _roster)},
         {"x": 2, "y": 2, "w": 4, "h": 2, "spec": ctx.empty("Coming soon")},
     ])
+
+
+def _panel(ctx, build):
+    """One sub-panel's spec: build(ctx) - or, should it raise, an error in
+    its place, the traceback logged as the host logs a failed render, so
+    a fault in one panel leaves the others drawn."""
+    try:
+        return build(ctx)
+    except Exception as e:
+        print(f"[apps] frms: the {build.__name__.strip('_')} panel failed")
+        traceback.print_exc()
+        return ctx.error(str(e) or type(e).__name__)
+
+
+def _circadian(ctx):
+    """The circadian panel, its sub-panel's spec: three strips over the
+    roster's window - where you are, day or night there, the body clock's
+    curve over it and the place and its time under the cursor; day or
+    night at home; each duty cut into day, night and WOCL pieces against
+    the body clock, its code once at its start. In the FRMS focus group,
+    so it scrolls with the roster's timeline and rails, and they with it.
+    Before any duty, the ask, as the roster panel's."""
+    if CONFIG is None:
+        return ctx.empty(CONFIG_ERROR)
+    # The roster panel's window - about six months back, and every duty
+    # still to come - to the latest duty's end or now, and a day past it.
+    since = date.fromisoformat(ctx.today()) - timedelta(days=183)
+    rostered = ctx.sessions(ROSTERED, since=since.isoformat())
+    flown = ctx.sessions(COMPLETE, since=since.isoformat())
+    if not rostered and not flown:
+        return ctx.empty("Upload your roster .ics")
+    now = datetime.now(timezone.utc)
+    ends = [_utc(s.end, "a duty's end") for s in (*rostered, *flown) if s.end is not None]
+    start = datetime.combine(since, time(), tzinfo=timezone.utc)
+    end = max([now, *ends]) + timedelta(days=1)
+    c = circadian(rostered, flown, now, start, end)
+
+    # Where you are: its sky, and the port and its time zone for the
+    # clock under the cursor - the zone the config's, the page's to read.
+    places = _destinations(CONFIG)
+    local = []
+    for x in c["location"]:
+        place = places.get(x["port"]) if x["port"] else None
+        tz = place.get("tz") if isinstance(place, dict) else None
+        local.append({"start": x["start"], "end": x["end"], "tone": x["tone"], "place": x["port"] or "",
+                      "tz": tz if isinstance(tz, str) and tz else None})
+    duty, prev = [], None
+    for x in c["duties"]:
+        # One label a duty: on its first piece, not on the pieces that
+        # continue it - so a duty clipped at the window's start labels
+        # its first piece in it.
+        first = not (prev and prev["code"] == x["code"] and prev["end"] == x["start"])
+        duty.append({"start": x["start"], "end": x["end"], "tone": x["tone"], "label": x["code"] if first else None})
+        prev = x
+    return ctx.strips([
+        {"kind": "sky", "clock": True, "spans": local, "troughs": c["troughs"]},
+        {"kind": "sky", "label": "Home", "spans": [{"start": x["start"], "end": x["end"], "tone": x["tone"]} for x in c["body"]]},
+        {"kind": "duty", "spans": duty},
+    ], now=now, sync="frms")
 
 
 def _roster(ctx):
@@ -666,7 +740,7 @@ def trip_cards(rostered, flown, home_base):
 
 # ---------- circadian: the body clock against the sun ----------
 #
-# The circadian panel's engine - drawn nowhere yet. Three strips over a
+# The circadian panel's engine - drawn by _circadian(). Three strips over a
 # window of time: where the crew member is, day or night there; the body
 # clock, day or night at home base, always - no acclimatisation, by
 # design; and the duties, each cut into pieces coloured against the body

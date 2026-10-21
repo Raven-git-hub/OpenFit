@@ -17,6 +17,7 @@ every duty in it is long over.
 """
 
 import importlib.util
+import json
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
@@ -40,8 +41,10 @@ frms = load_frms_app()
 
 
 def sample():
-    # newline="": the file's CRLFs as written, as an upload's text has them.
-    return SAMPLE.read_text(newline="")
+    # newline="": the file's CRLFs as written, as an upload's text has them
+    # (open(), not Path.read_text(newline=), which only 3.13 has).
+    with open(SAMPLE, encoding="utf-8", newline="") as f:
+        return f.read()
 
 
 def utc(*args):
@@ -289,6 +292,12 @@ def _roster_cell(spec):
     return cell["spec"]
 
 
+def _circadian_cell(spec):
+    """The circadian panel's spec in render()'s grid: the sub-panel at x 0, y 0."""
+    [cell] = [c for c in spec["cells"] if (c["x"], c["y"]) == (0, 0)]
+    return cell["spec"]
+
+
 def drawn(conn):
     """render()'s roster panel, and the instants either side of it."""
     before = datetime.now(timezone.utc).replace(microsecond=0)
@@ -310,7 +319,9 @@ def test_the_tile_is_four_sub_panels_on_a_six_by_four_grid(conn):
         (0, 0, 3, 2), (3, 0, 3, 2), (0, 2, 2, 2), (2, 2, 4, 2),
     ]
     [circadian, top_right, roster, bottom_right] = [c["spec"] for c in spec["cells"]]
-    assert circadian == {"type": "empty", "message": "Circadian — coming soon"}
+    # The fixture's config has no positions, so the circadian panel says
+    # why, in its own sub-panel - and the rest are drawn as ever.
+    assert circadian == {"type": "error", "message": "home base ZZA needs a lat and lon in config.json's destinations"}
     assert top_right == bottom_right == {"type": "empty", "message": "Coming soon"}
     assert roster["type"] == "panel" and roster["children"][0]["type"] == "rails"
     assert _roster_cell(spec) is roster
@@ -325,6 +336,7 @@ def test_the_tile_is_four_sub_panels_on_a_six_by_four_grid(conn):
     assert [{k: c[k] for k in "xywh"} for c in empty["cells"]] == [{k: c[k] for k in "xywh"} for c in spec["cells"]]
     assert _roster_cell(empty) == {"type": "panel", "children": [
         {"type": "empty", "message": "Upload your roster .ics"}, PICKER]}
+    assert _circadian_cell(empty) == {"type": "empty", "message": "Upload your roster .ics"}
 
 
 def test_render_draws_the_rostered_and_the_flown_on_a_timeline(conn):
@@ -591,8 +603,10 @@ def test_a_config_that_wont_load_is_caught_at_the_edge(tmp_path, config_text, me
         assert app.CONFIG_ERROR.startswith("config.json won't read:")
     else:
         assert app.CONFIG_ERROR == message
-    # The tile says why, over its picker - it never reads a session.
+    # The tile says why, over its picker - it never reads a session - and
+    # so does the circadian panel.
     assert _roster_cell(app.render(FakeCtx(), {})) == {"panel": [{"empty": app.CONFIG_ERROR}, {"input": True}]}
+    assert _circadian_cell(app.render(FakeCtx(), {})) == {"empty": app.CONFIG_ERROR}
     # And an upload is refused in the same words, before anything is read.
     with pytest.raises(ValueError) as refused:
         app.handle(FakeCtx(), "upload", {})
@@ -620,6 +634,205 @@ def test_a_good_config_loads():
     # The fixture's own config.json, loaded as the host loads it.
     assert frms.CONFIG is not None and frms.CONFIG_ERROR is None
     assert any(r.get("type") == "flight" for r in frms.CONFIG["duty_types"])
+
+
+# ---------- the circadian panel ----------
+#
+# The tile's top-left sub-panel: circadian() - test_frms_circadian.py's -
+# over the roster panel's window, drawn as three strips in the FRMS focus
+# group: where you are, its tag the port and its local time; home, tagged
+# Home; the duties, each in pieces, its code once, on its first. The
+# fixture's config has no positions, so these load the app with one of
+# the real shape - home Hong Kong, Sydney and London away - and file two
+# trips about now: one flown, one still to come, so whatever the date the
+# panel has a past and a future. Each duty is 14 hours - longer than any
+# day, or any night outside the WOCL, at Hong Kong - so always in pieces.
+
+PORTS = {
+    "HKG": {"city": "Hong Kong", "tz": "Asia/Hong_Kong", "lat": 22.31, "lon": 113.92},
+    "SYD": {"city": "Sydney", "tz": "Australia/Sydney", "lat": -33.95, "lon": 151.18},
+    "LHR": {"city": "London", "tz": "Europe/London", "lat": 51.47, "lon": -0.46},
+}
+REAL_CONFIG = {
+    "personal": {"home_base": "HKG", "timezone": "Asia/Hong_Kong", "cbt_min": "04:00"},
+    "duty_types": [{"type": "flight", "prefixes": ["CX"]}, {"type": "sim", "regex": r"^A\d"},
+                   {"type": "reserve", "prefixes": ["R"]}],
+    "default_type": "other",
+    "destinations": PORTS,
+}
+
+
+def real_app(tmp_path, config=REAL_CONFIG):
+    return load_with_config(tmp_path, json.dumps(config))
+
+
+def file_trips(conn):
+    """Flown to Sydney and home, over three and two days ago; rostered to
+    London and home, from tomorrow - each duty 14 hours, from the top of
+    an hour. Its duties: [(code, start, end)], in order."""
+    base = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+    filed = []
+    for kind, at, code, route in (
+        ("duties_complete", -80, "CX101", "HKG-SYD"), ("duties_complete", -40, "CX100", "SYD-HKG"),
+        ("duties_rostered", 20, "CX255", "HKG-LHR"), ("duties_rostered", 70, "CX256", "LHR-HKG"),
+    ):
+        start, end = iso_utc(base + timedelta(hours=at)), iso_utc(base + timedelta(hours=at + 14))
+        file_flight(conn, kind, start, end, code, route)
+        filed.append((code, start, end))
+    conn.commit()
+    return filed
+
+
+def spans_of(spans):
+    return [{k: s[k] for k in ("start", "end", "tone")} for s in spans]
+
+
+def test_the_circadian_panel_is_three_strips_in_the_frms_group(tmp_path, conn):
+    app = real_app(tmp_path)
+    filed = file_trips(conn)
+
+    before = datetime.now(timezone.utc).replace(microsecond=0)
+    spec = app.render(host.Ctx(conn), {})
+    after = datetime.now(timezone.utc)
+    strips = _circadian_cell(spec)
+
+    # Three strips - where you are, its tag the clock; home, tagged Home;
+    # the duties - with the line at now, the render's own, in the FRMS
+    # focus group: it scrolls with the roster's timeline and rails.
+    assert (strips["type"], strips["sync"]) == ("strips", "frms")
+    assert iso_utc(before) <= strips["now"] <= iso_utc(after)
+    local, home, duties = strips["lanes"]
+    assert [(lane["kind"], lane["label"], lane["clock"]) for lane in strips["lanes"]] == [
+        ("sky", None, True), ("sky", "Home", False), ("duty", None, False),
+    ]
+
+    # circadian()'s, for the same duties, now and window - the roster
+    # panel's, about six months back from midnight, to a day past the
+    # last duty's end.
+    ctx = host.Ctx(conn)
+    since = date.today() - timedelta(days=183)
+    rostered = ctx.sessions("duties_rostered", since=since.isoformat())
+    flown = ctx.sessions("duties_complete", since=since.isoformat())
+    start = datetime.combine(since, datetime.min.time(), tzinfo=timezone.utc)
+    end = datetime.fromisoformat(filed[-1][2]) + timedelta(days=1)
+    engine = app.circadian(rostered, flown, datetime.fromisoformat(strips["now"]), start, end)
+    assert spans_of(local["spans"]) == spans_of(engine["location"])
+    assert spans_of(home["spans"]) == spans_of(engine["body"])
+    assert spans_of(duties["spans"]) == spans_of(engine["duties"])
+    assert local["troughs"] == engine["troughs"] and home["troughs"] == duties["troughs"] == []
+    assert (local["spans"][0]["start"], local["spans"][-1]["end"]) == (iso_utc(start), iso_utc(end))
+    assert (home["spans"][0]["start"], home["spans"][-1]["end"]) == (iso_utc(start), iso_utc(end))
+
+    # The clock lane: each span the port the engine has you at - "" for
+    # not known - and that port's zone, for the time under the cursor.
+    assert [s["place"] for s in local["spans"]] == [x["port"] or "" for x in engine["location"]]
+    assert {(s["place"], s["tz"]) for s in local["spans"]} == {
+        ("", None), ("SYD", "Australia/Sydney"), ("HKG", "Asia/Hong_Kong"), ("LHR", "Europe/London"),
+    }
+    assert local["spans"][0]["tone"] == "none"
+    # The roster's panel beside it, drawn as ever.
+    assert _roster_cell(spec)["children"][0]["type"] == "rails"
+
+
+def test_a_duty_is_labelled_once_on_its_first_piece(tmp_path, conn):
+    app = real_app(tmp_path)
+    filed = file_trips(conn)
+
+    [_, _, duties] = _circadian_cell(app.render(host.Ctx(conn), {}))["lanes"]
+
+    # Every duty in pieces, its code on the first and on no other - one
+    # label a duty, for the page to draw once at its start.
+    for code, start, end in filed:
+        pieces = [s for s in duties["spans"] if start <= s["start"] < end]
+        assert len(pieces) > 1, code
+        assert pieces[0]["start"] == start
+        assert [p["label"] for p in pieces] == [code] + [None] * (len(pieces) - 1)
+    assert [s["label"] for s in duties["spans"] if s["label"]] == [code for code, _, _ in filed]
+
+
+def test_labels_and_places_are_mapped_from_the_engine_never_passed_through(tmp_path, conn, monkeypatch):
+    # The engine's output, as given - a duty clipped at the window's
+    # start, a code flown twice, a duty with no code; ports known, not
+    # known, and with a destination that isn't one.
+    places = {**PORTS, "MNL": "Manila", "BKK": {"city": "Bangkok", "tz": 7}, "CEB": {"city": "Cebu", "tz": ""}}
+    app = real_app(tmp_path, {**REAL_CONFIG, "destinations": places})
+    file_trips(conn)
+
+    def piece(start, end, code, tone):
+        return {"start": f"2026-10-{start}:00:00Z", "end": f"2026-10-{end}:00:00Z", "code": code, "tone": tone}
+
+    def where(start, end, port, tone="day"):
+        return {"start": f"2026-10-{start}:00:00Z", "end": f"2026-10-{end}:00:00Z", "port": port, "tone": tone}
+
+    engine = {
+        "home": "HKG", "wocl": [], "troughs": ["2026-10-20T20:00:00Z", "2026-10-21T20:00:00Z"],
+        "body": [{"start": "2026-10-20T00:00:00Z", "end": "2026-10-23T00:00:00Z", "tone": "day"}],
+        "location": [where("20T00", "20T06", None, "none"), where("20T06", "21T00", "SYD"),
+                     where("21T00", "21T06", "XXX", "none"), where("21T06", "21T12", "MNL"),
+                     where("21T12", "21T18", "BKK"), where("21T18", "22T00", "CEB"), where("22T00", "23T00", "LHR")],
+        "duties": [
+            piece("20T00", "20T02", "CX9", "wocl"),     # its start before the window's: the first in it labelled
+            piece("20T02", "20T05", "CX9", "day"),
+            piece("21T01", "21T03", "CX9", "day"),      # the same code another day: its own duty
+            piece("21T08", "21T09", "R1E", "night"),
+            piece("21T09", "21T10", "R1E", "wocl"),
+            piece("22T01", "22T02", "", "day"),         # no code: nothing to draw
+        ],
+    }
+    monkeypatch.setattr(app, "circadian", lambda *a, **k: engine)
+
+    local, home, duties = _circadian_cell(app.render(host.Ctx(conn), {}))["lanes"]
+
+    assert [s["label"] for s in duties["spans"]] == ["CX9", None, "CX9", "R1E", None, ""]
+    assert spans_of(duties["spans"]) == spans_of(engine["duties"])
+    # A port's place and zone - none for one not known, one not among the
+    # destinations, or one whose zone isn't text.
+    assert [(s["place"], s["tz"]) for s in local["spans"]] == [
+        ("", None), ("SYD", "Australia/Sydney"), ("XXX", None), ("MNL", None), ("BKK", None), ("CEB", None),
+        ("LHR", "Europe/London"),
+    ]
+    assert home["spans"] == [{"start": "2026-10-20T00:00:00Z", "end": "2026-10-23T00:00:00Z", "tone": "day",
+                              "label": None, "place": None, "tz": None}]
+
+
+def test_a_panel_that_fails_is_an_error_in_its_own_sub_panel(tmp_path, conn, monkeypatch, capsys):
+    app = real_app(tmp_path)
+    file_trips(conn)
+    circadian = app._circadian
+
+    def fails(ctx):
+        raise RuntimeError("the sun didn't rise")
+
+    # The circadian panel raising: an error in its sub-panel, logged with
+    # its traceback - and the roster's panel drawn as ever.
+    fails.__name__ = "_circadian"
+    monkeypatch.setattr(app, "_circadian", fails)
+    spec = app.render(host.Ctx(conn), {})
+    assert _circadian_cell(spec) == {"type": "error", "message": "the sun didn't rise"}
+    assert _roster_cell(spec)["children"][0]["type"] == "rails"
+    logged = capsys.readouterr()
+    assert "[apps] frms: the circadian panel failed" in logged.out
+    assert "RuntimeError: the sun didn't rise" in logged.err
+    # The other way about: the roster's panel raising leaves the circadian
+    # drawn. An exception that says nothing is named by its type.
+    def divides(ctx):
+        return 1 / 0
+
+    monkeypatch.setattr(app, "_circadian", circadian)
+    monkeypatch.setattr(app, "_roster", divides)
+    spec = app.render(host.Ctx(conn), {})
+    assert _roster_cell(spec) == {"type": "error", "message": "division by zero"}
+    assert _circadian_cell(spec)["type"] == "strips"
+
+    def silent(ctx):
+        raise KeyError
+
+    monkeypatch.setattr(app, "_roster", silent)
+    assert _roster_cell(app.render(host.Ctx(conn), {})) == {"type": "error", "message": "KeyError"}
+    # The placeholders, either way, as they were.
+    assert [c["spec"] for c in spec["cells"] if (c["x"], c["y"]) in ((3, 0), (2, 2))] == [
+        {"type": "empty", "message": "Coming soon"}, {"type": "empty", "message": "Coming soon"},
+    ]
 
 
 # ---------- trips: the layovers ----------
