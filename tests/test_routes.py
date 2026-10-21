@@ -4441,12 +4441,12 @@ def test_a_rails_frame_draws_its_timeline_as_it_is_alone_between_two_rails(clien
         const g = focusGroups.get('frms');
         r.group = [new Date(g.focusMs).toISOString(), g.following, g.members.size, timelines.size, focusGroups.size];
         const list = box.querySelector('.rail-cards'), card = box.querySelector('.rail-card');
-        r.list = [list.attrs.role, list.attrs['aria-label'], list.style.gap];
-        r.card = [card.attrs.role, card.attrs['aria-current'], card.dataset.id, card.style.height,
-                  card.children.map(c => c.className)];
+        r.list = [list.attrs.role, list.attrs['aria-label']];
+        r.card = [card.attrs.role, card.attrs['aria-current'], card.dataset.id, card.children.map(c => c.className)];
         r.heads = box.querySelectorAll('.rail-card.head').map(c => [c.dataset.id, c.attrs['aria-current']]);
         r.current = box.querySelectorAll('.rail-card').filter(c => c.attrs['aria-current']).length;
-        r.heights = [...new Set(box.querySelectorAll('.rail-card').map(c => c.style.height))];
+        // A card's size, and the gap between two, the CSS's: none set here.
+        r.inline = [list, ...box.querySelectorAll('.rail-card')].filter(n => 'height' in n.style || 'gap' in n.style).length;
         r.counts = box.querySelectorAll('.rail-count').length;
         r.html = [box, ...box.querySelectorAll('*')].map(n => n._html).join('');
     """))
@@ -4471,10 +4471,12 @@ def test_a_rails_frame_draws_its_timeline_as_it_is_alone_between_two_rails(clien
     assert r["heads"] == [["2026-10-17T01:00:00Z", "true"], ["2026-10-12T01:00:00Z", "true"]]
     assert r["current"] == 2
     assert r["group"] == ["2026-10-18T12:00:00.000Z", True, 4, 4, 1]
-    assert r["list"] == ["list", "Plan: 7 cards", "6px"]
-    # A card a fixed size, its four corners in reading order, its id carried.
-    assert r["card"] == ["listitem", "true", "2026-10-17T01:00:00Z", "58px", ["rc-out", "rc-port", "rc-in", "rc-day"]]
-    assert r["heights"] == ["58px"]
+    assert r["list"] == ["list", "Plan: 7 cards"]
+    # A card's four corners in reading order, its id carried; its size -
+    # roomy, or compact in a narrow rail - and the gap the CSS's, so
+    # nothing inline.
+    assert r["card"] == ["listitem", "true", "2026-10-17T01:00:00Z", ["rc-out", "rc-port", "rc-in", "rc-day"]]
+    assert r["inline"] == 0
     # Everything an app sent set as text.
     assert r["html"] == ""
 
@@ -4573,6 +4575,43 @@ def test_a_rail_shows_as_many_whole_cards_as_fit(client):
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
+def test_a_rail_counts_whole_cards_of_the_size_the_css_gives_them(client):
+    page = _page(client)
+    r = _node(_rails_script(page, f"""
+        const box = renderSpec({json.dumps(RAILS)}, 'Roster', 'roster');
+        const [L, tl, R] = box.children;
+        show(tl, 480);
+        // A card's height is the CSS's - the roomy 58px, or the compact
+        // 46px in a narrow rail - read off a card on the page: here, the
+        // cards drawn are given it, as a browser would lay them out.
+        const sized = (side, px) => side.querySelectorAll('.rail-card').forEach(c => {{ c.offsetHeight = px; }});
+        const at = (side, px, h) => {{ sized(side, px); showRail(side, h); return rail(side).cards; }};
+        const four = 4 * 46 + 3 * RAIL_GAP_PX;
+        // Compact: four whole cards in a column four tall, three a pixel short.
+        r.compact = [at(L, 46, four), at(L, 46, four - 1), at(R, 46, four)];
+        // A 2x2's column, as Chromium lays it out (231.6px): four a side.
+        r.twoByTwo = [at(L, 46, 231), at(R, 46, 231)].map(c => c.length);
+        // The cards drawn afresh aren't measured yet: the last measured stands.
+        showRail(L, four);
+        r.redrawn = rail(L).cards;
+        // A card with no height - the rail hidden - measures nothing.
+        r.hidden = at(L, 0, four);
+        // The rail widened: the roomy card, measured, three in the same column.
+        r.roomy = at(L, 58, four);
+    """))
+
+    assert r["compact"] == [
+        _cards(PLAN_CARDS, ["BLR", "YVR", "DEL", "JFK"], head="BLR"),
+        _cards(PLAN_CARDS, ["BLR", "YVR", "DEL"], head="BLR"),
+        _cards(REPORT_CARDS, ["LHR", "SIN", "NRT", "SYD"], head="SYD"),
+    ]
+    assert r["twoByTwo"] == [4, 4]
+    assert r["redrawn"] == r["compact"][0]
+    assert r["hidden"] == r["compact"][0]
+    assert r["roomy"] == _cards(PLAN_CARDS, ["BLR", "YVR", "DEL"], head="BLR")
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
 def test_a_hand_built_rail_is_drawn_as_far_as_it_can_be(client):
     page = _page(client)
     junk = {"type": "rail", "side": "plan", "title": None, "cards": [
@@ -4652,13 +4691,80 @@ def test_rails_off_the_page_are_let_go_of_with_their_timeline(client):
     assert r["gone"] == [0, 0, 1]
 
 
+def _css_rules(page):
+    """The page's CSS as far as the rails' tests need it: (base, blocks) -
+    the rules outside any at-rule, as text, and each single-condition
+    @container (max-width|max-height:Npx) block as (feature, px, its
+    rules), in the page's order. Comments go first (they hold braces)."""
+    css = re.sub(r"/\*.*?\*/", "", page[page.index("<style>") + len("<style>") : page.index("</style>")], flags=re.S)
+    base, blocks, at = [], [], 0
+    for m in re.finditer(r"@[\w-]+[^{;]*\{", css):
+        if m.start() < at:
+            continue
+        depth, i = 1, m.end()
+        while depth:
+            depth += {"{": 1, "}": -1}.get(css[i], 0)
+            i += 1
+        base.append(css[at : m.start()])
+        cond = re.fullmatch(r"@container \(max-(width|height):(\d+)px\)\s*\{", m.group(0))
+        if cond:
+            blocks.append((cond.group(1), int(cond.group(2)), css[m.end() : i - 1]))
+        at = i
+    base.append(css[at:])
+    return "".join(base), blocks
+
+
+def _decls(text, selector):
+    """What every rule in text naming selector declares, later ones winning."""
+    out = {}
+    for sels, body in re.findall(r"([^{}]+)\{([^{}]*)\}", text):
+        if selector in [x.strip() for x in sels.split(",")]:
+            out.update((k.strip(), v.strip()) for k, v in (d.split(":", 1) for d in body.split(";") if ":" in d))
+    return out
+
+
+def _styled(css, selector, **size):
+    """What selector gets in a container of size (width=, height=, px): its
+    rules outside any at-rule, then each @container block the size is
+    within - a feature not given (an inline-size container's height)
+    never matching."""
+    base, blocks = css
+    out = _decls(base, selector)
+    for feature, px, body in blocks:
+        if feature in size and size[feature] <= px:
+            out.update(_decls(body, selector))
+    return out
+
+
+def _px(v):
+    return float(re.fullmatch(r"(-?[\d.]+)px", v).group(1))
+
+
+def _tile_content(css, w, h, cell):
+    """A w x h tile's content box at a cell size: its span of cells and the
+    gaps between, less its padding and border (box-sizing border-box)."""
+    root = _decls(css[0], ":root")
+    gap = _px(root["--tile-gap"])
+    tile = _decls(css[0], ".tile")
+    pad_y, pad_x = (_px(v) for v in tile["padding"].split())
+    border = _px(tile["border"].split()[0])
+    return (w * cell + (w - 1) * gap - 2 * (pad_x + border), h * cell + (h - 1) * gap - 2 * (pad_y + border))
+
+
+def _rail_width(css, tile_w):
+    """A rail's width in a tile tile_w wide: its clamp(lo, N cqi, hi), cqi the tile's."""
+    lo, cqi, hi = re.fullmatch(r"clamp\(([\d.]+)px, ([\d.]+)cqi, ([\d.]+)px\)",
+                               _decls(css[0], ".spec-rails > .spec-rail")["width"]).groups()
+    return min(max(float(lo), float(cqi) * tile_w / 100), float(hi))
+
+
 def test_the_rails_are_left_out_of_a_tile_too_small_to_hold_them(client):
     page = _page(client)
     css = page[: page.index("</style>")]
-    # Under 400px wide or 240px tall inside, the rails go and the timeline
+    # Under 310px wide or 240px tall inside, the rails go and the timeline
     # has the tile, as it's drawn without them; otherwise it takes what
     # the rails leave.
-    assert "@container (max-width:399px){ .spec-rails > .spec-rail{display:none;} }" in css
+    assert "@container (max-width:309px){ .spec-rails > .spec-rail{display:none;} }" in css
     assert "@container (max-height:239px){ .spec-rails > .spec-rail{display:none;} }" in css
     assert ".spec-panel > .spec-rails{flex:1 1 0;}" in css
     assert ".spec-rails > .spec-timeline{flex:1 1 0;}" in css
@@ -4677,6 +4783,70 @@ def test_the_rails_are_left_out_of_a_tile_too_small_to_hold_them(client):
     for gone in ("rail-count", ".at", "rc-label", "rc-tag", "rc-when", "rc-detail"):
         assert gone not in rails, gone
     assert "rail-count" not in page and "fmtCardDays" not in page
+    # A card's size and the gap between two are the CSS's; the script's
+    # constants - what fit counts with before a card's measured - agree.
+    rules = _css_rules(page)
+    assert _decls(rules[0], ".rail-card")["height"] == f"{_js(page, 'RAIL_CARD_PX').split('= ')[1].split(';')[0]}px"
+    assert _decls(rules[0], ".rail-cards")["gap"] == f"{_js(page, 'RAIL_GAP_PX').split('= ')[1].split(';')[0]}px"
+
+
+def test_the_rails_show_down_to_a_two_wide_tile_with_a_compact_card(client):
+    page = _page(client)
+    css = _css_rules(page)
+    root = _decls(css[0], ":root")
+    big, small = _px(root["--tile-cell-max"]), _px(root["--tile-cell-min"])
+    # The hide rules key off the tile - the rail's nearest container
+    # but itself - and the card's off the rail, a container of its own.
+    assert _decls(css[0], ".tile")["container-type"] == "size"
+    assert _decls(css[0], ".spec-rail")["container-type"] == "inline-size"
+    shown = lambda w, h: _styled(css, ".spec-rails > .spec-rail", width=w, height=h).get("display") != "none"
+    card = lambda rail_w: _styled(css, ".rail-card", width=rail_w)
+    corner = lambda cls, rail_w: _styled(css, cls, width=rail_w)
+
+    # A 2x2 at a large viewport (cells at their max), as Chromium lays it
+    # out - 334 x 338 inside: the rails show, each at its 84px min, with
+    # the compact card.
+    two = _tile_content(css, 2, 2, big)
+    assert two == (334, 338)
+    assert shown(*two)
+    assert _rail_width(css, two[0]) == 84
+    compact = card(84)
+    assert (compact["height"], compact["padding"], compact["border-left-width"], compact["border-radius"],
+            compact["column-gap"]) == ("46px", "3px 6px", "2px", "7px", "4px")
+    assert [(corner(c, 84)["font-size"], corner(c, 84)["line-height"]) for c in (".rc-out", ".rc-in", ".rc-port", ".rc-day")] \
+        == [("10px", "13px"), ("10px", "13px"), ("13px", "15px"), ("9px", "13px")]
+    # Compact to a rail 119px wide; roomy past it.
+    assert card(119)["height"] == "46px" and card(120)["height"] == "58px"
+
+    # A 4-wide tile at a large viewport: the rail at its 156px max, the
+    # roomy card exactly as it was - nothing compact reaches it.
+    four = _tile_content(css, 4, 3, big)
+    assert shown(*four)
+    assert _rail_width(css, four[0]) == 156
+    roomy = card(156)
+    assert (roomy["height"], roomy["padding"], roomy["border-left"], roomy["border-radius"], roomy["column-gap"]) \
+        == ("58px", "4px 8px 4px 7px", "3px solid var(--layover)", "var(--radius-sm)", "6px")
+    assert "border-left-width" not in roomy
+    assert [corner(c, 156)["font"] for c in (".rc-out", ".rc-in", ".rc-port", ".rc-day")] == [
+        "600 11.5px/16px var(--font-mono)", "500 11.5px/16px var(--font-mono)",
+        "800 17px/20px var(--font-display)", "500 10.5px/16px var(--font-mono)"]
+    assert all("font-size" not in corner(c, 156) for c in (".rc-out", ".rc-in", ".rc-port", ".rc-day"))
+    # A 4-wide tile on a small screen (cells at their min): its rail at the
+    # min too, so the compact card.
+    assert _rail_width(css, _tile_content(css, 4, 3, small)[0]) == 84
+
+    # Left out under 310px wide - a 2x2 with the cells at their min among
+    # them - or 240px tall - a 2x1.
+    assert shown(310, two[1]) and not shown(309, two[1])
+    assert shown(two[0], 240) and not shown(two[0], 239)
+    assert not shown(*_tile_content(css, 2, 2, small))
+    assert not shown(*_tile_content(css, 2, 1, big))
+    # And four columns fit in the narrowest tile they show in: two rails at
+    # their min and the gaps leave the timeline's two lanes room (Chromium:
+    # 57px each at 310px).
+    narrowest = next(w for w in range(200, 800) if shown(w, two[1]))
+    gap = _px(_decls(css[0], ".spec-rails")["gap"])
+    assert narrowest - 2 * _rail_width(css, narrowest) - 2 * gap >= 120
 
 
 # ---------- an uninstalled app's data: Remove data ----------

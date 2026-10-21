@@ -688,8 +688,9 @@ own calls to its device API. Full direction:
   end, out, in, port}` straight through (`in` None while open — the page's
   dash; a day return like any, its port the turn-round's); no home base,
   no cards. The page shows five a side, restacking as the timeline
-  scrolls — Plan ahead of the cursor, Report back — and drops the rails in
-  a tile under 4 wide (the 4×2/4×3 sizes are theirs). The `duty_hours_*` metrics are
+  scrolls — Plan ahead of the cursor, Report back — down to a 2×2 (compact
+  cards there, about four a side; roomy at 4×2/4×3), dropping the rails in
+  a 2×1 or a 2-wide tile a small screen shrinks. The `duty_hours_*` metrics are
   still written; the tile no longer reads them (`app.yaml`'s `reads`
   still names them).
 - `app/home_layout.py` — the Home tab's layout, one `settings` row
@@ -1248,13 +1249,20 @@ own calls to its device API. Full direction:
   `tl-focus`) it mirrors with spacers (`.rail-sp`), so its heading sits in
   the lanes' heading row and its cards start level with the frame; the
   timeline takes what the rails leave (`clamp(84px, 22cqi, 156px)` each);
-  `@container (max-width:399px)` or `(max-height:239px)` drop the rails
+  `@container (max-width:309px)` or `(max-height:239px)` drop the rails
   (`display: none`), the timeline then the whole tile, pixel for pixel as
-  without them — every roster tile 2 wide; nothing in `timelineSpec()`,
+  without them — a 2×1, or a 2-wide tile a small screen shrinks (a 2×2 at
+  full size, 334px inside, keeps them); nothing in `timelineSpec()`,
   the focus clock or a `.tl-*` rule changed for them), `rail`
   (`railSpec(s, above)`: a `.rail-head` (its title alone, `\u00a0` for
-  none — no count) over `.rail-cards`, a list of `.rail-card`s, each
-  `RAIL_CARD_PX` (58) tall, `RAIL_GAP_PX` (6) apart, a 2×2 grid of four
+  none — no count) over `.rail-cards`, a list of `.rail-card`s, each a
+  fixed size the CSS sets by the rail's width (`.spec-rail` an inline-size
+  container, so its cards' `@container`): roomy, 58px tall
+  (`RAIL_CARD_PX`), in a rail wider than 119px (a 4-wide tile's 156px), and
+  compact, 46px with slimmer padding and edge and smaller type
+  (`@container (max-width:119px)`), at the rail's 84px min (a 2×2, or a
+  4-wide tile on a small screen) — none set inline — `RAIL_GAP_PX` (6)
+  apart (`.rail-cards`' `gap`), a 2×2 grid of four
   corners in reading order — `.rc-out` (top-left, mono), `.rc-port`
   (top-right, the display face, the prominent one), `.rc-in` (bottom-left,
   mono, muted; `—` for none, as `.rc-out`), `.rc-day` (bottom-right,
@@ -1271,9 +1279,11 @@ own calls to its device API. Full direction:
   list's start (`j ≥ count − 1`), `start` `j − count + 1`, `head` `count −
   1`, its bottom card — the head on a held end the end card, whatever the
   cursor's in. `fit` the whole cards
-  `.rail-cards`' height holds — `RAIL_MAX` until measured, then on a
-  `requestAnimationFrame` and every `ResizeObserver` callback, no height
-  keeping the last. Synced (`s.sync`), it reads `focusGroup(name).focusMs`
+  `.rail-cards`' height holds, of a card's measured height (`offsetHeight`
+  — roomy or compact, as the CSS drew it; `RAIL_CARD_PX` until one's
+  measured, the last measured while none is) — `RAIL_MAX` until measured,
+  then on a `requestAnimationFrame` and every `ResizeObserver` callback, no
+  height keeping the last. Synced (`s.sync`), it reads `focusGroup(name).focusMs`
   and joins the group's `members` with a `show` that restacks (only when
   the window changes), so a scroll by hand, Now and the follow
   tick all restack it — it never calls `setFocus()`; unsynced, the time it
@@ -2029,6 +2039,11 @@ same PR:
   `trip_cards()`' `in` now the leg that lands at base (5a's review).
   Purely additive: nothing in `timeline()`, `timelineSpec()`, the
   bands, the cursor, the focus clock or a `.tl-*` rule changed.
+  Then the rails fit a 2×2 (host only — no migration, no route or app
+  change): the width they drop at lowered from 399px to 309px, so a
+  full-size 2×2 (334px inside) keeps them, and a compact card in a
+  narrow rail (the rail its cards' container), its height the CSS's and
+  measured for `fit`; a 4-wide tile at full size draws exactly as before.
   Still to come for it: reading `destinations` (time-zone shifts), the
   cards' popups and PDF, the
   report store (re-attached to a trip by its id), per-block or per-band
