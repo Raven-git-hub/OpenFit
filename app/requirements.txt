@@ -4,3 +4,5 @@ apscheduler==3.11.3
 requests==2.33.1
 cryptography==50.0.1
 PyYAML==6.0.3
+# The IANA time-zone database, for zoneinfo: the slim image may not ship one.
+tzdata==2026.5

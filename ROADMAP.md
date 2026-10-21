@@ -142,7 +142,10 @@ FRMS (`app:frms`): one 6×4 app with one config, to be drawn as four sub-panels
 metrics dropped (duty hours are read from the sessions). Then the grid spec:
 one tile split into sub-panels, each drawn as a tile of its own on the Home
 grid's cells — FRMS its first user, the roster panel 2×2 bottom-left beside
-three placeholders. Next: the rest of the
+three placeholders. Then FRMS's circadian engine: sun times from date and
+position (NOAA), where the crew member is over time, home-base day/night and
+WOCL, duties cut into day/night/WOCL pieces against the body clock, the
+curve's troughs — pure functions, drawn by a later brick. Next: the rest of the
 Library (the writes ticker, now apps write back; alerts;
 Browse / Build / Create are still placeholders), and the grid pass (free cell
 placement, a second layout mode on the same sizes).

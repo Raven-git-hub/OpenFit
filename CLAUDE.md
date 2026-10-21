@@ -10,7 +10,9 @@ own calls to its device API. Full direction:
 
 ## Stack (keep it lightweight — no frameworks without a real reason)
 - Python + Flask, raw `sqlite3` (NOT SQLAlchemy/an ORM); PyYAML only to read
-  an installed app's `app.yaml`
+  an installed app's `app.yaml`; `tzdata` (the IANA time-zone database as a
+  package, so `zoneinfo` finds a zone even in a slim image without the
+  system's — FRMS's circadian engine the first to use it; nothing imports it)
 - Vanilla JS, no build step
 - Docker + docker-compose; one container, SQLite at `/data/tracker.db` (in WAL
   mode, so `tracker.db-wal`/`tracker.db-shm` beside it are part of the
@@ -573,9 +575,13 @@ own calls to its device API. Full direction:
   `app.py` (the engine) and `config.json` (the reference it reads — the
   round trip installs all three). The config: `duty_types`, an ordered
   list of rules `{type, prefixes: [...]}` or `{type, regex}`, the first
-  match winning; `default_type`; `personal` (`home_base`, `timezone`); and
-  `destinations` (IATA → `{city, tz}`, an IANA zone — not read yet: staged
-  for the time-zone/layover work). The fixture's is synthetic (`CX` →
+  match winning; `default_type`; `personal` (`home_base`, `timezone` — an
+  IANA zone, the body clock's — and `cbt_min`, `"HH:MM"` home local, the
+  body clock's low, `"04:00"` when absent); and `destinations` (IATA →
+  `{city, tz, lat, lon}`, `tz` an IANA zone, not read yet; `lat`/`lon`
+  decimal degrees, read by the circadian engine, below). The fixture's is
+  synthetic (no `lat`/`lon`, no `cbt_min`: the engine's tests bring their
+  own config; `CX` →
   flight, `^A\d` → sim, `R` → reserve, else other; home base and ports
   `ZZA`/`ZZB`); the owner's real one stays on their volume, never
   committed. Read once at import from beside the module (`__file__`, so
@@ -710,6 +716,65 @@ own calls to its device API. Full direction:
   scrolls — Plan ahead of the cursor, Report back — the compact card in
   its 2×2 sub-panel, as in a 2×2 tile (the rails dropped, the timeline
   alone, when a small screen shrinks the cells under 310px inside).
+  **The circadian engine** (`tests/test_frms_circadian.py`), the panel
+  top-left's calculations, pure module functions after the trip cards
+  that nothing calls yet — `render()` unchanged, the sub-panel still
+  `empty("Circadian — coming soon")`; drawing them is a later brick (a
+  host strip spec). Stdlib (`math`, `zoneinfo`, `bisect`); each public
+  one takes `config=None` → `CONFIG` (`_config()`: neither a dict →
+  `ValueError(CONFIG_ERROR)`); every instant an aware datetime or UTC
+  text in (`_utc()`: naive → `ValueError`), compared as aware UTC
+  datetimes, and given back as `_utc_text()` text; every span half-open,
+  `[start, end)`, and an empty window (`end <= start`) has none.
+  `sun_times(day, lat, lon)` → `(rise, set)`, aware UTC datetimes to the
+  second, around local solar noon of `day` (a `date`) at that position
+  (decimal degrees, north and east positive), from NOAA's sunrise
+  equation (mean anomaly, equation of centre, ecliptic longitude, solar
+  transit, declination, hour angle at −0.833°) — the day count from
+  J2000.0 (2000-01-01 12:00 UTC, JD 2451545.0), `n = days − lon/360`,
+  nothing added — or `"day"` (cos of the hour angle < −1: the sun doesn't
+  set) / `"night"` (> 1: it doesn't rise); within 3 minutes of the Hong
+  Kong Observatory's 2026 table and astral's values for eight more
+  ports. `daylight(lat, lon, start, end)` → contiguous `[{start, end,
+  tone}]`, `day`/`night`, the same tone merged, clipped to the window,
+  from `sun_times()` of each date start's − 1 … end's + 1 (UTC) — a
+  polar date a whole UTC day of its tone, over a neighbour's daylight
+  (`_tones()`, layers laid in order). `body_clock(start, end)` →
+  `{tz, wocl, troughs}`: `tz` `ZoneInfo(personal.timezone)` (missing or
+  unknown → `ValueError`); `wocl` `[{start, end}]` — `WOCL`, 02:00–06:00
+  home local, `[02:00, 06:00)`, of each home-local date the window
+  touches, through `zoneinfo` (right across a clock change), clipped;
+  `troughs` UTC text, `cbt_min` (`CBT_MIN` `"04:00"` when absent or
+  null; not `HH:MM` → `ValueError`) on each of those dates and one
+  either side, so one falls before the window and one after.
+  `curve_value(t, troughs)` → `−cos(2π·f)`, `f` `t`'s fraction of the
+  way from the trough before to the one after: −1 at a trough, +1
+  midway, 0 a quarter of the way; None outside the troughs. Which
+  duties count (`_counted()`): the flown (`duties_complete`) over by
+  `now` and the rostered (`duties_rostered`) ending after it — to come
+  and under way — never a past rostered one (no fallback: a past with
+  nothing flown is None, nothing drawn) and none without an end, by
+  start. `locations(rostered, flown, now, start, end)` →
+  `[{start, end, port}]`, contiguous over the window: walking them, from
+  a duty's start you're at its final destination — a flight's `arr` (a
+  day return's is base), a flight with none leaving you where you were,
+  any other duty at home base; before the first, `None`; a duty before
+  the window says where it starts; the same port merged.
+  `location_strip(locs, start, end)` → each span cut by `daylight()` at
+  its port's `destinations` `lat`/`lon` — `{start, end, port, tone}`,
+  `day`/`night`, or `none` for a `None` port or one with no position
+  (`_position()`: both numbers, not bools, on the globe), the port kept.
+  `body_strip(start, end)` → `daylight()` at home base (`_home_sky()`):
+  no `home_base`, or it has no position → `ValueError` naming it.
+  `duty_pieces(rostered, flown, now, start, end)` → each counted duty,
+  clipped, cut at home's WOCL and day/night boundaries — `{start, end,
+  code, tone}`, `wocl` (first), else `night` in home darkness, else
+  `day`, against the body clock alone, never the location; a duty's
+  pieces contiguous, the same tone merged; all by start; `code` the
+  summary's. `circadian(rostered, flown, now, start, end)` → `{home,
+  location, body, duties, wocl, troughs}`, each the function's own.
+  No acclimatisation, by design: the body clock is `personal.timezone`,
+  always.
 - `app/home_layout.py` — the Home tab's layout, one `settings` row
   (`LAYOUT_KEY` `home_layout`, no migration): `{"tabs": [{id, name,
   mode: "flow", subtitle, items: [{instance_id, app_id, size: {w, h},
@@ -2153,8 +2218,19 @@ same PR:
   additive: nothing in the timeline, rails, focus clock or `.tile` rules
   changed. Deploy: rebuild the image first, then Update FRMS (on the old
   image a `grid` spec draws "Unknown spec type: grid").
-  Still to come for it: the circadian panel (its sub-panel a placeholder
-  now) and the two other sub-panels, a sub-panel's error isolated on the
+  Then FRMS's circadian engine landed (no migration, no route or host
+  change: the app's module functions and their tests, plus `tzdata` in
+  `app/requirements.txt`): sun times from a date and a position (NOAA's
+  sunrise equation), where the crew member is over time (from the flown
+  duties to now and the rostered after it, never the plan for the past),
+  home-base day/night and WOCL, each duty cut into day/night/WOCL pieces
+  against the body clock, and the curve's troughs — pure, drawn nowhere
+  yet. Deploy: rebuild the image (for `tzdata`); updating `app.py`
+  changes nothing on screen.
+  Still to come for it: drawing the circadian panel (its sub-panel a
+  placeholder now; a host strip spec, then `render()` wired to
+  `circadian()`), personalising `cbt_min` from sleep data, and the two
+  other sub-panels, a sub-panel's error isolated on the
   server (a `render()` that raises is still the whole tile's error),
   reading `destinations` (time-zone shifts), the
   cards' popups and PDF, the
