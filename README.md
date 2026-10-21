@@ -486,8 +486,9 @@ among them), and **Report**, beside the flown, every trip home. Each rail shows
 five at a time and restacks as you scroll the timeline: Plan looks ahead of the
 cursor, its next trip at the top, and Report looks back, the latest trip home
 at the bottom — each held full at either end of its list, the trip nearest the
-cursor outlined. The rails need a wide tile (4×2 or 4×3): in a
-narrower or shorter one they're left out and the timeline is exactly as before.
+cursor outlined. The rails show down to a 2×2 tile, with compact cards there
+(roomy ones at 4×2 or 4×3): in a 2×1, or a 2-wide tile on a small screen,
+they're left out and the timeline is exactly as before.
 Uploading again replaces a duty with the same start and
 the same day's hours, but removes nothing: a duty dropped from a later roster
 keeps its row for now. Both kinds and both metrics file under the Roster

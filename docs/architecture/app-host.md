@@ -506,14 +506,23 @@ and focus clock untouched — and takes what the rails leave; each rail is
 `clamp(84px, 22cqi, 156px)` wide. A rail mirrors the rows over the
 timeline's frame with spacers (its title's line, its focus row), so the rail's
 heading sits in the lanes' heading row — Plan · Rostered · Flown · Report —
-and its cards start level with the frame. **In a tile too small for them** —
-under 400px wide or 240px tall inside (`@container`) — the rails are left out
-and the timeline has the tile, exactly as it's drawn without them (a 2-wide
-roster tile is pixel-identical to one from before rails).
+and its cards start level with the frame. They show **down to a 2-wide
+tile**: a 2×2 at full size (334px inside) holds the four columns, each rail at
+its 84px minimum and the timeline's lanes the ~150px left. **In a tile too
+small for them** — under 310px wide or 240px tall inside (`@container`): a
+2×1, or a 2-wide tile whose cells a small screen has shrunk — the rails are
+left out and the timeline has the tile, exactly as it's drawn without them.
 
 A rail (`railSpec()`) is its heading — the title alone — over a list of
-**fixed-size cards**, 58px tall (`RAIL_CARD_PX`), 6px apart (`RAIL_GAP_PX`),
-whatever they hold. A card is **four corners**: top-left the flight out
+**fixed-size cards**, 6px apart (`RAIL_GAP_PX`), whatever they hold. Their
+size is the CSS's, set by the rail's width (the rail is its cards' container,
+`container-type: inline-size`): wider than 119px — a 4-wide tile's 156px — the
+**roomy** card, 58px tall (`RAIL_CARD_PX`), an 11.5px flight number beside a
+17px port; at up to 119px — the rail at its 84px minimum, in a 2×2 or a
+4-wide tile on a small screen — a **compact** one, 46px tall, its padding
+and edge slimmer and its type smaller (10px flight numbers, a 13px port, a
+9px day), so a flight number still fits beside the port. A card is **four
+corners**: top-left the flight out
 (mono), top-right the port (the display face, the prominent one), bottom-left
 the flight home (mono, muted; `—` for none — an open trip), bottom-right the
 day it left (its start's, UTC: `05 Nov`). All as text, with an amber
@@ -544,7 +553,10 @@ never scrolls anything or moves the focus, and nothing on a card is clickable
 yet. Unsynced, it's drawn for the time it's drawn at. Its height is measured
 as a timeline's is: five first, then on the next frame and on every resize (a
 `ResizeObserver`, let go of with its tile by `releaseTimelines()`); with no
-height, the last layout stands. A hand-built rail is drawn as far as it can
+height, the last layout stands. A card's height is measured with it — the
+size the CSS gave it, roomy or compact — so the rail counts whole cards of
+the size drawn (`RAIL_CARD_PX` until a card's been measured; the last one
+measured while none is): about four a side in a 2×2, five in a 4×3. A hand-built rail is drawn as far as it can
 be: a card without a start, or with an end that isn't one or comes before it,
 is left out; a frame's side that isn't a rail is none.
 

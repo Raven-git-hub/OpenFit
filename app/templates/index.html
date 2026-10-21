@@ -739,25 +739,29 @@ h5 + .dnote{margin-top:0;}
    port across its top, the flight home and the day it left across its
    foot - stacked from the rail's top; the head, the card at the cursor's
    end of the window (Plan's top, Report's bottom), outlined in the
-   accent. In a tile too small to hold them, the rails are left out and
-   the timeline has the tile to itself. */
+   accent. The rail is its cards' container: at its widest (a 4-wide
+   tile) the roomy card, at its narrowest (a 2-wide tile, or a 4-wide one
+   on a small screen) a compact one, its height and type smaller, so a
+   flight number still fits beside the port. The rails show down to a
+   2-wide tile; in a tile too small to hold four columns, or too short,
+   they're left out and the timeline has the tile to itself. */
 .spec-rails{display:flex;gap:8px;min-height:0;min-width:0;}
 .spec-panel > .spec-rails{flex:1 1 0;}
 .spec-rails > .spec-timeline{flex:1 1 0;}
 .spec-rails > .spec-rail{flex:none;width:clamp(84px, 22cqi, 156px);}
-@container (max-width:399px){ .spec-rails > .spec-rail{display:none;} }
+@container (max-width:309px){ .spec-rails > .spec-rail{display:none;} }
 @container (max-height:239px){ .spec-rails > .spec-rail{display:none;} }
-.spec-rail{display:flex;flex-direction:column;gap:4px;min-height:0;min-width:0;}
+.spec-rail{display:flex;flex-direction:column;gap:4px;min-height:0;min-width:0;container-type:inline-size;}
 .rail-sp{min-height:20px;}
 .rail-sp.t{min-height:0;font-size:10.5px;}
 .rail-head{
   min-width:0;padding:0 2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
   font-size:10.5px;text-transform:uppercase;letter-spacing:.8px;color:var(--muted);font-weight:600;
 }
-.rail-cards{display:flex;flex-direction:column;flex:1 1 0;min-height:0;overflow:hidden;}
+.rail-cards{display:flex;flex-direction:column;gap:6px;flex:1 1 0;min-height:0;overflow:hidden;}
 .rail-none{padding:4px 2px;font-size:11.5px;color:var(--muted);}
 .rail-card{
-  flex:none;display:grid;grid-template-columns:minmax(0,1fr) auto;grid-template-rows:1fr 1fr;
+  flex:none;height:58px;display:grid;grid-template-columns:minmax(0,1fr) auto;grid-template-rows:1fr 1fr;
   align-items:center;column-gap:6px;min-width:0;overflow:hidden;
   padding:4px 8px 4px 7px;border:1px solid var(--border);border-left:3px solid var(--layover);
   border-radius:var(--radius-sm);background:var(--inset);
@@ -768,6 +772,13 @@ h5 + .dnote{margin-top:0;}
 .rc-in{font:500 11.5px/16px var(--font-mono);color:var(--muted);}
 .rc-port{justify-self:end;font:800 17px/20px var(--font-display);letter-spacing:.3px;color:var(--ink);}
 .rc-day{justify-self:end;font:500 10.5px/16px var(--font-mono);color:var(--muted);}
+/* the compact card: the rail at its ~84px min (it's the cards' container) */
+@container (max-width:119px){
+  .rail-card{height:46px;padding:3px 6px;border-left-width:2px;border-radius:7px;column-gap:4px;}
+  .rc-out, .rc-in{font-size:10px;line-height:13px;}
+  .rc-port{font-size:13px;line-height:15px;}
+  .rc-day{font-size:9px;line-height:13px;}
+}
 /* panel: its children, stacked */
 .spec-panel{display:flex;flex-direction:column;gap:12px;}
 .spec-panel > .spec-line{flex:1;}
@@ -4249,12 +4260,13 @@ h5 + .dnote{margin-top:0;}
     });
   }
 
-  /* A rail: a column of fixed-size cards (RAIL_CARD_PX tall, RAIL_GAP_PX
-     apart) - a trip each, in the roster's - stacked from the top under
-     its heading. A card is four corners: the flight out and the port
-     (the layover's, or a day return's turn-round) across its top, the
-     flight home - a dash for none - and the day it left (its start's,
-     UTC) across its foot. Its cards are in time order (by start), and at
+  /* A rail: a column of fixed-size cards (the CSS's size - roomy, or
+     compact in a narrow rail - RAIL_GAP_PX apart) - a trip each, in the
+     roster's - stacked from the top under its heading. A card is four
+     corners: the flight out and the port (the layover's, or a day
+     return's turn-round) across its top, the flight home - a dash for
+     none - and the day it left (its start's, UTC) across its foot. Its
+     cards are in time order (by start), and at
      most RAIL_MAX show at once - fewer in a column too short to hold
      them: as many whole cards as fit. Which ones, railWindow() works out
      from the time in focus and the rail's side (s.side), so the stack
@@ -4272,14 +4284,16 @@ h5 + .dnote{margin-top:0;}
      Its height is only known once it's on the page: it's drawn for
      RAIL_MAX first, then measured on the next frame and on every resize
      (a ResizeObserver, let go of with its tile by releaseTimelines(), as
-     a timeline's is); with no height - Home hidden - the last stands.
+     a timeline's is) - the column, and a card in it, whose height the
+     CSS sets by the rail's width; with no height - Home hidden - the
+     last stands.
      Everything an app sent is set as text. `above` names the rows over
      the frame of the timeline it flanks (railsSpec()): a spacer each -
      its title's line, its focus row - so the rail's heading sits in the
      lanes' heading row and its cards start level with the frame. */
   const RAIL_MAX = 5;        // the most cards a rail shows at once
-  const RAIL_CARD_PX = 58;   // a card's height: fixed, whatever it holds
-  const RAIL_GAP_PX = 6;     // the gap between two cards
+  const RAIL_CARD_PX = 58;   // the roomy card's height (.rail-card): counted with until a card's measured
+  const RAIL_GAP_PX = 6;     // the gap between two cards (.rail-cards)
   /* Which of a rail's cards show, with the focus at focusMs, room for
      `fit` and the rail's side - {start, count, head}: the first shown,
      how many (fit, held to RAIL_MAX and the cards there are), and which
@@ -4330,7 +4344,6 @@ h5 + .dnote{margin-top:0;}
     const head = box.appendChild(el('div','rail-head'));
     head.textContent = text(s.title) || ' ';   // a line, titled or not
     const list = box.appendChild(el('div','rail-cards'));
-    list.style.gap = RAIL_GAP_PX+'px';
     list.setAttribute('role','list');
     list.setAttribute('aria-label', (s.title ? s.title+': ' : '') + `${cards.length} card${cards.length===1 ? '' : 's'}`);
     if(!cards.length){ list.appendChild(el('div','rail-none')).textContent = 'None'; }
@@ -4338,7 +4351,6 @@ h5 + .dnote{margin-top:0;}
       const n = el('div','rail-card' + (isHead ? ' head' : ''));
       n.setAttribute('role','listitem');
       if(isHead) n.setAttribute('aria-current','true');
-      n.style.height = RAIL_CARD_PX+'px';
       if(c.id) n.dataset.id = c.id;
       // Its corners in reading order, so the grid places them: out and
       // the port across the top, in and the day across the foot.
@@ -4352,6 +4364,7 @@ h5 + .dnote{margin-top:0;}
     const group = typeof s.sync==='string' && s.sync!=='' ? focusGroup(s.sync) : null;
     const drawnAt = Date.now();
     let fit = RAIL_MAX;     // whole cards the column holds: RAIL_MAX until measured
+    let cardH = RAIL_CARD_PX;   // a card's height: the last one measured, the roomy one's until then
     let shown = null;       // the window drawn, so a move within it redraws nothing
     const show = () => {
       if(!cards.length) return;
@@ -4363,7 +4376,10 @@ h5 + .dnote{margin-top:0;}
     };
     const layout = () => {
       const h = list.clientHeight || 0;
-      if(h) fit = Math.floor((h + RAIL_GAP_PX) / (RAIL_CARD_PX + RAIL_GAP_PX));
+      // The CSS sizes a card - compact in a narrow rail - so it's measured.
+      const c = list.querySelector('.rail-card');
+      if(c && c.offsetHeight) cardH = c.offsetHeight;
+      if(h) fit = Math.floor((h + RAIL_GAP_PX) / (cardH + RAIL_GAP_PX));
       show();
     };
     // A member as a timeline is - `scroll` the element whose being on
