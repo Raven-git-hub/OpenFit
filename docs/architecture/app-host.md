@@ -279,8 +279,9 @@ the dicts itself.
 | `ctx.rail(cards, side, title=None, sync=None)` | `{"type": "rail", "side", "title", "cards": [{"id", "start", "end", "out", "in", "port"}, ...]}`, plus `"sync"` only when given | A column of fixed-size cards under its title, stacked from the top — four corners each, five at most, the window moving with the focus time: ahead of it on a `"plan"` rail, back from it on a `"report"` rail, the head outlined. With `sync`, it reads that focus group's time and restacks as it moves. See [the rail builders](#the-rail-builders), below. |
 | `ctx.rails(timeline, left=None, right=None)` | `{"type": "rails", "left", "timeline", "right"}` | A timeline drawn exactly as it is alone, a rail either side: four columns, a rail, the two lanes, a rail. In a tile too small for them, the timeline alone. See [the rail builders](#the-rail-builders), below. |
 | `ctx.grid(cols, rows, cells)` | `{"type": "grid", "cols", "rows", "cells": [{"x", "y", "w", "h", "spec"}, ...]}` | A tile split into sub-panels, each drawn as a tile of its own on the Home grid's cells: `cols` by `rows` cells, each sub-panel `w` by `h` from column `x`, row `y` (from 0), its `spec` sized to it as to a tile. Cells lie inside the grid and never overlap. See [the grid builder](#the-grid-builder), below. |
+| `ctx.strips(lanes, now=None, sync=None)` | `{"type": "strips", "now", "lanes": [{"kind", "label", "clock", "spans": [{"start", "end", "tone", "label", "place", "tz"}, ...], "troughs"}, ...]}`, plus `"sync"` only when given | One lane to three of tinted spans on one horizontal time axis, a day across the frame and the rest a scroll away — the first lane taking the height the others leave, each after it a 45px row: a `"sky"` lane's day, night or not known (hatched), a `"duty"` lane's day, night and WOCL pieces butting square, a span's label once at its start, a lane's troughs a dashed curve over it, a tag top-left of each lane — its label, or a clock lane's the place and its local time under the cursor. With `sync`, drawn around the group's focus clock as a synced timeline is, on its side, and scrolled with it both ways. See [the strips builder](#the-strips-builder), below. |
 | `ctx.empty(message=None)` | `{"type": "empty", "message"}` | Muted, centred text (default "No data yet"). |
-| (the host's) | `{"type": "error", "message"}` | Muted, centred: "Couldn't render <app name>" over the message. |
+| `ctx.error(message)` — the host's, or an app's for a part that failed | `{"type": "error", "message"}` | Muted, centred: "Couldn't render <app name>" over the message. The host's when a render fails; an app may return one for a part of its tile — a sub-panel — so the rest is drawn (the FRMS app's `_panel()`). |
 
 ### The line builder
 
@@ -623,12 +624,13 @@ doesn't know is drawn as an error tile too.
 
 ```python
 ctx.grid(6, 4, [
-    {"x": 0, "y": 0, "w": 3, "h": 2, "spec": ctx.empty("Circadian — coming soon")},
+    {"x": 0, "y": 0, "w": 3, "h": 2, "spec": circadian},
+    {"x": 3, "y": 0, "w": 3, "h": 2, "spec": ctx.empty("Coming soon")},
     {"x": 0, "y": 2, "w": 2, "h": 2, "spec": roster},
     ...
 ])
 # -> {"type": "grid", "cols": 6, "rows": 4,
-#     "cells": [{"x": 0, "y": 0, "w": 3, "h": 2, "spec": {"type": "empty", ...}}, ...]}
+#     "cells": [{"x": 0, "y": 0, "w": 3, "h": 2, "spec": {"type": "strips", ...}}, ...]}
 ```
 
 - **`cols`** and **`rows`** are whole numbers, 1 to 6 — a tile's own most;
@@ -641,8 +643,10 @@ ctx.grid(6, 4, [
   `x + w` at most `cols`, `y + h` at most `rows` — else `ValueError`. `spec`
   is a spec (a dict with a string `type`, else `TypeError`), carried verbatim.
   No two sub-panels share a cell (`ValueError`, "grid cells overlap"); a cell
-  none covers is left empty. The spec carries each cell as those five keys,
-  in the order given.
+  none covers is left empty. A cell takes those five keys and no other: a
+  misspelt one (`wdith`) is refused (`ValueError`, through `_fields()`, as a
+  lane's or a card's is). The spec carries each cell as those five keys, in
+  the order given.
 
 **How it's drawn.** A grid (`SPECS.grid`) is a `.spec-grid`: a CSS grid of
 `cols` by `rows` even tracks (`repeat(N, minmax(0, 1fr))`), its gap the Home
@@ -650,9 +654,9 @@ grid's own (`--tile-gap`), each cell a `.spec-cell` placed at its corner and
 spanning its size (`grid-column: x+1 / span w`, `grid-row` the same), its spec
 drawn by `renderSpec()` for the app, as a tile's is. Out of Configure the tile
 drops its own face (`.tiles:not(.configuring) .tile:has(> .spec-grid)`: no
-background, shadow or padding, its border transparent), so the tracks land on
-the Home grid's own cells — within a pixel: the tile's transparent border
-still takes its width — and each sub-panel wears **a tile's face** (the same
+background, shadow or padding, and no border — `border-width: 0`, so not even
+its pixel), so the tracks land exactly on the Home grid's own cells — and
+each sub-panel wears **a tile's face** (the same
 background, border, radius, shadow and `16px 18px` padding) and is **a size
 container** (`container-type: size`), as a tile is. So every container query
 and `cqi` size answers to the sub-panel: a spec in a 2×2 sub-panel draws as
@@ -663,9 +667,117 @@ go of with the tile by `releaseTimelines()`: nothing in the focus clock
 changes. In Configure the tile keeps its dashed face and its controls, and is
 moved and sized whole. A hand-built grid is drawn as far as it can be: cells
 that aren't a list are none, and a cell's spec the page can't draw is an
-error in that sub-panel alone. Not yet: a sub-panel's error isolated on the
-server (a `render()` that raises is still one error tile, the whole grid),
-and titles on sub-panels.
+error in that sub-panel alone. On the server a sub-panel's fault is the
+app's to isolate: build each cell's spec in its own `try`, and on an
+exception put `ctx.error(...)` in that cell (the FRMS app's `_panel()`,
+below) — a `render()` that raises is still one error tile, the whole grid.
+Not yet: titles on sub-panels.
+
+### The strips builder
+
+```python
+ctx.strips([
+    {"kind": "sky", "clock": True, "troughs": troughs, "spans": [
+        {"start": ..., "end": ..., "tone": "day", "place": "LHR", "tz": "Europe/London"}, ...]},
+    {"kind": "sky", "label": "Home", "spans": [{"start": ..., "end": ..., "tone": "night"}, ...]},
+    {"kind": "duty", "spans": [{"start": ..., "end": ..., "tone": "wocl", "label": "CX256"}, ...]},
+], now=now, sync="frms")
+# -> {"type": "strips", "now": "...Z", "sync": "frms", "lanes": [
+#      {"kind": "sky", "label": None, "clock": True, "troughs": [...],
+#       "spans": [{"start", "end", "tone", "label", "place", "tz"}, ...]}, ...]}
+```
+
+Lanes of tinted spans on one horizontal time axis — the circadian panel's.
+
+- **`lanes`** is a list or tuple (else `TypeError`) of one to three lanes
+  (`STRIP_LANES`; else `ValueError`), in order, top to bottom. Each a dict of
+  only `STRIP_LANE_FIELDS` (`_fields()`: not a dict `TypeError`, another
+  field `ValueError`):
+  - `kind` — `"sky"` or `"duty"` (`STRIP_KINDS`, else `ValueError`), which
+    says the tones its spans take: a sky's `"day"`, `"night"` or `"none"`
+    (not known — drawn hatched), a duty's `"day"`, `"night"` or `"wocl"`.
+  - `spans` — a list or tuple (required, `[]` for none; else `TypeError`)
+    of dicts of only `STRIP_SPAN_FIELDS`: `start` and `end` both required
+    (`ValueError`) and stored as a session's are (`_session_instant()`:
+    `iso_utc()` text, UTC to the second, a naive time taken to be UTC), the
+    end never before the start (`ValueError`; equal allowed); `tone` one
+    of its lane's kind's (`ValueError`); `label` text or `None` — a duty's
+    code, only on a duty lane (a sky span's label is `ValueError`: a sky's
+    span is day or night, not a thing); `place` and `tz` text or `None` —
+    an IATA code and an IANA zone, read on a clock lane (else `TypeError`).
+  - `troughs` — optional, a list or tuple (else `TypeError`) of instants,
+    each normalised as a start (`ValueError`): a dashed curve over the
+    lane, −1 at each trough, +1 midway between two, `-cos` between — the
+    body clock's.
+  - `label` — text or `None` (`TypeError`): the lane's tag, top-left.
+  - `clock` — a bool (default `False`; else `TypeError`): the tag is the
+    time under the cursor instead — the span there's `place` and its local
+    time in its `tz`, `LHR 01:00 UTC+1` — so a clock lane takes no `label`
+    (`ValueError`).
+- **`now`** — a time, normalised the same way, or `None`: where the now
+  line is drawn.
+- **`sync`** — a focus group's name, text or `None` (else `TypeError`), as
+  a timeline's: `None` or `""` adds no key.
+
+In the spec every lane is `{kind, label, clock, spans, troughs}` and every
+span `{start, end, tone, label, place, tz}`, `None` where not given — so the
+page never guesses at a key.
+
+**How it's drawn.** `stripsSpec()` (`SPECS.strips`) is a timeline turned on
+its side, its synced path mirrored line for line, horizontally. The axis runs
+from the earliest span's start to the latest end (or `now`); **a day**
+(`ST_VIEW_MS`) fills the viewport's width (`.st-scroll`, which scrolls
+sideways), so the rest is a scroll away. The lanes are a CSS grid
+(`.st-track`): the first takes the height the others leave (`minmax(0,1fr)`),
+each after it a 45px row (`grid-auto-rows`), 3px apart. A sky span is its
+tone's token (`--sky-day`, `--sky-night`; `"none"` a hatch in `--grid`); a
+duty span is inset 6px top and bottom, `--duty-day` green, `--duty-night`
+amber or `--duty-wocl` red, with **no radius and nothing between them**, so
+a duty's pieces tessellate into one bar. A span's label is its own element
+(`.st-code`, `--duty-ink`) placed at the span's start and laid over the
+pieces after it — the app puts one on a duty's first piece, so a short first
+piece never clips its code. A lane's troughs are an SVG path (`.st-curve`,
+`--curve`, dashed) a point an hour (`ST_CURVE_STEP_MS`), its height the
+lane's. The now line is the accent, **dotted** (`.st-now`), tagged Now at its
+foot. The tags (`.st-tags`) are an overlay on the same grid rows over the
+viewport — so they stay put as the track scrolls — kept clear of a
+scrollbar that takes room under it, so each sits level with its lane: small
+mono pills on a translucent surface, a lane's label (`Home`) as text, or a
+clock lane's `clockAt()` — the span under the cursor's `place` and its local
+time through the browser's `Intl.DateTimeFormat` in its `tz` (`shortOffset`,
+`GMT` said `UTC`: `LHR 01:00 UTC+1`, `HKG 08:00 UTC+8`, `LHR 00:00 UTC+0`
+once London's summer time is over — the zone's own rules), the place alone
+for a zone the browser can't read, and `—` where nothing is known. Every
+token is in all three theme blocks. Everything an app sent is set as text.
+
+**Synced** (`s.sync`), it's drawn around the group's focus clock exactly as
+a synced timeline is: the timeline's own focus row over it (`.tl-focus` —
+`.tl-readout`, the UTC time under the cursor, and `.tl-nowbtn`, Now, while
+the group isn't following), a fixed `--accent` cursor down the middle of the
+viewport (`.st-cursor`, over it, so the track scrolls under it), and the
+track padded half a viewport at each end, so `scrollLeft` is the focus
+time's offset on the axis. It joins the group's `members` as
+`{scroll, observer, group, show}` and sits in `timelines`, so
+`releaseTimelines()` lets it go with its tile. **The time is what's shared,
+never a scroll position**: the strips' day across and the timeline's week
+down each scroll to the group's time by their own scale. A scroll by hand
+moves the group's focus to the time under the cursor — the 6h mark it's on,
+else its quarter hour — and stops it following; any member's move, Now and
+the follow tick re-scroll it (`show(true)` → `toFocus()`) and refresh its
+readout, Now button and clock tag. It steps as the timeline does, by
+`TL_MARK_MS` — the timeline's own, so the two always rest on one mark: a
+wheel's notch, down **or sideways** (whichever way it turned more),
+accumulated per gesture as the timeline's is, or any of the four arrow keys
+(→/↓ on, ←/↑ back) to the next 6h mark; any other scroll of the user's
+settles on the nearest mark at `scrollend`. It's laid out at a fallback
+width first, then on the next frame and on every resize (a
+`ResizeObserver`) at the width and height it has. Unsynced, there's no
+focus row, cursor or clock tag, and it isn't scrolled to a time.
+
+A hand-built spec is drawn as far as it can be: three lanes at most, a kind
+that isn't `"duty"` drawn as a sky, a span without both ends in order left
+out, an unknown tone hatched as not known; nothing to draw → "Nothing to
+draw yet".
 
 ## Writing: apps as sources
 
@@ -1011,12 +1123,17 @@ path as the host loads it) and `test_app_actions.py` (the round trip), against
 a synthetic roster, `tests/fixtures/rosters/sample.ics`. It was the Roster
 app until it became FRMS: the whole FRMS suite as one app, with one tile and
 one `config.json`, drawn as four sub-panels on a 6×4 grid (`ctx.grid()`,
-above): circadian top-left (3×2), the roster panel bottom-left (2×2) — the
-timeline and its rails, below — and two more to come, top-right (3×2) and
-bottom-right (4×2). All but the roster are placeholders until they're built
-(`empty("Circadian — coming soon")`, `empty("Coming soon")`); `render()` is
-the layout, and the roster panel is `_roster(ctx)`, its spec the one the
-whole tile was before the grid.
+above): the circadian panel top-left (3×2) — three strips, below — the roster
+panel bottom-left (2×2) — the timeline and its rails, below — and two more to
+come, top-right (3×2) and bottom-right (4×2), placeholders until they're
+built (`empty("Coming soon")`). `render()` is the layout; the circadian panel
+is `_circadian(ctx)` and the roster panel `_roster(ctx)`, its spec the one the
+whole tile was before the grid. Each is built through `_panel(ctx, build)`,
+which returns `build(ctx)` — or, if it raises, prints `[apps] frms: the
+<panel> panel failed` and the traceback, as the host logs a failed render,
+and returns `ctx.error(<its message>)` (its type's name for one with none):
+**a fault in one panel is an error in its own sub-panel**, and the others
+are drawn as ever.
 All of its code is in its one `app.py`, by decision: the host imports
 `app.py` by its path, adding nothing to `sys.path`, so a module beside it
 couldn't be imported by name, and it reloads an app only when `app.yaml` or
@@ -1120,6 +1237,36 @@ they restack as the timeline scrolls. In its 2×2 sub-panel they show, with
 the compact card, as in a 2×2 tile at full size.
 
 A roster that's all over six months old is filed but draws as the empty state.
+
+**The circadian panel** (`_circadian(ctx)`) draws the circadian engine
+(`circadian()` and the functions under it: sun times, where you are, home's
+day and night and WOCL, each duty cut against the body clock, the curve's
+troughs — pure, and tested on their own in `test_frms_circadian.py`) as three
+strips (`ctx.strips()`, above), in the `"frms"` focus group — so **scrolling
+the strips scrolls the roster's timeline and rails, and the other way
+round**, to one time. Over the roster panel's window: from midnight UTC 183
+days before today to a day past the latest duty's end (or now, if later).
+Before any duty it's `empty("Upload your roster .ics")`, as the roster
+panel is; with no config, `empty(CONFIG_ERROR)`.
+
+1. **Where you are** — the first lane, filling the height: `location`, each
+   span its port's day or night (`none`, hatched, where it isn't known), its
+   `place` the port (`""` for none) and its `tz` the port's in the config's
+   `destinations` (`None` without one, or one that isn't text), the lane a
+   clock — the tag the port and its local time under the cursor — with the
+   body clock's troughs as its dashed curve.
+2. **Home** — a 45px row: `body`, day and night at home base, tagged Home.
+3. **The duties** — a 45px row: `duties`, each duty's day, night and WOCL
+   pieces, the duty's code once — on its first piece in the window, not on
+   the pieces that continue it (`prev`'s code and end the same as this
+   piece's), so a duty clipped at the window's start labels its first piece
+   in it.
+
+The engine's keys (`port`, `code`) are mapped, never passed through: the
+builder takes only its own. A config without the positions the engine needs
+(home base's `lat`/`lon`) makes `circadian()` raise, so the panel says so
+in its sub-panel — the fixture's synthetic config, for one — and the roster
+panel beside it is drawn as ever.
 
 ## Installing an app
 

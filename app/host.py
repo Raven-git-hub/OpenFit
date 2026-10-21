@@ -143,9 +143,24 @@ the dicts directly):
         a tile split into sub-panels, each drawn as a tile of its own on
         the Home grid's cells; x, y from 0; cells inside the grid, never
         overlapping
+    {"type": "strips", "now", "lanes": [{"kind", "label", "clock",
+                                         "spans": [{"start", "end", "tone", "label", "place", "tz"}, ...],
+                                         "troughs": [instant, ...]}, ...],
+     "sync"}
+        one lane to three of tinted spans, stacked on one horizontal time
+        axis - a day across the frame, the rest a scroll away - the
+        first lane taking the height the others leave, each after it a
+        slim row. A "sky" lane's spans are day, night or none (hatched),
+        a "duty" lane's day, night or wocl, butting square, a span's
+        label drawn once at its start; troughs a dashed curve over the
+        lane. A lane's tag, top-left, is its label - or, a clock lane's,
+        the place under the cursor and its local time there. `now` and
+        `sync` as a timeline's: synced, the page keeps a cursor at the
+        frame's middle and scrolls every member of the group to one time
     {"type": "empty", "message"}
     {"type": "error", "message"}
-        the host's, when a render fails - never an app's to return
+        the host's, when a render fails; an app's for a part of its tile
+        that failed - a sub-panel - so the rest is still drawn
 
 render_app() never raises: an app whose render() raises, or returns
 something that isn't a spec, gets an error spec in its place, so one
@@ -693,6 +708,11 @@ def rails(timeline, left=None, right=None):
     return {"type": "rails", "left": sides["left"], "timeline": timeline, "right": sides["right"]}
 
 
+# What a grid cell takes, and nothing else: a misspelt field (wdith) is
+# refused, as a lane's is.
+GRID_CELL_FIELDS = ("x", "y", "w", "h", "spec")
+
+
 def grid(cols, rows, cells):
     """A tile split into sub-panels: `cols` by `rows` cells, each sub-panel
     drawn as a tile of its own.
@@ -702,7 +722,8 @@ def grid(cols, rows, cells):
     its top-left corner at column `x`, row `y`, counted from 0, and `spec`
     the spec drawn in it - sized to the sub-panel as it would be to a tile.
     Sub-panels lie inside the grid and never overlap; cells none covers are
-    left empty. Raises TypeError or ValueError for anything it can't lay out.
+    left empty. A cell takes those five keys and no other. Raises TypeError
+    or ValueError for anything it can't lay out.
     """
     for what, n in (("cols", cols), ("rows", rows)):
         if not isinstance(n, int) or isinstance(n, bool) or not 1 <= n <= 6:
@@ -713,6 +734,7 @@ def grid(cols, rows, cells):
     for cell in cells:
         if not isinstance(cell, dict):
             raise TypeError(f"a grid cell must be a dict: {cell!r}")
+        _fields(cell, GRID_CELL_FIELDS, "a grid cell")
         x, y, w, h = (cell.get(k) for k in ("x", "y", "w", "h"))
         for k, v in (("x", x), ("y", y), ("w", w), ("h", h)):
             if not isinstance(v, int) or isinstance(v, bool):
@@ -730,12 +752,132 @@ def grid(cols, rows, cells):
     return {"type": "grid", "cols": cols, "rows": rows, "cells": out}
 
 
+# A strips spec's lanes: one to three, stacked. Each is of a kind, which
+# says the tones its spans take - a sky's day, night or none (not known:
+# hatched), a duty's day, night or wocl. What a lane and a span take, and
+# nothing else: a misspelt field is refused, as a timeline lane's is.
+STRIP_KINDS = {"sky": ("day", "night", "none"), "duty": ("day", "night", "wocl")}
+STRIP_LANES = (1, 2, 3)
+STRIP_LANE_FIELDS = ("kind", "spans", "troughs", "label", "clock")
+STRIP_SPAN_FIELDS = ("start", "end", "tone", "label", "place", "tz")
+
+
+def _strip_span(raw, kind):
+    """One span of a strips lane of `kind`, as the spec carries it: {start,
+    end, tone, label, place, tz} - both ends iso_utc()'s UTC text, the
+    rest text or None."""
+    what = "a strips span"
+    _fields(raw, STRIP_SPAN_FIELDS, what)
+    if raw.get("start") is None or raw.get("end") is None:
+        # Drawn from its start to its end: an open one has no length to draw.
+        raise ValueError(f"{what} needs a start and an end: {raw!r}")
+    start = _session_instant(raw["start"], f"{what}'s start")
+    end = _session_instant(raw["end"], f"{what}'s end")
+    # iso_utc()'s timestamps sort and compare as plain strings.
+    if end < start:
+        raise ValueError(f"{what}'s end is before its start: {end} < {start}")
+    tones = STRIP_KINDS[kind]
+    tone = raw.get("tone")
+    if tone not in tones:
+        raise ValueError(f"{what}'s tone on a {kind} lane is one of {', '.join(tones)}, not {tone!r}")
+    label = _text_or_none(raw.get("label"), "label", f"{what}'s")
+    if label is not None and kind != "duty":
+        # A sky's span is a stretch of day or night: a duty's is a duty's.
+        raise ValueError(f"{what}'s label is only for a duty lane, not a {kind}: {label!r}")
+    return {
+        "start": start, "end": end, "tone": tone, "label": label,
+        "place": _text_or_none(raw.get("place"), "place", f"{what}'s"),
+        "tz": _text_or_none(raw.get("tz"), "tz", f"{what}'s"),
+    }
+
+
+def _strip_lane(raw):
+    """One lane of a strips spec, as the spec carries it: {kind, label,
+    clock, spans, troughs}."""
+    what = "a strips lane"
+    _fields(raw, STRIP_LANE_FIELDS, what)
+    kind = raw.get("kind")
+    if not isinstance(kind, str) or kind not in STRIP_KINDS:
+        raise ValueError(f"{what}'s kind is {' or '.join(map(repr, STRIP_KINDS))}, not {kind!r}")
+    spans = raw.get("spans")
+    if not isinstance(spans, (list, tuple)):
+        raise TypeError(f"{what}'s spans must be a list: {spans!r}")
+    troughs = raw.get("troughs")
+    if troughs is None:
+        troughs = []
+    if not isinstance(troughs, (list, tuple)):
+        raise TypeError(f"{what}'s troughs must be a list of instants: {troughs!r}")
+    clock = raw.get("clock", False)
+    if not isinstance(clock, bool):
+        raise TypeError(f"{what}'s clock must be True or False: {clock!r}")
+    label = _text_or_none(raw.get("label"), "label", f"{what}'s")
+    if clock and label is not None:
+        # One tag a lane: a clock lane's is the place and time under the cursor.
+        raise ValueError(f"{what} with a clock takes no label - its tag is the clock: {label!r}")
+    return {
+        "kind": kind,
+        "label": label,
+        "clock": clock,
+        "spans": [_strip_span(span, kind) for span in spans],
+        "troughs": [_session_instant(t, f"{what}'s trough") for t in troughs],
+    }
+
+
+def strips(lanes, now=None, sync=None):
+    """Lanes of tinted spans on one horizontal time axis - a day across
+    the viewport, the rest a scroll away - the first lane filling the
+    height the others leave, each after it a slim row.
+
+    `lanes` is a list of one to three dicts {kind, spans, troughs, label,
+    clock}: `kind` "sky" (spans toned "day", "night" or "none" - none
+    drawn hatched) or "duty" (spans toned "day", "night" or "wocl");
+    `spans` a list of {start, end, tone, label, place, tz}, ends as a
+    session's (datetime or ISO-8601 text, UTC), end never before start;
+    on a duty lane a span's `label` (text or None) is drawn once at its
+    start, over the spans after it; `troughs` optional, a list of
+    instants - a dashed curve drawn over the lane, -1 at each, +1 midway
+    between two. `label` (text or None) is the lane's tag, top-left;
+    `clock` True makes the tag the time under the cursor instead - the
+    span there's `place` (text) and its local time in `tz` (an IANA
+    name), e.g. "LHR 01:00 UTC+1" - a clock lane takes no `label`. `now`
+    and `sync` are a timeline's: where the now line is drawn, and the
+    focus group it joins - the page keeps a cursor on it and scrolls
+    every member of the group to one time. Raises TypeError or
+    ValueError for anything it can't draw.
+
+    In the spec each lane is {kind, label, clock, spans, troughs} and
+    each span {start, end, tone, label, place, tz}, every key there -
+    None where not given - its times iso_utc()'s UTC text; `sync` only
+    when given (None or "" adds no key), as a timeline's. A sky span's
+    label is refused (a sky's span is day or night, not a thing); place
+    and tz are carried on any span, and drawn only on a clock lane's -
+    a tz the page can't read shows the place alone.
+    """
+    if not isinstance(lanes, (list, tuple)):
+        raise TypeError(f"a strips spec's lanes must be a list of one to three lanes: {lanes!r}")
+    if len(lanes) not in STRIP_LANES:
+        raise ValueError(f"a strips spec has one lane to three, not {len(lanes)}")
+    if sync is not None and not isinstance(sync, str):
+        raise TypeError(f"a strips spec's sync must be text, a focus group's name: {sync!r}")
+    spec = {
+        "type": "strips",
+        "now": None if now is None else _session_instant(now, "a strips spec's now"),
+        "lanes": [_strip_lane(lane) for lane in lanes],
+    }
+    if sync:
+        spec["sync"] = sync
+    return spec
+
+
 def empty(message=None):
     """Nothing to show, and why."""
     return {"type": "empty", "message": message or "No data yet"}
 
 
 def error(message):
+    """Something went wrong, and what: the host's for a render that fails,
+    an app's for a part of its tile that did - a sub-panel - so the rest
+    of the tile is still drawn."""
     return {"type": "error", "message": message}
 
 
@@ -756,7 +898,9 @@ class Ctx:
     rail = staticmethod(rail)
     rails = staticmethod(rails)
     grid = staticmethod(grid)
+    strips = staticmethod(strips)
     empty = staticmethod(empty)
+    error = staticmethod(error)
 
     def __init__(self, conn, today=None, app=None):
         self._conn = conn

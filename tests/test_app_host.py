@@ -1417,6 +1417,161 @@ def test_the_ctx_carries_the_grid():
     assert host.Ctx.grid(1, 1, [grid_cell(0, 0, 1, 1)]) == host.grid(1, 1, [grid_cell(0, 0, 1, 1)])
 
 
+@pytest.mark.parametrize("extra", [{"wdith": 2}, {"label": "Roster"}, {"spec ": EMPTY}])
+def test_a_grid_cell_takes_its_five_keys_and_no_other(extra):
+    # A misspelt field is refused, as a lane's or a card's is - not
+    # quietly a cell of the wrong size.
+    with pytest.raises(ValueError, match=re.escape("a grid cell takes x, y, w, h, spec - not ")):
+        host.grid(6, 4, [{**grid_cell(0, 0, 2, 2), **extra}])
+    # Not a dict is still the TypeError it was.
+    with pytest.raises(TypeError, match="a grid cell must be a dict"):
+        host.grid(6, 4, [["x", 0]])
+
+
+# ---------- strips: lanes of tinted spans on a horizontal day ----------
+#
+# The circadian panel's spec: up to three lanes of spans on one time axis,
+# a day across - a sky lane's day, night or not known, a duty lane's
+# pieces by day, by night and in the WOCL - each span's times stored as a
+# session's are, the first lane's troughs a curve over it, a clock lane's
+# tag the place and its time under the cursor. The host checks and
+# carries; the page draws, and syncs it with the group it names.
+
+LOCAL = {"kind": "sky", "clock": True, "troughs": ["2026-10-21T20:00:00Z", "2026-10-22T20:00:00Z"], "spans": [
+    {"start": "2026-10-21T00:00:00Z", "end": "2026-10-21T13:00:00Z", "tone": "none", "place": "", "tz": None},
+    {"start": "2026-10-21T13:00:00Z", "end": "2026-10-22T08:13:00Z", "tone": "day", "place": "SYD",
+     "tz": "Australia/Sydney"},
+]}
+HOME = {"kind": "sky", "label": "Home", "spans": [
+    {"start": "2026-10-21T00:00:00Z", "end": "2026-10-21T09:53:00Z", "tone": "day"},
+    {"start": "2026-10-21T09:53:00Z", "end": "2026-10-22T08:13:00Z", "tone": "night"},
+]}
+DUTY = {"kind": "duty", "spans": [
+    {"start": "2026-10-21T13:00:00Z", "end": "2026-10-21T18:00:00Z", "tone": "night", "label": "CX101"},
+    {"start": "2026-10-21T18:00:00Z", "end": "2026-10-21T22:00:00Z", "tone": "wocl", "label": None},
+    {"start": "2026-10-21T22:00:00Z", "end": "2026-10-21T22:30:00Z", "tone": "day"},
+]}
+
+
+def strip_span(start, end, tone, label=None, place=None, tz=None):
+    return {"start": start, "end": end, "tone": tone, "label": label, "place": place, "tz": tz}
+
+
+def test_strips_lay_lanes_of_spans_on_one_axis():
+    spec = host.strips([LOCAL, HOME, DUTY], now="2026-10-21T12:07:00Z", sync="frms")
+
+    # Each lane its kind, its tag (a label, or the clock), its spans and
+    # troughs; every span key there, None where not given - the times
+    # as a session's are stored.
+    assert spec == {"type": "strips", "now": "2026-10-21T12:07:00Z", "lanes": [
+        {"kind": "sky", "label": None, "clock": True, "spans": [
+            strip_span("2026-10-21T00:00:00Z", "2026-10-21T13:00:00Z", "none", place=""),
+            strip_span("2026-10-21T13:00:00Z", "2026-10-22T08:13:00Z", "day", place="SYD", tz="Australia/Sydney"),
+        ], "troughs": ["2026-10-21T20:00:00Z", "2026-10-22T20:00:00Z"]},
+        {"kind": "sky", "label": "Home", "clock": False, "spans": [
+            strip_span("2026-10-21T00:00:00Z", "2026-10-21T09:53:00Z", "day"),
+            strip_span("2026-10-21T09:53:00Z", "2026-10-22T08:13:00Z", "night"),
+        ], "troughs": []},
+        {"kind": "duty", "label": None, "clock": False, "spans": [
+            strip_span("2026-10-21T13:00:00Z", "2026-10-21T18:00:00Z", "night", label="CX101"),
+            strip_span("2026-10-21T18:00:00Z", "2026-10-21T22:00:00Z", "wocl"),
+            strip_span("2026-10-21T22:00:00Z", "2026-10-21T22:30:00Z", "day"),
+        ], "troughs": []},
+    ], "sync": "frms"}
+    assert json.loads(json.dumps(spec, allow_nan=False)) == spec
+    # Times as datetimes or text in any offset, as a session's: UTC to the
+    # second; tuples for lists; a span of no length allowed.
+    hkt = timezone(timedelta(hours=8))
+    one = host.strips((
+        {"kind": "duty", "spans": ({"start": datetime(2026, 10, 22, 5, tzinfo=hkt), "end": "2026-10-22T06:00:00+08:00",
+                                    "tone": "wocl", "label": "CX100"},
+                                   {"start": "2026-10-21T22:00:00Z", "end": "2026-10-21T22:00:00Z", "tone": "day"}),
+         "troughs": (datetime(2026, 10, 21, 20, 0, 30, 999, tzinfo=timezone.utc),)},
+    ), now=datetime(2026, 10, 21, 20, 1, 2, 345))
+    assert one["now"] == "2026-10-21T20:01:02Z"
+    assert one["lanes"][0]["spans"][0] == strip_span("2026-10-21T21:00:00Z", "2026-10-21T22:00:00Z", "wocl", label="CX100")
+    assert one["lanes"][0]["troughs"] == ["2026-10-21T20:00:30Z"]
+    assert len(one["lanes"][0]["spans"]) == 2 and one["lanes"][0]["spans"][1]["end"] == "2026-10-21T22:00:00Z"
+
+
+def test_strips_now_and_sync_are_a_timelines():
+    # No now, no line; not named - no sync, None or "" - no key, so the
+    # spec is the same JSON either way.
+    plain = host.strips([HOME])
+    assert list(plain) == ["type", "now", "lanes"] and plain["now"] is None
+    for unnamed in (None, ""):
+        assert json.dumps(host.strips([HOME], sync=unnamed)) == json.dumps(plain)
+    assert host.strips([HOME], sync="frms") == {**plain, "sync": "frms"}
+    for sync in (3, True, ["frms"]):
+        with pytest.raises(TypeError, match="a strips spec's sync must be text, a focus group's name"):
+            host.strips([HOME], sync=sync)
+    for now in ("yesterday", 5, date(2026, 10, 21)):
+        with pytest.raises(ValueError, match="a strips spec's now must be a datetime or ISO-8601 timestamp"):
+            host.strips([HOME], now=now)
+
+
+def sky(*spans, **lane):
+    return {"kind": "sky", "spans": list(spans), **lane}
+
+
+def span(tone="day", **more):
+    return {"start": "2026-10-21T00:00:00Z", "end": "2026-10-21T06:00:00Z", "tone": tone, **more}
+
+
+@pytest.mark.parametrize(
+    "lanes, error, says",
+    [
+        # One lane to three, in a list.
+        ([], ValueError, "a strips spec has one lane to three, not 0"),
+        ([HOME] * 4, ValueError, "a strips spec has one lane to three, not 4"),
+        (HOME, TypeError, "a strips spec's lanes must be a list of one to three lanes"),
+        ("lanes", TypeError, "a strips spec's lanes must be a list"),
+        # A lane: a mapping of only its fields, of a kind there is.
+        (["sky"], TypeError, "a strips lane must be a mapping"),
+        ([{**HOME, "colour": "blue"}], ValueError, "a strips lane takes kind, spans, troughs, label, clock - not 'colour'"),
+        ([{**HOME, "kind": "sun"}], ValueError, "a strips lane's kind is 'sky' or 'duty', not 'sun'"),
+        ([{**HOME, "kind": None}], ValueError, "a strips lane's kind is 'sky' or 'duty', not None"),
+        ([{"spans": []}], ValueError, "a strips lane's kind is 'sky' or 'duty', not None"),
+        ([{"kind": "sky"}], TypeError, "a strips lane's spans must be a list: None"),
+        ([sky(troughs="2026-10-21T04:00:00Z")], TypeError, "a strips lane's troughs must be a list of instants"),
+        ([sky(troughs=["at four"])], ValueError, "a strips lane's trough must be a datetime or ISO-8601 timestamp"),
+        ([sky(troughs=[None])], ValueError, "a strips lane's trough must be a datetime or ISO-8601 timestamp"),
+        ([sky(clock="yes")], TypeError, "a strips lane's clock must be True or False: 'yes'"),
+        ([sky(clock=True, label="Local")], ValueError, "a strips lane with a clock takes no label"),
+        ([sky(label=3)], TypeError, "a strips lane's label must be text: 3"),
+        # A span: of only its fields, both ends, in order, a tone its kind has.
+        ([sky("night")], TypeError, "a strips span must be a mapping"),
+        ([sky(span(colour="blue"))], ValueError, "a strips span takes start, end, tone, label, place, tz - not 'colour'"),
+        ([sky(span("wocl"))], ValueError, "a strips span's tone on a sky lane is one of day, night, none, not 'wocl'"),
+        ([sky(span(None))], ValueError, "a strips span's tone on a sky lane is one of day, night, none, not None"),
+        ([{"kind": "duty", "spans": [span("none")]}], ValueError,
+         "a strips span's tone on a duty lane is one of day, night, wocl, not 'none'"),
+        ([sky(span(end=None))], ValueError, "a strips span needs a start and an end"),
+        ([sky({"end": "2026-10-21T06:00:00Z", "tone": "day"})], ValueError, "a strips span needs a start and an end"),
+        ([sky(span(end="2026-10-20T23:59:59Z"))], ValueError,
+         "a strips span's end is before its start: 2026-10-20T23:59:59Z < 2026-10-21T00:00:00Z"),
+        ([sky(span(start="dawn"))], ValueError, "a strips span's start must be a datetime or ISO-8601 timestamp"),
+        ([sky(span(label="CX101"))], ValueError, "a strips span's label is only for a duty lane, not a sky"),
+        ([{"kind": "duty", "spans": [span(label=101)]}], TypeError, "a strips span's label must be text: 101"),
+        ([sky(span(place=["SYD"]))], TypeError, "a strips span's place must be text"),
+        ([sky(span(tz=10))], TypeError, "a strips span's tz must be text: 10"),
+    ],
+)
+def test_strips_refuse_what_they_cant_draw(lanes, error, says):
+    with pytest.raises(error, match=re.escape(says)):
+        host.strips(lanes)
+
+
+def test_the_ctx_carries_strips_and_error():
+    # Bound on the ctx as the other builders are: the module's own - and
+    # error, for an app's part that failed (a sub-panel), the host's own.
+    assert host.Ctx.strips is host.strips
+    assert host.Ctx.error is host.error
+    assert host.Ctx.strips([HOME], sync="frms") == host.strips([HOME], sync="frms")
+    assert host.Ctx.error("home base ZZA needs a lat and lon") == {
+        "type": "error", "message": "home base ZZA needs a lat and lon"}
+
+
 def test_the_ctx_carries_the_builders(conn):
     ctx = host.Ctx(conn)
     assert ctx.panel(ctx.number(1), ctx.line([1]), ctx.input("k", "a"), ctx.empty())["type"] == "panel"

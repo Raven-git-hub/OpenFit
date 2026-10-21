@@ -84,6 +84,20 @@
   --layover:#c07d18;
   --grid:color-mix(in srgb, var(--muted) 22%, transparent);
 
+  /* strips - lanes of tinted spans on one horizontal time axis (the
+     circadian panel's): a sky lane's day and night, the body clock's
+     dashed curve over it in --curve; a duty lane's pieces green by day,
+     amber by night and red in the window of circadian low, each duty's
+     code on them in --duty-ink. Not known (a sky's "none") is hatched in
+     --grid; the cursor and the now line are --accent, as a timeline's. */
+  --sky-day:#cfe4f8;
+  --sky-night:#5b4fa8;
+  --curve:#1d2433;
+  --duty-day:#3aa76d;
+  --duty-night:#d99a2b;
+  --duty-wocl:#d64545;
+  --duty-ink:#ffffff;
+
   --radius:14px;
   --radius-sm:9px;
   --shadow:0 1px 2px rgba(20,28,27,.06), 0 8px 24px rgba(20,28,27,.05);
@@ -120,6 +134,13 @@
     --timeline-b-ink:var(--ink);
     --layover:#e0a83a;
     --grid:color-mix(in srgb, var(--muted) 26%, transparent);
+    --sky-day:#2f6496;
+    --sky-night:#2c2458;
+    --curve:#f3f6f8;
+    --duty-day:#38b26f;
+    --duty-night:#e0a83a;
+    --duty-wocl:#e5534b;
+    --duty-ink:#0d1214;
     --shadow:0 1px 2px rgba(0,0,0,.3), 0 10px 30px rgba(0,0,0,.35);
   }
 }
@@ -150,6 +171,13 @@
   --timeline-b-ink:var(--ink);
   --layover:#e0a83a;
   --grid:color-mix(in srgb, var(--muted) 26%, transparent);
+  --sky-day:#2f6496;
+  --sky-night:#2c2458;
+  --curve:#f3f6f8;
+  --duty-day:#38b26f;
+  --duty-night:#e0a83a;
+  --duty-wocl:#e5534b;
+  --duty-ink:#0d1214;
   --shadow:0 1px 2px rgba(0,0,0,.3), 0 10px 30px rgba(0,0,0,.35);
 }
 
@@ -818,13 +846,43 @@ h5 + .dnote{margin-top:0;}
    (kept in Configure, where it's moved and sized whole). Each sub-panel
    is a size container, so a spec in it sizes to it as to a tile. */
 .spec-grid{display:grid;gap:var(--tile-gap);min-width:0;min-height:0;}
-.tiles:not(.configuring) .tile:has(> .spec-grid){background:none;border-color:transparent;box-shadow:none;padding:0;}
+.tiles:not(.configuring) .tile:has(> .spec-grid){background:none;border-width:0;box-shadow:none;padding:0;}
 .spec-cell{
   background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow);
   padding:16px 18px;min-width:0;min-height:0;overflow:hidden;
   display:flex;flex-direction:column;container-type:size;
 }
 .spec-cell > *{flex:1;min-height:0;}
+/* strips: lanes of tinted spans on one horizontal time axis, a day
+   across - the first lane taking the height the others leave, each
+   after it a 45px row - under the timeline's focus row (readout, Now).
+   The track scrolls under a fixed cursor; a duty's pieces butt square,
+   its code once at its start; a tag top-left of a lane that has one -
+   the clock lane's the place and its local time under the cursor. */
+.spec-strips{display:flex;flex-direction:column;gap:6px;min-height:0;min-width:0;}
+.st-view{position:relative;flex:1;min-height:0;border:1px solid var(--border);border-radius:var(--radius-sm);overflow:hidden;background:var(--inset);}
+.st-scroll{position:absolute;inset:0;overflow-x:auto;overflow-y:hidden;scrollbar-width:thin;overflow-anchor:none;outline:none;}
+.st-track, .st-tags{display:grid;grid-template-rows:minmax(0,1fr);grid-auto-rows:45px;row-gap:3px;}
+.st-track{position:relative;height:100%;}
+.st-tags{position:absolute;inset:0;pointer-events:none;z-index:3;}
+.st-tag{padding:6px 8px;min-width:0;}
+.st-tag > span{display:inline-block;font:600 11px/16px var(--font-mono);color:var(--ink);background:color-mix(in srgb, var(--surface) 82%, transparent);padding:0 6px;border-radius:4px;white-space:nowrap;}
+.st-tags > .st-tag + .st-tag{display:flex;align-items:center;padding-top:0;padding-bottom:0;}
+.st-lane{position:relative;overflow:hidden;}
+.st-span{position:absolute;top:0;bottom:0;}
+.st-sky .st-t-day{background:var(--sky-day);}
+.st-sky .st-t-night{background:var(--sky-night);}
+.st-sky .st-t-none{background:repeating-linear-gradient(135deg, var(--grid) 0 2px, transparent 2px 7px);}
+.st-duty .st-span{top:6px;bottom:6px;}
+.st-duty .st-t-day{background:var(--duty-day);}
+.st-duty .st-t-night{background:var(--duty-night);}
+.st-duty .st-t-wocl{background:var(--duty-wocl);}
+.st-code{position:absolute;top:6px;bottom:6px;display:flex;align-items:center;padding-left:6px;font:600 10.5px/1 var(--font-mono);color:var(--duty-ink);white-space:nowrap;pointer-events:none;z-index:1;}
+.st-curve{position:absolute;top:0;left:0;pointer-events:none;overflow:visible;}
+.st-curve path{fill:none;stroke:var(--curve);stroke-width:1.75;stroke-dasharray:6 5;stroke-linecap:round;}
+.st-cursor{position:absolute;top:0;bottom:0;left:50%;width:0;margin-left:-1px;border-left:2px solid var(--accent);z-index:3;pointer-events:none;}
+.st-now{position:absolute;top:0;bottom:0;width:0;margin-left:-1px;border-left:2px dotted var(--accent);z-index:2;pointer-events:none;}
+.st-now-tag{position:absolute;bottom:2px;left:4px;font:700 9px/14px var(--font-mono);letter-spacing:.6px;text-transform:uppercase;color:var(--accent-ink);background:var(--accent);padding:0 4px;border-radius:3px;}
 /* input: a label over a field, its unit and Save - at a panel's foot -
    and a refusal under them */
 .spec-input{display:flex;flex-direction:column;justify-content:center;gap:5px;min-width:0;}
@@ -3838,6 +3896,7 @@ h5 + .dnote{margin-top:0;}
     timeline: s => timelineSpec(s),
     rail: s => railSpec(s, []),
     rails: (s, name, appId) => railsSpec(s, name, appId),
+    strips: s => stripsSpec(s),
     grid: (s, name, appId) => {
       const box = el('div','spec-grid');
       box.style.gridTemplateColumns = `repeat(${s.cols}, minmax(0, 1fr))`;
@@ -4409,6 +4468,252 @@ h5 + .dnote{margin-top:0;}
       if(t.group) t.group.members.delete(t);
       timelines.delete(t);
     });
+  }
+
+  /* Strips: lanes of tinted spans on one horizontal time axis - a
+     timeline turned on its side, and a day (ST_VIEW_MS) across the
+     viewport, not a week down it. The first lane takes the height the
+     others leave; each after it is a slim row (the CSS's 45px), up to
+     ST_MAX_LANES. A sky lane's spans are day, night or none - not known,
+     hatched; a duty lane's are day, night or wocl, and butt square, one
+     piece to the next, its code (a span's label) drawn once at that
+     span's start, over the pieces after it - so a short first piece never
+     clips it. A lane's troughs are a dashed curve over it: -1 at each,
+     +1 midway between two, -cos between (the body clock's), a point an
+     hour. A lane's tag, top-left, is its label - or, a clock lane's, the
+     place under the cursor and its local time there (clockAt(): the
+     span's tz, through the browser's Intl, so right across a clock
+     change), "—" where it isn't known. The now line is the accent,
+     dotted, tagged Now. Everything an app sent is set as text.
+
+     Synced (s.sync), it's drawn around its group's focus clock exactly
+     as a synced timeline is, on its side: the timeline's focus row over
+     it (.tl-focus - the readout, the time under the cursor, and a Now
+     button while the group isn't following), a fixed cursor down the
+     middle of the viewport (.st-cursor, over it in .st-view: the track
+     scrolls under it), the track padded half a viewport at each end so
+     scrollLeft is the focus time's offset on the axis. The group's time
+     is what's shared, never a scroll position: the strips' day across
+     and a timeline's week down scroll to one time, each by its own
+     scale. Scrolled by hand, it moves the group's focus to the time
+     under its cursor - the 6h mark it's on, else the quarter hour - and
+     stops it following; a member's move scrolls it there. It steps as a
+     timeline does: a wheel's notch (down or sideways) or an arrow key
+     (any of the four) to the next 6h mark - TL_MARK_MS, the timeline's
+     own, so the two always rest on one mark - and any other scroll of
+     the user's settles on the nearest mark at scrollend. It's a member
+     of the group, {scroll, observer, group, show}, in timelines, so
+     releaseTimelines() lets go of it with its tile.
+
+     Its width is only known once it's on the page: laid out at a
+     fallback width first, then on the next frame and on every resize
+     (a ResizeObserver), at the width and height it has - the curve's
+     height is its lane's - with no width at all, the last layout
+     standing. Unsynced, there's no focus row, cursor or clock tag, and
+     it isn't scrolled to a time. */
+  const ST_VIEW_MS = 86400000;        // the span one viewport's width shows: a day
+  const ST_CURVE_STEP_MS = 3600000;  // the curve's points: one an hour
+  const ST_MAX_LANES = 3;
+  const ST_TONES = ['day', 'night', 'none', 'wocl'];
+  function stripsSpec(s){
+    const ms = t => { const v = typeof t==='string' ? Date.parse(t) : NaN; return Number.isFinite(v) ? v : null; };
+    const group = typeof s.sync==='string' && s.sync ? focusGroup(s.sync) : null;
+    const now = ms(s.now);
+    // A hand-built spec is drawn as far as it can be: three lanes at
+    // most, a span without both ends, in order, left out.
+    const lanes = (Array.isArray(s.lanes) ? s.lanes : []).slice(0, ST_MAX_LANES).map(l => ({
+      kind: l && l.kind==='duty' ? 'duty' : 'sky',
+      label: l && typeof l.label==='string' ? l.label : '', clock: !!(l && l.clock),
+      troughs: (l && Array.isArray(l.troughs) ? l.troughs : []).map(ms).filter(v => v!==null).sort((a, b) => a - b),
+      spans: (l && Array.isArray(l.spans) ? l.spans : []).map(x => ({a: ms(x && x.start), b: ms(x && x.end),
+        tone: ST_TONES.includes(x && x.tone) ? x.tone : 'none',
+        label: x && typeof x.label==='string' ? x.label : '', tz: x && typeof x.tz==='string' ? x.tz : null,
+        place: x && typeof x.place==='string' ? x.place : ''}))
+        .filter(x => x.a!==null && x.b!==null && x.b > x.a),
+    }));
+    // The axis spans every span, and now.
+    let t0 = Infinity, t1 = -Infinity;
+    lanes.forEach(l => l.spans.forEach(x => { t0 = Math.min(t0, x.a); t1 = Math.max(t1, x.b); }));
+    if(now!==null){ t0 = Math.min(t0, now); t1 = Math.max(t1, now); }
+    if(!Number.isFinite(t0)) return specMsg(null, 'Nothing to draw yet');
+    const box = el('div','spec-strips');
+    // Synced: the timeline's focus row - its readout and Now button.
+    const head = el('div','tl-focus st-focus');
+    const readout = head.appendChild(el('div','tl-readout'));
+    readout.title = 'The time at the cursor, UTC';
+    const nowBtn = head.appendChild(el('button','btn sm tl-nowbtn'));
+    nowBtn.type = 'button';
+    nowBtn.textContent = 'Now';
+    nowBtn.title = 'Back to now, and follow it';
+    if(group) nowBtn.onclick = () => setFocus(group, tlSnap(Date.now()), true);
+    if(group) box.appendChild(head);
+    const view = box.appendChild(el('div','st-view'));
+    const scroll = view.appendChild(el('div','st-scroll'));
+    scroll.tabIndex = 0;   // stepped from the keyboard too
+    scroll.setAttribute('role','region');
+    scroll.setAttribute('aria-label', 'strips, ' + lanes.map((l, i) => `${l.label || l.kind+' '+(i+1)} ${l.spans.length}`).join(', '));
+    const track = scroll.appendChild(el('div','st-track'));
+    // The tags over the viewport, not in it: they stay as the track scrolls.
+    const tags = view.appendChild(el('div','st-tags'));
+    const rows = lanes.map(l => {
+      const lane = track.appendChild(el('div','st-lane st-'+l.kind));
+      const spans = l.spans.map(x => lane.appendChild(el('div','st-span st-t-'+x.tone)));
+      // A duty's code, once, at its start - over its pieces, not in one.
+      const codes = l.spans.map(x => {
+        if(l.kind!=='duty' || !x.label) return null;
+        const c = lane.appendChild(el('div','st-code')); c.textContent = x.label; return c;
+      });
+      const tag = tags.appendChild(el('div','st-tag'));
+      // A clock lane's tag is the time under the cursor: synced only.
+      const tagText = (l.clock ? group : l.label) ? tag.appendChild(el('span')) : null;
+      if(tagText && !l.clock) tagText.textContent = l.label;
+      let svg = null, path = null;
+      if(l.troughs.length > 1){
+        svg = lane.appendChild(document.createElementNS('http://www.w3.org/2000/svg','svg'));
+        svg.setAttribute('class','st-curve');
+        path = svg.appendChild(document.createElementNS('http://www.w3.org/2000/svg','path'));
+      }
+      return {l, lane, spans, codes, svg, path, tagText};
+    });
+    const line = now!==null ? track.appendChild(el('div','st-now')) : null;
+    if(line){ const t = line.appendChild(el('div','st-now-tag')); t.textContent = 'Now'; }
+    if(group) view.appendChild(el('div','st-cursor'));
+    // The curve at t: -1 at a trough, +1 midway to the next; null off them.
+    const curveAt = (lows, t) => {
+      if(lows.length < 2 || t < lows[0] || t > lows[lows.length-1]) return null;
+      const i = lows.findIndex(v => v > t); if(i < 0) return -1;
+      const a = lows[i-1], b = lows[i];
+      return -Math.cos(2 * Math.PI * (t - a) / (b - a));
+    };
+    let laidW = 0, laidH = 0, laidPx = 0;   // the viewport it's laid out for, and its scale (px a ms): 0 before any
+    let ours = null;         // the scrollLeft it last set itself, so its own scroll isn't taken for the user's
+    let unsettled = false;   // scrolled by the user, and not yet settled on a mark
+    const layout = () => {
+      const w = scroll.clientWidth || 0, h = scroll.clientHeight || 0;
+      if(!w && laidW) return;   // hidden, or gone: the last layout stands
+      // The tags' rows level with the lanes': clear of the scrollbar under
+      // the track, where the browser draws one that takes room.
+      tags.style.bottom = Math.max(0, (scroll.offsetHeight - scroll.clientHeight) || 0)+'px';
+      // Half a viewport of axis past each end, so the cursor - its middle
+      // - can reach every time on it.
+      const viewW = w || 480, px = viewW / ST_VIEW_MS, pad = viewW / 2;
+      if(viewW!==laidW || h!==laidH){
+        const width = pad * 2 + (t1 - t0) * px;
+        track.style.width = width+'px';
+        rows.forEach(r => {
+          r.l.spans.forEach((x, i) => {
+            r.spans[i].style.left = pad + (x.a - t0) * px+'px';
+            r.spans[i].style.width = (x.b - x.a) * px+'px';
+            if(r.codes[i]) r.codes[i].style.left = pad + (x.a - t0) * px+'px';
+          });
+          if(r.svg){
+            const lh = r.lane.clientHeight || 100, m = 10, amp = (lh - 2*m) / 2;
+            r.svg.setAttribute('width', width); r.svg.setAttribute('height', lh);
+            const lows = r.l.troughs; let d = '';
+            for(let t = Math.max(t0, lows[0]); t <= Math.min(t1, lows[lows.length-1]); t += ST_CURVE_STEP_MS){
+              const v = curveAt(lows, t);
+              if(v===null) continue;
+              d += (d ? 'L' : 'M') + (pad + (t - t0) * px).toFixed(1) + ' ' + (m + amp - amp * v).toFixed(1);
+            }
+            r.path.setAttribute('d', d);
+          }
+        });
+        if(line) line.style.left = pad + (now - t0) * px+'px';
+        laidW = viewW; laidH = h; laidPx = px;
+      }
+      if(!w) return;            // no real width yet: nothing to scroll
+      if(group) toFocus();
+    };
+    // Synced: the group's focus time under the cursor - padded, that's
+    // where its scrollLeft is that time's offset on the axis. A move of
+    // the focus outdoes a settle still to come.
+    const toFocus = () => {
+      if(!scroll.clientWidth || !laidPx) return;
+      scroll.scrollLeft = (group.focusMs - t0) * laidPx;
+      ours = scroll.scrollLeft; unsettled = false;
+    };
+    // A scroll to where it last put itself (`ours`, read back) is its own.
+    const own = () => { const mine = ours!==null && Math.abs(scroll.scrollLeft - ours) < 1; ours = null; return mine; };
+    // The time at the cursor - the viewport's middle - and the 6h mark
+    // that is, within half a pixel (and a hair, for the sums), else null.
+    const midMs = () => t0 + scroll.scrollLeft / laidPx;
+    const onMark = v => { const m = Math.round(v / TL_MARK_MS) * TL_MARK_MS; return Math.abs(v - m) * laidPx < 0.501 ? m : null; };
+    const toMark = m => { scroll.scrollLeft = (m - t0) * laidPx; };
+    // n marks on (back, for n < 0) from the one it's on - off one, the
+    // first that way is the first step.
+    const step = n => {
+      if(!n || !scroll.clientWidth || !laidPx) return;
+      const at = midMs(), on = onMark(at);
+      const from = on!==null ? on : (n > 0 ? Math.floor(at / TL_MARK_MS) : Math.ceil(at / TL_MARK_MS)) * TL_MARK_MS;
+      toMark(from + n * TL_MARK_MS);
+    };
+    // The wheel steps it, down or sideways - whichever it turned more - a
+    // gesture's first turn at once, then a step a notch's travel, as a
+    // timeline's does. A pinch (ctrl) is the browser's.
+    let wheelAcc = 0, wheelDir = 0, wheelAt = -Infinity;
+    scroll.addEventListener('wheel', e => {
+      if(e.ctrlKey || !scroll.clientWidth || !laidPx) return;
+      const raw = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
+      const dv = raw * (e.deltaMode===1 ? TL_NOTCH_PX / 3 : e.deltaMode===2 ? scroll.clientWidth : 1);
+      if(!dv) return;
+      e.preventDefault();
+      const dir = Math.sign(dv);
+      wheelAcc = e.timeStamp - wheelAt > TL_GESTURE_MS || dir!==wheelDir ? dir * Math.max(Math.abs(dv), TL_NOTCH_PX) : wheelAcc + dv;
+      wheelAt = e.timeStamp; wheelDir = dir;
+      const n = Math.trunc(wheelAcc / TL_NOTCH_PX); wheelAcc -= n * TL_NOTCH_PX;
+      step(n);
+    }, {passive: false});
+    // So does an arrow key, any of the four; the other keys scroll as they do, and settle.
+    scroll.onkeydown = e => {
+      const k = {ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1}[e.key];
+      if(!k || e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
+      e.preventDefault(); step(k);
+    };
+    // Any other scroll of the user's settles on the nearest mark once
+    // it's ended. A browser without scrollend leaves it where it is.
+    scroll.onscrollend = () => {
+      if(!unsettled) return; unsettled = false;
+      if(!scroll.clientWidth || !laidPx) return;
+      const at = midMs(); if(onMark(at)===null) toMark(Math.round(at / TL_MARK_MS) * TL_MARK_MS);
+    };
+    // The clock lane's tag: the place and its local time under the cursor.
+    const clockAt = (r, at) => {
+      const x = r.l.spans.find(x => x.a <= at && at < x.b);
+      if(!x || !x.tz) return x && x.place ? x.place : '—';
+      try{
+        const f = new Intl.DateTimeFormat('en-GB', {timeZone: x.tz, hour: '2-digit', minute: '2-digit', hourCycle: 'h23', timeZoneName: 'shortOffset'});
+        return (x.place ? x.place+' ' : '') + f.format(new Date(at)).replace('GMT', 'UTC').replace(/UTC$/, 'UTC+0');
+      }catch(_){ return x.place || '—'; }
+    };
+    const showTags = at => rows.forEach(r => { if(r.tagText && r.l.clock) r.tagText.textContent = clockAt(r, at); });
+    const t = {scroll, observer: null, group, show: null};
+    if(group){
+      // Its own scroll to the focus passes; the user's moves the group's
+      // focus to the time under the cursor - the mark it's on, else the
+      // quarter hour - and stops it following.
+      scroll.onscroll = () => {
+        if(!scroll.clientWidth || !laidPx || own()) return;
+        const at = t0 + scroll.scrollLeft / laidPx;
+        setFocus(group, onMark(at) ?? tlSnap(at), false, t);
+        unsettled = true;
+      };
+      t.show = rescroll => {
+        readout.textContent = fmtFocus(group.focusMs);
+        nowBtn.hidden = group.following;
+        showTags(group.focusMs);
+        if(rescroll) toFocus();
+      };
+      group.members.add(t);
+      t.show(false);
+    }
+    layout();
+    if(typeof requestAnimationFrame==='function') requestAnimationFrame(layout);
+    if(typeof ResizeObserver==='function'){
+      t.observer = new ResizeObserver(() => { if(scroll.isConnected) layout(); else releaseTimelines(); });
+      t.observer.observe(scroll);
+    }
+    timelines.add(t);
+    return box;
   }
 
   /* A rail: a column of fixed-size cards (the CSS's size - roomy, or
