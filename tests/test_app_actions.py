@@ -1655,8 +1655,8 @@ def test_the_roster_app_shows_rostered_against_flown_on_a_timeline(client, conn,
     timeline = frame["timeline"]
     now_drawn = drawn_now(before, after, timeline)
     assert timeline == {"type": "timeline", "title": None, "now": now_drawn, "sync": "frms", "lanes": [
-        {"label": "Rostered", "grey_after_now": False, "intervals": [block(3)]},
-        {"label": "Flown", "grey_after_now": True, "intervals": [block(1), block(2)],
+        {"label": "Roster", "grey_after_now": False, "intervals": [block(3)]},
+        {"label": "Complete", "grey_after_now": True, "intervals": [block(1), block(2)],
          "bands": [{"start": stamp(duties[2][1]), "end": now_drawn, "label": "ZZB"}]},
     ]}
     # That trip, not home, is a card on the Plan rail - no flight home
@@ -1700,12 +1700,12 @@ def test_the_roster_app_with_only_a_roster_to_come_has_flown_nothing(client, con
         ("2099-11-09T22:00:00Z", "2099-11-10T10:00:00Z", "R1E"),
         ("2099-11-12T01:00:00Z", "2099-11-12T05:30:00Z", "A1534"),
     ]
-    assert (rostered["label"], rostered["grey_after_now"]) == ("Rostered", False)
+    assert (rostered["label"], rostered["grey_after_now"]) == ("Roster", False)
     # The roster's one trip, shaded behind its blocks: out of base (ZZA)
     # on CX9101 to ZZB, home on CX9102 - the reserve and the sim after it
     # at home, no part of it.
     assert rostered["bands"] == [{"start": "2099-11-05T15:10:00Z", "end": "2099-11-08T13:00:00Z", "label": "ZZB"}]
-    assert flown == {"label": "Flown", "grey_after_now": True, "intervals": []}
+    assert flown == {"label": "Complete", "grey_after_now": True, "intervals": []}
     # The same trip, a card to plan for; none to report.
     assert [(c["out"], c["in"], c["port"]) for c in frame["left"]["cards"]] == [("CX9101", "CX9102", "ZZB")]
     assert frame["right"]["cards"] == []

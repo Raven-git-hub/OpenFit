@@ -371,11 +371,11 @@ def test_render_draws_the_rostered_and_the_flown_on_a_timeline(conn):
                      "right": {"type": "rail", "side": "report", "title": "Report", "cards": [], "sync": "frms"}}
     assert iso_utc(before) <= timeline["now"] <= iso_utc(after)
     assert timeline == {"type": "timeline", "title": None, "now": timeline["now"], "sync": "frms", "lanes": [
-        {"label": "Rostered", "grey_after_now": False, "intervals": [
+        {"label": "Roster", "grey_after_now": False, "intervals": [
             {"start": "2026-10-20T22:00:00Z", "end": "2026-10-21T10:00:00Z", "label": "R1E"},
             {"start": "2099-11-05T15:10:00Z", "end": "2099-11-06T04:10:00Z", "label": "CX9102"},
         ]},
-        {"label": "Flown", "grey_after_now": True, "intervals": [
+        {"label": "Complete", "grey_after_now": True, "intervals": [
             {"start": "2026-04-15T00:00:00Z", "end": "2026-04-15T04:30:00Z", "label": "A1534"},
             {"start": "2026-10-10T01:00:00Z", "end": "2026-10-10T14:00:00Z", "label": "CX9101"},
         ]},

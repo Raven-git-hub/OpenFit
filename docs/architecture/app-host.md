@@ -318,9 +318,9 @@ are `{date, value}` objects or bare numbers.
 ```python
 ctx.timeline(lanes, now=None, title=None, sync=None)
 # -> {"type": "timeline", "title": title, "now": "2026-10-19T00:00:00Z",
-#     "lanes": [{"label": "Rostered", "grey_after_now": False,
+#     "lanes": [{"label": "Roster", "grey_after_now": False,
 #                "intervals": [{"start": "...Z", "end": "...Z", "label": "CX105"}, ...]},
-#               {"label": "Flown", "grey_after_now": True, "intervals": [...],
+#               {"label": "Complete", "grey_after_now": True, "intervals": [...],
 #                "bands": [{"start": "...Z", "end": "...Z", "label": "MEL"}]}]}
 # a lane's "bands" only when it has any; with sync="frms", the same plus "sync": "frms"
 ```
@@ -394,12 +394,50 @@ theme: `#c07d18` light, `#e0a83a` dark) with a dashed edge. Its label
 (`.tl-band-label`) is placed past the block or blocks over its top edge — the
 flight out, which starts with the band — so it sits on the layover rather than
 under a block, cut off by the band if the layover's too short to hold it. The
-axis spans every block and band, so none is drawn off it. The frame opens
+axis spans every block and band, so none is drawn off it. **Day lines**: a
+faint 1px line across both lanes at each midnight, UTC, on the axis (the
+first at or after its start, then every 24h to its end; an axis within one
+day has none, and so does one of more than ten years — 3660 lines,
+`TL_MAX_DAY_LINES` — rather than a node a day) — `.tl-gridline`s in one layer (`.tl-grid`) first in the track,
+so under the bands, the grey, the blocks, the now line and the cursor, never in
+the way of a tap, and placed in the same layout pass as the blocks. Their
+colour is `--grid`, its own token in every theme (`--muted` at 22% light,
+26% dark); no labels. (UTC, as the readout is; home-local days wait for the
+time-zone work.) The frame opens
 with the now line in the middle (with no `now`, the end in view), and a
-resize keeps the time at its top. Times are UTC; there are no day gridlines
-yet. A hand-built spec is drawn as far as it can be: two lanes at most, and
+resize keeps the time at its top. Times are UTC. A hand-built spec is drawn
+as far as it can be: two lanes at most, and
 an interval or band without both ends, in order, left out (bands that aren't
-a list, none). Nothing to draw at all shows "No data".
+a list, none). Nothing to draw at all shows "No data". The lanes' headings
+are 10.5px with .8px letter-spacing; in a narrow tile (`@container
+(max-width:519px)` — a 2-wide one, or a 4-wide one a small screen shrinks)
+they're 10px with .3px, on the same line height, so an eight-letter heading —
+COMPLETE — fits a 2×2's ~61px lane and the heading row stays level with the
+rails'.
+
+**Scrolling: six hours a step.** A wheel's notch or an arrow key (↑/↓, on
+the focused frame) moves the time at the frame's middle — a synced
+timeline's cursor — to the next 6-hour mark that way (00, 06, 12, 18Z;
+`TL_MARK_MS`): from a mark, the next; off one, the first that way. The wheel
+listener is `{passive: false}` and takes the event over (`preventDefault`);
+its `deltaY` (lines a third of a notch, pages the frame's height) is
+accumulated per **gesture** — a run of events with no 150ms pause
+(`TL_GESTURE_MS`) and no turn back: a gesture's first event steps at once,
+however small (a trackpad's swipe starts small, and some mice's notch is a few
+pixels), then one step for each further 100px (`TL_NOTCH_PX`, about a mouse
+notch: Chrome's 100px, Firefox's three lines) — so a mouse steps a notch at a
+time, quick or slow, and a trackpad's short swipe is one step, a long one a
+few, never a race. A pinch (`ctrlKey`) or a sideways turn is left to the
+browser. Any other scroll by the user — the scrollbar dragged, a page key, a
+touch — **settles** on the nearest mark once it ends (`scrollend`; a browser
+without it leaves it where it's left). The frame's own scrolls (opening on now,
+a resize, a synced one's to its group's focus) are never settled. A position
+within half a pixel of a mark is on it: the browser rounds a scroll to the
+pixel, which would otherwise floor a mark to the quarter hour before. Not the
+CSS's `scroll-snap`: Chromium snaps a page's own `scrollTop` writes too
+(checked: under `proximity` with 6h snap points, 100 → 103 and 1000.5 → 994),
+so it would pull a synced timeline off its focus — the follow tick's quarter
+hour — and stop it following now.
 
 The frame's height is only known once the tile is on the page, which it isn't
 while `renderSpec()` builds it. So the timeline is laid out at a 240px
@@ -436,16 +474,20 @@ readout, no button, the now line centred on opening as above.
   focus time in UTC, to the quarter hour: `Mon 03 Nov 14:15Z`. Every focus
   time is snapped down to the quarter hour (`tlSnap()`).
 - **Scrolling by hand** — a wheel, a drag, the keyboard — sets the group's
-  focus to the quarter hour under that timeline's cursor and stops it
-  following; every other member scrolls there, and every readout says it. The
-  one scrolled stays where it was put (no snap under the hand). Its own scrolls
-  — to the focus — aren't taken for the user's.
+  focus to the time under that timeline's cursor — the 6h mark it's on (a
+  wheel's or an arrow's step, or a scroll settled), else the quarter hour —
+  and stops it following; every other member scrolls there, and every readout
+  says it. The one scrolled stays where it was put while it's moving (a drag
+  settles on a mark once it ends, above). Its own scrolls — to the focus —
+  aren't taken for the user's, and a move of the focus (Now, the follow tick,
+  another member) outdoes a settle still to come.
 - **Following**: while a group follows, a single shared timer (`followNow()`,
   due on each quarter hour) moves its focus on to now, and every member with
   it. A group that isn't following stays where it was left.
-- **Now** (`.tl-nowbtn`), at the end of the readout's row, is shown only while
-  the group isn't following — scrolled off now — and hidden while it is.
-  It puts the focus back on now, following again, on every member.
+- **Now** (`.tl-nowbtn`), at the end of the readout's row — in a rails frame,
+  the frame's top-right (below) — is shown only while the group isn't
+  following — scrolled off now — and hidden while it is. It puts the focus
+  back on now, following again, on every member.
 - **The now line** stays at the spec's `now`, scrolling with the track, and
   carries a **Now** tag on the greyed lane, just under the line, where the grey
   starts. It's `--accent`, like the cursor: the two lines meet while the group
@@ -501,12 +543,21 @@ show.
 
 **How it's drawn.** A rails frame (`railsSpec()`) is four columns: a rail, the
 timeline's two lanes, a rail. The timeline is drawn by `renderSpec()` exactly
-as it is on its own — its DOM node for node, its cursor, readout, Now, bands
-and focus clock untouched — and takes what the rails leave; each rail is
-`clamp(84px, 22cqi, 156px)` wide. A rail mirrors the rows over the
+as it is on its own — its DOM node for node, its cursor, readout, bands and
+focus clock untouched, bar its Now button — and takes what the rails leave;
+each rail is `clamp(84px, 22cqi, 156px)` wide. A rail mirrors the rows over the
 timeline's frame with spacers (its title's line, its focus row), so the rail's
-heading sits in the lanes' heading row — Plan · Rostered · Flown · Report —
-and its cards start level with the frame. They show **down to a 2-wide
+heading sits in the lanes' heading row — Plan · Roster · Complete · Report —
+and its cards start level with the frame. **Now is the frame's**: the
+timeline's Now button — the same button, its click and its hiding while the
+group follows unchanged — is moved out of the focus row into `.rails-now`,
+the frame's last child, absolutely placed at its top-right (`.spec-rails` is
+`position: relative`), over the Report rail; a spacer for each row above the
+focus row (the title's line) puts it level with that row. The readout then
+has the row to itself, centred over the lanes (the row keeps the lanes'
+scrollbar gutter), so a 2×2's is no longer cut off. With the rails left out
+(below) the row is as it is alone: the readout at its start, room at its end
+(`padding-right: 48px`) for Now, which is then at the timeline's top-right. They show **down to a 2-wide
 tile**: a 2×2 at full size (334px inside) holds the four columns, each rail at
 its 84px minimum and the timeline's lanes the ~150px left. **In a tile too
 small for them** — under 310px wide or 240px tall inside (`@container`): a
@@ -958,8 +1009,9 @@ Its tile reads the duties back: `ctx.sessions()` of both kinds since about six
 months before today (183 days, by the day a duty starts in UTC), and every duty
 still to come. With none, it's `empty("Upload your roster .ics")` over the
 picker. Otherwise it's a timeline (`ctx.timeline()`, above), between its rails (below), over the picker —
-the upload at the tile's foot: rostered duties in the left lane, flown ones in the
-right with `grey_after_now`, each a block from its start to its end labelled
+the upload at the tile's foot: rostered duties in the left lane, headed
+**Roster**, flown ones in the right, headed **Complete**, with
+`grey_after_now`, each a block from its start to its end labelled
 with its code, and the now line at the time of the render. The timeline fills
 the rest of the tile and scrolls, laid out to whichever size the tile is
 (`render()` isn't told it). It's synced into the `"frms"` focus group
@@ -1006,7 +1058,8 @@ band's id for the same trip, for a report to re-attach to. Plan is
 `ctx.rail(plan, "plan", …)`, looking ahead of the cursor; Report is
 `ctx.rail(report, "report", …)`, looking back. Both rails are in `"frms"`, so
 they restack as the timeline scrolls. They need room:
-the 4×2 and 4×3 sizes are for them, and in a 2-wide tile they're left out.
+a 2×2 holds them compact, the 4×2 and 4×3 roomy; a 2×1, or a 2-wide tile a
+small screen shrinks, leaves them out.
 
 The `duty_hours_*` metrics are still written on every
 upload; the tile no longer reads them. A roster that's all over six months old
