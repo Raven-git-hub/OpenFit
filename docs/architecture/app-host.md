@@ -278,6 +278,7 @@ the dicts itself.
 | `ctx.timeline(lanes, now=None, title=None, sync=None)` | `{"type": "timeline", "title", "now", "lanes": [{"label", "grey_after_now", "intervals": [{"start", "end", "label"}, ...]}, ...]}`, plus `"sync"` only when given | One lane or two of time-blocks side by side on one vertical time axis, in a frame that scrolls — lane 0 the left column in the lighter tone, lane 1 the right in the darker — under the lanes' labels; a line at `now`, and a `grey_after_now` lane greyed below it. With `sync`, a focus group's name, it's drawn around the group's focus clock: a fixed cursor, the time under it and a Now button, every timeline of the group scrolling to one time. See [the timeline builder](#the-timeline-builder), below. |
 | `ctx.rail(cards, side, title=None, sync=None)` | `{"type": "rail", "side", "title", "cards": [{"id", "start", "end", "out", "in", "port"}, ...]}`, plus `"sync"` only when given | A column of fixed-size cards under its title, stacked from the top — four corners each, five at most, the window moving with the focus time: ahead of it on a `"plan"` rail, back from it on a `"report"` rail, the head outlined. With `sync`, it reads that focus group's time and restacks as it moves. See [the rail builders](#the-rail-builders), below. |
 | `ctx.rails(timeline, left=None, right=None)` | `{"type": "rails", "left", "timeline", "right"}` | A timeline drawn exactly as it is alone, a rail either side: four columns, a rail, the two lanes, a rail. In a tile too small for them, the timeline alone. See [the rail builders](#the-rail-builders), below. |
+| `ctx.grid(cols, rows, cells)` | `{"type": "grid", "cols", "rows", "cells": [{"x", "y", "w", "h", "spec"}, ...]}` | A tile split into sub-panels, each drawn as a tile of its own on the Home grid's cells: `cols` by `rows` cells, each sub-panel `w` by `h` from column `x`, row `y` (from 0), its `spec` sized to it as to a tile. Cells lie inside the grid and never overlap. See [the grid builder](#the-grid-builder), below. |
 | `ctx.empty(message=None)` | `{"type": "empty", "message"}` | Muted, centred text (default "No data yet"). |
 | (the host's) | `{"type": "error", "message"}` | Muted, centred: "Couldn't render <app name>" over the message. |
 
@@ -617,6 +618,54 @@ catches a return value that isn't a spec (a dict with a string `type`) or
 isn't plain JSON, such as NaN or a set. Any of these come back as an error
 spec with a 200, so the page shows one error tile. A spec type the page
 doesn't know is drawn as an error tile too.
+
+### The grid builder
+
+```python
+ctx.grid(6, 4, [
+    {"x": 0, "y": 0, "w": 3, "h": 2, "spec": ctx.empty("Circadian — coming soon")},
+    {"x": 0, "y": 2, "w": 2, "h": 2, "spec": roster},
+    ...
+])
+# -> {"type": "grid", "cols": 6, "rows": 4,
+#     "cells": [{"x": 0, "y": 0, "w": 3, "h": 2, "spec": {"type": "empty", ...}}, ...]}
+```
+
+- **`cols`** and **`rows`** are whole numbers, 1 to 6 — a tile's own most;
+  anything else (`0`, `7`, a bool, `"6"`) raises `ValueError`.
+- **`cells`** is a list or tuple (else `TypeError`) of dicts (else
+  `TypeError`), each `{x, y, w, h, spec}`: a sub-panel `w` cells wide and `h`
+  high, its top-left corner at column `x`, row `y`, counted from 0. Each of
+  the four a whole number (missing, a float or a bool: `TypeError`), and the
+  sub-panel inside the grid — `x` and `y` at least 0, `w` and `h` at least 1,
+  `x + w` at most `cols`, `y + h` at most `rows` — else `ValueError`. `spec`
+  is a spec (a dict with a string `type`, else `TypeError`), carried verbatim.
+  No two sub-panels share a cell (`ValueError`, "grid cells overlap"); a cell
+  none covers is left empty. The spec carries each cell as those five keys,
+  in the order given.
+
+**How it's drawn.** A grid (`SPECS.grid`) is a `.spec-grid`: a CSS grid of
+`cols` by `rows` even tracks (`repeat(N, minmax(0, 1fr))`), its gap the Home
+grid's own (`--tile-gap`), each cell a `.spec-cell` placed at its corner and
+spanning its size (`grid-column: x+1 / span w`, `grid-row` the same), its spec
+drawn by `renderSpec()` for the app, as a tile's is. Out of Configure the tile
+drops its own face (`.tiles:not(.configuring) .tile:has(> .spec-grid)`: no
+background, shadow or padding, its border transparent), so the tracks land on
+the Home grid's own cells — within a pixel: the tile's transparent border
+still takes its width — and each sub-panel wears **a tile's face** (the same
+background, border, radius, shadow and `16px 18px` padding) and is **a size
+container** (`container-type: size`), as a tile is. So every container query
+and `cqi` size answers to the sub-panel: a spec in a 2×2 sub-panel draws as
+it does in a 2×2 tile — the rails shown at full size, with the compact card,
+and left out when a small screen shrinks the cells. A timeline or a rail in a
+sub-panel joins its focus group exactly as at the top of a tile, and is let
+go of with the tile by `releaseTimelines()`: nothing in the focus clock
+changes. In Configure the tile keeps its dashed face and its controls, and is
+moved and sized whole. A hand-built grid is drawn as far as it can be: cells
+that aren't a list are none, and a cell's spec the page can't draw is an
+error in that sub-panel alone. Not yet: a sub-panel's error isolated on the
+server (a `render()` that raises is still one error tile, the whole grid),
+and titles on sub-panels.
 
 ## Writing: apps as sources
 
@@ -961,8 +1010,13 @@ run by `test_frms_app.py` (its parsing on its own, the module loaded by
 path as the host loads it) and `test_app_actions.py` (the round trip), against
 a synthetic roster, `tests/fixtures/rosters/sample.ics`. It was the Roster
 app until it became FRMS: the whole FRMS suite as one app, with one tile and
-one `config.json`, to be drawn as four sub-panels. Today its roster panel —
-the timeline and its rails, below — fills the tile; a circadian panel is next.
+one `config.json`, drawn as four sub-panels on a 6×4 grid (`ctx.grid()`,
+above): circadian top-left (3×2), the roster panel bottom-left (2×2) — the
+timeline and its rails, below — and two more to come, top-right (3×2) and
+bottom-right (4×2). All but the roster are placeholders until they're built
+(`empty("Circadian — coming soon")`, `empty("Coming soon")`); `render()` is
+the layout, and the roster panel is `_roster(ctx)`, its spec the one the
+whole tile was before the grid.
 All of its code is in its one `app.py`, by decision: the host imports
 `app.py` by its path, adding nothing to `sys.path`, so a module beside it
 couldn't be imported by name, and it reloads an app only when `app.yaml` or
@@ -1014,12 +1068,12 @@ Its roster panel reads the duties back: `ctx.sessions()` of both kinds since abo
 months before today (183 days, by the day a duty starts in UTC), and every duty
 still to come. With none, it's `empty("Upload your roster .ics")` over the
 picker. Otherwise it's a timeline (`ctx.timeline()`, above), between its rails (below), over the picker —
-the upload at the tile's foot: rostered duties in the left lane, headed
+the upload at its sub-panel's foot: rostered duties in the left lane, headed
 **Roster**, flown ones in the right, headed **Complete**, with
 `grey_after_now`, each a block from its start to its end labelled
 with its code, and the now line at the time of the render. The timeline fills
-the rest of the tile and scrolls, laid out to whichever size the tile is
-(`render()` isn't told it). It's synced into the `"frms"` focus group
+the rest of its sub-panel and scrolls, laid out to whichever size the
+sub-panel is (`render()` isn't told it). It's synced into the `"frms"` focus group
 (`sync="frms"`): a fixed cursor across its middle, the UTC time under it above
 the labels, following now until it's scrolled, with a Now button to come back —
 and any later FRMS panel naming the same group scrolls with it. A duty with no end, which only another source could
@@ -1062,8 +1116,8 @@ known, drawn as a dash), a day return like any, its id the trip's — the
 band's id for the same trip, for a report to re-attach to. Plan is
 `ctx.rail(plan, "plan", …)`, looking ahead of the cursor; Report is
 `ctx.rail(report, "report", …)`, looking back. Both rails are in `"frms"`, so
-they restack as the timeline scrolls. The 6×4 tile always has room for them,
-and for roomy cards.
+they restack as the timeline scrolls. In its 2×2 sub-panel they show, with
+the compact card, as in a 2×2 tile at full size.
 
 A roster that's all over six months old is filed but draws as the empty state.
 
@@ -1666,7 +1720,8 @@ saved positions and gives `paintTiles` start cells. The sizes, the CSS grid,
 
 - **The grid**: free cell placement, a second layout `mode` on the same sizes
   and CSS grid (coordinates, drop anywhere, deliberate gaps, collision).
-  Resize stays the picker.
+  Resize stays the picker. (Home's layout, not the `grid` spec, which splits
+  one tile into sub-panels.)
 - **A phone layout**: under the minimum cell, Home scrolls sideways.
 - **The rest of the Library.** It reuses `scan_apps()` and `/api/apps`. Its
   shell has landed: the Data tab's right-hand **Applications** column lists

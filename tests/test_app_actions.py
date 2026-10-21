@@ -1293,6 +1293,12 @@ ROSTER_PICKER = {
 }
 
 
+def _roster_cell(spec):
+    """The roster panel's spec in the FRMS tile's grid: the sub-panel at x 0, y 2."""
+    [cell] = [c for c in spec["cells"] if (c["x"], c["y"]) == (0, 2)]
+    return cell["spec"]
+
+
 def install_frms(client):
     """Install the FRMS app through the Library, from its committed files."""
     folder = REAL_APPS / "frms"
@@ -1363,9 +1369,25 @@ def test_the_frms_app_installs_and_is_listed(client, apps_dir):
          "files": ["app.py", "app.yaml", "config.json"]},
     ]
     # Nothing yet: it says so, over its picker.
-    assert client.post("/api/app/frms/render").get_json() == {
+    assert _roster_cell(client.post("/api/app/frms/render").get_json()) == {
         "type": "panel", "children": [{"type": "empty", "message": "Upload your roster .ics"}, ROSTER_PICKER],
     }
+
+
+def test_the_frms_tile_is_drawn_as_four_sub_panels(client, apps_dir):
+    install_frms(client)
+
+    spec = client.post("/api/app/frms/render").get_json()
+
+    # One grid spec, from the render route: the circadian panel and two
+    # more to come as placeholders, the roster's panel 2x2 bottom-left.
+    assert spec == {"type": "grid", "cols": 6, "rows": 4, "cells": [
+        {"x": 0, "y": 0, "w": 3, "h": 2, "spec": {"type": "empty", "message": "Circadian — coming soon"}},
+        {"x": 3, "y": 0, "w": 3, "h": 2, "spec": {"type": "empty", "message": "Coming soon"}},
+        {"x": 0, "y": 2, "w": 2, "h": 2, "spec": {"type": "panel", "children": [
+            {"type": "empty", "message": "Upload your roster .ics"}, ROSTER_PICKER]}},
+        {"x": 2, "y": 2, "w": 4, "h": 2, "spec": {"type": "empty", "message": "Coming soon"}},
+    ]}
 
 
 def test_frms_is_one_six_by_four_tile(client, apps_dir):
@@ -1588,7 +1610,7 @@ def test_a_backfilled_duty_draws_in_the_rostered_lane(client, conn, apps_dir, up
     start = datetime.now(timezone.utc).replace(microsecond=0) - timedelta(days=3)
     end = start + timedelta(hours=12)
 
-    spec = upload_roster(client, roster_ics(("R1E", ics_at(start), ics_at(end))), payload={"backfill": True}).get_json()["spec"]
+    spec = _roster_cell(upload_roster(client, roster_ics(("R1E", ics_at(start), ics_at(end))), payload={"backfill": True}).get_json()["spec"])
 
     # The past duty on both sides: flown, and in the plan beside it.
     [frame, picker] = spec["children"]
@@ -1642,7 +1664,7 @@ def test_frms_shows_rostered_against_flown_on_a_timeline(client, conn, apps_dir,
     # the layover, until now.
     block = lambda i: {"start": stamp(duties[i][1]), "end": stamp(duties[i][1] + duties[i][2]),
                        "label": ["CX9102", "A1534", "CX9101", "R1E"][i]}
-    [frame, picker] = resp.get_json()["spec"]["children"]
+    [frame, picker] = _roster_cell(resp.get_json()["spec"])["children"]
     assert picker == ROSTER_PICKER
     timeline = frame["timeline"]
     now_drawn = drawn_now(before, after, timeline)
@@ -1660,7 +1682,7 @@ def test_frms_shows_rostered_against_flown_on_a_timeline(client, conn, apps_dir,
     assert frame["right"] == {"type": "rail", "side": "report", "title": "Report", "sync": "frms", "cards": []}
     # The same tile from the render route - the band to its own now.
     before = datetime.now(timezone.utc)
-    again = client.post("/api/app/frms/render").get_json()
+    again = _roster_cell(client.post("/api/app/frms/render").get_json())
     after = datetime.now(timezone.utc)
     assert again["children"][1] == ROSTER_PICKER
     now_again = drawn_now(before, after, again["children"][0]["timeline"])
@@ -1673,7 +1695,7 @@ def test_frms_shows_rostered_against_flown_on_a_timeline(client, conn, apps_dir,
 def test_frms_with_only_a_roster_to_come_has_flown_nothing(client, conn, apps_dir, upload_dir):
     install_frms(client)
 
-    spec = upload_roster(client, sample_roster(2099)).get_json()["spec"]
+    spec = _roster_cell(upload_roster(client, sample_roster(2099)).get_json()["spec"])
 
     # Every duty still to come, however far ahead; nothing flown - an
     # empty lane, still drawn, greyed after now, and with no trip.
@@ -1707,7 +1729,7 @@ def test_a_roster_flown_over_six_months_ago_draws_as_the_empty_state(client, con
     # six months back: nothing to draw, so the tile asks for a roster, as
     # before the first.
     assert len(duty_rows(conn)) == 4
-    assert resp.get_json()["spec"] == {"type": "panel", "children": [
+    assert _roster_cell(resp.get_json()["spec"]) == {"type": "panel", "children": [
         {"type": "empty", "message": "Upload your roster .ics"}, ROSTER_PICKER,
     ]}
 

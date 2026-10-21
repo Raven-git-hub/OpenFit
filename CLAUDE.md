@@ -379,6 +379,18 @@ own calls to its device API. Full direction:
   spec, carried verbatim — the same dict, never re-checked — and
   `left`/`right` rail specs or `None`; `_of_type()`: not a dict
   `TypeError`, another `type` `ValueError`),
+  `grid(cols, rows, cells)` → `{"type": "grid", cols, rows, cells: [{x,
+  y, w, h, spec}]}` (a tile split into sub-panels, each drawn as a tile
+  of its own on the Home grid's cells: `cols`/`rows` whole numbers 1–6,
+  else `ValueError` (a bool or `"6"` too); `cells` a list or tuple (else
+  `TypeError`) of dicts (else `TypeError`), each `x`/`y`/`w`/`h` a whole
+  number (missing, a float or a bool `TypeError`) — the sub-panel's
+  top-left column and row from 0 and its size — inside the grid (`x`,
+  `y` ≥ 0, `w`, `h` ≥ 1, `x + w ≤ cols`, `y + h ≤ rows`, else
+  `ValueError`), and `spec` a spec (a dict with a string `type`, else
+  `TypeError`), carried verbatim; no two on one cell (`ValueError`,
+  "grid cells overlap"); a cell none covers left empty; each cell
+  carried as those five keys, in order),
   `empty(message)`; the host's own is `{"type": "error", "message"}`. `render_app(app, conn, cfg=None,
   today=None)` calls `render(ctx, dict(cfg or {}))` (the ctx made for
   `app`) — `cfg` the
@@ -542,9 +554,14 @@ own calls to its device API. Full direction:
   host loads it, and the round trip by `tests/test_app_actions.py`,
   against the synthetic `tests/fixtures/rosters/sample.ics` — fake
   flights and ports). The whole FRMS suite is this one app: one tile, one
-  `config.json`, to be drawn as four sub-panels (the layout brick is to
-  come) — the roster panel, the timeline and its rails, today, filling
-  the tile until then; a circadian panel next. Its `app.yaml`: id `frms`
+  `config.json`, drawn as four sub-panels on a 6×4 `ctx.grid()` —
+  circadian top-left (x 0, y 0, 3×2, `empty("Circadian — coming
+  soon")`), a placeholder top-right (x 3, y 0, 3×2, `empty("Coming
+  soon")`), the roster panel bottom-left (x 0, y 2, 2×2, `_roster(ctx)`)
+  and a placeholder beside it (x 2, y 2, 4×2, `empty("Coming soon")`):
+  `render()` is the layout, `_roster()` the roster panel — the timeline
+  and its rails — its spec the one the whole tile was before the grid;
+  the tests read it at x 0, y 2 (`_roster_cell()`). Its `app.yaml`: id `frms`
   (so it files under `app:frms`, session ids `app:frms:<kind>:<start>`),
   name "FRMS", `sizes: [{ w: 6, h: 4 }]` — the one size, so no picker —
   and `reads: [duties_rostered, duties_complete]`; no `metrics:` (its
@@ -656,7 +673,7 @@ own calls to its device API. Full direction:
   upload of it had, so it replaces that plan) — the sessions are all it
   writes: no metric, so no day's hours held to 24 (a UTC day with 25
   hours of duty files like any). Backfill off is exactly the plain clock
-  split. All or nothing (the route rolls back). `render()` reads the duties back, both kinds through
+  split. All or nothing (the route rolls back). `_roster()` reads the duties back, both kinds through
   `ctx.sessions(kind, since=…)`, `since` 183 days before `ctx.today()`
   (about six months, by the start's UTC date) and no `until` (every duty
   to come): none → `empty("Upload your roster .ics")` over the picker
@@ -666,7 +683,7 @@ own calls to its device API. Full direction:
   recorded as flown, and any plan you already uploaded for those duties
   is replaced."}`), a roster all older than that included; else
   `panel(rails(timeline, left=Plan, right=Report), picker)` — the upload
-  at the tile's foot — the `timeline` lane 0 "Roster" (`duties_rostered`), lane 1 "Complete"
+  at its sub-panel's foot — the `timeline` lane 0 "Roster" (`duties_rostered`), lane 1 "Complete"
   (`duties_complete`, `grey_after_now`), each session an interval of its
   `start`/`end` labelled with `summary["code"]` (`""` for none; a session
   with no end, only another source's, left out — `_lane()`), and each
@@ -678,7 +695,7 @@ own calls to its device API. Full direction:
   now line); `now` `datetime.now(timezone.utc)`, taken once for both,
   `sync` `"frms"` (the FRMS focus group:
   a later FRMS panel naming it scrolls with the roster, by time). The
-  timeline fills the rest of the tile
+  timeline fills the rest of its sub-panel
   and scrolls, laid out to its size by the page (`render()` isn't told
   it). Either side of it, a rail (`ctx.rails()`): `trip_cards(rostered,
   flown, home base)` split at the same `now` (`_utc_text(now)`) — **Plan**,
@@ -690,9 +707,9 @@ own calls to its device API. Full direction:
   end, out, in, port}` straight through (`in` None while open — the page's
   dash; a day return like any, its port the turn-round's); no home base,
   no cards. The page shows five a side, restacking as the timeline
-  scrolls — Plan ahead of the cursor, Report back — roomy cards in the
-  6×4 tile, at any width it's drawn (the page's compact cards and dropped
-  rails are for smaller tiles, which FRMS never is).
+  scrolls — Plan ahead of the cursor, Report back — the compact card in
+  its 2×2 sub-panel, as in a 2×2 tile (the rails dropped, the timeline
+  alone, when a small screen shrinks the cells under 310px inside).
 - `app/home_layout.py` — the Home tab's layout, one `settings` row
   (`LAYOUT_KEY` `home_layout`, no migration): `{"tabs": [{id, name,
   mode: "flow", subtitle, items: [{instance_id, app_id, size: {w, h},
@@ -1330,6 +1347,23 @@ own calls to its device API. Full direction:
   tick all restack it — it never calls `setFocus()`; unsynced, the time it
   was drawn at. It sits in `timelines` as `{scroll: its list, observer,
   group, show}`, so `releaseTimelines()` lets it go with its tile),
+  `grid` (`SPECS.grid`: a `.spec-grid`, a CSS grid of `repeat(cols,
+  minmax(0, 1fr))` by `repeat(rows, …)` tracks at `--tile-gap`, each cell
+  a `.spec-cell` at `grid-column: x+1 / span w`, `grid-row: y+1 / span
+  h`, its spec drawn by `renderSpec(c.spec, name, appId)` — so a
+  timeline or rail in one joins its focus group as at the top of a tile,
+  and leaves with it; cells not a list → none. Out of Configure the
+  tile drops its face (`.tiles:not(.configuring) .tile:has(>
+  .spec-grid)`: no background, shadow or padding, its border
+  transparent), so the tracks land on Home's own cells (within a pixel:
+  the transparent border keeps its width), and each `.spec-cell` wears
+  a tile's face — the `.tile` rule's background, border, radius,
+  shadow, `16px 18px` padding, flex column — and is a size container
+  (`container-type: size`), so every container query and `cqi` size
+  answers to the sub-panel: a 2×2 one draws as a 2×2 tile does. In
+  Configure the tile keeps its dashed face and controls and is moved
+  and sized whole. Its CSS a block of its own after the panel's; the
+  `.tile` and `.tile > *` rules untouched),
   `empty`/`error` (muted, centred; error under
   "Couldn't render <name>"), any other type an error tile. A spec is drawn
   for its app — `renderSpec(spec, name, appId)`, the id threaded from the
@@ -2108,7 +2142,20 @@ same PR:
   the 0–24 refusal of a long UTC day; `render()`'s output unchanged. A
   clean reload on the server, not a migration: uninstall Roster, remove
   `app:roster`'s data, install FRMS, upload the rosters again.
-  Still to come for it: the sub-panel layout and the circadian panel,
+  Then the grid spec landed (no migration, no route change): `ctx.grid(
+  cols, rows, cells)`, one tile split into sub-panels, each drawn as a
+  tile of its own on the Home grid's cells — the tile's face dropped out
+  of Configure, each sub-panel a tile's face and a size container, so a
+  spec in it sizes to it as to a tile and a timeline or rail in it joins
+  its focus group as at the top of one — and FRMS its first user: the
+  roster panel, unchanged, 2×2 bottom-left beside three placeholders
+  (circadian 3×2 top-left, 3×2 top-right, 4×2 bottom-right). Purely
+  additive: nothing in the timeline, rails, focus clock or `.tile` rules
+  changed. Deploy: rebuild the image first, then Update FRMS (on the old
+  image a `grid` spec draws "Unknown spec type: grid").
+  Still to come for it: the circadian panel (its sub-panel a placeholder
+  now) and the two other sub-panels, a sub-panel's error isolated on the
+  server (a `render()` that raises is still the whole tile's error),
   reading `destinations` (time-zone shifts), the
   cards' popups and PDF, the
   report store (re-attached to a trip by its id), per-block or per-band

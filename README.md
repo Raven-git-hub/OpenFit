@@ -304,7 +304,8 @@ into a sync group, a fixed cursor with the UTC time under it and a Now button,
 every timeline of the group scrolling to one time), `rail` (a column of
 fixed-size cards, five at a time, that restacks as its sync group's time moves
 — looking ahead of it, or back)
-and `rails` (a timeline drawn as it is, with a rail either side) and
+`rails` (a timeline drawn as it is, with a rail either side), `grid` (a tile
+split into sub-panels, each drawn as a tile of its own on Home's cells) and
 `empty`. An app that fails to load is logged and
 left out, and one whose `render()` fails shows as an error tile, never a
 broken page.
@@ -440,8 +441,9 @@ just finished from how many minutes it lasted, is the example.
 
 The **FRMS** app (`tests/fixtures/apps/frms/`) puts the two together. It's
 the whole FRMS suite as one app — one tile, 6 wide by 4 tall (its only size),
-and one `config.json` — to be drawn as four sub-panels; today its roster panel,
-the timeline and rails below, fills the tile, and a circadian panel is next.
+and one `config.json` — drawn as four sub-panels, each like a tile of its own:
+its roster panel, the timeline and rails below, 2×2 at the bottom left, beside
+three placeholders — a circadian panel top-left and two more to come.
 All its code is in its one `app.py`, by design. You upload a duty roster's
 `.ics` export, and the app — not OpenFit — reads it.
 Every event with real times is a work duty (an all-day one is a day off or
@@ -470,16 +472,16 @@ into the rostered plan as well as the flown record (its copy there marked
 `capture: "backfill"`, so a plan put back after the fact is always told from one
 captured live); a duty still to come is filed once either way. Because a backfilled duty replaces any plan you'd already
 uploaded for it, Save asks you to confirm first; unticked, it's the plain split.
-Its tile draws the duties back on a timeline over the picker — the upload at
-the foot: the last six months or so and everything still to come, rostered on the left
+Its roster panel draws the duties back on a timeline over the picker — the
+upload at the foot: the last six months or so and everything still to come, rostered on the left
 (headed Roster) and flown on the right (Complete), each duty a block at its
 time labelled with its code, a line at now and the flown side greyed after it,
-and a faint line at each midnight (UTC); it scrolls, a week to the tile's height,
+and a faint line at each midnight (UTC); it scrolls, a week to the panel's height,
 six hours a step — a mouse wheel's notch or an arrow key moves it to the next
 6-hour mark (00, 06, 12, 18Z), a trackpad swipe a step or two, and a scroll
 by other means (the scrollbar, a touch) settles on the nearest. A cursor stays fixed across the middle
 of it, with the time under it (UTC, to the quarter hour) shown above: it follows
-now until you scroll, and a Now button, at the tile's top-right, brings it back. Behind the blocks, each
+now until you scroll, and a Now button, at the panel's top-right, brings it back. Behind the blocks, each
 lane shades its trips away from your home base (the config's) in amber: a
 flight out of base to the next flight back, any sectors between inside the one
 trip, labelled with the port it flew out to — only flights count, so a reserve

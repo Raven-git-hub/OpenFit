@@ -1,10 +1,12 @@
 """FRMS — one app, one tile, one config.
 
 The FRMS suite is this one app: one tile, 6 wide by 4 tall (app.yaml's
-only size), one config.json, drawn as sub-panels - the roster panel,
-the timeline and its Plan and Report rails, today; a circadian panel
-and two more to come. Until the sub-panels are laid out, the roster
-panel fills the tile.
+only size), one config.json. render() draws the tile as four sub-panels
+on a 6x4 grid (ctx.grid()), each drawn as a tile of its own: circadian
+top-left (3x2), the roster bottom-left (2x2) - the timeline and its Plan
+and Report rails - and two more to come, top-right (3x2) and
+bottom-right (4x2). All but the roster are placeholders until they're
+built.
 
 All of the app's code lives in this one file, by design: the host
 imports app.py by its path - nothing added to sys.path, so a module
@@ -108,6 +110,18 @@ except (OSError, ValueError) as _e:
 
 
 def render(ctx, cfg):
+    return ctx.grid(6, 4, [
+        {"x": 0, "y": 0, "w": 3, "h": 2, "spec": ctx.empty("Circadian — coming soon")},
+        {"x": 3, "y": 0, "w": 3, "h": 2, "spec": ctx.empty("Coming soon")},
+        {"x": 0, "y": 2, "w": 2, "h": 2, "spec": _roster(ctx)},
+        {"x": 2, "y": 2, "w": 4, "h": 2, "spec": ctx.empty("Coming soon")},
+    ])
+
+
+def _roster(ctx):
+    """The roster panel, its sub-panel's spec: the timeline between the
+    Plan and Report rails over the upload - or, before any duty, the ask
+    over the picker."""
     picker = ctx.input("file", "upload", label="Upload roster", kind="file", accept=".ics", toggle=BACKFILL)
     if CONFIG is None:
         return ctx.panel(ctx.empty(CONFIG_ERROR), picker)

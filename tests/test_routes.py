@@ -5227,6 +5227,182 @@ def test_lane_headings_fit_complete_in_a_two_by_two(client):
     assert _decls(css[0], ".rail-head")["font-size"] == "10.5px"
 
 
+# ---------- grid: one tile split into sub-panels ----------
+#
+# A grid spec splits its tile into sub-panels, each drawn as a tile of
+# its own: the tile drops its face, the grid lays its cells on the Home
+# grid's own cells and gap, and each sub-panel - a size container with a
+# tile's face - draws its spec as a tile would, so a spec in one sizes
+# to it, and a timeline or a rail in one joins its focus group as it
+# does at the top of a tile. In Configure the tile keeps its face, and
+# is moved and sized whole.
+
+GRID = {"type": "grid", "cols": 6, "rows": 4, "cells": [
+    {"x": 0, "y": 0, "w": 3, "h": 2, "spec": {"type": "empty", "message": "Circadian — coming soon"}},
+    {"x": 3, "y": 0, "w": 3, "h": 2, "spec": {"type": "empty", "message": "Coming soon"}},
+    {"x": 0, "y": 2, "w": 2, "h": 2, "spec": RAILS},
+    {"x": 2, "y": 2, "w": 4, "h": 2, "spec": {"type": "empty", "message": "Coming soon"}},
+]}
+
+
+def test_a_grid_places_each_sub_panel_on_its_cells_and_draws_its_spec(client):
+    page = _page(client)
+    specs = _js(page, "SPECS")
+    assert "    grid: (s, name, appId) => {" in specs
+    grid = specs[specs.index("    grid: (s, name, appId) => {") : specs.index("    empty: s =>")]
+    # The grid's tracks: cols by rows, even, never wider than the tile.
+    assert "const box = el('div','spec-grid');" in grid
+    assert "box.style.gridTemplateColumns = `repeat(${s.cols}, minmax(0, 1fr))`;" in grid
+    assert "box.style.gridTemplateRows = `repeat(${s.rows}, minmax(0, 1fr))`;" in grid
+    # Each cell a sub-panel at its corner - x and y from 0, grid lines
+    # from 1 - spanning its size, its spec drawn for the app as a tile's is.
+    assert "const cell = el('div','spec-cell');" in grid
+    assert "cell.style.gridColumn = `${c.x + 1} / span ${c.w}`;" in grid
+    assert "cell.style.gridRow = `${c.y + 1} / span ${c.h}`;" in grid
+    assert "cell.appendChild(renderSpec(c.spec, name, appId));" in grid
+    # Everything an app sent set as text: no markup.
+    assert "innerHTML" not in grid
+
+
+def test_a_grids_sub_panels_wear_a_tiles_face_and_the_tile_drops_its_own(client):
+    page = _page(client)
+    css = page[: page.index("</style>")]
+    block = css[css.index("/* grid: a tile split into sub-panels") :]
+    block = block[: block.index("/* input:")]
+    assert ".spec-grid{display:grid;gap:var(--tile-gap);min-width:0;min-height:0;}" in block
+    # The tile's own face dropped - out of Configure only, where the tile
+    # keeps its dashed face and controls and is moved and sized whole.
+    assert (".tiles:not(.configuring) .tile:has(> .spec-grid)"
+            "{background:none;border-color:transparent;box-shadow:none;padding:0;}") in block
+    assert css.count(":has(> .spec-grid)") == 1
+    assert (".spec-cell{\n"
+            "  background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow);\n"
+            "  padding:16px 18px;min-width:0;min-height:0;overflow:hidden;\n"
+            "  display:flex;flex-direction:column;container-type:size;\n"
+            "}") in block
+    assert ".spec-cell > *{flex:1;min-height:0;}" in block
+    # Every colour a token.
+    assert not re.search(r"#[0-9a-fA-F]{3,8}\b|rgba?\(", block)
+
+    rules = _css_rules(page)
+    cell, tile = _decls(rules[0], ".spec-cell"), _decls(rules[0], ".tile")
+    # A sub-panel is a size container, as a tile is - so the rails, the
+    # compact card, the lane headings and the cqi type sizes all answer
+    # to it - and wears a tile's face, declaration for declaration.
+    assert cell["container-type"] == "size"
+    assert cell == {k: v for k, v in tile.items() if k != "position"}
+    assert _decls(rules[0], ".spec-cell > *") == _decls(rules[0], ".tile > *")
+    # The tile's own rules as they were.
+    assert ".tile > *{flex:1;min-height:0;}" in css
+    assert tile["container-type"] == "size" and tile["padding"] == "16px 18px"
+
+
+def test_a_two_by_two_sub_panel_draws_as_a_two_by_two_tile(client):
+    page = _page(client)
+    css = _css_rules(page)
+    root = _decls(css[0], ":root")
+    gap = _px(root["--tile-gap"])
+    assert _decls(css[0], ".spec-grid")["gap"] == "var(--tile-gap)"
+    shown = lambda w, h: _styled(css, ".spec-rails > .spec-rail", width=w, height=h).get("display") != "none"
+
+    def sub_panel(w, h, cols, rows, cell):
+        """A w x h sub-panel's content box in a cols x rows tile at a cell
+        size: the tile's span, less its border - its face dropped, so no
+        padding - split into even tracks with the Home grid's gap, less
+        the sub-panel's own padding and border."""
+        dropped = _decls(css[0], ".tiles:not(.configuring) .tile:has(> .spec-grid)")
+        assert dropped["padding"] == "0"
+        border = _px(_decls(css[0], ".tile")["border"].split()[0])
+        inner_w = cols * cell + (cols - 1) * gap - 2 * border
+        inner_h = rows * cell + (rows - 1) * gap - 2 * border
+        track_w, track_h = (inner_w - (cols - 1) * gap) / cols, (inner_h - (rows - 1) * gap) / rows
+        pad_y, pad_x = (_px(v) for v in _decls(css[0], ".spec-cell")["padding"].split())
+        own = _px(_decls(css[0], ".spec-cell")["border"].split()[0])
+        return (w * track_w + (w - 1) * gap - 2 * (pad_x + own), h * track_h + (h - 1) * gap - 2 * (pad_y + own))
+
+    for cell in (_px(root["--tile-cell-max"]), _px(root["--tile-cell-min"])):
+        roster, tile = sub_panel(2, 2, 6, 4, cell), _tile_content(css, 2, 2, cell)
+        # The roster's sub-panel, on FRMS's 6x4 grid, within a pixel of a
+        # real 2x2 tile's - the tile's border, transparent, still takes
+        # its pixel - and on the same side of every rule a 2x2 answers to.
+        assert all(0 <= t - r <= 1 for r, t in zip(roster, tile)), (roster, tile)
+        assert shown(*roster) == shown(*tile)
+        assert _rail_width(css, roster[0]) == _rail_width(css, tile[0])
+        assert _styled(css, ".rail-card", width=_rail_width(css, roster[0]))["height"] \
+            == _styled(css, ".rail-card", width=_rail_width(css, tile[0]))["height"]
+    # At full size (334 x 338 inside a real 2x2): the rails shown, each at
+    # its min, with the compact card.
+    roster = sub_panel(2, 2, 6, 4, _px(root["--tile-cell-max"]))
+    assert roster == (pytest.approx(333 + 1 / 3), 337)
+    assert shown(*roster) and _rail_width(css, roster[0]) == 84
+    assert _styled(css, ".rail-card", width=84)["height"] == "46px"
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
+def test_a_grids_sub_panels_draw_their_specs_as_at_the_top_of_a_tile(client):
+    page = _page(client)
+    r = _node(_rails_script(page, f"""
+        const box = renderSpec({json.dumps(GRID)}, 'FRMS', 'frms');
+        r.grid = [box.className, box.style.gridTemplateColumns, box.style.gridTemplateRows];
+        r.cells = box.children.map(c => [c.className, c.style.gridColumn, c.style.gridRow,
+                                         c.children.map(x => x.className)]);
+        r.placeholders = [0, 1, 3].map(i => box.children[i].textContent);
+        // The roster's rails frame in its sub-panel, its timeline and both
+        // rails in it - and in the FRMS focus group, a member apiece, as
+        // at the top of a tile.
+        const frame = box.children[2].children[0];
+        r.inCell = ['.spec-rails', '.spec-timeline', '.spec-rail', '.tl-scroll', '.rail-cards']
+          .map(sel => [box.querySelectorAll(sel).length, box.children[2].querySelectorAll(sel).length]);
+        const g = focusGroups.get('frms');
+        r.group = [focusGroups.size, g.members.size, timelines.size, new Date(g.focusMs).toISOString(), g.following];
+        r.html = [box, ...box.querySelectorAll('*')].map(n => n._html).join('');
+        // Drawn node for node as the frame is drawn alone.
+        const alone = renderSpec({json.dumps(RAILS)}, 'FRMS', 'frms');
+        r.same = JSON.stringify(tree(frame)) === JSON.stringify(tree(alone));
+        // A scroll by hand on the sub-panel's timeline moves the group,
+        // as on a tile's.
+        show(frame.children[1], 480);
+        scrollTo(frame.children[1], (Date.parse('2026-10-14T03:00:00Z') - {TIMELINE_T0}) * 480 / WEEK);
+        r.scrolled = [new Date(g.focusMs).toISOString(), g.following];
+        // The tile drawn afresh: the sub-panel's members let go of with it.
+        [box, alone].forEach(b => {{
+          b.querySelectorAll('.rail-cards').forEach(l => {{ l.isConnected = false; }});
+          b.querySelector('.tl-scroll').isConnected = false;
+        }});
+        releaseTimelines();
+        r.released = [timelines.size, g.members.size];
+        // Hand-built: cells that aren't a list draw none; a cell's spec
+        // the page can't draw says so in that sub-panel alone.
+        r.noCells = renderSpec({{type: 'grid', cols: 2, rows: 1, cells: 'x'}}, 'X', 'x').children.length;
+        const odd = renderSpec({{type: 'grid', cols: 2, rows: 1, cells: [
+          {{x: 0, y: 0, w: 1, h: 1, spec: {{type: 'nope'}}}},
+          {{x: 1, y: 0, w: 1, h: 1, spec: {{type: 'empty', message: 'Fine'}}}},
+        ]}}, 'X', 'x');
+        r.odd = odd.children.map(c => c.textContent);
+    """))
+
+    assert r["grid"] == ["spec-grid", "repeat(6, minmax(0, 1fr))", "repeat(4, minmax(0, 1fr))"]
+    # Each sub-panel at its corner and spanning its size, its spec its one child.
+    assert r["cells"] == [
+        ["spec-cell", "1 / span 3", "1 / span 2", ["spec-msg"]],
+        ["spec-cell", "4 / span 3", "1 / span 2", ["spec-msg"]],
+        ["spec-cell", "1 / span 2", "3 / span 2", ["spec-rails"]],
+        ["spec-cell", "3 / span 4", "3 / span 2", ["spec-msg"]],
+    ]
+    assert r["placeholders"] == ["Circadian — coming soon", "Coming soon", "Coming soon"]
+    # Every part of the frame inside the roster's sub-panel, none elsewhere.
+    assert r["inCell"] == [[1, 1], [1, 1], [2, 2], [1, 1], [2, 2]]
+    # One group, three members - the timeline and its two rails - on now,
+    # following.
+    assert r["group"] == [1, 3, 3, "2026-10-18T12:00:00.000Z", True]
+    assert r["html"] == ""
+    assert r["same"] is True
+    assert r["scrolled"] == ["2026-10-14T03:00:00.000Z", False]
+    assert r["released"] == [0, 0]
+    assert r["noCells"] == 0
+    assert r["odd"] == ["Couldn't render XUnknown spec type: nope", "Fine"]
+
+
 # ---------- an uninstalled app's data: Remove data ----------
 #
 # Uninstall keeps what an app wrote; GET /api/app-sources lists every
