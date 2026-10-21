@@ -224,7 +224,7 @@ def test_index_splits_applications_into_controls_and_a_list(client, monkeypatch)
     monkeypatch.setitem(main.app.config, "APPS_DIR", fixtures)
     apps = client.get("/api/apps").get_json()
     assert [(a["id"], a["name"]) for a in apps] == [
-        ("caffeine", "Caffeine"), ("import", "Import weigh-ins"), ("mood", "Mood"), ("roster", "Roster"),
+        ("caffeine", "Caffeine"), ("frms", "FRMS"), ("import", "Import weigh-ins"), ("mood", "Mood"),
         ("steps", "Steps"), ("steps-metres", "Distance (from steps)"), ("weight", "Weight"),
         ("workout-log", "Workout log"),
     ]

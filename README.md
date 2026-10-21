@@ -438,8 +438,12 @@ Nothing is derived from a session, so no day is re-derived for it. The
 **Workout log** app (`tests/fixtures/apps/workout-log/`), which files a workout
 just finished from how many minutes it lasted, is the example.
 
-The **Roster** app (`tests/fixtures/apps/roster/`) puts the two together: you
-upload a duty roster's `.ics` export, and the app — not OpenFit — reads it.
+The **FRMS** app (`tests/fixtures/apps/frms/`) puts the two together. It's
+the whole FRMS suite as one app — one tile, 6 wide by 4 tall (its only size),
+and one `config.json` — to be drawn as four sub-panels; today its roster panel,
+the timeline and rails below, fills the tile, and a circadian panel is next.
+All its code is in its one `app.py`, by design. You upload a duty roster's
+`.ics` export, and the app — not OpenFit — reads it.
 Every event with real times is a work duty (an all-day one is a day off or
 leave, whatever its code, and is skipped), filed as a session from its start to
 its end as the calendar gives them in UTC: `duties_complete` if it had ended
@@ -458,14 +462,13 @@ home base and timezone, and a table of destinations, so adding a carrier or a
 duty code is a config edit, made with Update. The committed copy's config is a
 synthetic one for the tests; your own stays on your server. If the config is
 missing or won't read, the tile says so over its picker and an upload is
-refused, nothing filed. The app also files each day's
-duty hours as its own metrics, `duty_hours_complete` and `duty_hours_rostered`
-(summed by the UTC day a duty starts). If you upload a roster after it
+refused, nothing filed. The sessions are all the app files: it has no
+metrics of its own, so duty hours, when a report needs them, are read from the
+duties, and a long day of duty is never refused. If you upload a roster after it
 started, tick **Backfill** beside the picker: a duty already over is then filed
 into the rostered plan as well as the flown record (its copy there marked
 `capture: "backfill"`, so a plan put back after the fact is always told from one
-captured live) and counted in the rostered hours; a duty still to come is filed
-once either way. Because a backfilled duty replaces any plan you'd already
+captured live); a duty still to come is filed once either way. Because a backfilled duty replaces any plan you'd already
 uploaded for it, Save asks you to confirm first; unticked, it's the plain split.
 Its tile draws the duties back on a timeline over the picker — the upload at
 the foot: the last six months or so and everything still to come, rostered on the left
@@ -491,13 +494,10 @@ among them), and **Report**, beside the flown, every trip home. Each rail shows
 five at a time and restacks as you scroll the timeline: Plan looks ahead of the
 cursor, its next trip at the top, and Report looks back, the latest trip home
 at the bottom — each held full at either end of its list, the trip nearest the
-cursor outlined. The rails show down to a 2×2 tile, with compact cards there
-(roomy ones at 4×2 or 4×3): in a 2×1, or a 2-wide tile on a small screen,
-they're left out and the timeline is exactly as before.
-Uploading again replaces a duty with the same start and
-the same day's hours, but removes nothing: a duty dropped from a later roster
-keeps its row for now. Both kinds and both metrics file under the Roster
-category: OpenFit keeps operational context like this because you do — it
+cursor outlined.
+Uploading again replaces a duty with the same start, but removes nothing: a
+duty dropped from a later roster keeps its row for now. Both kinds file under
+the Roster category: OpenFit keeps operational context like this because you do — it
 doesn't decide what counts as health data.
 
 An app isn't limited to OpenFit's metrics: it can **invent its own**. Declare
@@ -660,7 +660,7 @@ its `type` (the device's activity type, lowercased), `duration_minutes`,
 An app can file sessions of these kinds too, under its own source
 (`ctx.write_session()`, above). Two more kinds, `duties_rostered` and
 `duties_complete`, hold work duties off a roster — each the duty's report to
-release, in UTC — filed by a roster app (the Roster app, above), never a device.
+release, in UTC — filed by a roster app (the FRMS app, above), never a device.
 A third table, `samples`, is the series (intraday) grain: one row per
 `(source, metric, timestamp)` for readings like heart rate every couple of
 minutes, filed under its own series vocabulary (`heart_rate` in bpm,

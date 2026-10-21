@@ -99,8 +99,8 @@ The primary axis for grouping, in display order (`CATEGORIES`):
 6. Nutrition & hydration
 7. Women's health — declared, no keys yet (see *Deferred*)
 8. Roster — operational context, not a body measurement: the session kinds
-   `duties_rostered` / `duties_complete` and a roster app's own duty hours
-   (added after v2, with the roster path)
+   `duties_rostered` / `duties_complete` (added after v2, with the roster
+   path; the roster app's own duty-hour metrics went when it became FRMS)
 9. Other
 
 A category is metadata the key carries, independent of its source: steps are
