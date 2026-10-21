@@ -1,9 +1,22 @@
-"""Roster — a duty roster's .ics, filed as duty sessions.
+"""FRMS — one app, one tile, one config.
 
-The file picker is OpenFit's; the format is this app's. Save hands
-handle() the roster picked - an iCalendar (.ics) export, a Cathay-style
-one in mind - as a FileUpload, and the host never reads it: this app
-unfolds and parses it itself, with the standard library alone.
+The FRMS suite is this one app: one tile, 6 wide by 4 tall (app.yaml's
+only size), one config.json, drawn as sub-panels - the roster panel,
+the timeline and its Plan and Report rails, today; a circadian panel
+and two more to come. Until the sub-panels are laid out, the roster
+panel fills the tile.
+
+All of the app's code lives in this one file, by design: the host
+imports app.py by its path - nothing added to sys.path, so a module
+beside it couldn't be imported by name - and reloads the app only when
+app.yaml or app.py changes, so code in any other file would go stale.
+What's specific to an airline or an owner is config.json's.
+
+The roster panel takes a duty roster's .ics. The file picker is
+OpenFit's; the format is this app's. Save hands handle() the roster
+picked - an iCalendar (.ics) export, a Cathay-style one in mind - as a
+FileUpload, and the host never reads it: this app unfolds and parses it
+itself, with the standard library alone.
 
 What's a duty is structural, never a list of codes: an event with real
 times (a DTSTART and a DTEND, in UTC) is a work duty, and is filed; an
@@ -16,21 +29,18 @@ seen before is filed as "other", the code kept.
 Each duty is a session of its DTSTART..DTEND - its envelope, already in
 UTC; the description's local times aren't read for it, only kept,
 verbatim - under duties_complete if it had ended when the roster was
-uploaded, else duties_rostered. Beside them, a figure a day for each: the
-hours of the duties that started that day (UTC), summed -
-duty_hours_complete and duty_hours_rostered, metrics this app invents
-(app.yaml).
+uploaded, else duties_rostered. The sessions are all it files: duty
+hours, when a report needs them, are read from them.
 
 Backfill, a checkbox beside the picker, is for a roster uploaded after
 it started: a duty already over is filed into the rostered plan as well
 as the flown record - its rostered copy captured "backfill", so a
-reconstructed plan is always told from one captured live - and counted
-in the rostered hours too. A duty still to come is filed once, backfill
-or not. Ticked, the page asks first: a backfilled duty replaces any plan
-already uploaded for it.
+reconstructed plan is always told from one captured live. A duty still
+to come is filed once, backfill or not. Ticked, the page asks first: a
+backfilled duty replaces any plan already uploaded for it.
 
-The tile reads the duties back (ctx.sessions()) - about six months of
-them, and all still to come - and draws them on a timeline over the
+The roster panel reads the duties back (ctx.sessions()) - about six
+months of them, and all still to come - and draws them on a timeline over the
 picker: the roster on the left (headed Roster), what's complete - flown
 - on the right (Complete), each duty a block at its time and labelled
 with its code, a line at now and the complete side greyed after it. Behind the blocks, each lane shades its trips away
@@ -46,18 +56,18 @@ lane, looking ahead of the cursor; every trip home on the Report rail,
 beside the flown, looking back. Each rail shows five at a time,
 restacking as the timeline scrolls.
 
-Uploading again replaces a duty of the same kind and start, and a day's
-figure; it removes nothing, so a duty taken off the roster keeps its
-row until another lands on its start.
+Uploading again replaces a duty of the same kind and start; it removes
+nothing, so a duty taken off the roster keeps its row until another
+lands on its start.
 
-All or nothing: a refusal - no duties, a time not in UTC, a day over 24
-hours - writes nothing; the host rolls back whatever was already filed.
+All or nothing: a refusal - no duties, a time not in UTC - writes
+nothing; the host rolls back whatever was already filed.
 
 The parsing, labelling, routing and trip-finding are module functions -
 parse_events(), duties(), classify() (a flight's dep and arr its origin
 and final destination, first leg to last, the description's legs before
-the title's), bucket_for(), filed_as(), daily_hours(), trips(),
-trip_cards() - pure, for a test to call on their own.
+the title's), bucket_for(), filed_as(), trips(), trip_cards() - pure,
+for a test to call on their own.
 """
 
 import json
@@ -68,9 +78,6 @@ from typing import NamedTuple
 
 ROSTERED = "duties_rostered"
 COMPLETE = "duties_complete"
-
-# Each kind's figure a day: the app's own metrics (app.yaml).
-HOURS = {ROSTERED: "duty_hours_rostered", COMPLETE: "duty_hours_complete"}
 
 NON_UTC = "roster has a non-UTC time, which isn't supported yet: {}"
 
@@ -214,12 +221,6 @@ def handle(ctx, action, payload):
     for duty in found:
         for kind, capture in filed_as(duty.end, now, backfill):
             ctx.write_session(kind, duty.start, duty.end, session_summary(duty, capture))
-    for (metric, day), hours in sorted(daily_hours(found, now, backfill).items()):
-        try:
-            # The host holds each to the declared range, 0-24.
-            ctx.write_metric(metric, hours, date=day)
-        except ValueError as e:
-            raise ValueError(f"{day}: {e}") from None
 
 
 # ---------- reading the .ics ----------
@@ -458,21 +459,6 @@ def filed_as(end, now, backfill=False):
     if backfill and kind == COMPLETE:
         filed.append((ROSTERED, "backfill"))
     return filed
-
-
-def daily_hours(duties, now, backfill=False):
-    """{(metric, YYYY-MM-DD): hours} - each kind's duty hours a day: the
-    duties that started that day (UTC) summed, one past midnight counted
-    whole on the day it started - each kind a duty is filed as
-    (filed_as()), so backfilling counts a past duty in the rostered hours
-    too, as its sessions are. A duty twice in the file (one kind, one
-    start) counts once, its last, as its session does."""
-    filed = {(kind, d.start): d for d in duties for kind, _ in filed_as(d.end, now, backfill)}
-    seconds = {}
-    for (kind, start), d in filed.items():
-        key = (HOURS[kind], start.date().isoformat())
-        seconds[key] = seconds.get(key, 0) + (d.end - d.start).total_seconds()
-    return {key: s / 3600 for key, s in seconds.items()}
 
 
 # ---------- trips ----------

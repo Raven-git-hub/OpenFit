@@ -1,8 +1,8 @@
 """
-The roster app's own logic, on its own: reading an .ics, picking out the
-duties, labelling them and routing them by the clock.
+The FRMS app's roster engine, on its own: reading an .ics, picking out
+the duties, labelling them and routing them by the clock.
 
-The app (tests/fixtures/apps/roster/app.py) is loaded by path, as the
+The app (tests/fixtures/apps/frms/app.py) is loaded by path, as the
 host loads it - nothing added to sys.path - reading its rules from the
 config.json beside it (the fixture's, synthetic), and its module functions
 called directly, with a fixed `now`; its render() too, over a ctx of
@@ -29,14 +29,14 @@ FIXTURES = Path(__file__).parent / "fixtures"
 SAMPLE = FIXTURES / "rosters" / "sample.ics"
 
 
-def load_roster_app():
-    spec = importlib.util.spec_from_file_location("roster_app", FIXTURES / "apps" / "roster" / "app.py")
+def load_frms_app():
+    spec = importlib.util.spec_from_file_location("frms_app", FIXTURES / "apps" / "frms" / "app.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
 
 
-roster = load_roster_app()
+frms = load_frms_app()
 
 
 def sample():
@@ -66,7 +66,7 @@ def timed(summary, start="20251120T010000Z", end="20251120T090000Z", description
 
 
 def test_parse_skips_all_day_and_keeps_timed():
-    events = roster.parse_events(sample())
+    events = frms.parse_events(sample())
 
     # Every event read: the O and G days off all-day, marked so ...
     assert [(e["summary"], e["all_day"]) for e in events] == [
@@ -79,7 +79,7 @@ def test_parse_skips_all_day_and_keeps_timed():
     ]
     assert events[0]["start"] == date(2025, 11, 3)
     # ... and only the four timed ones are duties.
-    found = roster.duties(events)
+    found = frms.duties(events)
     assert [d.code for d in found] == ["CX9101", "CX9102", "R1E", "A1534"]
     assert len(found) == 4
 
@@ -89,11 +89,11 @@ def test_any_all_day_event_is_a_day_off_whatever_its_code(code):
     # Structural, not a list: a code never seen before, all day, is off.
     text = ics(["DTSTART;VALUE=DATE:20251120", "DTEND;VALUE=DATE:20251121", f"SUMMARY:20-Nov {code}"])
 
-    assert roster.duties(roster.parse_events(text)) == []
+    assert frms.duties(frms.parse_events(text)) == []
 
 
 def test_parse_unfolds_and_unescapes_the_description():
-    [_, _, flight, *_] = roster.parse_events(sample())
+    [_, _, flight, *_] = frms.parse_events(sample())
 
     # The folded line joined, \n a line break, \, a comma - verbatim else.
     assert flight["description"] == (
@@ -102,11 +102,11 @@ def test_parse_unfolds_and_unescapes_the_description():
 
 
 def test_parse_reads_a_roster_with_bare_line_feeds_too():
-    assert roster.parse_events(sample().replace("\r\n", "\n")) == roster.parse_events(sample())
+    assert frms.parse_events(sample().replace("\r\n", "\n")) == frms.parse_events(sample())
 
 
 def test_unescaping_takes_each_escape_once():
-    [event] = roster.parse_events(ics(timed("x", description=r"a\\nb\;c\Nd\,e\\")))
+    [event] = frms.parse_events(ics(timed("x", description=r"a\\nb\;c\Nd\,e\\")))
 
     # \\n is a backslash and an n, not a backslash and a line break.
     assert event["description"] == "a\\nb;c\nd,e\\"
@@ -116,14 +116,14 @@ def test_an_alarm_inside_an_event_lends_it_nothing():
     text = ics([*timed("20-Nov R1E", description="Home reserve"),
                 "BEGIN:VALARM", "ACTION:DISPLAY", "DESCRIPTION:Reminder", "END:VALARM"])
 
-    [event] = roster.parse_events(text)
+    [event] = frms.parse_events(text)
     assert event["description"] == "Home reserve"
 
 
 def test_an_event_that_cant_be_read_is_skipped_not_the_upload(capsys):
     text = ics(timed("20-Nov R1E", start="2025-11-20 01:00"), timed("21-Nov R2E", "20251121T010000Z", "20251121T090000Z"))
 
-    events = roster.parse_events(text)
+    events = frms.parse_events(text)
 
     assert [e["summary"] for e in events] == ["21-Nov R2E"]
     assert "[roster] skipping an event that can't be read, '20-Nov R1E'" in capsys.readouterr().out
@@ -140,7 +140,7 @@ def test_non_utc_timed_event_is_rejected(line):
     text = ics([line, "DTEND:20251120T170000Z", "SUMMARY:20-Nov R1E"])
 
     with pytest.raises(ValueError) as refused:
-        roster.parse_events(text)
+        frms.parse_events(text)
     assert str(refused.value) == f"roster has a non-UTC time, which isn't supported yet: {line}"
 
 
@@ -151,12 +151,12 @@ def test_a_timezone_definition_is_no_event_and_no_refusal():
             "TZOFFSETFROM:+0800", "TZOFFSETTO:+0800", "END:STANDARD", "END:VTIMEZONE"]
     text = ics(timed("20-Nov R1E")).replace("BEGIN:VEVENT", "\r\n".join(zone) + "\r\nBEGIN:VEVENT", 1)
 
-    assert [e["summary"] for e in roster.parse_events(text)] == ["20-Nov R1E"]
+    assert [e["summary"] for e in frms.parse_events(text)] == ["20-Nov R1E"]
 
 
 def test_a_file_that_isnt_icalendar_has_no_events():
-    assert roster.parse_events("2026-01-03 81.2\n2026-01-04 80.9\n") == []
-    assert roster.parse_events("") == []
+    assert frms.parse_events("2026-01-03 81.2\n2026-01-04 80.9\n") == []
+    assert frms.parse_events("") == []
 
 
 # ---------- duties ----------
@@ -169,13 +169,13 @@ def test_a_timed_event_with_no_end_or_ending_before_it_starts_is_skipped(capsys)
         timed("22-Nov R3E", "20251122T010000Z", "20251122T010000Z"),   # no length, still a duty
     )
 
-    assert [d.code for d in roster.duties(roster.parse_events(text))] == ["R3E"]
+    assert [d.code for d in frms.duties(frms.parse_events(text))] == ["R3E"]
     out = capsys.readouterr().out
     assert "skipping '20-Nov R1E'" in out and "skipping '21-Nov R2E'" in out
 
 
 def test_classify_flight_reserve_sim_other():
-    classify = roster.classify
+    classify = frms.classify
     # A flight: CX and its number, apart or together; the route; a
     # trailing crew position when there is one.
     assert classify("05-Nov CX 9101 ZZA-ZZB RP") == {
@@ -199,21 +199,21 @@ def test_classify_flight_reserve_sim_other():
 def test_a_duty_of_a_code_never_seen_is_still_a_duty():
     text = ics(timed("20-Nov ZQX9 ZZA", description="Something new"))
 
-    [duty] = roster.duties(roster.parse_events(text))
+    [duty] = frms.duties(frms.parse_events(text))
 
     assert (duty.type, duty.code, duty.summary, duty.description) == ("other", "ZQX9", "20-Nov ZQX9 ZZA", "Something new")
 
 
 def test_a_dutys_summary_is_its_label_code_and_raw_description():
-    flight, _, reserve, _ = roster.duties(roster.parse_events(sample()))
+    flight, _, reserve, _ = frms.duties(frms.parse_events(sample()))
 
-    assert roster.session_summary(flight) == {
+    assert frms.session_summary(flight) == {
         "capture": "live", "type": "flight", "code": "CX9101", "label": "05-Nov CX 9101 ZZA-ZZB RP",
         "raw": "CX9101 ZZA-ZZB\nRPT 23:10L\nZZA 00:10L - ZZB 08:40L BLK 09:30 A359, seat 2\nREL 12:10L\nTOTAL 13:00",
         "flight_no": "CX9101", "dep": "ZZA", "arr": "ZZB", "position": "RP",
     }
     # No flight keys for a reserve: left out, not null.
-    assert roster.session_summary(reserve) == {
+    assert frms.session_summary(reserve) == {
         "capture": "live", "type": "reserve", "code": "R1E", "label": "10-Nov R1E",
         "raw": "R1E - Home reserve\nRPT 06:00L REL 18:00L\nTOTAL 12:00",
     }
@@ -225,38 +225,10 @@ def test_a_dutys_summary_is_its_label_code_and_raw_description():
 def test_bucket_for_complete_vs_rostered():
     now = utc(2025, 11, 10, 12, 0)
 
-    assert roster.bucket_for(utc(2025, 11, 8, 13, 0), now) == "duties_complete"     # over
-    assert roster.bucket_for(now, now) == "duties_complete"                         # just over
-    assert roster.bucket_for(now + timedelta(seconds=1), now) == "duties_rostered"  # under way
-    assert roster.bucket_for(utc(2025, 11, 12, 5, 30), now) == "duties_rostered"    # to come
-
-
-def test_daily_hours_sum_a_day_by_its_start_and_split_by_kind():
-    now = utc(2025, 11, 20, 12, 0)
-    text = ics(
-        timed("19-Nov R1E", "20251119T010000Z", "20251119T050000Z"),         # 4h  over
-        timed("19-Nov A1534", "20251119T080000Z", "20251119T113000Z"),       # 3.5h over, same day
-        timed("20-Nov CX9101 ZZA-ZZB", "20251120T100000Z", "20251121T000000Z"),  # 14h, under way at now
-        timed("20-Nov R2E", "20251120T060000Z", "20251120T080000Z"),         # 2h  over
-        timed("21-Nov CX9102 ZZB-ZZA", "20251121T220000Z", "20251122T090000Z"),  # 11h to come, past midnight
-    )
-
-    assert roster.daily_hours(roster.duties(roster.parse_events(text)), now) == {
-        ("duty_hours_complete", "2025-11-19"): 7.5,
-        ("duty_hours_complete", "2025-11-20"): 2.0,
-        ("duty_hours_rostered", "2025-11-20"): 14.0,
-        ("duty_hours_rostered", "2025-11-21"): 11.0,   # whole, on the day it started
-    }
-
-
-def test_a_duty_twice_in_the_file_counts_once():
-    now = utc(2025, 11, 30)
-    twice = timed("19-Nov R1E", "20251119T010000Z", "20251119T050000Z")
-
-    duties = roster.duties(roster.parse_events(ics(twice, twice)))
-
-    assert len(duties) == 2
-    assert roster.daily_hours(duties, now) == {("duty_hours_complete", "2025-11-19"): 4.0}
+    assert frms.bucket_for(utc(2025, 11, 8, 13, 0), now) == "duties_complete"     # over
+    assert frms.bucket_for(now, now) == "duties_complete"                         # just over
+    assert frms.bucket_for(now + timedelta(seconds=1), now) == "duties_rostered"  # under way
+    assert frms.bucket_for(utc(2025, 11, 12, 5, 30), now) == "duties_rostered"    # to come
 
 
 # ---------- backfill: past duties into the plan too ----------
@@ -267,52 +239,27 @@ def test_filed_as_is_the_clock_split_and_backfill_doubles_only_a_past_duty():
     past, just_over, under_way = utc(2025, 11, 8, 13, 0), now, now + timedelta(seconds=1)
 
     # Off: one kind each, by the clock, captured live.
-    assert roster.filed_as(past, now) == [("duties_complete", "live")]
-    assert roster.filed_as(under_way, now) == [("duties_rostered", "live")]
-    assert roster.filed_as(past, now, backfill=False) == [("duties_complete", "live")]
+    assert frms.filed_as(past, now) == [("duties_complete", "live")]
+    assert frms.filed_as(under_way, now) == [("duties_rostered", "live")]
+    assert frms.filed_as(past, now, backfill=False) == [("duties_complete", "live")]
     # On: a duty that's over is flown, and put back into the plan - its
     # copy there captured "backfill"; one still to come is as it was.
-    assert roster.filed_as(past, now, backfill=True) == [("duties_complete", "live"), ("duties_rostered", "backfill")]
-    assert roster.filed_as(just_over, now, backfill=True) == [("duties_complete", "live"), ("duties_rostered", "backfill")]
-    assert roster.filed_as(under_way, now, backfill=True) == [("duties_rostered", "live")]
+    assert frms.filed_as(past, now, backfill=True) == [("duties_complete", "live"), ("duties_rostered", "backfill")]
+    assert frms.filed_as(just_over, now, backfill=True) == [("duties_complete", "live"), ("duties_rostered", "backfill")]
+    assert frms.filed_as(under_way, now, backfill=True) == [("duties_rostered", "live")]
 
 
 def test_a_backfilled_summary_says_so():
-    flight = roster.duties(roster.parse_events(sample()))[0]
+    flight = frms.duties(frms.parse_events(sample()))[0]
 
-    live = roster.session_summary(flight)
-    backfilled = roster.session_summary(flight, capture="backfill")
+    live = frms.session_summary(flight)
+    backfilled = frms.session_summary(flight, capture="backfill")
 
     # The capture is the one difference: the paper trail of a plan put
     # back after the fact.
     assert live["capture"] == "live" and backfilled["capture"] == "backfill"
     assert {**backfilled, "capture": "live"} == live
-    assert roster.session_summary(flight, "live") == live
-
-
-def test_backfilled_hours_count_a_past_duty_in_the_rostered_hours_too():
-    now = utc(2025, 11, 20, 12, 0)
-    text = ics(
-        timed("19-Nov R1E", "20251119T010000Z", "20251119T050000Z"),            # 4h over
-        timed("19-Nov A1534", "20251119T080000Z", "20251119T113000Z"),          # 3.5h over, same day
-        timed("21-Nov CX9102 ZZB-ZZA", "20251121T220000Z", "20251122T090000Z"),  # 11h to come
-        timed("19-Nov R1E", "20251119T010000Z", "20251119T050000Z"),            # the first, twice
-    )
-    found = roster.duties(roster.parse_events(text))
-
-    # Each past day's hours both flown and rostered, as its sessions are
-    # filed - the duty in the file twice still once; a day to come
-    # rostered alone, counted once.
-    assert roster.daily_hours(found, now, backfill=True) == {
-        ("duty_hours_complete", "2025-11-19"): 7.5,
-        ("duty_hours_rostered", "2025-11-19"): 7.5,
-        ("duty_hours_rostered", "2025-11-21"): 11.0,
-    }
-    # Off, the plain split - as before backfill.
-    assert roster.daily_hours(found, now) == roster.daily_hours(found, now, backfill=False) == {
-        ("duty_hours_complete", "2025-11-19"): 7.5,
-        ("duty_hours_rostered", "2025-11-21"): 11.0,
-    }
+    assert frms.session_summary(flight, "live") == live
 
 
 # ---------- the tile ----------
@@ -332,14 +279,14 @@ PICKER = {
 }
 
 
-def file_duty(conn, kind, start, end, code, source="app:roster"):
+def file_duty(conn, kind, start, end, code, source="app:frms"):
     write_session(conn, source, kind, start, end, {"capture": "live", "type": "other", "code": code})
 
 
 def drawn(conn):
     """render()'s spec, and the instants either side of it."""
     before = datetime.now(timezone.utc).replace(microsecond=0)
-    spec = roster.render(host.Ctx(conn, today=TODAY), {})
+    spec = frms.render(host.Ctx(conn, today=TODAY), {})
     return spec, before, datetime.now(timezone.utc)
 
 
@@ -393,12 +340,12 @@ def test_the_upload_is_at_the_tiles_foot_in_every_state(conn):
     conn.commit()
     [frame, picker] = drawn(conn)[0]["children"]
     assert frame["type"] == "rails" and frame["timeline"]["type"] == "timeline" and picker == PICKER
-    assert picker["toggle"] == roster.BACKFILL
+    assert picker["toggle"] == frms.BACKFILL
     assert picker["toggle"]["confirm"].startswith("Backfill past duties into your rostered plan?")
 
 
 def test_a_duty_with_no_code_is_a_block_with_no_label(conn):
-    write_session(conn, "app:roster", "duties_complete", "2026-10-10T01:00:00Z", "2026-10-10T02:00:00Z", {})
+    write_session(conn, "app:frms", "duties_complete", "2026-10-10T01:00:00Z", "2026-10-10T02:00:00Z", {})
     conn.commit()
 
     [frame, _] = drawn(conn)[0]["children"]
@@ -411,7 +358,7 @@ def test_a_duty_with_no_code_is_a_block_with_no_label(conn):
 def file_flight(conn, kind, start, end, code, route):
     """A flight duty, filed as the app files one: its route a summary's dep and arr."""
     dep, arr = route.split("-")
-    write_session(conn, "app:roster", kind, start, end,
+    write_session(conn, "app:frms", kind, start, end,
                   {"capture": "live", "type": "flight", "code": code, "flight_no": code, "dep": dep, "arr": arr})
 
 
@@ -459,7 +406,7 @@ def test_render_flanks_the_timeline_with_the_plan_and_report_rails(conn):
     # its title.
     file_flight(conn, "duties_complete", "2026-10-01T01:00:00Z", "2026-10-01T14:00:00Z", "CX9101", "ZZA-ZZB")
     file_flight(conn, "duties_complete", "2026-10-03T02:00:00Z", "2026-10-03T13:00:00Z", "CX9102", "ZZB-ZZA")
-    write_session(conn, "app:roster", "duties_complete", "2026-10-08T01:00:00Z", "2026-10-08T09:00:00Z",
+    write_session(conn, "app:frms", "duties_complete", "2026-10-08T01:00:00Z", "2026-10-08T09:00:00Z",
                   {"capture": "live", "type": "flight", "code": "CX9105", "flight_no": "CX9105", "dep": "ZZA",
                    "arr": "ZZA", "label": "08-Oct CX 9105 ZZA-ZZD / 08-Oct CX 9106 ZZD-ZZA", "raw": ""})
     # Under way: flown out, its way home still rostered - one trip across
@@ -533,13 +480,13 @@ def test_classify_takes_its_types_from_the_config():
     # Another airline's prefix, read by the same engine: here QF is the
     # flight, and its number/route/position parse just as a CX's would.
     other_airline = cfg([{"type": "flight", "prefixes": ["QF"]}])
-    assert roster.classify("05-Nov QF123 ZZA-ZZB RP", other_airline) == {
+    assert frms.classify("05-Nov QF123 ZZA-ZZB RP", other_airline) == {
         "type": "flight", "code": "QF123", "flight_no": "QF123",
         "dep": "ZZA", "arr": "ZZB", "position": "RP",
     }
     # And with no rule for it, a CX is just "other": nothing about the
     # carrier is baked into the code.
-    assert roster.classify("05-Nov CX9101 ZZA-ZZB", other_airline) == {"type": "other", "code": "CX9101"}
+    assert frms.classify("05-Nov CX9101 ZZA-ZZB", other_airline) == {"type": "other", "code": "CX9101"}
 
 
 def test_a_regex_rule_matches_and_the_first_rule_wins():
@@ -547,12 +494,12 @@ def test_a_regex_rule_matches_and_the_first_rule_wins():
         {"type": "sim", "regex": r"^A\d"},
         {"type": "reserve", "prefixes": ["A"]},   # also matches A1534, but sim is first
     ])
-    assert roster.classify("12-Nov A1534", rules)["type"] == "sim"       # the regex, first
-    assert roster.classify("12-Nov AX", rules)["type"] == "reserve"      # no digit: the prefix
+    assert frms.classify("12-Nov A1534", rules)["type"] == "sim"       # the regex, first
+    assert frms.classify("12-Nov AX", rules)["type"] == "reserve"      # no digit: the prefix
 
 
 def test_an_unmatched_code_takes_the_configs_default():
-    assert roster.classify("13-Nov ZZZ", cfg([], default="ground")) == {"type": "ground", "code": "ZZZ"}
+    assert frms.classify("13-Nov ZZZ", cfg([], default="ground")) == {"type": "ground", "code": "ZZZ"}
 
 
 # ---------- the config must load ----------
@@ -569,10 +516,10 @@ def load_with_config(tmp_path, config_text):
     config.json - or no config.json at all when config_text is None - so the
     module-level load runs against it. Each load gets its own module name so
     nothing is cached between cases."""
-    (tmp_path / "app.py").write_text((FIXTURES / "apps" / "roster" / "app.py").read_text())
+    (tmp_path / "app.py").write_text((FIXTURES / "apps" / "frms" / "app.py").read_text())
     if config_text is not None:
         (tmp_path / "config.json").write_text(config_text)
-    spec = importlib.util.spec_from_file_location(f"roster_cfg_{tmp_path.name}", tmp_path / "app.py")
+    spec = importlib.util.spec_from_file_location(f"frms_cfg_{tmp_path.name}", tmp_path / "app.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -631,8 +578,8 @@ def test_a_config_with_no_home_base_shades_no_trips(tmp_path, conn):
 
 def test_a_good_config_loads():
     # The fixture's own config.json, loaded as the host loads it.
-    assert roster.CONFIG is not None and roster.CONFIG_ERROR is None
-    assert any(r.get("type") == "flight" for r in roster.CONFIG["duty_types"])
+    assert frms.CONFIG is not None and frms.CONFIG_ERROR is None
+    assert any(r.get("type") == "flight" for r in frms.CONFIG["duty_types"])
 
 
 # ---------- trips: the layovers ----------
@@ -647,11 +594,11 @@ HOME = "HKG"
 
 def flight(route, start, end, code="CX100"):
     dep, arr = route.split("-")
-    return host.Session(start, end, "app:roster", {"type": "flight", "code": code, "dep": dep, "arr": arr})
+    return host.Session(start, end, "app:frms", {"type": "flight", "code": code, "dep": dep, "arr": arr})
 
 
 def duty(kind, start, end, code, **summary):
-    return host.Session(start, end, "app:roster", {"type": kind, "code": code, **summary})
+    return host.Session(start, end, "app:frms", {"type": kind, "code": code, **summary})
 
 
 def trip(start, end, out_port):
@@ -664,7 +611,7 @@ def test_a_simple_trip_is_one_band():
 
     # From the flight out's start to the flight home's end; the port it
     # flew out to. Taken by start, whatever order they're given in.
-    assert roster.trips([back, out], HOME) == [trip("2026-11-05T15:10:00Z", "2026-11-08T13:00:00Z", "MEL")]
+    assert frms.trips([back, out], HOME) == [trip("2026-11-05T15:10:00Z", "2026-11-08T13:00:00Z", "MEL")]
 
 
 def test_an_integrated_pattern_is_one_band():
@@ -676,7 +623,7 @@ def test_an_integrated_pattern_is_one_band():
 
     # One trip - the whole time away - not one a sector: BKK-SIN is inside
     # it, and the first port is the one it's labelled with.
-    assert roster.trips(sectors, HOME) == [trip("2026-11-05T01:00:00Z", "2026-11-07T10:00:00Z", "BKK")]
+    assert frms.trips(sectors, HOME) == [trip("2026-11-05T01:00:00Z", "2026-11-07T10:00:00Z", "BKK")]
 
 
 def test_reserve_and_sim_between_trips_open_no_band():
@@ -694,7 +641,7 @@ def test_reserve_and_sim_between_trips_open_no_band():
     ]
 
     # Two trips, each its flights' - nothing between opens or stretches one.
-    assert roster.trips(sessions, HOME, open_end="2026-11-30T00:00:00Z") == [
+    assert frms.trips(sessions, HOME, open_end="2026-11-30T00:00:00Z") == [
         trip("2026-11-01T15:00:00Z", "2026-11-04T13:00:00Z", "MEL"),
         trip("2026-11-10T01:00:00Z", "2026-11-11T08:00:00Z", "BKK"),
     ]
@@ -706,14 +653,14 @@ def test_an_open_rostered_trip_runs_to_the_rosters_end():
 
     # Out, and the roster runs out before the flight home: the trip ends
     # where the roster does.
-    assert roster.trips([out, reserve], HOME, open_end="2026-11-25T10:00:00Z") == [
+    assert frms.trips([out, reserve], HOME, open_end="2026-11-25T10:00:00Z") == [
         trip("2026-11-20T15:00:00Z", "2026-11-25T10:00:00Z", "MEL"),
     ]
     # With nowhere to end it, it's dropped: a band needs an end.
-    assert roster.trips([out, reserve], HOME) == []
+    assert frms.trips([out, reserve], HOME) == []
     # And never before its flight out has landed - the flight out the
     # roster's last word, an end before that is the flight's.
-    assert roster.trips([out], HOME, open_end="2026-11-20T15:00:00Z") == [
+    assert frms.trips([out], HOME, open_end="2026-11-20T15:00:00Z") == [
         trip("2026-11-20T15:00:00Z", "2026-11-21T04:00:00Z", "MEL"),
     ]
 
@@ -726,7 +673,7 @@ def test_an_open_complete_trip_runs_to_now():
     ]
 
     # Flown out - and on, a sector - and not home yet: away until now.
-    assert roster.trips(flown, HOME, open_end=now) == [trip("2026-11-05T01:00:00Z", now, "BKK")]
+    assert frms.trips(flown, HOME, open_end=now) == [trip("2026-11-05T01:00:00Z", now, "BKK")]
 
 
 def test_back_to_back_trips_are_two_bands():
@@ -738,7 +685,7 @@ def test_back_to_back_trips_are_two_bands():
         flight("BKK-HKG", "2026-11-06T05:00:00Z", "2026-11-06T08:00:00Z"),
     ]
 
-    assert roster.trips(sessions, HOME) == [
+    assert frms.trips(sessions, HOME) == [
         trip("2026-11-01T15:00:00Z", "2026-11-04T13:00:00Z", "MEL"),
         trip("2026-11-05T01:00:00Z", "2026-11-06T08:00:00Z", "BKK"),
     ]
@@ -755,19 +702,19 @@ def test_a_flight_with_no_route_is_skipped_for_boundaries():
     # closes nothing - and the trip after is its own.
     out_unknown = [routeless("2026-11-01T15:00:00Z", "2026-11-02T04:00:00Z"),
                    flight("MEL-HKG", "2026-11-04T02:00:00Z", "2026-11-04T13:00:00Z"), *bkk]
-    assert roster.trips(out_unknown, HOME) == [trip("2026-11-10T01:00:00Z", "2026-11-11T08:00:00Z", "BKK")]
+    assert frms.trips(out_unknown, HOME) == [trip("2026-11-10T01:00:00Z", "2026-11-11T08:00:00Z", "BKK")]
     # Its flight home with no route: that trip never closes - the next
     # flight out of base shows it was home by then, so it's dropped, not
     # paired with the next trip's flight home.
     back_unknown = [flight("HKG-MEL", "2026-11-01T15:00:00Z", "2026-11-02T04:00:00Z"),
                     routeless("2026-11-04T02:00:00Z", "2026-11-04T13:00:00Z"), *bkk]
-    assert roster.trips(back_unknown, HOME) == [trip("2026-11-10T01:00:00Z", "2026-11-11T08:00:00Z", "BKK")]
+    assert frms.trips(back_unknown, HOME) == [trip("2026-11-10T01:00:00Z", "2026-11-11T08:00:00Z", "BKK")]
     # A sector with no route, inside a trip: nothing changes.
     inside = [bkk[0], routeless("2026-11-10T20:00:00Z", "2026-11-10T22:00:00Z"), bkk[1]]
-    assert roster.trips(inside, HOME) == [trip("2026-11-10T01:00:00Z", "2026-11-11T08:00:00Z", "BKK")]
+    assert frms.trips(inside, HOME) == [trip("2026-11-10T01:00:00Z", "2026-11-11T08:00:00Z", "BKK")]
     # A flight that's another source's, still open - no end - is no
     # boundary either.
-    assert roster.trips([bkk[0], bkk[1]._replace(end=None)], HOME) == []
+    assert frms.trips([bkk[0], bkk[1]._replace(end=None)], HOME) == []
 
 
 def test_a_flight_from_base_to_base_is_no_trip():
@@ -776,21 +723,21 @@ def test_a_flight_from_base_to_base_is_no_trip():
     sessions = [flight("HKG-HKG", "2026-11-01T01:00:00Z", "2026-11-01T03:00:00Z"),
                 flight("MEL-HKG", "2026-11-04T02:00:00Z", "2026-11-04T13:00:00Z")]
 
-    assert roster.trips(sessions, HOME, open_end="2026-11-30T00:00:00Z") == []
+    assert frms.trips(sessions, HOME, open_end="2026-11-30T00:00:00Z") == []
 
 
 def test_the_trip_id_is_the_outbound_flight_start():
     out = flight("HKG-MEL", "2026-11-05T15:10:00Z", "2026-11-06T04:10:00Z")
     back = flight("MEL-HKG", "2026-11-08T02:00:00Z", "2026-11-08T13:00:00Z")
 
-    [found] = roster.trips([out, back], HOME)
+    [found] = frms.trips([out, back], HOME)
     assert found["id"] == out.start == "2026-11-05T15:10:00Z"
     # The flight home re-planned, a day later: the same trip - the same
     # id - longer.
-    [replanned] = roster.trips([out, back._replace(start="2026-11-09T02:00:00Z", end="2026-11-09T13:00:00Z")], HOME)
+    [replanned] = frms.trips([out, back._replace(start="2026-11-09T02:00:00Z", end="2026-11-09T13:00:00Z")], HOME)
     assert (replanned["id"], replanned["end"]) == (found["id"], "2026-11-09T13:00:00Z")
     # Not drawn: a band is its span and its port, nothing more.
-    assert roster._band(found) == {"start": "2026-11-05T15:10:00Z", "end": "2026-11-08T13:00:00Z", "label": "MEL"}
+    assert frms._band(found) == {"start": "2026-11-05T15:10:00Z", "end": "2026-11-08T13:00:00Z", "label": "MEL"}
 
 
 # ---------- a duty's route: its legs, first to last ----------
@@ -814,18 +761,18 @@ TURN_DESCRIPTION = (
 
 def filed(title, description, start="20261119T232500Z", end="20261120T070000Z"):
     """The one duty of an .ics holding just this event, as duties() reads it."""
-    [found] = roster.duties(roster.parse_events(ics(timed(title, start, end, description.replace("\n", "\\n")))))
+    [found] = frms.duties(frms.parse_events(ics(timed(title, start, end, description.replace("\n", "\\n")))))
     return found
 
 
 def as_session(d):
     """A duty as ctx.sessions() gives it back once filed."""
-    return host.Session(iso_utc(d.start), iso_utc(d.end), "app:roster", roster.session_summary(d))
+    return host.Session(iso_utc(d.start), iso_utc(d.end), "app:frms", frms.session_summary(d))
 
 
 def test_a_day_turn_is_not_a_layover():
     # Out to MNL and back to base, one duty: base to base.
-    assert roster.classify(TURN_TITLE, description=TURN_DESCRIPTION) == {
+    assert frms.classify(TURN_TITLE, description=TURN_DESCRIPTION) == {
         "type": "flight", "code": "CX903", "flight_no": "CX903", "dep": "HKG", "arr": "HKG",
     }
     turn = filed(TURN_TITLE, TURN_DESCRIPTION)
@@ -834,11 +781,11 @@ def test_a_day_turn_is_not_a_layover():
     # The last duty flown, no flight home after it: still no trip - not a
     # layover in MNL running to now.
     now = "2026-11-26T00:00:00Z"
-    assert roster.trips([as_session(turn)], HOME, open_end=now) == []
+    assert frms.trips([as_session(turn)], HOME, open_end=now) == []
     # And a real trip before it is still its one band.
     out = flight("HKG-BLR", "2026-11-10T15:00:00Z", "2026-11-11T00:30:00Z")
     back = flight("BLR-HKG", "2026-11-13T19:00:00Z", "2026-11-14T03:00:00Z")
-    assert roster.trips([out, back, as_session(turn)], HOME, open_end=now) == [
+    assert frms.trips([out, back, as_session(turn)], HOME, open_end=now) == [
         trip("2026-11-10T15:00:00Z", "2026-11-14T03:00:00Z", "BLR"),
     ]
 
@@ -846,7 +793,7 @@ def test_a_day_turn_is_not_a_layover():
 def test_the_leg_chain_is_read_from_the_description():
     # The title shows only the way out; the description lists both legs,
     # and wins: the duty ends back at base.
-    found = roster.classify("20-Nov CX 903 HKG-MNL", description=TURN_DESCRIPTION)
+    found = frms.classify("20-Nov CX 903 HKG-MNL", description=TURN_DESCRIPTION)
     assert (found["dep"], found["arr"]) == ("HKG", "HKG")
     # duties() hands classify() the event's description.
     turn = filed("20-Nov CX 903 HKG-MNL", TURN_DESCRIPTION)
@@ -854,10 +801,10 @@ def test_the_leg_chain_is_read_from_the_description():
 
 
 def test_without_a_description_the_title_is_the_fallback():
-    found = roster.classify("12-Oct CX 903 HKG-MNL / 12-Oct CX 902 MNL-HKG")
+    found = frms.classify("12-Oct CX 903 HKG-MNL / 12-Oct CX 902 MNL-HKG")
     assert (found["dep"], found["arr"]) == ("HKG", "HKG")
     # A description with no legs in it falls back to the title too.
-    found = roster.classify(TURN_TITLE, description="DUTY START: 20-Nov 07:25\nDUTY END: 20-Nov 15:00")
+    found = frms.classify(TURN_TITLE, description="DUTY START: 20-Nov 07:25\nDUTY END: 20-Nov 15:00")
     assert (found["dep"], found["arr"]) == ("HKG", "HKG")
 
 
@@ -872,12 +819,12 @@ def test_a_one_way_duty_keeps_origin_and_destination():
 
     # Out of base and on, ending away: from HKG - the first leg's origin,
     # not the last's - to CEB.
-    assert roster.classify(title, description=description) == {
+    assert frms.classify(title, description=description) == {
         "type": "flight", "code": "CX903", "flight_no": "CX903", "dep": "HKG", "arr": "CEB",
     }
     # So it still opens a real trip, to where the duty ended.
     one_way = filed(title, description, end="20261120T060000Z")
-    assert roster.trips([as_session(one_way)], HOME, open_end="2026-11-22T00:00:00Z") == [
+    assert frms.trips([as_session(one_way)], HOME, open_end="2026-11-22T00:00:00Z") == [
         trip("2026-11-19T23:25:00Z", "2026-11-22T00:00:00Z", "CEB"),
     ]
 
@@ -900,11 +847,11 @@ def test_an_out_and_back_trip_is_one_card():
 
     # From the flight out's start to the flight home's end: both flight
     # numbers, and the port away. Taken by start, whatever the order.
-    assert roster.trip_cards([back, out], [], HOME) == [
+    assert frms.trip_cards([back, out], [], HOME) == [
         card("2026-11-05T15:10:00Z", "2026-11-08T13:00:00Z", "CX105", "CX104", "MEL"),
     ]
     # Flown, the same card.
-    assert roster.trip_cards([], [back, out], HOME) == roster.trip_cards([out, back], [], HOME)
+    assert frms.trip_cards([], [back, out], HOME) == frms.trip_cards([out, back], [], HOME)
 
 
 def test_an_integrated_pattern_is_one_card():
@@ -916,7 +863,7 @@ def test_an_integrated_pattern_is_one_card():
 
     # Out on the first, home on the last; the sector between is inside it,
     # and the port is the first away - the band's label.
-    assert roster.trip_cards(sectors, [], HOME) == [
+    assert frms.trip_cards(sectors, [], HOME) == [
         card("2026-11-05T01:00:00Z", "2026-11-07T10:00:00Z", "CX701", "CX730", "BKK"),
     ]
 
@@ -931,17 +878,17 @@ def test_a_trips_flight_home_is_the_leg_that_lands_at_base():
 
     # In is the flight that lands at base - its last leg's number, read
     # back from the description - not the duty's code.
-    assert roster.trip_cards([out, home], [], HOME) == [
+    assert frms.trip_cards([out, home], [], HOME) == [
         card("2026-11-05T01:00:00Z", "2026-11-07T09:00:00Z", "CX907", "CX906", "MNL"),
     ]
     # Its title's legs, with no description to read.
     titled = home._replace(summary={**home.summary, "raw": ""})
-    assert roster.trip_cards([out, titled], [], HOME)[0]["in"] == "CX906"
+    assert frms.trip_cards([out, titled], [], HOME)[0]["in"] == "CX906"
     # Legs with no flight numbers, or none to read: the duty's code.
     bare = home._replace(summary={**home.summary, "label": "07-Nov CX913", "raw": "CEB-MNL\nMNL-HKG"})
-    assert roster.trip_cards([out, bare], [], HOME)[0]["in"] == "CX913"
+    assert frms.trip_cards([out, bare], [], HOME)[0]["in"] == "CX913"
     unread = home._replace(summary={"type": "flight", "code": "CX913", "dep": "CEB", "arr": "HKG"})
-    assert roster.trip_cards([out, unread], [], HOME)[0]["in"] == "CX913"
+    assert frms.trip_cards([out, unread], [], HOME)[0]["in"] == "CX913"
 
 
 def test_a_day_return_is_a_card_of_its_own():
@@ -953,28 +900,28 @@ def test_a_day_return_is_a_card_of_its_own():
     # Its flight home and the port it turned round at, read back from the
     # description it was stored with - nothing new stored, nothing uploaded
     # again.
-    assert roster.trip_cards([], [turn], HOME) == [
+    assert frms.trip_cards([], [turn], HOME) == [
         card("2026-11-19T23:25:00Z", "2026-11-20T07:00:00Z", "CX903", "CX902", "MNL", day=True),
     ]
-    assert roster.trips([turn], HOME, open_end="2026-11-26T00:00:00Z") == []
+    assert frms.trips([turn], HOME, open_end="2026-11-26T00:00:00Z") == []
 
 
 def test_a_day_returns_legs_fall_back_to_its_title():
     # A description with no legs: the title's, as its route was read.
     turn = as_session(filed(TURN_TITLE, "DUTY START: 20-Nov 07:25\nDUTY END: 20-Nov 15:00"))
-    [found] = roster.trip_cards([turn], [], HOME)
+    [found] = frms.trip_cards([turn], [], HOME)
     assert (found["out"], found["in"], found["port"], found["day"]) == ("CX903", "CX902", "MNL", True)
 
     # A flight number joined to its carrier reads the same.
     joined = duty("flight", "2026-11-20T01:00:00Z", "2026-11-20T09:00:00Z", "CX9101", dep="HKG", arr="HKG",
                   label="20-Nov CX9101 HKG-ZZB / 20-Nov CX9102 ZZB-HKG", raw="")
-    [found] = roster.trip_cards([joined], [], HOME)
+    [found] = frms.trip_cards([joined], [], HOME)
     assert (found["out"], found["in"], found["port"]) == ("CX9101", "CX9102", "ZZB")
 
     # Legs with no flight numbers: the port still, but no flight home to name.
     bare = duty("flight", "2026-11-20T01:00:00Z", "2026-11-20T09:00:00Z", "CX903", dep="HKG", arr="HKG",
                 label="20-Nov CX903", raw="HKG-MNL\nMNL-HKG")
-    [found] = roster.trip_cards([bare], [], HOME)
+    [found] = frms.trip_cards([bare], [], HOME)
     assert (found["out"], found["in"], found["port"]) == ("CX903", None, "MNL")
 
 
@@ -982,18 +929,18 @@ def test_a_duty_that_never_left_base_is_no_card():
     # A turnback, a local training flight: base to base, no port away.
     turnback = duty("flight", "2026-11-03T01:00:00Z", "2026-11-03T03:00:00Z", "CX100", dep="HKG", arr="HKG",
                     label="03-Nov CX 100 HKG-HKG", raw="")
-    assert roster.trip_cards([turnback], [], HOME) == []
+    assert frms.trip_cards([turnback], [], HOME) == []
     # Nor one whose legs can't be read back - another source's, with no
     # description or title: no port to turn round at.
     unread = duty("flight", "2026-11-03T01:00:00Z", "2026-11-03T03:00:00Z", "CX100", dep="HKG", arr="HKG")
-    assert roster.trip_cards([unread], [], HOME) == []
+    assert frms.trip_cards([unread], [], HOME) == []
 
     # And a trip open before it lost its way home, as trips() has it:
     # dropped, the flight home after it closing nothing.
     out = flight("HKG-MEL", "2026-11-01T15:00:00Z", "2026-11-02T04:00:00Z")
     back = flight("MEL-HKG", "2026-11-04T02:00:00Z", "2026-11-04T13:00:00Z")
-    assert roster.trip_cards([out, turnback, back], [], HOME) == []
-    assert roster.trips([out, turnback, back], HOME) == []
+    assert frms.trip_cards([out, turnback, back], [], HOME) == []
+    assert frms.trips([out, turnback, back], HOME) == []
 
 
 def test_a_trip_under_way_is_read_across_both_lanes():
@@ -1002,12 +949,12 @@ def test_a_trip_under_way_is_read_across_both_lanes():
     whole = [card("2026-11-05T15:10:00Z", "2026-11-08T13:00:00Z", "CX105", "CX104", "MEL")]
 
     # Flown out - filed complete - and still rostered home: one card, whole.
-    assert roster.trip_cards([back], [out], HOME) == whole
+    assert frms.trip_cards([back], [out], HOME) == whole
     # The flight out in the plan too - uploaded before it flew, or
     # backfilled - is the same duty, taken once; and so for a whole trip
     # in both lanes.
-    assert roster.trip_cards([out, back], [out], HOME) == whole
-    assert roster.trip_cards([out, back], [out, back], HOME) == whole
+    assert frms.trip_cards([out, back], [out], HOME) == whole
+    assert frms.trip_cards([out, back], [out, back], HOME) == whole
 
 
 def test_a_duty_in_both_lanes_is_one_card():
@@ -1016,8 +963,8 @@ def test_a_duty_in_both_lanes_is_one_card():
     flown = as_session(filed(TURN_TITLE, TURN_DESCRIPTION))
     planned = flown._replace(summary={**flown.summary, "capture": "backfill"})
 
-    assert roster.trip_cards([planned], [flown], HOME) == roster.trip_cards([], [flown], HOME)
-    assert len(roster.trip_cards([planned], [flown], HOME)) == 1
+    assert frms.trip_cards([planned], [flown], HOME) == frms.trip_cards([], [flown], HOME)
+    assert len(frms.trip_cards([planned], [flown], HOME)) == 1
 
 
 def test_the_latest_trip_still_open_is_a_card_with_no_way_home_yet():
@@ -1026,7 +973,7 @@ def test_the_latest_trip_still_open_is_a_card_with_no_way_home_yet():
 
     # Out, and the roster runs out before the flight home: a card still -
     # one to plan for - its end and its flight home not known yet.
-    assert roster.trip_cards([out, reserve], [], HOME) == [
+    assert frms.trip_cards([out, reserve], [], HOME) == [
         card("2026-11-20T15:00:00Z", None, "CX105", None, "MEL"),
     ]
 
@@ -1034,11 +981,11 @@ def test_the_latest_trip_still_open_is_a_card_with_no_way_home_yet():
     bkk = [flight("HKG-BKK", "2026-11-26T01:00:00Z", "2026-11-26T04:00:00Z", "CX701"),
            flight("BKK-HKG", "2026-11-27T05:00:00Z", "2026-11-27T08:00:00Z", "CX700")]
     bkk_card = card("2026-11-26T01:00:00Z", "2026-11-27T08:00:00Z", "CX701", "CX700", "BKK")
-    assert roster.trip_cards([out, *bkk], [], HOME) == [bkk_card]
+    assert frms.trip_cards([out, *bkk], [], HOME) == [bkk_card]
     # A flight into base with none open - out before the data starts - is
     # nothing.
     early_back = flight("MEL-HKG", "2026-11-04T02:00:00Z", "2026-11-04T13:00:00Z")
-    assert roster.trip_cards([early_back], bkk, HOME) == [bkk_card]
+    assert frms.trip_cards([early_back], bkk, HOME) == [bkk_card]
 
 
 def test_only_flights_with_a_route_and_an_end_make_a_card():
@@ -1055,7 +1002,7 @@ def test_only_flights_with_a_route_and_an_end_make_a_card():
         flight("HKG-BKK", "2026-11-10T01:00:00Z", None),
     ]
 
-    assert roster.trip_cards(sessions, [], HOME) == [
+    assert frms.trip_cards(sessions, [], HOME) == [
         card("2026-11-01T15:00:00Z", "2026-11-04T13:00:00Z", "CX105", "CX104", "MEL"),
     ]
 
@@ -1068,7 +1015,7 @@ def test_cards_are_in_order_and_a_cards_id_is_its_bands():
            flight("BKK-HKG", "2026-11-23T05:00:00Z", "2026-11-23T08:00:00Z", "CX700")]
 
     # Across both lanes, in any order: by start, a day return among them.
-    cards = roster.trip_cards([bkk[1], turn, mel[0]], [bkk[0], mel[1]], HOME)
+    cards = frms.trip_cards([bkk[1], turn, mel[0]], [bkk[0], mel[1]], HOME)
     assert [(c["start"], c["port"], c["day"]) for c in cards] == [
         ("2026-11-10T15:00:00Z", "MEL", False),
         ("2026-11-19T23:25:00Z", "MNL", True),
@@ -1076,7 +1023,7 @@ def test_cards_are_in_order_and_a_cards_id_is_its_bands():
     ]
     # The same trip on a rail and on the timeline has one id - the flight
     # out's start - for a report to re-attach to either.
-    bands = roster.trips([*mel, turn, *bkk], HOME)
+    bands = frms.trips([*mel, turn, *bkk], HOME)
     assert [c["id"] for c in cards if not c["day"]] == [t["id"] for t in bands]
 
 
@@ -1084,9 +1031,9 @@ def test_the_sample_rosters_trip_is_one_card():
     # The synthetic roster end to end: parsed, filed as its sessions would
     # be, and carded from the config's home base. One trip, ZZA to ZZB and
     # back; the reserve and the sim aren't trips.
-    found = roster.duties(roster.parse_events(sample()))
+    found = frms.duties(frms.parse_events(sample()))
     sessions = [as_session(d) for d in found]
 
-    assert roster.trip_cards([], sessions, roster._home_base()) == [
+    assert frms.trip_cards([], sessions, frms._home_base()) == [
         card("2025-11-05T15:10:00Z", "2025-11-08T13:00:00Z", "CX9101", "CX9102", "ZZB"),
     ]

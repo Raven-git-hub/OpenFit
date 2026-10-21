@@ -222,7 +222,7 @@ function in `app/derived.py` (`derived_points()`, `session_rows()`).
     `YYYY-MM-DDTHH:MM:SSZ`, so starts sort and compare as plain strings.
   - `.end`: when it finished, in the same form, or `None` if it has no end.
   - `.source`: the source it was filed under, such as `garmin`,
-    `google_health` or `app:roster`.
+    `google_health` or `app:frms`.
   - `.summary`: the kind's breakdown, a `dict` parsed from the stored JSON.
     Its keys belong to the kind and are listed beside `SESSION_KINDS`. It's
     `{}` when the source gave no summary. Each call returns a fresh copy, so
@@ -954,24 +954,32 @@ and started that many minutes before, and files it with
 session (its own start); it shows in `GET /api/sessions/workout` beside a
 watch's, and nothing is derived from it.
 
-### The roster app
+### The FRMS app
 
-The first app to file duties, committed in `tests/fixtures/apps/roster/` and
-run by `test_roster_app.py` (its parsing on its own, the module loaded by
+The first app to file duties, committed in `tests/fixtures/apps/frms/` and
+run by `test_frms_app.py` (its parsing on its own, the module loaded by
 path as the host loads it) and `test_app_actions.py` (the round trip), against
-a synthetic roster, `tests/fixtures/rosters/sample.ics`. It takes a duty
-roster's `.ics` through a file input and parses it itself, with the standard
-library alone: the host only carries the file.
+a synthetic roster, `tests/fixtures/rosters/sample.ics`. It was the Roster
+app until it became FRMS: the whole FRMS suite as one app, with one tile and
+one `config.json`, to be drawn as four sub-panels. Today its roster panel —
+the timeline and its rails, below — fills the tile; a circadian panel is next.
+All of its code is in its one `app.py`, by decision: the host imports
+`app.py` by its path, adding nothing to `sys.path`, so a module beside it
+couldn't be imported by name, and it reloads an app only when `app.yaml` or
+`app.py` changes. The roster panel takes a duty roster's `.ics` through a
+file input and parses it itself, with the standard library alone: the host
+only carries the file.
 
 ```yaml
-id: roster
-name: Roster
-sizes: [{ w: 2, h: 1 }, { w: 2, h: 2 }, { w: 4, h: 2 }, { w: 4, h: 3 }]
-reads: [duty_hours_rostered, duty_hours_complete]
-metrics:
-  - { key: duty_hours_rostered, label: Rostered duty hours, unit: h, category: Roster, grain: daily, range: [0, 24] }
-  - { key: duty_hours_complete, label: Flown duty hours,    unit: h, category: Roster, grain: daily, range: [0, 24] }
+id: frms
+name: FRMS
+sizes: [{ w: 6, h: 4 }]
+reads: [duties_rostered, duties_complete]
 ```
+
+One size, 6×4, so no size picker. No `metrics:`: the app files sessions and
+nothing else. Duty hours, when a report needs them, are read from the
+sessions.
 
 Every timed event (a `DTSTART`/`DTEND` in UTC) is a duty and an all-day one
 a day off, whatever its code, so a duty code never seen before is still filed
@@ -979,10 +987,9 @@ a day off, whatever its code, so a duty code never seen before is still filed
 summary)`: `kind` `duties_complete` if it had ended at upload, else
 `duties_rostered`; `start`/`end` the `DTSTART`/`DTEND` datetimes; `summary`
 `{capture, type, code, label, raw}` plus a flight's `flight_no`/`dep`/`arr`/
-`position`. Then each kind's hours a day (by the UTC date a duty starts,
-summed first, then one `ctx.write_metric(…, date=day)` a day), held to the
-declared 0–24. A time with a `TZID` or none (floating) refuses the upload, as
-does a file with no duty; the route rolls back whatever was filed.
+`position`. That's all it writes, so a UTC day with more than 24 hours of
+duty is filed like any. A time with a `TZID` or none (floating) refuses the
+upload, as does a file with no duty; the route rolls back whatever was filed.
 
 **Backfill.** The picker carries a toggle, **Backfill** (`toggle={"key":
 "backfill", …}`, its confirm "Backfill past duties into your rostered plan?
@@ -998,14 +1005,12 @@ matrix, `[(kind, capture)]`:
 | A duty still to come | `duties_rostered`, `"live"` | `duties_rostered`, `"live"` — unchanged |
 
 `session_summary(duty, capture="live")` stamps it, so a reconstructed plan is
-always told from one captured live, and `daily_hours(duties, now,
-backfill=False)` counts each kind a duty is filed as, so backfilled days have
-`duty_hours_rostered` as their sessions do (a duty twice in the file still
-once). A backfilled duty's rostered session has the id a live upload of it
-had, so it replaces that plan — the confirm's warning. Off — unticked, or no
-payload at all — it's exactly the plain clock split from before.
+always told from one captured live. A backfilled duty's rostered session has
+the id a live upload of it had, so it replaces that plan — the confirm's
+warning. Off — unticked, or no payload at all — it's exactly the plain clock
+split from before.
 
-Its tile reads the duties back: `ctx.sessions()` of both kinds since about six
+Its roster panel reads the duties back: `ctx.sessions()` of both kinds since about six
 months before today (183 days, by the day a duty starts in UTC), and every duty
 still to come. With none, it's `empty("Upload your roster .ics")` over the
 picker. Otherwise it's a timeline (`ctx.timeline()`, above), between its rails (below), over the picker —
@@ -1057,13 +1062,10 @@ known, drawn as a dash), a day return like any, its id the trip's — the
 band's id for the same trip, for a report to re-attach to. Plan is
 `ctx.rail(plan, "plan", …)`, looking ahead of the cursor; Report is
 `ctx.rail(report, "report", …)`, looking back. Both rails are in `"frms"`, so
-they restack as the timeline scrolls. They need room:
-a 2×2 holds them compact, the 4×2 and 4×3 roomy; a 2×1, or a 2-wide tile a
-small screen shrinks, leaves them out.
+they restack as the timeline scrolls. The 6×4 tile always has room for them,
+and for roomy cards.
 
-The `duty_hours_*` metrics are still written on every
-upload; the tile no longer reads them. A roster that's all over six months old
-is filed but draws as the empty state.
+A roster that's all over six months old is filed but draws as the empty state.
 
 ## Installing an app
 

@@ -284,7 +284,7 @@ source's sessions with no pick, until the preferred-source view below lands.
   source roles and fixed default precedence; forward-only re-derive over the sync
   window.
 - `sessions` (sleep, workout, and two duty kinds — `duties_rostered` /
-  `duties_complete`, category Roster — filed by the Roster app from a
+  `duties_complete`, category Roster — filed by the FRMS app from a
   roster's `.ics`), source-agnostic querying by kind.
 - `samples` (series grain) storage; Garmin intraday heart rate, respiration and
   SpO2 ingested into it (respiration and SpO2 from the vitals responses already

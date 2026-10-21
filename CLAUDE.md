@@ -83,7 +83,7 @@ own calls to its device API. Full direction:
   plugins or the API. `CATEGORIES` is the 9 labels in display order —
   Activity, Vitals, Body composition, Fitness, Sleep, Nutrition & hydration,
   Women's health (no keys yet), Roster (operational context: the duty
-  kinds and the roster app's hours), Other — and `GRAINS` the 4: `daily`,
+  kinds), Other — and `GRAINS` the 4: `daily`,
   `instant` (a timestamped point like a weigh-in; a label for now, still
   filed one per day in `metrics`), `session`, `series`. `grain_for(key)` →
   `"series"` (in `SERIES_METRICS`), `"session"` (in `SESSION_KINDS`), else
@@ -536,16 +536,23 @@ own calls to its device API. Full direction:
   number")`), then `ctx.write_session("workout", start, end, {"type":
   "manual", "duration_minutes": minutes})`, `end` now
   (`datetime.now(timezone.utc)`) and `start` that many minutes before —
-  each log its own session. And the first to file duties: `roster`
-  (`tests/fixtures/apps/roster/`; its pure functions run by
-  `tests/test_roster_app.py`, loaded by path as the host loads it, and
-  the round trip by `tests/test_app_actions.py`, against the synthetic
-  `tests/fixtures/rosters/sample.ics` — fake flights and ports). Its
-  `app.yaml`: id `roster`, name "Roster", `sizes: [{ w: 2, h: 1 }, { w: 2,
-  h: 2 }, { w: 4, h: 2 }, { w: 4, h: 3 }]` (the 4-wide ones room for its
-  rails), `reads: [duty_hours_rostered, duty_hours_complete]`, and
-  `metrics:` those two — "Rostered duty hours"/"Flown duty hours", `h`,
-  Roster, daily, `range: [0, 24]`. Config-driven: three files, `app.yaml`,
+  each log its own session. And the first to file duties: `frms`
+  (`tests/fixtures/apps/frms/`, the Roster app until it became FRMS; its
+  pure functions run by `tests/test_frms_app.py`, loaded by path as the
+  host loads it, and the round trip by `tests/test_app_actions.py`,
+  against the synthetic `tests/fixtures/rosters/sample.ics` — fake
+  flights and ports). The whole FRMS suite is this one app: one tile, one
+  `config.json`, to be drawn as four sub-panels (the layout brick is to
+  come) — the roster panel, the timeline and its rails, today, filling
+  the tile until then; a circadian panel next. Its `app.yaml`: id `frms`
+  (so it files under `app:frms`, session ids `app:frms:<kind>:<start>`),
+  name "FRMS", `sizes: [{ w: 6, h: 4 }]` — the one size, so no picker —
+  and `reads: [duties_rostered, duties_complete]`; no `metrics:` (its
+  duty-hour metrics were dropped: a report reads duty hours from the
+  sessions). All its code is in `app.py`, by decision: the host imports
+  it by path (nothing on `sys.path`, so a sibling module couldn't be
+  imported by name) and reloads it only when `app.yaml` or `app.py`
+  changes. Config-driven: three files, `app.yaml`,
   `app.py` (the engine) and `config.json` (the reference it reads — the
   round trip installs all three). The config: `duty_types`, an ordered
   list of rules `{type, prefixes: [...]}` or `{type, regex}`, the first
@@ -594,11 +601,7 @@ own calls to its device API. Full direction:
   backfilling, a duty already over (`duties_complete`) filed into the
   plan too, `(duties_rostered, "backfill")`; a duty still to come once
   either way), `session_summary(duty, capture="live")` (the summary
-  below, `capture` as given), `daily_hours(duties, now, backfill=False)`
-  (each kind's hours by `DTSTART`'s UTC date, a duty past midnight whole
-  on its start day, each kind `filed_as()` files it as — so a backfilled
-  day has `duty_hours_rostered` too; a kind+start twice counted once)
-  and `trips(sessions, home_base,
+  below, `capture` as given) and `trips(sessions, home_base,
   open_end=None)` (one lane's duty `Session`s grouped into trips away
   from base, by flights alone — a session whose summary `type` is
   `flight` with `dep` and `arr` and an end, sorted by `start`; a reserve,
@@ -650,11 +653,10 @@ own calls to its device API. Full direction:
   label, raw, [flight_no, dep, arr, position]}` — `capture` `"live"`, or
   `"backfill"` on a past duty's rostered copy (the paper trail: a plan
   put back is always told from one captured live; its id the one a live
-  upload of it had, so it replaces that plan); then each `(metric, day)`
-  total of `daily_hours(found, now, backfill)` once,
-  `ctx.write_metric(…, date=day)` — a day over the declared 24 h refused
-  as "<day>: <why>". Backfill off is exactly the plain clock split. All
-  or nothing (the route rolls back). `render()` reads the duties back, both kinds through
+  upload of it had, so it replaces that plan) — the sessions are all it
+  writes: no metric, so no day's hours held to 24 (a UTC day with 25
+  hours of duty files like any). Backfill off is exactly the plain clock
+  split. All or nothing (the route rolls back). `render()` reads the duties back, both kinds through
   `ctx.sessions(kind, since=…)`, `since` 183 days before `ctx.today()`
   (about six months, by the start's UTC date) and no `until` (every duty
   to come): none → `empty("Upload your roster .ics")` over the picker
@@ -688,11 +690,9 @@ own calls to its device API. Full direction:
   end, out, in, port}` straight through (`in` None while open — the page's
   dash; a day return like any, its port the turn-round's); no home base,
   no cards. The page shows five a side, restacking as the timeline
-  scrolls — Plan ahead of the cursor, Report back — down to a 2×2 (compact
-  cards there, about four a side; roomy at 4×2/4×3), dropping the rails in
-  a 2×1 or a 2-wide tile a small screen shrinks. The `duty_hours_*` metrics are
-  still written; the tile no longer reads them (`app.yaml`'s `reads`
-  still names them).
+  scrolls — Plan ahead of the cursor, Report back — roomy cards in the
+  6×4 tile, at any width it's drawn (the page's compact cards and dropped
+  rails are for smaller tiles, which FRMS never is).
 - `app/home_layout.py` — the Home tab's layout, one `settings` row
   (`LAYOUT_KEY` `home_layout`, no migration): `{"tabs": [{id, name,
   mode: "flow", subtitle, items: [{instance_id, app_id, size: {w, h},
@@ -1565,8 +1565,8 @@ own calls to its device API. Full direction:
   `SESSION_KINDS` (`app/metrics.py`, where each kind's summary keys are listed).
   Four kinds: `sleep` and `workout`, both from Garmin and Google (and from
   an app, through `ctx.write_session()`, under `app:<id>`), and the two
-  duty kinds, from a roster app (the `roster` fixture, under
-  `app:roster`); a summary holds only what the source gives:
+  duty kinds, from a roster app (the `frms` fixture, under
+  `app:frms`); a summary holds only what the source gives:
   - `sleep` — one session per night/nap, summary in minutes: `asleep_minutes`
     plus `light_minutes`/`deep_minutes`/`rem_minutes`/`awake_minutes`. Sleep is
     sessions only: there is no daily sleep metric (v2 retired `sleep_minutes`
@@ -2097,7 +2097,19 @@ same PR:
   fights the focus clock's own scrolls); the lane headings set tighter
   in a narrow tile so COMPLETE fits a 2×2; and the roster app's lanes
   renamed Roster and Complete (labels only — the kinds unchanged).
-  Still to come for it: reading `destinations` (time-zone shifts), the
+  Then the Roster app became FRMS (no migration, no route or host
+  change: an app fixture and its tests): id `roster` → `frms`, so it
+  files under `app:frms`, name "FRMS", one size, 6×4 — the whole FRMS
+  suite as one app with one `config.json`, to be drawn as four
+  sub-panels (the roster's timeline and rails first, filling the tile
+  until the layout brick; a circadian panel next), all its code in
+  `app.py` by decision — and its two duty-hour metrics dropped (nothing
+  read them; a report reads duty hours from the sessions), which retires
+  the 0–24 refusal of a long UTC day; `render()`'s output unchanged. A
+  clean reload on the server, not a migration: uninstall Roster, remove
+  `app:roster`'s data, install FRMS, upload the rosters again.
+  Still to come for it: the sub-panel layout and the circadian panel,
+  reading `destinations` (time-zone shifts), the
   cards' popups and PDF, the
   report store (re-attached to a trip by its id), per-block or per-band
   detail on click or hover, and home-local (`base_tz`) day lines and

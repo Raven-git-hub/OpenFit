@@ -1737,9 +1737,9 @@ def test_ctx_sessions_orders_by_source_priority_then_start(conn):
 
 def test_ctx_sessions_summary_is_a_parsed_dict(conn):
     nested = {"type": "flight", "legs": [{"dep": "AAA", "arr": "BBB"}], "duration_minutes": 95.5}
-    filed(conn, "app:roster", DUTIES_COMPLETE, "2026-10-14T05:00:00Z", "2026-10-14T07:00:00Z", nested)
-    filed(conn, "app:roster", DUTIES_COMPLETE, "2026-10-15T05:00:00Z", "2026-10-15T07:00:00Z", None)
-    filed(conn, "app:roster", DUTIES_COMPLETE, "2026-10-16T05:00:00Z", "2026-10-16T07:00:00Z", {})
+    filed(conn, "app:frms", DUTIES_COMPLETE, "2026-10-14T05:00:00Z", "2026-10-14T07:00:00Z", nested)
+    filed(conn, "app:frms", DUTIES_COMPLETE, "2026-10-15T05:00:00Z", "2026-10-15T07:00:00Z", None)
+    filed(conn, "app:frms", DUTIES_COMPLETE, "2026-10-16T05:00:00Z", "2026-10-16T07:00:00Z", {})
     ctx = host.Ctx(conn, today=TODAY)
 
     with_summary, without, emptied = ctx.sessions(DUTIES_COMPLETE)

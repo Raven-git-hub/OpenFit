@@ -270,7 +270,7 @@ What a declaration can't be yet, and why:
   `duties_complete`) is supported now: no declaration, just
   `ctx.write_session(kind, start, end, summary)` — write what exists. The
   reference apps are `tests/fixtures/apps/workout-log/` and, from a file,
-  `tests/fixtures/apps/roster/`.
+  `tests/fixtures/apps/frms/`.
 - **Only your own.** Reading another app's custom metric isn't offered — read the
   canonical metrics and your own.
 - **Its data outlives the app.** Uninstall the app and its metrics drop out of
@@ -308,7 +308,7 @@ An app folder can hold more than `app.yaml` and `app.py`: any other file is
 the app's own, installed, listed and updated with it. Put what's specific to
 a domain or an owner there, as data — a carrier's duty codes, a home base, a
 lookup table — and keep `app.py` the engine, so adding a code or a carrier
-is a config edit, never a code change. The Roster app is the reference: its
+is a config edit, never a code change. The FRMS app is the reference: its
 `config.json` holds the duty-type rules (`prefixes` or a `regex` per type,
 the first match winning, else `default_type`), the owner's home base and
 timezone, and a destinations table (each port's city and IANA zone).
@@ -346,7 +346,7 @@ timezone, and a destinations table (each port's city and IANA zone).
 A choice that goes with a file — *how* to file it — is a companion checkbox
 on the file input, not a second input or a second button:
 `ctx.input("file", "upload", kind="file", accept=".ics", toggle={"key":
-"backfill", "label": "Backfill", "confirm": "…"})`. The Roster app's
+"backfill", "label": "Backfill", "confirm": "…"})`. The FRMS app's
 **Backfill** is the reference.
 
 - **It arrives in the same payload.** `handle()` gets `{<input key>:
@@ -355,10 +355,9 @@ on the file input, not a second input or a second button:
   from a hand-made call can't turn it on. A page from before the toggle
   sends no payload at all, so a missing key means off.
 - **Off must be exactly what it was before.** The roster's matrix lives in
-  one pure function, `filed_as(end, now, backfill)`, which both the session
-  writes and `daily_hours()` read, so a past duty backfilled into the plan
-  is counted in the rostered hours too and the two can't drift. Off, it's
-  the plain clock split, key for key.
+  one pure function, `filed_as(end, now, backfill)`, that every session
+  write goes through, so the matrix is in one place. Off, it's the plain
+  clock split, key for key.
 - **Leave a paper trail.** What the toggle files differently should say so in
   its summary — the roster's backfilled copy is `capture: "backfill"`, never
   `"live"` — so a reconstructed record is always told from a captured one.

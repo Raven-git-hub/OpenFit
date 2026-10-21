@@ -1,0 +1,4 @@
+id: frms
+name: FRMS
+sizes: [{ w: 6, h: 4 }]
+reads: [duties_rostered, duties_complete]

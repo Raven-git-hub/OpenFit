@@ -173,7 +173,7 @@ class Session(NamedTuple):
 
     start: str      # ISO 8601 UTC, YYYY-MM-DDTHH:MM:SSZ, as stored
     end: object     # the same, or None: no end yet
-    source: str     # the source it was filed under: garmin, app:roster, ...
+    source: str     # the source it was filed under: garmin, app:frms, ...
     summary: dict   # the kind's breakdown (beside SESSION_KINDS); {} for none
 
 
@@ -783,7 +783,7 @@ class Ctx:
         .start is when it began and .end when it finished, ISO 8601 UTC
         text as stored (YYYY-MM-DDTHH:MM:SSZ, so they sort and compare as
         text), .end None for one with no end; .source is where it came
-        from (garmin, app:roster); .summary is the kind's breakdown, a
+        from (garmin, app:frms); .summary is the kind's breakdown, a
         dict ({} when the source gave none), the app's own copy.
 
         `kind` is one of OpenFit's session kinds (SESSION_KINDS in

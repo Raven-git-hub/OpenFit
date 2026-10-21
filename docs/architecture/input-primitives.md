@@ -171,7 +171,7 @@ the platform stays open to any file an author brings.
 - Session write-back (`write_session`): the roster-to-sessions app waits on
   it; the `import` app writes metrics only. (Since landed, separately:
   `ctx.write_session()`, existing kinds only — `app-host.md`; and the roster
-  app on it, `tests/fixtures/apps/roster/`.)
+  app on it, now FRMS, `tests/fixtures/apps/frms/`.)
 
 ## A file input's toggle, and confirm-before-submit (built)
 
@@ -200,7 +200,7 @@ ctx.input("file", "upload", label="Upload roster", kind="file", accept=".ics",
 - **App:** `handle()` reads `payload.get(<key>) is True`. The confirm is
   static — fixed at render, before the file's read — so it can't count what
   the file holds; a count-aware confirm is a later step.
-- **Reference:** the roster's **Backfill** (`app-host.md`, the roster app).
+- **Reference:** the roster's **Backfill** (`app-host.md`, the FRMS app).
   Tests: the builder (`tests/test_app_host.py`), the checkbox, the payload and
   the confirm under the node/DOM harness (`tests/test_routes.py`), and the
   round trip (`tests/test_app_actions.py`).

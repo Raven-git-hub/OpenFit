@@ -201,7 +201,7 @@ built-in/default metrics themselves are never purgeable.
   `workout-log` app is the reference).
 - **Roster path:** done — two session kinds in core, `duties_rostered` and
   `duties_complete`, in a new `Roster` category (operational context, kept
-  per decision 1), and the `roster` app (`tests/fixtures/apps/roster/`),
+  per decision 1), and the `roster` app (now `frms`, `tests/fixtures/apps/frms/`),
   which parses a roster's `.ics` itself (stdlib) and files it. Decided:
   - **Duty-ness is structural**, never a code allow-list: a timed `VEVENT` is a
     duty and is filed; an all-day one (`O`, `G`, `U`, `L`, any future code) is
@@ -215,13 +215,15 @@ built-in/default metrics themselves are never purgeable.
     the plan and the actual side by side. Every summary says `capture: "live"`,
     so a later "upload a saved plan" override is additive.
   - **Daily hours** (`duty_hours_complete`/`duty_hours_rostered`, the app's own
-    metrics, `h`, 0–24) are summed per kind by `DTSTART`'s UTC date, a duty past
-    midnight whole on its start day — home-local bucketing waits on `base_tz`.
-  - **Upsert-only**: a re-upload replaces a duty of the same kind and start
-    and a day's figure, but removes nothing; `U` (unfit) and leave aren't
-    captured. Next on the path: an app replacing its own sessions/metrics over
-    a date range (the stale-duty cleanup), and the rostered↔flown matching
-    (session read-back + a derived duty key — the feed has no `UID`).
+    metrics, `h`, 0–24) were summed per kind by `DTSTART`'s UTC date, a duty past
+    midnight whole on its start day. Dropped when the app became FRMS
+    (`app:frms`): nothing read them, and duty hours are read from the sessions
+    when a report needs them — home-local bucketing still waits on `base_tz`.
+  - **Upsert-only**: a re-upload replaces a duty of the same kind and start,
+    but removes nothing; `U` (unfit) and leave aren't captured. Next on the
+    path: an app replacing its own sessions/metrics over a date range (the
+    stale-duty cleanup), and the rostered↔flown matching (session read-back +
+    a derived duty key — the feed has no `UID`).
 - **(later) fatigue tracker**, reading the duties (and sleep) the roster path
   now files.
 

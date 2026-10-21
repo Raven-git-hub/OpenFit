@@ -1,7 +1,0 @@
-id: roster
-name: Roster
-sizes: [{ w: 2, h: 1 }, { w: 2, h: 2 }, { w: 4, h: 2 }, { w: 4, h: 3 }]
-reads: [duty_hours_rostered, duty_hours_complete]
-metrics:
-  - { key: duty_hours_rostered, label: Rostered duty hours, unit: h, category: Roster, grain: daily, range: [0, 24] }
-  - { key: duty_hours_complete, label: Flown duty hours,    unit: h, category: Roster, grain: daily, range: [0, 24] }
