@@ -500,7 +500,13 @@ cursor outlined.
 Uploading again replaces a duty with the same start, but removes nothing: a
 duty dropped from a later roster keeps its row for now. Both kinds file under
 the Roster category: OpenFit keeps operational context like this because you do — it
-doesn't decide what counts as health data.
+doesn't decide what counts as health data. The circadian panel's engine is in
+the app already, though nothing draws it yet: from your home base's time zone
+(the body clock — never adjusted to where you've flown), a `cbt_min` (the body
+clock's low, 04:00 home time unless the config says) and each destination's
+`lat`/`lon` in the config, it works out day and night where you are and at
+home, the body clock's low window (WOCL, 02:00–06:00 home time), and each duty
+cut into pieces of day, night and WOCL against the body clock.
 
 An app isn't limited to OpenFit's metrics: it can **invent its own**. Declare
 what you invent, write what exists — a built-in metric is just written, while a

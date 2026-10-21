@@ -70,13 +70,35 @@ parse_events(), duties(), classify() (a flight's dep and arr its origin
 and final destination, first leg to last, the description's legs before
 the title's), bucket_for(), filed_as(), trips(), trip_cards() - pure,
 for a test to call on their own.
+
+The circadian panel's engine is here too, pure module functions nothing
+draws yet (the panel is still a placeholder): sun_times() - a day's
+sunrise and sunset at a position, from NOAA's sunrise equation, or "day"
+or "night" when the sun doesn't set or rise; daylight() - day and night
+there over a window; body_clock() - the home time zone, its WOCL (02:00
+to 06:00 home local) and the troughs of the body clock's curve (cbt_min,
+home local); curve_value() - the curve at an instant, -1 at a trough and
++1 midway; locations() - where the crew member is; location_strip() -
+day and night there; body_strip() - day and night at home base;
+duty_pieces() - each duty cut into wocl, night and day pieces; and
+circadian(), all of them at once. The body clock is home base's, always -
+no acclimatisation, by design - and a duty's pieces are coloured against
+it alone, never the sun where it's flown. Where you are comes from the
+flown duties over by now and the rostered ones ending after it - never a
+past rostered one, so a past with nothing flown is unknown, not the plan:
+from the moment a duty starts you're at its final destination - a
+flight's arr (where you were, without one), home base for any other
+duty. Times come back as UTC text, every span half-open.
 """
 
+import bisect
 import json
+import math
 import os
 import re
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from typing import NamedTuple
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 ROSTERED = "duties_rostered"
 COMPLETE = "duties_complete"
@@ -640,3 +662,357 @@ def trip_cards(rostered, flown, home_base):
     if trip is not None:
         cards.append(trip)
     return cards
+
+
+# ---------- circadian: the body clock against the sun ----------
+#
+# The circadian panel's engine - drawn nowhere yet. Three strips over a
+# window of time: where the crew member is, day or night there; the body
+# clock, day or night at home base, always - no acclimatisation, by
+# design; and the duties, each cut into pieces coloured against the body
+# clock alone, never where it's flown. Beside them the body clock's WOCL
+# and the curve's troughs. Instants are compared as aware UTC datetimes
+# and given back as UTC text, as a session's are; every span is
+# half-open, [start, end).
+
+_J2000 = datetime(2000, 1, 1, 12, tzinfo=timezone.utc)   # J2000.0, JD 2451545.0
+_SUN_ALTITUDE = -0.833      # degrees: the sun's upper limb on the horizon, refraction in
+_OBLIQUITY = 23.4397        # degrees: the Earth's axial tilt
+WOCL = ((2, 0), (6, 0))     # the window of circadian low, home local: [02:00, 06:00)
+CBT_MIN = "04:00"           # the body clock's low, home local, unless the config gives one
+
+
+def sun_times(day, lat, lon):
+    """Sunrise and sunset around local solar noon of `day` (a date) at
+    `lat`, `lon` - decimal degrees, north and east positive - from NOAA's
+    solar equations (the sunrise equation): (rise, set), two aware UTC
+    datetimes to the second; or "day" if the sun doesn't set that day,
+    "night" if it doesn't rise.
+
+    The day count is from J2000.0 - 2000-01-01 12:00 UTC, JD 2451545.0 -
+    less the longitude's share of a day, so it lands on mean solar noon
+    at `lon`; that's the day count's own noon, with nothing added."""
+    rad = math.radians
+    n = (day - _J2000.date()).days - lon / 360                    # mean solar noon, days from J2000.0
+    m = rad((357.5291 + 0.98560028 * n) % 360)                    # mean anomaly
+    centre = 1.9148 * math.sin(m) + 0.0200 * math.sin(2 * m) + 0.0003 * math.sin(3 * m)
+    ecliptic = rad((math.degrees(m) + centre + 180 + 102.9372) % 360)   # ecliptic longitude
+    transit = n + 0.0053 * math.sin(m) - 0.0069 * math.sin(2 * ecliptic)   # solar noon
+    declination = math.asin(math.sin(ecliptic) * math.sin(rad(_OBLIQUITY)))
+    cos_hour = ((math.sin(rad(_SUN_ALTITUDE)) - math.sin(rad(lat)) * math.sin(declination))
+                / (math.cos(rad(lat)) * math.cos(declination)))
+    if cos_hour < -1:
+        return "day"
+    if cos_hour > 1:
+        return "night"
+    half = math.degrees(math.acos(cos_hour)) / 360                # half the daylight, in days
+    return tuple(_J2000 + timedelta(seconds=round(days * 86400)) for days in (transit - half, transit + half))
+
+
+def daylight(lat, lon, start, end):
+    """Day and night at `lat`, `lon` over [start, end) (aware datetimes):
+    contiguous spans {start, end, tone}, tone "day" or "night", in order,
+    the window's edges theirs. Built from sun_times() for every date from
+    the day before start's to the day after end's; a date the sun
+    doesn't set (or rise) on is a whole UTC day of day (or night)."""
+    return [_text(s, e, tone=tone) for s, e, tone in _daylight(lat, lon, _utc(start, "start"), _utc(end, "end"))]
+
+
+def body_clock(start, end, config=None):
+    """The body clock - home base's time zone, personal.timezone, always -
+    over [start, end) (aware datetimes): {tz, wocl, troughs}.
+
+    `tz` the ZoneInfo; `wocl` the window of circadian low, 02:00 to 06:00
+    home local of every home-local date the window touches, as UTC spans
+    {start, end}, clipped to it - through zoneinfo, so right across a
+    clock change; `troughs` the curve's low points, personal.cbt_min (HH:MM,
+    home local, CBT_MIN when absent) on each of those dates and one either
+    side, so one falls before the window and one after: UTC text, in order.
+    ValueError for a timezone missing or unknown, or a cbt_min that isn't
+    HH:MM."""
+    config = _config(config)
+    start, end = _utc(start, "start"), _utc(end, "end")
+    tz = _home_zone(config)
+    cbt = _cbt_min(config)
+    return {
+        "tz": tz,
+        "wocl": [_text(s, e) for s, e in _wocl(start, end, tz)],
+        "troughs": [_utc_text(_home_local(d, cbt, tz)) for d in _home_days(start, end, tz, margin=1)],
+    }
+
+
+def curve_value(t, troughs):
+    """The body clock's curve at `t` (an aware datetime), between the
+    troughs (body_clock()'s - UTC text, or datetimes) either side of it:
+    -cos(2*pi*f), f the fraction of the way from the one before to the one
+    after. -1 at a trough, +1 midway, 0 a quarter of the way. None outside
+    the troughs' range."""
+    t = _utc(t, "t")
+    lows = sorted(_utc(low, "a trough") for low in troughs)
+    if not lows or not lows[0] <= t <= lows[-1]:
+        return None
+    i = bisect.bisect_right(lows, t)
+    if i == len(lows):                    # the last trough itself
+        return -1.0
+    before, after = lows[i - 1], lows[i]
+    return -math.cos(2 * math.pi * ((t - before) / (after - before)))
+
+
+def locations(rostered, flown, now, start, end, config=None):
+    """Where the crew member is over [start, end): contiguous spans
+    {start, end, port}, port an IATA code or None - not known.
+
+    `rostered` and `flown` the two lanes' duty sessions, as ctx.sessions()
+    gives them; `now` an aware datetime. The duties that count are the
+    flown ones over by now and the rostered ones ending after it - those
+    to come and the one under way - never a past rostered one: a past
+    stretch with nothing flown is None, not the plan. A session with no
+    end counts for neither.
+
+    Walking them by start, from the moment a duty starts you're at its
+    final destination: a flight's arr (a day return's is base); a flight
+    with no arr leaves you where you were; any other duty - a sim, a
+    reserve - is at home base. Before the first, None. A duty before the
+    window still says where it starts. The same port twice in a row is
+    one span."""
+    config = _config(config)
+    start, end, now = _utc(start, "start"), _utc(end, "end"), _utc(now, "now")
+    return [_text(s, e, port=port) for s, e, port in _locations(rostered, flown, now, start, end, config)]
+
+
+def location_strip(locs, start, end, config=None):
+    """locations()' spans cut into day and night where they are: {start,
+    end, port, tone}, tone "day" or "night" at that port - daylight() at
+    its destinations lat and lon - or "none" for a port not known (None)
+    or one with no lat and lon in the config's destinations, the port
+    kept. In order, clipped to [start, end)."""
+    config = _config(config)
+    start, end = _utc(start, "start"), _utc(end, "end")
+    places = _destinations(config)
+    pieces = []
+    for loc in sorted(locs, key=lambda loc: _utc(loc["start"], "a location's start")):
+        s = max(_utc(loc["start"], "a location's start"), start)
+        e = min(_utc(loc["end"], "a location's end"), end)
+        if e <= s:
+            continue
+        port = loc.get("port")
+        position = _position(places.get(port)) if port else None
+        for a, b, tone in _daylight(*position, s, e) if position else [(s, e, "none")]:
+            last = pieces[-1] if pieces else None
+            if last and (last["port"], last["tone"], last["end"]) == (port, tone, a):
+                last["end"] = b
+            else:
+                pieces.append({"start": a, "end": b, "port": port, "tone": tone})
+    return [_text(p["start"], p["end"], port=p["port"], tone=p["tone"]) for p in pieces]
+
+
+def body_strip(start, end, config=None):
+    """Day and night at home base over [start, end) - the body clock's
+    sky: daylight() at personal.home_base's lat and lon in the config's
+    destinations. ValueError naming the home base if it isn't there, or
+    has no lat and lon."""
+    config = _config(config)
+    start, end = _utc(start, "start"), _utc(end, "end")
+    return [_text(s, e, tone=tone) for s, e, tone in _home_sky(start, end, config)]
+
+
+def duty_pieces(rostered, flown, now, start, end, config=None):
+    """The duties that count (as locations() counts them), each clipped
+    to [start, end) and cut against the body clock - never where it's
+    flown: {start, end, code, tone}, tone "wocl" inside home's WOCL
+    (02:00-06:00 home local - first), else "night" in home base's
+    darkness, else "day". A duty's pieces are contiguous, the same tone
+    side by side merged; all in order by start. `code` the summary's."""
+    config = _config(config)
+    start, end, now = _utc(start, "start"), _utc(end, "end"), _utc(now, "now")
+    return [_text(s, e, code=code, tone=tone) for s, e, code, tone in _duty_pieces(rostered, flown, now, start, end, config)]
+
+
+def circadian(rostered, flown, now, start, end, config=None):
+    """Everything the circadian panel draws over [start, end), at once:
+    {home, location, body, duties, wocl, troughs} - home base, then
+    location_strip() of locations(), body_strip(), duty_pieces(), and
+    body_clock()'s wocl and troughs."""
+    config = _config(config)
+    clock = body_clock(start, end, config)
+    return {
+        "home": _personal(config).get("home_base"),
+        "location": location_strip(locations(rostered, flown, now, start, end, config), start, end, config),
+        "body": body_strip(start, end, config),
+        "duties": duty_pieces(rostered, flown, now, start, end, config),
+        "wocl": clock["wocl"],
+        "troughs": clock["troughs"],
+    }
+
+
+def _config(config):
+    config = CONFIG if config is None else config
+    if not isinstance(config, dict):
+        raise ValueError(CONFIG_ERROR or "no config")
+    return config
+
+
+def _personal(config):
+    personal = config.get("personal")
+    return personal if isinstance(personal, dict) else {}
+
+
+def _destinations(config):
+    places = config.get("destinations")
+    return places if isinstance(places, dict) else {}
+
+
+def _position(place):
+    """A destination's (lat, lon), or None without both, as numbers on the globe."""
+    if not isinstance(place, dict):
+        return None
+    lat, lon = place.get("lat"), place.get("lon")
+    for value, limit in ((lat, 90), (lon, 180)):
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not -limit <= value <= limit:
+            return None
+    return float(lat), float(lon)
+
+
+def _utc(moment, what):
+    """An instant as an aware UTC datetime: an aware datetime, or UTC text
+    as a session's start and end are stored."""
+    if isinstance(moment, str):
+        try:
+            moment = datetime.fromisoformat(moment)
+        except ValueError:
+            raise ValueError(f"{what} isn't a time: {moment!r}") from None
+    if not isinstance(moment, datetime) or moment.utcoffset() is None:
+        raise ValueError(f"{what} must be an aware datetime: {moment!r}")
+    return moment.astimezone(timezone.utc)
+
+
+def _text(start, end, **rest):
+    return {"start": _utc_text(start), "end": _utc_text(end), **rest}
+
+
+def _tones(start, end, base, layers):
+    """[start, end) as contiguous (start, end, tone) spans, in order:
+    each the tone of the last of `layers` - (start, end, tone) spans,
+    each laid over those before - that covers it, else `base`; the same
+    tone side by side merged."""
+    if end <= start:
+        return []
+    cuts = sorted({start, end, *(t for s, e, _ in layers for t in (s, e) if start < t < end)})
+    spans = []
+    for a, b in zip(cuts, cuts[1:]):
+        tone = next((tone for s, e, tone in reversed(layers) if s <= a and b <= e), base)
+        if spans and spans[-1][2] == tone:
+            spans[-1] = (spans[-1][0], b, tone)
+        else:
+            spans.append((a, b, tone))
+    return spans
+
+
+def _daylight(lat, lon, start, end):
+    days, polar = [], []
+    day, last = start.date() - timedelta(days=1), end.date() + timedelta(days=1)
+    while day <= last:
+        sun = sun_times(day, lat, lon)
+        if isinstance(sun, str):
+            midnight = datetime.combine(day, time(), tzinfo=timezone.utc)
+            polar.append((midnight, midnight + timedelta(days=1), sun))
+        else:
+            days.append((*sun, "day"))
+        day += timedelta(days=1)
+    # A polar date's whole UTC day is its own, over a neighbour's daylight.
+    return _tones(start, end, "night", days + polar)
+
+
+def _home_zone(config):
+    name = _personal(config).get("timezone")
+    if not isinstance(name, str) or not name:
+        raise ValueError("config.json's personal block needs a timezone, an IANA name such as Asia/Hong_Kong")
+    try:
+        return ZoneInfo(name)
+    except (ZoneInfoNotFoundError, ValueError, OSError):
+        raise ValueError(f"config.json's personal timezone isn't a time zone: {name!r}") from None
+
+
+def _cbt_min(config):
+    raw = _personal(config).get("cbt_min")
+    raw = CBT_MIN if raw is None else raw
+    found = re.fullmatch(r"(\d{1,2}):(\d{2})", raw) if isinstance(raw, str) else None
+    if not found or int(found[1]) > 23 or int(found[2]) > 59:
+        raise ValueError(f"config.json's personal cbt_min must be HH:MM, home local: {raw!r}")
+    return int(found[1]), int(found[2])
+
+
+def _home_days(start, end, tz, margin=0):
+    """The home-local dates [start, end) touches, `margin` more either side."""
+    if end <= start:
+        return []
+    first = start.astimezone(tz).date() - timedelta(days=margin)
+    last = (end - timedelta(microseconds=1)).astimezone(tz).date() + timedelta(days=margin)
+    return [first + timedelta(days=i) for i in range((last - first).days + 1)]
+
+
+def _home_local(day, hour_minute, tz):
+    """`day` at that home-local time, as a UTC instant."""
+    return datetime.combine(day, time(*hour_minute), tzinfo=tz).astimezone(timezone.utc)
+
+
+def _wocl(start, end, tz):
+    spans = []
+    for day in _home_days(start, end, tz):
+        s, e = max(_home_local(day, WOCL[0], tz), start), min(_home_local(day, WOCL[1], tz), end)
+        if s < e:
+            spans.append((s, e))
+    return spans
+
+
+def _home_sky(start, end, config):
+    home = _personal(config).get("home_base")
+    if not home:
+        raise ValueError("config.json's personal block needs a home_base")
+    position = _position(_destinations(config).get(home))
+    if position is None:
+        raise ValueError(f"home base {home} needs a lat and lon in config.json's destinations")
+    return _daylight(*position, start, end)
+
+
+def _counted(rostered, flown, now):
+    """The duties that count, by start: flown ones over by now, rostered
+    ones ending after it; none with no end."""
+    found = [s for s in flown if s.end is not None and _utc(s.end, "a duty's end") <= now]
+    found += [s for s in rostered if s.end is not None and _utc(s.end, "a duty's end") > now]
+    return sorted(found, key=lambda s: (_utc(s.start, "a duty's start"), _utc(s.end, "a duty's end")))
+
+
+def _locations(rostered, flown, now, start, end, config):
+    if end <= start:
+        return []
+    home = _personal(config).get("home_base") or None
+    spans, since, here = [], start, None
+    for s in _counted(rostered, flown, now):
+        at = _utc(s.start, "a duty's start")
+        if at >= end:
+            break
+        if s.summary.get("type") != "flight":
+            there = home
+        else:
+            there = s.summary.get("arr") or here
+        if at > start and there != here:
+            spans.append((since, at, here))
+            since = at
+        here = there
+    spans.append((since, end, here))
+    return spans
+
+
+def _duty_pieces(rostered, flown, now, start, end, config):
+    tz = _home_zone(config)
+    # Home's sky, the WOCL laid over it: the body clock's tones.
+    layers = [*_home_sky(start, end, config), *((s, e, "wocl") for s, e in _wocl(start, end, tz))]
+    pieces = []
+    for duty in _counted(rostered, flown, now):
+        s = max(_utc(duty.start, "a duty's start"), start)
+        e = min(_utc(duty.end, "a duty's end"), end)
+        under = [layer for layer in layers if layer[0] < e and s < layer[1]]
+        code = duty.summary.get("code", "")
+        pieces += [(a, b, code, tone) for a, b, tone in _tones(s, e, "day", under)]
+    return sorted(pieces, key=lambda piece: piece[0])
