@@ -31,9 +31,9 @@ already uploaded for it.
 
 The tile reads the duties back (ctx.sessions()) - about six months of
 them, and all still to come - and draws them on a timeline over the
-picker: rostered on the left, flown on the right, each duty a block at
-its time and labelled with its code, a line at now and the flown side
-greyed after it. Behind the blocks, each lane shades its trips away
+picker: the roster on the left (headed Roster), what's complete - flown
+- on the right (Complete), each duty a block at its time and labelled
+with its code, a line at now and the complete side greyed after it. Behind the blocks, each lane shades its trips away
 from home base (trips()): a flight out of base to the next flight back,
 any sectors between inside it - the layovers.
 
@@ -121,16 +121,16 @@ def render(ctx, cfg):
     rostered_trips = trips(rostered, home_base, rostered_end)
     flown_trips = trips(flown, home_base, _utc_text(now))
 
-    # The plan on the left, what was flown on the right - greyed after
-    # now, when nothing's flown yet. The timeline takes the rest of the
+    # The roster on the left, what's complete - flown - on the right,
+    # greyed after now, when nothing's flown yet. The timeline takes the rest of the
     # tile and scrolls, laid out to whatever size the tile is (render()
     # isn't told it); the picker at its foot. It's in the FRMS focus
     # group: the page keeps a cursor on it, and scrolls every timeline
     # of the group to one time.
     timeline = ctx.timeline(
         [
-            _lane(rostered, label="Rostered", bands=[_band(t) for t in rostered_trips]),
-            _lane(flown, label="Flown", grey_after_now=True, bands=[_band(t) for t in flown_trips]),
+            _lane(rostered, label="Roster", bands=[_band(t) for t in rostered_trips]),
+            _lane(flown, label="Complete", grey_after_now=True, bands=[_band(t) for t in flown_trips]),
         ],
         now=now,
         sync="frms",

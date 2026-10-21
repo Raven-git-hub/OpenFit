@@ -664,7 +664,7 @@ own calls to its device API. Full direction:
   recorded as flown, and any plan you already uploaded for those duties
   is replaced."}`), a roster all older than that included; else
   `panel(rails(timeline, left=Plan, right=Report), picker)` — the upload
-  at the tile's foot — the `timeline` lane 0 "Rostered" (`duties_rostered`), lane 1 "Flown"
+  at the tile's foot — the `timeline` lane 0 "Roster" (`duties_rostered`), lane 1 "Complete"
   (`duties_complete`, `grey_after_now`), each session an interval of its
   `start`/`end` labelled with `summary["code"]` (`""` for none; a session
   with no end, only another source's, left out — `_lane()`), and each
@@ -750,8 +750,9 @@ own calls to its device API. Full direction:
   (vanilla JS, no build step, no external calls or web fonts; every colour/font/
   radius in its `CUSTOMISE OPENFIT HERE` token block — the timeline's two lane
   tones, `--timeline-a`/`--timeline-b`, and the ink each takes,
-  `--timeline-a-ink`/`--timeline-b-ink`, and its bands' amber,
-  `--layover` (`#c07d18` light, `#e0a83a` dark), in all three theme
+  `--timeline-a-ink`/`--timeline-b-ink`, its bands' amber,
+  `--layover` (`#c07d18` light, `#e0a83a` dark), and its day lines'
+  `--grid` (`--muted` at 22% light, 26% dark), in all three theme
   blocks). Under the top bar
   (date, a `settings` button, the theme toggle) sits the original angled tab
   strip: Home's tabs (far left, one per tab of the layout, drawn by
@@ -1193,7 +1194,17 @@ own calls to its device API. Full direction:
   blocks — `top = (start − t0)·px`, `height = length·px`, no floor — each
   label a `.tl-band-label` (as text) set past the block(s) covering the
   band's top edge (the flight out), so on the layover, clipped by the
-  band. The axis runs from the earliest start to
+  band. Under everything, first in the track, a `.tl-grid` layer of
+  `.tl-gridline`s — 1px in `--grid`, the track's width, no labels, `top
+  = pad + (midnight − t0)·px` in the same layout pass — at each midnight
+  UTC from the first at or after `t0` (`TL_DAY_MS` apart) to `t1`; none,
+  and no layer, for an axis that crosses no midnight, or more than
+  `TL_MAX_DAY_LINES` (3660, ten years: a hand-built spec spanning ages isn't
+  a node a day). The lanes'
+  headings (`.tl-lh`, 10.5px, `.8px` spacing) are 10px with `.3px` in a
+  tile `@container (max-width:519px)` (a 2-wide one), on the 10.5px
+  line (`calc(10.5px * 1.45)`), so COMPLETE fits a 2×2's lane and the
+  row stays level with the rails' headings. The axis runs from the earliest start to
   the latest end (or `now`) of every block and band; `TL_VIEW_MS`, a week, fills the frame's
   height (`px = max(height, TL_MIN_WEEK_PX 240) / week`, so a frame under
   240px — a 2×1's — shows less than a week and scrolls further, never
@@ -1205,7 +1216,25 @@ own calls to its device API. Full direction:
   frame, at its `clientHeight`; no height once laid out (Home behind
   Data) keeps the last layout. The first real layout scrolls `now` to the
   middle (none: the end into view); after that the time at the top is kept
-  (`onscroll`), through a resize. Each observer is in `timelines` and let
+  (`onscroll`), through a resize. It scrolls six hours a step
+  (`TL_MARK_MS`, the marks 00/06/12/18Z): a `wheel` listener
+  (`{passive: false}`, `preventDefault`; not a `ctrlKey` pinch or a
+  sideways turn) and `onkeydown` ↑/↓ (no modifier) `step()` the time at
+  the frame's middle (`midMs()`: `t0 + (scrollTop + (synced ? 0 :
+  clientHeight/2))/px` — synced, the cursor's) to the next mark that way
+  (from a mark, the next; off one, the first that way), `toMark()`
+  setting `scrollTop`, whose scroll event does the rest; the wheel's
+  `deltaY` (lines × `TL_NOTCH_PX`/3, pages × the frame's height)
+  accumulated per gesture — a gesture's first event (after
+  `TL_GESTURE_MS` 150 quiet, or turning back) a step at once, then one
+  per `TL_NOTCH_PX` (100) more. Any other scroll of the user's (not
+  `own()`: to `ours`, the `scrollTop` it set itself, read back — the
+  unsynced layout's and `toFocus()`'s) is `unsettled` until
+  `onscrollend`, which moves it to the nearest mark (none: left as it
+  is); `toFocus()` clears it. `onMark()`: within half a pixel (`<
+  0.501`) of a mark is on it, so the browser's rounding never floors a
+  step to the quarter hour before. Not CSS `scroll-snap`: Chromium snaps
+  the page's own `scrollTop` writes too, fighting `toFocus()`. Each observer is in `timelines` and let
   go of by `releaseTimelines()` — called at the end of `paintHome()` and
   `repaintTile()`, and by the observer finding its frame gone —
   disconnecting any whose frame `!isConnected` (and taking a synced one
@@ -1238,8 +1267,9 @@ own calls to its device API. Full direction:
   `s.now`, with a `.tl-now-tag` "Now" under it on the greyed lane (the
   first, with none). Its `onscroll`: a scroll it made itself (to
   `ours`, the `scrollTop` it set, read back) passes; any other is the
-  user's — the group's focus to the quarter hour under its cursor,
-  `following` false. Now: `setFocus(group, tlSnap(Date.now()), true)`.
+  user's — the group's focus to the time under its cursor, the 6h mark
+  it's on (`onMark()`) else its quarter hour, `following` false — and
+  `unsettled`. Now: `setFocus(group, tlSnap(Date.now()), true)`.
   `.tl-view > .tl-scroll` has `overflow-anchor: none`), `rails`
   (`railsSpec(s, name, appId)`: `.spec-rails`, a flex row of four columns —
   a rail, the timeline's two lanes, a rail: `s.timeline` drawn by
@@ -1252,8 +1282,19 @@ own calls to its device API. Full direction:
   `@container (max-width:309px)` or `(max-height:239px)` drop the rails
   (`display: none`), the timeline then the whole tile, pixel for pixel as
   without them — a 2×1, or a 2-wide tile a small screen shrinks (a 2×2 at
-  full size, 334px inside, keeps them); nothing in `timelineSpec()`,
-  the focus clock or a `.tl-*` rule changed for them), `rail`
+  full size, 334px inside, keeps them); then the timeline's Now button
+  (`.tl-focus .tl-nowbtn`, the same element, its click and `hidden`
+  as they were) is moved — `remove()`, then appended — into
+  `.rails-now`, the frame's last child, after a `.rail-sp t` spacer
+  (`\u00a0`) for each `above` row before `tl-focus`: absolutely at the
+  frame's top-right (`.spec-rails` `position: relative`; the slot
+  `pointer-events: none`, the button `auto`), over the Report rail,
+  level with the focus row; `.spec-rails .tl-focus` then centres the
+  readout over the lanes (`justify-content: center`, the lanes'
+  scrollbar gutter kept), and with the rails dropped goes back to the
+  row alone — `flex-start`, no gutter, `padding-right: 48px` for Now —
+  so the bare timeline looks as it does alone; the Now button's own
+  size is `.btn.tl-nowbtn`, wherever it is), `rail`
   (`railSpec(s, above)`: a `.rail-head` (its title alone, `\u00a0` for
   none — no count) over `.rail-cards`, a list of `.rail-card`s, each a
   fixed size the CSS sets by the rail's width (`.spec-rail` an inline-size
@@ -2044,11 +2085,23 @@ same PR:
   full-size 2×2 (334px inside) keeps them, and a compact card in a
   narrow rail (the rail its cards' container), its height the CSS's and
   measured for `fit`; a 4-wide tile at full size draws exactly as before.
+  Then the timeline tweaks landed (no migration, no route change; the
+  timeline, frozen through the rails work, changed on purpose): in a
+  rails frame the Now button is the frame's, at its top-right over the
+  Report rail, the readout centred over the lanes and no longer cut off
+  at 2×2; faint day lines at each midnight UTC under the blocks (a
+  `--grid` token); the timeline scrolls 6h a step — a wheel's notch or
+  an arrow key to the next 6h mark, accumulated per gesture so a
+  trackpad doesn't race, and any other scroll of the user's settled on
+  the nearest mark once it ends (JS, not CSS `scroll-snap`, which
+  fights the focus clock's own scrolls); the lane headings set tighter
+  in a narrow tile so COMPLETE fits a 2×2; and the roster app's lanes
+  renamed Roster and Complete (labels only — the kinds unchanged).
   Still to come for it: reading `destinations` (time-zone shifts), the
   cards' popups and PDF, the
   report store (re-attached to a trip by its id), per-block or per-band
-  detail on click or hover, and `base_tz` day gridlines and WOCL shading
-  on the axis.
+  detail on click or hover, and home-local (`base_tz`) day lines and
+  WOCL shading on the axis.
   Still to come for write-back: an app replacing its own sessions and
   metrics over a date range (so a re-planned roster's dropped duties go),
   the rostered↔flown per-duty matching (needs a derived duty key — the

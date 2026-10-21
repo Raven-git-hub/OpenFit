@@ -75,12 +75,14 @@
      now line is --accent, as is a synced timeline's fixed cursor; the
      greyed future and the frame, the neutrals. A lane's bands - a trip
      away, its layovers - are --layover, amber, a soft tint behind the
-     blocks with a dashed edge. */
+     blocks with a dashed edge. --grid draws its day lines (midnight
+     UTC), faint, under everything else. */
   --timeline-a:#b4a8f0;
   --timeline-a-ink:var(--ink);
   --timeline-b:#5a47c9;
   --timeline-b-ink:var(--accent-ink);
   --layover:#c07d18;
+  --grid:color-mix(in srgb, var(--muted) 22%, transparent);
 
   --radius:14px;
   --radius-sm:9px;
@@ -117,6 +119,7 @@
     --timeline-b:#5d4ecc;
     --timeline-b-ink:var(--ink);
     --layover:#e0a83a;
+    --grid:color-mix(in srgb, var(--muted) 26%, transparent);
     --shadow:0 1px 2px rgba(0,0,0,.3), 0 10px 30px rgba(0,0,0,.35);
   }
 }
@@ -146,6 +149,7 @@
   --timeline-b:#5d4ecc;
   --timeline-b-ink:var(--ink);
   --layover:#e0a83a;
+  --grid:color-mix(in srgb, var(--muted) 26%, transparent);
   --shadow:0 1px 2px rgba(0,0,0,.3), 0 10px 30px rgba(0,0,0,.35);
 }
 
@@ -664,8 +668,11 @@ h5 + .dnote{margin-top:0;}
    tone; lane 1 right, in the darker; the now line across both in the
    accent; a grey_after_now lane hatched grey from it down; a lane's
    bands - a trip away - tinted amber behind everything else in it, its
-   port written where the band shows. The heading row keeps the same
-   scrollbar gutter as the frame, so each heading sits over its lane. */
+   port written where the band shows; a faint line across both at each
+   midnight (UTC), under all of it. The heading row keeps the same
+   scrollbar gutter as the frame, so each heading sits over its lane;
+   in a narrow tile (a 2-wide one) the headings are set tighter, so an
+   eight-letter one - COMPLETE - still fits its lane. */
 .spec-timeline{display:flex;flex-direction:column;gap:4px;min-height:0;min-width:0;}
 .spec-panel > .spec-timeline{flex:1 1 0;}
 .spec-timeline .t{font-size:10.5px;text-transform:uppercase;letter-spacing:.8px;color:var(--muted);font-weight:600;}
@@ -675,11 +682,19 @@ h5 + .dnote{margin-top:0;}
   flex:1 1 0;min-width:0;padding:0 4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
   font-size:10.5px;text-transform:uppercase;letter-spacing:.8px;color:var(--muted);font-weight:600;
 }
+/* a narrow tile's (a 2-wide one's): tighter and a hair smaller, on the
+   10.5px heading's line, so the row - and the frame under it - stays
+   level with the rails' headings */
+@container (max-width:519px){ .tl-lh{font-size:10px;letter-spacing:.3px;line-height:calc(10.5px * 1.45);} }
 .tl-scroll{
   position:relative;flex:1 1 0;min-height:24px;overflow-x:hidden;overflow-y:auto;overscroll-behavior:contain;
   border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--inset);
 }
 .tl-track{position:relative;width:100%;}
+/* the day lines: first in the track, so under the lanes - their bands,
+   the grey, the blocks - and the now line and cursor over those */
+.tl-grid{position:absolute;inset:0;pointer-events:none;}
+.tl-gridline{position:absolute;left:0;right:0;height:0;border-top:1px solid var(--grid);}
 .tl-lane{position:absolute;top:0;bottom:0;}
 .tl-lane + .tl-lane{border-left:1px solid var(--border);}
 .tl-block{
@@ -718,8 +733,9 @@ h5 + .dnote{margin-top:0;}
    the accent: they meet while the group follows now. */
 .tl-focus{display:flex;align-items:center;gap:8px;min-height:20px;}
 .tl-readout{font:600 11.5px/16px var(--font-mono);color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;}
-.tl-focus .tl-nowbtn{flex:none;margin-left:auto;padding:1px 8px;font-size:11px;line-height:16px;}
-.tl-focus .tl-nowbtn[hidden]{display:none;}
+.btn.tl-nowbtn{flex:none;padding:1px 8px;font-size:11px;line-height:16px;}
+.btn.tl-nowbtn[hidden]{display:none;}
+.tl-focus .tl-nowbtn{margin-left:auto;}
 .tl-view{position:relative;display:flex;flex-direction:column;flex:1 1 0;min-height:24px;min-width:0;}
 .tl-view > .tl-scroll{overflow-anchor:none;}
 .tl-cursor{position:absolute;left:0;right:0;top:50%;height:0;margin-top:-1px;border-top:2px solid var(--accent);z-index:2;pointer-events:none;}
@@ -744,13 +760,28 @@ h5 + .dnote{margin-top:0;}
    on a small screen) a compact one, its height and type smaller, so a
    flight number still fits beside the port. The rails show down to a
    2-wide tile; in a tile too small to hold four columns, or too short,
-   they're left out and the timeline has the tile to itself. */
-.spec-rails{display:flex;gap:8px;min-height:0;min-width:0;}
+   they're left out and the timeline has the tile to itself. The
+   timeline's Now button is the frame's (.rails-now): at its top-right,
+   over the Report rail and level with the focus row, which leaves the
+   readout the row - centred over the lanes, the row keeping the lanes'
+   scrollbar gutter. With the rails left out, Now is at the timeline's
+   top-right, as it is alone, and the readout goes back to the row's
+   start, clear of it. */
+.spec-rails{position:relative;display:flex;gap:8px;min-height:0;min-width:0;}
 .spec-panel > .spec-rails{flex:1 1 0;}
 .spec-rails > .spec-timeline{flex:1 1 0;}
 .spec-rails > .spec-rail{flex:none;width:clamp(84px, 22cqi, 156px);}
 @container (max-width:309px){ .spec-rails > .spec-rail{display:none;} }
 @container (max-height:239px){ .spec-rails > .spec-rail{display:none;} }
+.rails-now{
+  position:absolute;top:0;right:0;display:flex;flex-direction:column;align-items:flex-end;gap:4px;pointer-events:none;
+}
+.rails-now > .tl-nowbtn{pointer-events:auto;}
+.spec-rails .tl-focus{justify-content:center;overflow:hidden;scrollbar-gutter:stable;scrollbar-width:thin;}
+/* rails left out: the readout at the row's start, room for Now (about
+   40px) and the row's gap at its end */
+@container (max-width:309px){ .spec-rails .tl-focus{justify-content:flex-start;scrollbar-gutter:auto;padding-right:48px;} }
+@container (max-height:239px){ .spec-rails .tl-focus{justify-content:flex-start;scrollbar-gutter:auto;padding-right:48px;} }
 .spec-rail{display:flex;flex-direction:column;gap:4px;min-height:0;min-width:0;container-type:inline-size;}
 .rail-sp{min-height:20px;}
 .rail-sp.t{min-height:0;font-size:10.5px;}
@@ -4000,7 +4031,19 @@ h5 + .dnote{margin-top:0;}
      shorter than TL_MIN_WEEK_PX (a 2x1 tile's) shows less than a week,
      at that scale, and scrolls further: squeezed to a week, its blocks
      would all be at the floor, running into each other over the gaps
-     between them. Everything an app sent is set as text.
+     between them. Under everything, a faint line at each midnight (UTC)
+     on the axis marks the days. Everything an app sent is set as text.
+
+     It scrolls six hours at a time (TL_MARK_MS): a wheel's notch, or an
+     arrow key, moves the time at the viewport's middle - the cursor's,
+     synced - to the next 6h mark that way (00, 06, 12 or 18Z), and any
+     other scroll of the user's - the scrollbar dragged, a page key, a
+     touch - settles on the nearest mark once it's ended (scrollend, where
+     the browser has it). Within half a pixel of a mark - where the
+     browser's rounding leaves a scroll to one - is on it. Not the CSS's
+     scroll-snap: that snaps the timeline's own scrolls too, which would
+     pull a synced one off its focus time (a quarter hour) and stop it
+     following now.
 
      The viewport's height is only known once the timeline is on the
      page, which it isn't while renderSpec() builds it: it's laid out at
@@ -4029,6 +4072,11 @@ h5 + .dnote{margin-top:0;}
   const TL_MIN_WEEK_PX = 240;        // ... but never less than this to the week: a shorter viewport shows less
   const TL_MIN_BLOCK_PX = 18;        // a block's least height: a short duty stays legible, and tappable
   const TL_FALLBACK_PX = 240;        // the viewport's height until it has one: built detached, or no layout
+  const TL_DAY_MS = 86400000;        // the day lines' spacing: at each midnight, UTC
+  const TL_MAX_DAY_LINES = 3660;     // ... on an axis of at most ten years: past that, none (a line a day would be a node a day)
+  const TL_MARK_MS = 6 * 3600000;    // a scroll's step, and the marks it settles on: 00, 06, 12 and 18Z
+  const TL_NOTCH_PX = 100;           // the wheel's travel for a step: about a mouse's notch (Chrome's 100px; Firefox's three lines)
+  const TL_GESTURE_MS = 150;         // a wheel quiet this long has stopped: its next turn starts a new gesture
   const timelines = new Set();       // the timelines drawn, each {scroll, observer, group, show}: see releaseTimelines()
   /* The focus clock: by group name, the time in focus on the synced
      timelines - the one under every member's cursor - and whether it's
@@ -4127,6 +4175,13 @@ h5 + .dnote{margin-top:0;}
     scroll.setAttribute('aria-label', (s.title ? s.title+': ' : '') + 'timeline, '
       + lanes.map((l, i) => `${l.label || 'lane '+(i+1)} ${l.blocks.length}`).join(', '));
     const track = el('div','tl-track');
+    // First, so under the rest: the day lines, at each midnight (UTC) on
+    // the axis.
+    let days = [];
+    for(let d = Math.ceil(t0 / TL_DAY_MS) * TL_DAY_MS; d <= t1 && days.length <= TL_MAX_DAY_LINES; d += TL_DAY_MS) days.push(d);
+    if(days.length > TL_MAX_DAY_LINES) days = [];
+    const grid = days.length ? track.appendChild(el('div','tl-grid')) : null;
+    const gridlines = days.map(() => grid.appendChild(el('div','tl-gridline')));
     const cols = lanes.map((l, i) => {
       const col = el('div','tl-lane l'+i);
       col.style.left = (i * 100 / lanes.length)+'%';
@@ -4168,7 +4223,8 @@ h5 + .dnote{margin-top:0;}
 
     let laidH = 0, laidPx = 0;   // the viewport height it's laid out for, and its scale (px a ms): 0 before any
     let topMs = null;   // the time at the viewport's top, as last scrolled: null before a real layout
-    let ours = null;    // synced: the scrollTop it last set itself, so its own scroll isn't taken for the user's
+    let ours = null;    // the scrollTop it last set itself, so its own scroll isn't taken for the user's
+    let unsettled = false;   // scrolled by the user, and not yet settled on a mark
     const layout = () => {
       const h = scroll.clientHeight || 0;
       if(!h && laidH) return;   // hidden, or gone: the last layout stands
@@ -4195,6 +4251,7 @@ h5 + .dnote{margin-top:0;}
             if(tag) tag.style.top = placed.reduce((y, [a, z]) => a <= top && top < z ? Math.max(y, z) : y, top) - top+'px';
           });
         });
+        gridlines.forEach((g, i) => { g.style.top = pad + (days[i] - t0) * px+'px'; });
         track.style.height = (bottom + pad)+'px';
         if(now!==null){
           const y = pad + (now - t0) * px;
@@ -4208,24 +4265,89 @@ h5 + .dnote{margin-top:0;}
       if(group){ toFocus(); return; }
       if(topMs===null) topMs = now!==null ? now - viewH/2/px : t1 - viewH/px;
       scroll.scrollTop = (topMs - t0) * px;
+      ours = scroll.scrollTop;
     };
     // Synced: the group's focus time under the cursor - padded, that's
     // where its scrollTop is that time's offset on the axis. A time
-    // past either end of the axis scrolls as far as it goes.
+    // past either end of the axis scrolls as far as it goes. A move of
+    // the focus outdoes a settle still to come.
     const toFocus = () => {
       if(!scroll.clientHeight || !laidPx) return;
       scroll.scrollTop = (group.focusMs - t0) * laidPx;
       ours = scroll.scrollTop;
+      unsettled = false;
+    };
+    // A scroll to where it last put itself (`ours`, read back) is its own.
+    const own = () => {
+      const mine = ours!==null && Math.abs(scroll.scrollTop - ours) < 1;
+      ours = null;
+      return mine;
+    };
+    // The time at the viewport's middle - the cursor's, synced: padded,
+    // a time's offset on the axis is the scrollTop that puts it there -
+    // and the 6h mark that is, if it's within half a pixel of one (and a
+    // hair, for the sums), else null.
+    const midOff = () => group ? 0 : scroll.clientHeight / 2;
+    const midMs = () => t0 + (scroll.scrollTop + midOff()) / laidPx;
+    const onMark = ms => {
+      const m = Math.round(ms / TL_MARK_MS) * TL_MARK_MS;
+      return Math.abs(ms - m) * laidPx < 0.501 ? m : null;
+    };
+    const toMark = m => { scroll.scrollTop = (m - t0) * laidPx - midOff(); };
+    // n marks on (back, for n < 0) from the one it's on - off one, the
+    // first that way is the first step. A scroll like a hand's: synced,
+    // it moves the group's focus, and stops it following.
+    const step = n => {
+      if(!n || !scroll.clientHeight || !laidPx) return;
+      const at = midMs(), on = onMark(at);
+      const from = on!==null ? on : (n > 0 ? Math.floor(at / TL_MARK_MS) : Math.ceil(at / TL_MARK_MS)) * TL_MARK_MS;
+      toMark(from + n * TL_MARK_MS);
+    };
+    // The wheel steps it: a gesture's first turn at once, however little
+    // it travels - a swipe starts small, and some mice's notch is a few
+    // px - then a step for each notch's travel after it, so a trackpad's
+    // run of small events is a step or two, not a race. A pinch (ctrl)
+    // or a sideways turn is the browser's.
+    let wheelAcc = 0, wheelDir = 0, wheelAt = -Infinity;
+    scroll.addEventListener('wheel', e => {
+      if(e.ctrlKey || !scroll.clientHeight || !laidPx) return;
+      const dy = e.deltaY * (e.deltaMode===1 ? TL_NOTCH_PX / 3 : e.deltaMode===2 ? scroll.clientHeight : 1);
+      if(!dy) return;
+      e.preventDefault();
+      const dir = Math.sign(dy);
+      wheelAcc = e.timeStamp - wheelAt > TL_GESTURE_MS || dir!==wheelDir
+        ? dir * Math.max(Math.abs(dy), TL_NOTCH_PX) : wheelAcc + dy;
+      wheelAt = e.timeStamp;
+      wheelDir = dir;
+      const n = Math.trunc(wheelAcc / TL_NOTCH_PX);
+      wheelAcc -= n * TL_NOTCH_PX;
+      step(n);
+    }, {passive: false});
+    // So does an arrow key; the other keys scroll as they do, and settle.
+    scroll.onkeydown = e => {
+      if((e.key!=='ArrowDown' && e.key!=='ArrowUp') || e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
+      e.preventDefault();
+      step(e.key==='ArrowDown' ? 1 : -1);
+    };
+    // Any other scroll of the user's settles on the nearest mark once
+    // it's ended. A browser without scrollend leaves it where it is.
+    scroll.onscrollend = () => {
+      if(!unsettled) return;
+      unsettled = false;
+      if(!scroll.clientHeight || !laidPx) return;
+      const at = midMs();
+      if(onMark(at)===null) toMark(Math.round(at / TL_MARK_MS) * TL_MARK_MS);
     };
     const t = {scroll, observer: null, group, show: null};
     if(group){
       // Its own scroll to the focus passes; the user's moves the group's
-      // focus to the time under the cursor, and stops it following.
+      // focus to the time under the cursor - the mark it's on, else the
+      // quarter hour - and stops it following.
       scroll.onscroll = () => {
-        if(!scroll.clientHeight || !laidPx) return;
-        const mine = ours!==null && Math.abs(scroll.scrollTop - ours) < 1;
-        ours = null;
-        if(!mine) setFocus(group, tlSnap(t0 + scroll.scrollTop / laidPx), false, t);
+        if(!scroll.clientHeight || !laidPx || own()) return;
+        const at = t0 + scroll.scrollTop / laidPx;
+        setFocus(group, onMark(at) ?? tlSnap(at), false, t);
+        unsettled = true;
       };
       t.show = rescroll => {
         readout.textContent = fmtFocus(group.focusMs);
@@ -4235,7 +4357,11 @@ h5 + .dnote{margin-top:0;}
       group.members.add(t);
       t.show(false);
     }else{
-      scroll.onscroll = () => { if(scroll.clientHeight && laidPx) topMs = t0 + scroll.scrollTop / laidPx; };
+      scroll.onscroll = () => {
+        if(!scroll.clientHeight || !laidPx) return;
+        topMs = t0 + scroll.scrollTop / laidPx;
+        if(!own()) unsettled = true;
+      };
     }
     layout();
     if(typeof requestAnimationFrame==='function') requestAnimationFrame(layout);
@@ -4401,8 +4527,13 @@ h5 + .dnote{margin-top:0;}
      and first - a synced one starts or joins its focus group as it would
      alone, the rails reading it after - with a rail either side (a side
      that isn't a rail spec: none), each told the rows over the
-     timeline's frame to line up with. The CSS leaves the rails out in a
-     tile too small to hold them: the timeline then has the tile. */
+     timeline's frame to line up with. The timeline's Now button - the
+     same button, its click and its hiding as they were - is then the
+     frame's (.rails-now): moved out of the focus row to the frame's
+     top-right, over the Report rail and level with that row (a spacer
+     for each row above it), so the readout has the row to itself. The
+     CSS leaves the rails out in a tile too small to hold them: the
+     timeline then has the tile, Now at its top-right. */
   function railsSpec(s, name, appId){
     const box = el('div','spec-rails');
     const centre = renderSpec(s.timeline, name, appId);
@@ -4418,6 +4549,14 @@ h5 + .dnote{margin-top:0;}
     if(left) box.appendChild(left);
     box.appendChild(centre);
     if(right) box.appendChild(right);
+    const now = centre.querySelector('.tl-focus .tl-nowbtn');
+    if(now){
+      const slot = el('div','rails-now');
+      above.slice(0, above.indexOf('tl-focus')).forEach(() => { slot.appendChild(el('div','rail-sp t')).textContent = ' '; });
+      now.remove();
+      slot.appendChild(now);
+      box.appendChild(slot);
+    }
     return box;
   }
 

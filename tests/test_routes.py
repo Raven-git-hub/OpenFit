@@ -1084,8 +1084,10 @@ def _js(page, name):
 
 
 # A stand-in DOM: elements with children, classes, data-* and attributes,
-# text, and querySelector(All) for the selectors the page uses (compound
-# simple selectors - tag, #id, .class, [attr], [attr="v"] - and descendants).
+# text, querySelector(All) for the selectors the page uses (compound
+# simple selectors - tag, #id, .class, [attr], [attr="v"] - and
+# descendants), remove(), and the listeners added (noted, with their
+# options, for a test to call).
 MINI_DOM = r"""
     const camel = s => s.replace(/-(\w)/g, (_, c) => c.toUpperCase());
     const attrOf = (n, k) => k.startsWith('data-') ? n.dataset[camel(k.slice(5))] : k==='id' ? n.id : n.attrs[k];
@@ -1109,11 +1111,13 @@ MINI_DOM = r"""
     const below = n => n.children.flatMap(c => [c, ...below(c)]);
     const mk = tag => {
       const n = {tag, children:[], style:{}, dataset:{}, attrs:{}, className:'', id:'', hidden:false, parent:null,
-                 _text:'', _html:''};
+                 _text:'', _html:'', listeners:{}};
       n.setAttribute = (k, v) => { n.attrs[k] = String(v); if(k==='id') n.id = String(v); };
       n.getAttribute = k => k in n.attrs ? n.attrs[k] : null;
       n.removeAttribute = k => { delete n.attrs[k]; };
       n.appendChild = c => { c.parent = n; n.children.push(c); return c; };
+      n.remove = () => { if(n.parent) n.parent.children = n.parent.children.filter(c => c!==n); n.parent = null; };
+      n.addEventListener = (type, f, options) => { (n.listeners[type] = n.listeners[type] || []).push({f, options}); };
       n.replaceChildren = (...cs) => { cs.forEach(c => { c.parent = n; }); n.children = cs; n._html = ''; n._text = ''; };
       n.classList = {
         contains: c => n.className.split(/\s+/).includes(c),
@@ -3615,7 +3619,8 @@ def test_the_file_sender_reaches_the_action_route_through_the_api_block(client):
 
 TIMELINE_PARTS = [
     "el", "SPECS", "renderSpec", "specMsg",
-    "TL_VIEW_MS", "TL_MIN_WEEK_PX", "TL_MIN_BLOCK_PX", "TL_FALLBACK_PX", "timelines", "timelineSpec", "releaseTimelines",
+    "TL_VIEW_MS", "TL_MIN_WEEK_PX", "TL_MIN_BLOCK_PX", "TL_FALLBACK_PX", "TL_DAY_MS", "TL_MAX_DAY_LINES", "TL_MARK_MS",
+    "TL_NOTCH_PX", "TL_GESTURE_MS", "timelines", "timelineSpec", "releaseTimelines",
 ]
 
 TIMELINE_HARNESS = r"""
@@ -3651,7 +3656,9 @@ TIMELINE_HARNESS = r"""
           futures: kids(l, 'tl-future').length})),
         nows: track ? kids(track, 'tl-now').length : 0,
         bands: lanes.map(l => kids(l, 'tl-band').map(b => b.textContent)),
+        gridlines: track ? kids(track, 'tl-grid').flatMap(g => kids(g, 'tl-gridline')).length : 0,
         laidOut: !!track && px(track.style.height)
+          && kids(track, 'tl-grid').every(g => kids(g, 'tl-gridline').every(n => px(n.style.top)))
           && lanes.every(l => kids(l, 'tl-block').every(b => px(b.style.top) && px(b.style.height)))
           && kids(track, 'tl-now').every(n => px(n.style.top))
           && lanes.every(l => kids(l, 'tl-future').every(f => px(f.style.top)))
@@ -3706,13 +3713,14 @@ def test_a_timeline_draws_two_lanes_of_blocks_a_now_line_and_the_greyed_future(c
 
     built = r["built"]
     # Its title, the lanes' headings over a scrolling frame; in the frame
-    # the track, a lane each - lane 0 the left half, lane 1 the right - and
-    # the now line across both.
+    # the track - the day lines under everything, a lane each - lane 0 the
+    # left half, lane 1 the right - and the now line across both.
     assert built["cls"] == "spec-timeline"
     assert built["kids"] == ["t", "tl-head", "tl-scroll"]
     assert built["title"] == "Duties <i>"
     assert built["head"] == ["Rostered", "Flown"]
-    assert built["track"] == ["tl-lane l0", "tl-lane l1", "tl-now"]
+    assert built["track"] == ["tl-grid", "tl-lane l0", "tl-lane l1", "tl-now"]
+    assert built["gridlines"] == 12   # 11 to 22 October
     assert built["lanes"] == [
         {"cls": "tl-lane l0", "left": "0%", "width": "50%", "blocks": ["CX9101 <b>", "R1E"], "futures": 0},
         {"cls": "tl-lane l1", "left": "50%", "width": "50%", "blocks": ["CX9101", "A1534", ""], "futures": 1},
@@ -3788,7 +3796,7 @@ def test_a_timeline_with_no_now_has_no_line_and_greys_nothing(client):
     # One lane, the whole width; no now, so no line - and nothing greyed,
     # grey_after_now or not, with no now to grey after.
     assert r["one"]["kids"] == ["tl-head", "tl-scroll"]
-    assert r["one"]["track"] == ["tl-lane l0"]
+    assert r["one"]["track"] == ["tl-grid", "tl-lane l0"]
     assert r["one"]["lanes"] == [
         {"cls": "tl-lane l0", "left": "0%", "width": "100%", "blocks": ["CX9101", "A1534", ""], "futures": 0},
     ]
@@ -3893,7 +3901,7 @@ def test_a_lanes_bands_are_shaded_behind_its_blocks(client):
     # blocks, the now line and the grey as without them.
     assert built["bands"] == [["ZZB <b>", "ZZC"], [""]]
     assert built["lanes"] == r["plain"]["lanes"]
-    assert built["track"] == ["tl-lane l0", "tl-lane l1", "tl-now"]
+    assert built["track"] == ["tl-grid", "tl-lane l0", "tl-lane l1", "tl-now"]
     assert built["html"] == ""
     assert built["laidOut"] is True
     # First in each lane - so behind the grey and the blocks over them.
@@ -4095,7 +4103,7 @@ def test_a_synced_timeline_draws_a_cursor_a_readout_and_a_now_button(client):
     # Unsynced, exactly as before: the title, the headings, the frame -
     # no focus row, no cursor, no Now tag - and no group, no clock.
     assert r["plain"]["kids"] == ["t", "tl-head", "tl-scroll"]
-    assert r["plain"]["track"] == ["tl-lane l0", "tl-lane l1", "tl-now"]
+    assert r["plain"]["track"] == ["tl-grid", "tl-lane l0", "tl-lane l1", "tl-now"]
     assert r["plainKids"] == [[["t", "tl-head", "tl-scroll"], [0, 0, 0, 0, 0, 0]]] * 3
     assert r["groupsUnsynced"] == [0, 0]
     assert (r["none"]["kids"], r["none"]["msg"]) == (["spec-msg"], "No data")
@@ -4109,7 +4117,7 @@ def test_a_synced_timeline_draws_a_cursor_a_readout_and_a_now_button(client):
     assert drawn["focus"] == ["tl-readout", "btn sm tl-nowbtn"]
     assert drawn["view"] == ["tl-scroll", "tl-cursor"]
     assert drawn["cursors"] == 1
-    assert built["track"] == ["tl-lane l0", "tl-lane l1", "tl-now"]
+    assert built["track"] == ["tl-grid", "tl-lane l0", "tl-lane l1", "tl-now"]
     assert [lane["blocks"] for lane in built["lanes"]] == [["CX9101 <b>", "R1E"], ["CX9101", "A1534", ""]]
     assert built["laidOut"] is True
     assert built["html"] == ""
@@ -4431,7 +4439,9 @@ def test_a_rails_frame_draws_its_timeline_as_it_is_alone_between_two_rails(clien
         const box = renderSpec({json.dumps(RAILS)}, 'Roster', 'roster');
         r.cls = box.className;
         r.kids = box.children.map(c => c.className);
-        // The middle, the timeline: drawn as it is on its own, node for node.
+        // The middle, the timeline: drawn as it is on its own, node for
+        // node - bar its Now button, moved out of its focus row.
+        alone.querySelector('.tl-nowbtn').remove();
         r.same = JSON.stringify(tree(box.children[1])) === JSON.stringify(tree(alone));
         r.centre = look(box.children[1]);
         r.left = rail(box.children[0]);
@@ -4451,9 +4461,10 @@ def test_a_rails_frame_draws_its_timeline_as_it_is_alone_between_two_rails(clien
         r.html = [box, ...box.querySelectorAll('*')].map(n => n._html).join('');
     """))
 
-    # Four columns: a rail, the timeline's two lanes, a rail.
+    # Four columns: a rail, the timeline's two lanes, a rail - and the
+    # timeline's Now button, the frame's.
     assert r["cls"] == "spec-rails"
-    assert r["kids"] == ["spec-rail", "spec-timeline", "spec-rail"]
+    assert r["kids"] == ["spec-rail", "spec-timeline", "spec-rail", "rails-now"]
     assert r["same"] is True
     assert r["centre"]["kids"] == ["t", "tl-focus", "tl-head", "tl-view"]
     assert r["centre"]["laidOut"] is True
@@ -4506,7 +4517,7 @@ def test_rails_restack_as_the_focus_moves_and_never_move_it(client):
         to('2026-09-29T00:00:00Z');
         r.further = both();
         // Now: every member back on now, the rails with them.
-        tl.querySelector('.tl-nowbtn').onclick();
+        box.querySelector('.tl-nowbtn').onclick();
         r.now = both();
         // The follow tick, once the trip under way is home: off the plan.
         clock = Date.parse('2026-10-19T13:07:30Z');
@@ -4847,6 +4858,373 @@ def test_the_rails_show_down_to_a_two_wide_tile_with_a_compact_card(client):
     narrowest = next(w for w in range(200, 800) if shown(w, two[1]))
     gap = _px(_decls(css[0], ".spec-rails")["gap"])
     assert narrowest - 2 * _rail_width(css, narrowest) - 2 * gap >= 120
+
+
+# ---------- the timeline's tweaks: Now in the frame, day lines, 6h steps ----------
+#
+# In a rails frame the timeline's Now button is the frame's, at its
+# top-right, and the readout has the focus row, centred over the lanes;
+# alone, a timeline keeps Now in its row. Every timeline draws a faint
+# line at each midnight (UTC) under everything else, and scrolls six
+# hours at a time: a wheel's notch or an arrow key moves the time at the
+# viewport's middle - the cursor's, synced - to the next 6h mark, and a
+# scroll by hand settles on the nearest once it ends. Under node, over
+# the stand-in DOM, with the clock held still as for the focus clock;
+# the browser's part - the scroll event a scroll fires, its scrollend -
+# called as a browser would.
+
+SIX_HOURS_PX_480 = 6 * 3600000 * 480 / (7 * 86400000)   # a 6h mark's spacing in a 480px viewport: a week to its height
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
+def test_in_a_rails_frame_the_now_button_is_the_frames_at_its_top_right(client):
+    page = _page(client)
+    untitled = {**RAILS, "timeline": {**SYNCED, "title": None}}
+    r = _node(_rails_script(page, f"""
+        const box = renderSpec({json.dumps(RAILS)}, 'Roster', 'roster');
+        const [L, tl, R, slot] = box.children;
+        r.kids = box.children.map(c => c.className);
+        // The slot: a spacer for the title's line, then the button - so
+        // it's level with the focus row, whose readout is all it holds.
+        r.slot = slot.children.map(c => [c.className, c.textContent]);
+        r.focus = tl.querySelector('.tl-focus').children.map(c => c.className);
+        r.inTimeline = tl.querySelectorAll('.tl-nowbtn').length;
+        const btn = slot.children[1];
+        r.btn = [btn.tag, btn.type, btn.textContent, btn.title, btn.hidden];
+        // The same button: hidden while the group follows now, shown once
+        // the timeline's scrolled by hand, and its click brings the group back.
+        show(tl, 480);
+        scrollTo(tl, (Date.parse('2026-10-14T03:00:00Z') - {TIMELINE_T0}) * 480 / WEEK);
+        r.scrolled = [btn.hidden, focusGroups.get('frms').following, tl.querySelector('.tl-readout').textContent];
+        btn.onclick();
+        r.back = [btn.hidden, focusGroups.get('frms').following, tl.querySelector('.tl-readout').textContent];
+        // Untitled, no spacer; unsynced, no Now to move.
+        r.untitled = renderSpec({json.dumps(untitled)}, 'Roster', 'roster').children[3].children.map(c => c.className);
+        r.unsynced = renderSpec({{...{json.dumps(RAILS)}, timeline: {json.dumps(TIMELINE)}}}, 'Roster', 'roster')
+          .children.map(c => c.className);
+        // Alone, a synced timeline keeps Now at its focus row's end.
+        r.alone = renderSpec({json.dumps(SYNCED)}, 'Roster', 'roster').querySelector('.tl-focus').children.map(c => c.className);
+    """))
+
+    assert r["kids"] == ["spec-rail", "spec-timeline", "spec-rail", "rails-now"]
+    assert r["slot"] == [["rail-sp t", " "], ["btn sm tl-nowbtn", "Now"]]
+    assert r["focus"] == ["tl-readout"]
+    assert r["inTimeline"] == 0
+    assert r["btn"] == ["button", "button", "Now", "Back to now, and follow it", True]
+    assert r["scrolled"] == [False, False, "Wed 14 Oct 03:00Z"]
+    assert r["back"] == [True, True, "Sun 18 Oct 12:00Z"]
+    assert r["untitled"] == ["btn sm tl-nowbtn"]
+    assert r["unsynced"] == ["spec-rail", "spec-timeline", "spec-rail"]
+    assert r["alone"] == ["tl-readout", "btn sm tl-nowbtn"]
+
+    # The frame places it: at its top-right, over the Report rail - the
+    # frame its containing block - the button alone taking a click.
+    css = _css_rules(page)
+    root = _decls(css[0], ":root")
+    big, small = _px(root["--tile-cell-max"]), _px(root["--tile-cell-min"])
+    assert _decls(css[0], ".spec-rails")["position"] == "relative"
+    slot = _decls(css[0], ".rails-now")
+    assert (slot["position"], slot["top"], slot["right"], slot["pointer-events"]) == ("absolute", "0", "0", "none")
+    assert (slot["flex-direction"], slot["align-items"], slot["gap"]) == ("column", "flex-end", "4px")
+    assert _decls(css[0], ".rails-now > .tl-nowbtn")["pointer-events"] == "auto"
+    # As small as it was in the row, wherever it is - over .btn.sm's size.
+    btn = _decls(css[0], ".btn.tl-nowbtn")
+    assert (btn["padding"], btn["font-size"], btn["line-height"]) == ("1px 8px", "11px", "16px")
+    assert _decls(css[0], ".btn.tl-nowbtn[hidden]")["display"] == "none"
+    # The readout centred over the lanes - the row keeping their
+    # scrollbar gutter - with the rails shown: a 2x2, a 4x3.
+    focus = lambda w, h: _styled(css, ".spec-rails .tl-focus", width=w, height=h)
+    for size in (_tile_content(css, 2, 2, big), _tile_content(css, 4, 3, big)):
+        f = focus(*size)
+        assert (f["justify-content"], f["scrollbar-gutter"], f["overflow"]) == ("center", "stable", "hidden"), size
+        assert "padding-right" not in f
+    # With them left out, the row as it is alone: the readout at its
+    # start, room for Now at its end.
+    for size in ((309, 338), (334, 239), _tile_content(css, 2, 1, big), _tile_content(css, 2, 2, small)):
+        f = focus(*size)
+        assert (f["justify-content"], f["scrollbar-gutter"], f["padding-right"]) == ("flex-start", "auto", "48px"), size
+    assert _decls(css[0], ".tl-focus .tl-nowbtn")["margin-left"] == "auto"
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
+def test_a_timeline_draws_a_line_at_each_midnight_under_everything(client):
+    page = _page(client)
+    lane = lambda a, b: {"label": None, "intervals": [{"start": a, "end": b, "label": "X"}]}
+    within = {"type": "timeline", "lanes": [lane("2026-10-10T01:00:00Z", "2026-10-10T14:00:00Z")]}
+    across = {"type": "timeline", "lanes": [lane("2026-10-10T20:00:00Z", "2026-10-11T04:00:00Z")]}
+    on_midnight = {"type": "timeline", "lanes": [lane("2026-10-10T00:00:00Z", "2026-10-11T00:00:00Z")]}
+    decade = {"type": "timeline", "lanes": [lane("2020-01-01T00:00:00Z", "2030-01-07T00:00:00Z")]}
+    ages = {"type": "timeline", "lanes": [lane("0001-01-01T00:00:00Z", "9999-01-01T00:00:00Z")]}
+    r = _node(_rails_script(page, f"""
+        const lines = box => {{
+          const track = box.querySelector('.tl-track');
+          const grid = kids(track, 'tl-grid');
+          return {{order: track.children.map(c => c.className), layers: grid.length,
+                   tops: grid.flatMap(g => kids(g, 'tl-gridline')).map(g => parseFloat(g.style.top))}};
+        }};
+        const plain = renderSpec({json.dumps(TIMELINE)}, 'Roster', 'roster');
+        show(plain, 480);
+        r.plain = lines(plain);
+        // Resized: laid out again with the blocks, on the new scale.
+        show(plain, 600);
+        r.resized = lines(plain);
+        // Synced: padded half a frame, as the blocks are.
+        const inGroup = renderSpec({json.dumps(SYNCED)}, 'Roster', 'roster');
+        show(inGroup, 480);
+        r.synced = lines(inGroup);
+        r.firstBlock = parseFloat(inGroup.querySelector('.tl-block').style.top);
+        // Built, not shown: at the fallback height, a week to 240px.
+        r.within = lines(renderSpec({json.dumps(within)}, 'X', 'x'));
+        r.across = lines(renderSpec({json.dumps(across)}, 'X', 'x'));
+        r.onMidnight = lines(renderSpec({json.dumps(on_midnight)}, 'X', 'x'));
+        // Ten years (3660 midnights, both ends among them): a line each; a
+        // hand-built spec spanning ages: none, rather than a node a day.
+        r.decade = lines(renderSpec({json.dumps(decade)}, 'X', 'x')).tops.length;
+        r.ages = lines(renderSpec({json.dumps(ages)}, 'X', 'x')).layers;
+        r.html = [plain, ...plain.querySelectorAll('*')].map(n => n._html).join('');
+    """))
+
+    t0 = _ms("2026-10-10T01:00:00Z")
+    midnights = [_ms(f"2026-10-{d:02d}T00:00:00Z") for d in range(11, 23)]   # 11 to 22 October: the axis runs to 10:00Z on the 22nd
+    at = lambda h, pad=0: [pytest.approx(pad + (m - t0) * h / (7 * 86400000)) for m in midnights]
+    # One layer of lines, first in the track - under the lanes, so under
+    # their bands, the grey and the blocks, and the now line over it -
+    # a line at each midnight from the axis' start to its end.
+    assert r["plain"] == {"order": ["tl-grid", "tl-lane l0", "tl-lane l1", "tl-now"], "layers": 1, "tops": at(480)}
+    assert r["resized"]["tops"] == at(600)
+    assert r["synced"]["tops"] == at(480, pad=240)
+    assert r["firstBlock"] == 240
+    # An axis within a day draws none - not even the layer; across one
+    # midnight, one; from a midnight, one at its top and one a day on.
+    assert r["within"] == {"order": ["tl-lane l0"], "layers": 0, "tops": []}
+    assert r["across"]["tops"] == [pytest.approx(4 * 3600000 * 240 / (7 * 86400000))]
+    assert r["onMidnight"]["tops"] == [0, pytest.approx(240 / 7)]
+    assert r["decade"] == 3660 and r["ages"] == 0
+    assert r["html"] == ""
+
+    # Faint, in its own token in every theme; under everything, and never
+    # in the way of a tap.
+    css = page[: page.index("</style>")]
+    light = css[css.index(":root{") : css.index("@media (prefers-color-scheme:dark)")]
+    os_dark = css[css.index("@media (prefers-color-scheme:dark)") : css.index(':root[data-theme="dark"]{')]
+    toggle_dark = css[css.index(':root[data-theme="dark"]{') :]
+    toggle_dark = toggle_dark[: toggle_dark.index("}")]
+    assert "--grid:color-mix(in srgb, var(--muted) 22%, transparent);" in light
+    for block in (os_dark, toggle_dark):
+        assert "--grid:color-mix(in srgb, var(--muted) 26%, transparent);" in block
+    rules = _css_rules(page)[0]
+    layer, line = _decls(rules, ".tl-grid"), _decls(rules, ".tl-gridline")
+    assert (layer["position"], layer["inset"], layer["pointer-events"]) == ("absolute", "0", "none")
+    assert (line["position"], line["left"], line["right"], line["border-top"]) == ("absolute", "0", "0", "1px solid var(--grid)")
+
+
+STEP_HARNESS = r"""
+    // A wheel event as a browser sends it to the frame's listeners - then,
+    // if it scrolled, the scroll event that fires - and where it left the
+    // group: how far it moved, in 6h marks, and the focus.
+    const MARK = 6 * 3600000;
+    let prevented = 0;
+    const where = (g, sc, before, px) => ({moved: (sc.scrollTop - before) / (MARK * px),
+      focus: new Date(g.focusMs).toISOString().slice(5, 16), following: g.following});
+    const wheel = (box, px, deltaY, timeStamp, more) => {
+      const sc = box.querySelector('.tl-scroll'), before = sc.scrollTop, g = focusGroups.get('frms');
+      const e = {deltaY, deltaMode: 0, timeStamp, ctrlKey: false, preventDefault(){ prevented++; }, ...(more || {})};
+      sc.listeners.wheel.forEach(l => l.f(e));
+      if(sc.scrollTop!==before) sc.onscroll();
+      return where(g, sc, before, px);
+    };
+    const key = (box, px, k, more) => {
+      const sc = box.querySelector('.tl-scroll'), before = sc.scrollTop, g = focusGroups.get('frms');
+      sc.onkeydown({key: k, preventDefault(){ prevented++; }, ...(more || {})});
+      if(sc.scrollTop!==before) sc.onscroll();
+      return where(g, sc, before, px);
+    };
+"""
+
+
+def _step_script(page, scenario):
+    return (
+        MINI_DOM + "\n".join(_js(page, n) for n in RAILS_PARTS) + TIMELINE_HARNESS + SYNC_HARNESS + RAILS_HARNESS
+        + STEP_HARNESS + scenario + "\nconsole.log(JSON.stringify(r));"
+    )
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
+def test_a_wheel_notch_or_an_arrow_key_steps_the_timeline_six_hours(client):
+    page = _page(client)
+    r = _node(_step_script(page, f"""
+        const box = renderSpec({json.dumps(SYNCED)}, 'Roster', 'roster');
+        const sc = show(box, 480);
+        const scale = 480 / WEEK;
+        r.listeners = sc.listeners.wheel.map(l => l.options);
+        // On now, a mark (12:00Z): a notch down, then another after a pause.
+        r.notch = wheel(box, scale, 100, 1000);
+        r.again = wheel(box, scale, 100, 2000);
+        // Two more, quick: a step each.
+        r.quick = [wheel(box, scale, 100, 2030), wheel(box, scale, 100, 2060)];
+        // A trackpad's short swipe - eight small events - is one step;
+        // running on, a step for each notch's travel after its first.
+        r.swipe = [0, 1, 2, 3, 4, 5, 6, 7].map(i => wheel(box, scale, 10, 5000 + 16 * i).moved);
+        r.runOn = [8, 9, 10].map(i => wheel(box, scale, 10, 5000 + 16 * i).moved);
+        r.afterSwipe = focusGroups.get('frms').focusMs;
+        // Turned back: a new gesture, a step back at once.
+        r.back = wheel(box, scale, -10, 5176);
+        // A notch counted in lines (Firefox's three), and one on the mark
+        // the browser rounds a scroll to: the pixel - still on it.
+        r.lines = [wheel(box, scale, 3, 9000, {{deltaMode: 1}}), wheel(box, scale, 3, 9050, {{deltaMode: 1}})];
+        sc.listeners.wheel.forEach(l => l.f({{deltaY: 100, deltaMode: 0, timeStamp: 12000, preventDefault(){{ prevented++; }}}}));
+        const exact = sc.scrollTop;
+        sc.scrollTop = Math.round(sc.scrollTop);
+        sc.onscroll();
+        r.rounded = [exact, sc.scrollTop, new Date(tlSnap({TIMELINE_T0} + sc.scrollTop / scale)).toISOString().slice(5, 16),
+                     new Date(focusGroups.get('frms').focusMs).toISOString().slice(5, 16)];
+        r.prevented = prevented;
+        // A pinch, or a sideways turn: the browser's - not stepped, not prevented.
+        r.pinch = wheel(box, scale, 50, 14000, {{ctrlKey: true}});
+        r.sideways = wheel(box, scale, 0, 15000, {{deltaX: 40}});
+        r.preventedAfter = prevented;
+        // Off a mark - Now on 12:15Z - a notch down to the next mark, 18:00Z;
+        // up, to the last, 12:00Z.
+        clock = Date.parse('2026-10-18T12:20:00Z');
+        box.querySelector('.tl-nowbtn').onclick(); sc.onscroll();
+        r.offDown = wheel(box, scale, 100, 20000).focus;
+        box.querySelector('.tl-nowbtn').onclick(); sc.onscroll();
+        r.offUp = wheel(box, scale, -100, 21000).focus;
+        // The arrow keys step it too; the others, and a modified arrow, aren't its.
+        r.keys = [key(box, scale, 'ArrowDown'), key(box, scale, 'ArrowDown'), key(box, scale, 'ArrowUp'),
+                  key(box, scale, 'ArrowDown', {{shiftKey: true}}).moved, key(box, scale, 'PageDown').moved];
+        // Unsynced: the time at the viewport's middle steps, mark to mark.
+        const plain = renderSpec({json.dumps(TIMELINE)}, 'Roster', 'roster');
+        const ps = show(plain, 480);
+        ps.onscroll();   // its own scroll, to open on now
+        const middle = () => new Date({TIMELINE_T0} + (ps.scrollTop + 240) / scale).toISOString().slice(5, 16);
+        r.plain = [middle()];
+        ps.listeners.wheel.forEach(l => l.f({{deltaY: 100, deltaMode: 0, timeStamp: 30000, preventDefault(){{}}}}));
+        ps.onscroll();
+        r.plain.push(middle());
+        ps.onkeydown({{key: 'ArrowUp', preventDefault(){{}}}});
+        r.plain.push(middle());
+    """))
+
+    step = lambda n, focus, following=False: {"moved": pytest.approx(n), "focus": focus, "following": following}
+    # A listener that can stop the browser's own scroll.
+    assert r["listeners"] == [{"passive": False}]
+    # A notch: one 6h mark, the group's focus on it, no longer following.
+    assert r["notch"] == step(1, "10-18T18:00")
+    assert r["again"] == step(1, "10-19T00:00")
+    assert r["quick"] == [step(1, "10-19T06:00"), step(1, "10-19T12:00")]
+    # Eight small events, one step; three more - a notch's travel on - one more.
+    assert r["swipe"] == [pytest.approx(1)] + [0] * 7
+    assert r["runOn"] == [0, 0, pytest.approx(1)]
+    assert r["back"] == step(-1, "10-19T18:00")
+    assert r["lines"] == [step(1, "10-20T00:00"), step(1, "10-20T06:00")]
+    # A step, its scroll rounded to the pixel - a few minutes short of the
+    # mark, so the quarter hour under it the one before: the mark.
+    exact, rounded, floored, focus = r["rounded"]
+    assert exact == pytest.approx(717 + 1 / 7) and rounded == 717
+    assert (floored, focus) == ("10-20T11:45", "10-20T12:00")
+    assert r["prevented"] == 1 + 1 + 2 + 8 + 3 + 1 + 2 + 1
+    assert r["pinch"] == step(0, "10-20T12:00") and r["sideways"] == step(0, "10-20T12:00")
+    assert r["preventedAfter"] == r["prevented"]
+    assert (r["offDown"], r["offUp"]) == ("10-18T18:00", "10-18T12:00")
+    assert r["keys"] == [step(1, "10-18T18:00"), step(1, "10-19T00:00"), step(-1, "10-18T18:00"), 0, 0]
+    # A step is a mark's spacing at the frame's scale: 6h of a week to 480px.
+    assert SIX_HOURS_PX_480 == pytest.approx(480 / 28)
+    assert r["plain"] == ["10-18T12:00", "10-18T18:00", "10-18T12:00"]
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
+def test_a_scroll_by_hand_settles_on_the_nearest_six_hour_mark(client):
+    page = _page(client)
+    r = _node(_step_script(page, f"""
+        const a = renderSpec({json.dumps(SYNCED)}, 'Roster', 'roster');
+        const b = renderSpec({json.dumps(OTHER)}, 'Sleep', 'sleep');
+        const sa = show(a, 480), sb = show(b, 300);
+        const g = focusGroups.get('frms');
+        const focus = () => [new Date(g.focusMs).toISOString().slice(5, 16), g.following];
+        // The browser's end of a scroll - and the scroll event of any
+        // scroll it then makes.
+        const end = sc => {{ const before = sc.scrollTop; sc.onscrollend(); if(sc.scrollTop!==before) sc.onscroll(); return sc.scrollTop!==before; }};
+        // Dragged by hand to 14:40Z on Monday 12 October: the quarter
+        // hour under it, until the drag ends - then the nearest mark,
+        // 12:00Z, for the whole group.
+        scrollTo(a, (Date.parse('2026-10-12T14:40:00Z') - {TIMELINE_T0}) * 480 / WEEK);
+        r.dragged = focus();
+        r.settled = [end(sa), focus(), synced(a, {TIMELINE_T0}, 480).atCursor, synced(b, {OTHER_T0}, 300).atCursor];
+        // Its settle's own end, and b's - scrolled to the time, not by
+        // hand: nothing moves.
+        r.still = [end(sa), (sb.onscroll(), end(sb)), focus()];
+        // Now: on now, a quarter hour off the marks, following - and the
+        // end of its scroll leaves it there.
+        clock = Date.parse('2026-10-18T12:20:00Z');
+        a.querySelector('.tl-nowbtn').onclick(); sa.onscroll(); sb.onscroll();
+        r.now = [end(sa), end(sb), focus()];
+        // A hand's scroll, then Now before the scroll's end: Now outdoes it.
+        scrollTo(a, (Date.parse('2026-10-13T08:00:00Z') - {TIMELINE_T0}) * 480 / WEEK);
+        a.querySelector('.tl-nowbtn').onclick(); sa.onscroll();
+        r.outdone = [end(sa), focus()];
+        // The follow tick's scroll, to 12:30Z: its own, never settled.
+        clock = Date.parse('2026-10-18T12:30:00Z');
+        timers[timers.length - 1].f(); sa.onscroll();
+        r.ticked = [end(sa), focus()];
+        // Unsynced: its own scroll (opening on now) isn't settled; a hand's
+        // settles the time at its middle on the nearest mark.
+        const plain = renderSpec({json.dumps(TIMELINE)}, 'Roster', 'roster');
+        const ps = show(plain, 480);
+        ps.onscroll();
+        r.plainOwn = end(ps);
+        ps.scrollTop += 37; ps.onscroll();
+        const middle = () => {TIMELINE_T0} + (ps.scrollTop + 240) / (480 / WEEK);
+        r.plainHand = [end(ps), new Date(middle()).toISOString().slice(5, 16)];
+    """))
+
+    assert r["dragged"] == ["10-12T14:30", False]
+    assert r["settled"] == [True, ["10-12T12:00", False], "2026-10-12T12:00:00.000Z", "2026-10-12T12:00:00.000Z"]
+    assert r["still"] == [False, False, ["10-12T12:00", False]]
+    assert r["now"] == [False, False, ["10-18T12:15", True]]
+    assert r["outdone"] == [False, ["10-18T12:15", True]]
+    assert r["ticked"] == [False, ["10-18T12:30", True]]
+    assert r["plainOwn"] is False
+    # 37px on from now (12:00Z), at a week to 480px, is 00:57Z the next
+    # day: 00:00Z is nearest.
+    assert r["plainHand"] == [True, "10-19T00:00"]
+
+
+def test_lane_headings_fit_complete_in_a_two_by_two(client):
+    page = _page(client)
+    css = _css_rules(page)
+    root = _decls(css[0], ":root")
+    big, small = _px(root["--tile-cell-max"]), _px(root["--tile-cell-min"])
+    heading = lambda w, h: _styled(css, ".tl-lh", width=w, height=h)
+    two, four = _tile_content(css, 2, 2, big), _tile_content(css, 4, 3, big)
+
+    # A 4-wide tile's headings exactly as they were.
+    assert (heading(*four)["font-size"], heading(*four)["letter-spacing"]) == ("10.5px", ".8px")
+    assert "line-height" not in heading(*four)
+    # A 2-wide tile's - and a 4-wide one a small screen shrinks - set tighter.
+    for size in (two, _tile_content(css, 4, 3, small)):
+        assert (heading(*size)["font-size"], heading(*size)["letter-spacing"]) == ("10px", ".3px"), size
+
+    # COMPLETE in a 2x2's lane: the timeline what its rails and the gaps
+    # leave, less the heading row's padding and a thin scrollbar's gutter
+    # (Chromium's, 10px), halved, less a heading's padding. Its width is
+    # 5.51em of the face (Inter at 600 - system-ui where IBM Plex Sans
+    # isn't installed - measured in Chromium) and a letter-space a letter.
+    def room(width):
+        frame = width - 2 * _rail_width(css, width) - 2 * _px(_decls(css[0], ".spec-rails")["gap"])
+        head = sum(_px(p) for p in _decls(css[0], ".tl-head")["padding"].split()[1:2]) * 2
+        pad = _px(_decls(css[0], ".tl-lh")["padding"].split()[1]) * 2
+        return (frame - head - 10) / 2 - pad
+
+    complete = lambda h: 5.51 * _px(h["font-size"]) + 8 * _px(h["letter-spacing"])
+    assert room(two[0]) == pytest.approx(61)
+    assert complete(heading(*two)) <= room(two[0]) - 3        # fits, with room to spare
+    assert complete(_decls(css[0], ".tl-lh")) > room(two[0])  # as it was, it didn't
+    # On the 10.5px heading's line: the row - and the frame under it -
+    # stays level with the rails' headings.
+    assert heading(*two)["line-height"] == "calc(10.5px * 1.45)"
+    assert _decls(css[0], "body")["line-height"] == "1.45"
+    assert _decls(css[0], ".rail-head")["font-size"] == "10.5px"
 
 
 # ---------- an uninstalled app's data: Remove data ----------
