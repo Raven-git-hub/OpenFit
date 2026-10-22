@@ -987,7 +987,9 @@ returns nothing:
   end at the start (zero-length, or inside the same second) is fine.
 - **`summary`** is a `dict` or `None` (stored as `NULL`): the session's
   breakdown, its keys the kind's, as listed beside `SESSION_KINDS`
-  (`asleep_minutes` and the stage minutes for sleep; `type`,
+  (`asleep_minutes` and the stage minutes for sleep, plus `main_sleep`,
+  `utc_offset_minutes`, the `stages` timeline and `brief_wakes` where the
+  source has them; `type`,
   `duration_minutes`, `distance_m`, `avg_hr_bpm`, `calories_kcal` for a
   workout), leaving out what the app doesn't have. The host doesn't check
   the keys, but the whole must be plain JSON — `json.dumps(summary,

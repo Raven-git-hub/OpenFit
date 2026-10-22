@@ -1864,7 +1864,14 @@ own calls to its device API. Full direction:
   duty kinds, from a roster app (the `frms` fixture, under
   `app:frms`); a summary holds only what the source gives:
   - `sleep` — one session per night/nap, summary in minutes: `asleep_minutes`
-    plus `light_minutes`/`deep_minutes`/`rem_minutes`/`awake_minutes`. Sleep is
+    plus `light_minutes`/`deep_minutes`/`rem_minutes`/`awake_minutes` (the
+    source's totals, never recomputed); plus, where the source gives them
+    (Google today, Garmin not yet), `main_sleep`, `utc_offset_minutes`, the
+    `stages` timeline (`[{start, end, stage}]`, stage from `SLEEP_STAGES` in
+    `metrics.py`, unmapped types → `"unknown"`, logged) and `brief_wakes`
+    (`[{start, end}]`, an overlay, not awake time). A segment that can't be
+    read is skipped and logged; a timeline that can't be read is left out and
+    the session kept. Sleep is
     sessions only: there is no daily sleep metric (v2 retired `sleep_minutes`
     — a daily total is an aggregate, an app's to compute), and neither plugin
     files one.

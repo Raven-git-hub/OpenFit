@@ -258,12 +258,34 @@ def series_unit_for(metric):
 # source leaves out any it doesn't report:
 #
 #   sleep    asleep_minutes, light_minutes, deep_minutes, rem_minutes,
-#            awake_minutes - all whole minutes
+#            awake_minutes - all whole minutes, the source's own totals
+#            (never recomputed from the timeline below);
+#            main_sleep (bool - the source's main sleep of the day, not a
+#            nap); utc_offset_minutes (int - the offset the device kept
+#            when the sleep began, e.g. 480 for UTC+8);
+#            stages - the stage timeline: [{start, end, stage}] by start,
+#            times iso_utc() strings, meant to tile the session with no
+#            overlap (a stretch it doesn't cover has no stage data). stage
+#            is one of SLEEP_STAGES below;
+#            brief_wakes - [{start, end}] by start: the source's short
+#            wakings, an overlay on the timeline, not counted in
+#            awake_minutes.
+#            A source converts its own format into these (blocks merged
+#            into segments, its stage names mapped) but never adds to it:
+#            cycles, sleep efficiency and the like are an app's to derive.
 #   workout  type (the source's activity type, lowercased, e.g.
 #            "running"), duration_minutes (int, excluding pauses),
 #            distance_m (float, metres), avg_hr_bpm (int),
 #            calories_kcal (int)
 #
+# The canonical names a sleep session's `stages` segments take.
+# awake/light/deep/rem: a staged timeline (light ~ N1+N2, deep ~ N3).
+# asleep: asleep, no stage detail (e.g. a short nap a device doesn't
+# stage). restless: a source's restless-but-asleep (Fitbit classic sleep).
+# out_of_bed: the source says the sleeper was up. unknown: a stage the
+# source names that maps to none of these - logged by the plugin.
+SLEEP_STAGES = ("awake", "light", "deep", "rem", "asleep", "restless", "out_of_bed", "unknown")
+
 # A work duty off a roster is a session too, its start and end the duty's
 # envelope (report to release, UTC). Two kinds, by whether the duty had
 # ended when it was filed: duties_rostered (still to come, or under way -

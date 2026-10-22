@@ -222,6 +222,13 @@ Oldest first, one point per day, in the metric's canonical unit
               "rem_minutes": 102, "awake_minutes": 20}}]
 ```
 
+A sleep session from a source that gives the stage timeline (Google Health
+today) also carries `main_sleep`, `utc_offset_minutes`, `stages` (the
+timeline, `[{start, end, stage}]`, stage one of `awake`/`light`/`deep`/`rem`/
+`asleep`/`restless`/`out_of_bed`/`unknown`) and `brief_wakes` (short wakings,
+`[{start, end}]`, not counted in `awake_minutes`) — see `SESSION_KINDS` in
+`app/metrics.py`.
+
 Times are ISO 8601 UTC, and `summary` holds the kind's fields that the device
 reported (`{}` if none). Sessions aren't picked between sources yet, so a night
 both devices tracked appears once per device — but they're listed by source
@@ -677,7 +684,9 @@ table holds interval records, each with a start/end and a summary, filed under
 a session kind from the same vocabulary. A `sleep` session is one
 night (or nap) from each device, with its stage breakdown in minutes
 (`asleep_minutes`, plus `light_minutes`/`deep_minutes`/`rem_minutes`/
-`awake_minutes` where the device reports them); sleep is sessions only, with no
+`awake_minutes` where the device reports them, and the stage timeline —
+`stages`, `brief_wakes`, `main_sleep`, `utc_offset_minutes` — where it gives
+that); sleep is sessions only, with no
 daily total beside it (schema v2 retired the old `sleep_minutes` metric). A
 `workout` session is one activity, with no daily metric beside it:
 its `type` (the device's activity type, lowercased), `duration_minutes`,

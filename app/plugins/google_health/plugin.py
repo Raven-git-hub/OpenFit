@@ -35,7 +35,10 @@ span across all of them (see DAILY_ROLLUPS and DAILY_SUMMARIES):
       daily-oxygen-saturation -> spo2_pct,
       daily-respiratory-rate -> respiratory_rate_brpm
   - sleep                     -> list, each data point stored as a sleep session
-                                 (no daily metric). Asked for by end date; sleep
+                                 (no daily metric): the stage minutes, plus the
+                                 stage timeline, the short awakenings, the
+                                 main-sleep flag and the UTC offset (see
+                                 _sleep_session). Asked for by end date; sleep
                                  that began before the sync window is dropped
                                  (see _fetch_sleep)
   - exercise                  -> list, each data point stored as a workout
@@ -116,6 +119,22 @@ SLEEP_STAGE_KEYS = {
     "DEEP": "deep_minutes",
     "REM": "rem_minutes",
     "AWAKE": "awake_minutes",
+}
+
+# Segment types in a sleep point's `stages` timeline -> the canonical stage
+# names of the sleep session's `stages` (see SESSION_KINDS in metrics.py).
+# STAGES sleep gives LIGHT/DEEP/REM/AWAKE; CLASSIC sleep gives
+# ASLEEP/RESTLESS/AWAKE, kept as they are - a nap's ASLEEP is not light
+# sleep, and RESTLESS has no equivalent to fold it into. A type not listed
+# here is filed as "unknown" and logged, so a new one shows up rather than
+# being dropped or guessed at.
+SLEEP_STAGE_NAMES = {
+    "AWAKE": "awake",
+    "LIGHT": "light",
+    "DEEP": "deep",
+    "REM": "rem",
+    "ASLEEP": "asleep",
+    "RESTLESS": "restless",
 }
 
 # Google hands back a nextPageToken while more pages remain; this only
@@ -529,10 +548,17 @@ class GoogleHealthPlugin(SyncPlugin):
             # Same idea as the resting-HR fetcher: sessions came back but
             # not one had a stage in it, so the stage fields are probably
             # not where this expects - show what a summary looks like.
-            if sessions and all(len(summary) == 1 for _, _, summary in sessions):
+            stage_minutes = set(SLEEP_STAGE_KEYS.values())
+            if sessions and not any(stage_minutes & set(summary) for _, _, summary in sessions):
                 sample = points[0].get("sleep", {}).get("summary")
                 print(f"[google_health] sleep: got sessions but no stage breakdown in "
                       f"summary.stagesSummary. Sample summary: {sample}")
+            # Likewise for the timeline: sessions, but not one with a stage
+            # segment - show which keys a sleep point does carry.
+            if sessions and not any("stages" in summary for _, _, summary in sessions):
+                sample = sorted(points[0].get("sleep", {}))
+                print(f"[google_health] sleep: got sessions but no stage timeline in "
+                      f"sleep.stages. Sample sleep keys: {sample}")
             return out, sessions
         except Exception as e:
             print(f"[google_health] sleep fetch failed: {e}")
@@ -851,10 +877,17 @@ def _sleep_session(sleep):
     back to minutesAwake if the AWAKE stage isn't listed. Google sends
     these int64 counts as JSON strings.
 
+    Beside those totals, as the source gives them (see _sleep_extras):
+    main_sleep (metadata.mainSleep), utc_offset_minutes
+    (interval.startUtcOffset), stages (the `stages` timeline) and
+    brief_wakes (`shortAwakenings`). The totals are never recomputed from
+    the timeline.
+
     Defensive throughout: a stage that isn't there is left out of the
     summary, a point with no minutesAsleep is no session (the daily total
     skips it too), a point with no usable start is logged and skipped,
-    and nothing here raises.
+    and nothing here raises. A timeline that can't be read costs only the
+    timeline, not the session.
     """
     try:
         sleep_summary = sleep.get("summary") or {}
@@ -879,10 +912,104 @@ def _sleep_session(sleep):
         if "awake_minutes" not in summary and awake is not None:
             summary["awake_minutes"] = awake
 
+        summary.update(_sleep_extras(sleep, interval, start))
         return start, _rfc3339_iso(interval.get("endTime")), summary
     except Exception as e:
         print(f"[google_health] could not read a sleep session: {e}")
         return None
+
+
+def _sleep_extras(sleep, interval, start):
+    """The sleep summary's keys beyond the stage minutes, as a dict.
+
+    main_sleep - metadata.mainSleep, when it is a bool (Google sends no
+    `nap` flag on a main night, so none is kept). utc_offset_minutes -
+    interval.startUtcOffset, the offset the device was keeping when the
+    sleep began. stages - the `stages` timeline as [{start, end, stage}],
+    by start, stage a canonical name (SLEEP_STAGE_NAMES). brief_wakes -
+    `shortAwakenings` as [{start, end}], by start: Google's brief wakings,
+    which overlay the timeline and aren't counted in the AWAKE minutes.
+
+    Each is left out when the point has none. Stored as Google gives
+    them - nothing merged, filled or trimmed - except that a segment
+    without a usable start and end, or that ends before it starts, is
+    skipped and logged. Never raises: a timeline that can't be read is
+    logged and left out, and the session keeps everything else.
+    """
+    extras = {}
+    main = (sleep.get("metadata") or {}).get("mainSleep")
+    if isinstance(main, bool):
+        extras["main_sleep"] = main
+    offset = _offset_minutes(interval.get("startUtcOffset"))
+    if offset is not None:
+        extras["utc_offset_minutes"] = offset
+
+    for field, key in (("stages", "stages"), ("shortAwakenings", "brief_wakes")):
+        try:
+            segments, skipped, unknown = _segments(sleep.get(field), key == "stages")
+        except Exception as e:
+            print(f"[google_health] could not read sleep.{field} of the sleep at {start}: {e}")
+            continue
+        if skipped:
+            print(f"[google_health] sleep at {start}: skipped {skipped} sleep.{field} "
+                  f"segment(s) without a usable start and end")
+        if unknown:
+            print(f"[google_health] sleep at {start}: stage type(s) {sorted(unknown)} "
+                  f"filed as \"unknown\"")
+        if segments:
+            extras[key] = segments
+    return extras
+
+
+def _segments(entries, staged):
+    """A list of Google sleep segments as ([segment], skipped, unknown).
+
+    Each segment is {start, end} as iso_utc() strings, plus `stage` (its
+    type through SLEEP_STAGE_NAMES, "unknown" if unlisted) when `staged`.
+    Sorted by start. `skipped` counts entries without a usable start and
+    end (or ending before they start); `unknown` is the set of unlisted
+    types met. Raises if `entries` is there but isn't a list.
+    """
+    if entries is None:
+        return [], 0, set()
+    if not isinstance(entries, list):
+        raise ValueError(f"expected a list, got {type(entries).__name__}")
+    segments, skipped, unknown = [], 0, set()
+    for entry in entries:
+        if not isinstance(entry, dict):
+            skipped += 1
+            continue
+        seg_start = _rfc3339_iso(entry.get("startTime"))
+        seg_end = _rfc3339_iso(entry.get("endTime"))
+        # iso_utc() strings compare in time order.
+        if seg_start is None or seg_end is None or seg_end < seg_start:
+            skipped += 1
+            continue
+        segment = {"start": seg_start, "end": seg_end}
+        if staged:
+            kind = entry.get("type")
+            stage = SLEEP_STAGE_NAMES.get(kind)
+            if stage is None:
+                stage = "unknown"
+                unknown.add(str(kind))
+            segment["stage"] = stage
+        segments.append(segment)
+    segments.sort(key=lambda segment: segment["start"])
+    return segments, skipped, unknown
+
+
+def _offset_minutes(value):
+    """A Google duration such as "28800s" or "-18000s" as whole minutes,
+    or None - for a missing value, another shape, or a part minute."""
+    if not isinstance(value, str):
+        return None
+    match = re.fullmatch(r"(-?\d+)s", value)
+    if match is None:
+        return None
+    seconds = int(match.group(1))
+    if seconds % 60:
+        return None
+    return seconds // 60
 
 
 def _workout_session(point):
