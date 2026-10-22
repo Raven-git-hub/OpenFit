@@ -85,18 +85,21 @@
   --grid:color-mix(in srgb, var(--muted) 22%, transparent);
 
   /* strips - lanes of tinted spans on one horizontal time axis (the
-     circadian panel's): a sky lane's day and night, the body clock's
-     dashed curve over it in --curve; a duty lane's pieces green by day,
-     amber by night and red in the window of circadian low, each duty's
-     code on them in --duty-ink. Not known (a sky's "none") is hatched in
-     --grid; the cursor and the now line are --accent, as a timeline's. */
-  --sky-day:#cfe4f8;
-  --sky-night:#5b4fa8;
-  --curve:#1d2433;
-  --duty-day:#3aa76d;
-  --duty-night:#d99a2b;
-  --duty-wocl:#d64545;
-  --duty-ink:#ffffff;
+     circadian panel's): a sky lane's day and night a translucent tint
+     over the frame, faded from the top to nothing halfway down, the body
+     clock's curve over it in --curve, the roster's purple; a duty lane's
+     slim bar green by day, amber by night and red in the window of
+     circadian low, each duty's code above it in --duty-ink. Not known (a
+     sky's "none") is hatched in --grid, and the first lane's hour grid
+     drawn in it; the cursor and the now line are --accent, as a
+     timeline's. */
+  --sky-day:color-mix(in srgb, #5d9fe3 55%, transparent);
+  --sky-night:color-mix(in srgb, var(--timeline-b) 55%, transparent);
+  --curve:var(--timeline-b);
+  --duty-day:#43a876;
+  --duty-night:#d8a03e;
+  --duty-wocl:#d65a55;
+  --duty-ink:var(--ink-2);
 
   --radius:14px;
   --radius-sm:9px;
@@ -134,13 +137,13 @@
     --timeline-b-ink:var(--ink);
     --layover:#e0a83a;
     --grid:color-mix(in srgb, var(--muted) 26%, transparent);
-    --sky-day:#2f6496;
-    --sky-night:#2c2458;
-    --curve:#f3f6f8;
-    --duty-day:#38b26f;
-    --duty-night:#e0a83a;
-    --duty-wocl:#e5534b;
-    --duty-ink:#0d1214;
+    --sky-day:color-mix(in srgb, #4f97dc 62%, transparent);
+    --sky-night:color-mix(in srgb, #5b4ccc 62%, transparent);
+    --curve:var(--timeline-a);
+    --duty-day:#7fd0a2;
+    --duty-night:#f1c36e;
+    --duty-wocl:#f2857e;
+    --duty-ink:var(--ink-2);
     --shadow:0 1px 2px rgba(0,0,0,.3), 0 10px 30px rgba(0,0,0,.35);
   }
 }
@@ -171,13 +174,13 @@
   --timeline-b-ink:var(--ink);
   --layover:#e0a83a;
   --grid:color-mix(in srgb, var(--muted) 26%, transparent);
-  --sky-day:#2f6496;
-  --sky-night:#2c2458;
-  --curve:#f3f6f8;
-  --duty-day:#38b26f;
-  --duty-night:#e0a83a;
-  --duty-wocl:#e5534b;
-  --duty-ink:#0d1214;
+  --sky-day:color-mix(in srgb, #4f97dc 62%, transparent);
+  --sky-night:color-mix(in srgb, #5b4ccc 62%, transparent);
+  --curve:var(--timeline-a);
+  --duty-day:#7fd0a2;
+  --duty-night:#f1c36e;
+  --duty-wocl:#f2857e;
+  --duty-ink:var(--ink-2);
   --shadow:0 1px 2px rgba(0,0,0,.3), 0 10px 30px rgba(0,0,0,.35);
 }
 
@@ -855,33 +858,51 @@ h5 + .dnote{margin-top:0;}
 .spec-cell > *{flex:1;min-height:0;}
 /* strips: lanes of tinted spans on one horizontal time axis, a day
    across - the first lane taking the height the others leave, each
-   after it a 45px row - under the timeline's focus row (readout, Now).
-   The track scrolls under a fixed cursor; a duty's pieces butt square,
-   its code once at its start; a tag top-left of a lane that has one -
-   the clock lane's the place and its local time under the cursor. */
+   after it a 45px row, a hairline between - under the timeline's focus
+   row (readout, Now). The first lane sits on an hour grid (a square an
+   hour); a sky's day and night are hard at sunrise and sunset and fade
+   from the top to nothing halfway down; a faint line at each midnight
+   (UTC) runs through every lane, as the timeline's day lines. A duty is
+   a slim bar, its pieces butting square and its own ends rounded as a
+   block's, its code above it. The body clock's curve is solid in the
+   roster's purple, a dot where the cursor crosses it; the cursor's ends
+   arrowed and the now line solid with a dot at its head, as the
+   timeline's. */
 .spec-strips{display:flex;flex-direction:column;gap:6px;min-height:0;min-width:0;}
 .st-view{position:relative;flex:1;min-height:0;border:1px solid var(--border);border-radius:var(--radius-sm);overflow:hidden;background:var(--inset);}
 .st-scroll{position:absolute;inset:0;overflow-x:auto;overflow-y:hidden;scrollbar-width:thin;overflow-anchor:none;outline:none;}
-.st-track, .st-tags{display:grid;grid-template-rows:minmax(0,1fr);grid-auto-rows:45px;row-gap:3px;}
+.st-track, .st-tags{display:grid;grid-template-rows:minmax(0,1fr);grid-auto-rows:45px;row-gap:0;}
 .st-track{position:relative;height:100%;}
 .st-tags{position:absolute;inset:0;pointer-events:none;z-index:3;}
 .st-tag{padding:6px 8px;min-width:0;}
-.st-tag > span{display:inline-block;font:600 11px/16px var(--font-mono);color:var(--ink);background:color-mix(in srgb, var(--surface) 82%, transparent);padding:0 6px;border-radius:4px;white-space:nowrap;}
+.st-tag > span{display:inline-block;font:600 11.5px/16px var(--font-mono);color:var(--ink);white-space:nowrap;}
 .st-tags > .st-tag + .st-tag{display:flex;align-items:center;padding-top:0;padding-bottom:0;}
+.st-tags > .st-tag + .st-tag > span{font:600 10.5px/16px var(--font-body);text-transform:uppercase;letter-spacing:.8px;color:var(--muted);}
 .st-lane{position:relative;overflow:hidden;}
+.st-lane + .st-lane{border-top:1px solid var(--border);}
 .st-span{position:absolute;top:0;bottom:0;}
+.st-sky .st-span{-webkit-mask-image:linear-gradient(180deg, #000 0, transparent 50%);mask-image:linear-gradient(180deg, #000 0, transparent 50%);}
 .st-sky .st-t-day{background:var(--sky-day);}
 .st-sky .st-t-night{background:var(--sky-night);}
 .st-sky .st-t-none{background:repeating-linear-gradient(135deg, var(--grid) 0 2px, transparent 2px 7px);}
-.st-duty .st-span{top:6px;bottom:6px;}
+.st-hours{position:absolute;top:0;bottom:0;left:0;pointer-events:none;background-image:linear-gradient(90deg, var(--grid) 1px, transparent 1px), linear-gradient(180deg, var(--grid) 1px, transparent 1px);}
+.st-mid{position:absolute;top:0;bottom:0;width:0;border-left:1px solid color-mix(in srgb, var(--muted) 45%, transparent);pointer-events:none;}
+.st-duty .st-span{top:24px;bottom:auto;height:14px;box-shadow:0 0 0 1px var(--inset);}
+.st-duty .st-span.first{border-top-left-radius:4px;border-bottom-left-radius:4px;}
+.st-duty .st-span.last{border-top-right-radius:4px;border-bottom-right-radius:4px;}
 .st-duty .st-t-day{background:var(--duty-day);}
 .st-duty .st-t-night{background:var(--duty-night);}
 .st-duty .st-t-wocl{background:var(--duty-wocl);}
-.st-code{position:absolute;top:6px;bottom:6px;display:flex;align-items:center;padding-left:6px;font:600 10.5px/1 var(--font-mono);color:var(--duty-ink);white-space:nowrap;pointer-events:none;z-index:1;}
-.st-curve{position:absolute;top:0;left:0;pointer-events:none;overflow:visible;}
-.st-curve path{fill:none;stroke:var(--curve);stroke-width:1.75;stroke-dasharray:6 5;stroke-linecap:round;}
+.st-code{position:absolute;top:5px;height:16px;display:flex;align-items:center;padding-left:1px;font:600 10.5px/16px var(--font-mono);color:var(--duty-ink);white-space:nowrap;pointer-events:none;z-index:1;}
+.st-curve{position:absolute;top:0;left:0;pointer-events:none;overflow:visible;z-index:1;}
+.st-curve path{fill:none;stroke:var(--curve);stroke-width:1.5;stroke-linecap:round;}
+.st-dot{position:absolute;left:50%;width:9px;height:9px;margin:-4.5px 0 0 -4.5px;border-radius:50%;background:var(--accent);box-shadow:0 0 0 2px var(--surface);z-index:4;pointer-events:none;}
 .st-cursor{position:absolute;top:0;bottom:0;left:50%;width:0;margin-left:-1px;border-left:2px solid var(--accent);z-index:3;pointer-events:none;}
-.st-now{position:absolute;top:0;bottom:0;width:0;margin-left:-1px;border-left:2px dotted var(--accent);z-index:2;pointer-events:none;}
+.st-cursor::before, .st-cursor::after{content:"";position:absolute;left:-5px;border:4px solid transparent;}
+.st-cursor::before{top:0;border-top:6px solid var(--accent);}
+.st-cursor::after{bottom:0;border-bottom:6px solid var(--accent);}
+.st-now{position:absolute;top:0;bottom:0;width:0;margin-left:-1px;border-left:2px solid var(--accent);z-index:2;pointer-events:none;}
+.st-now::before{content:"";position:absolute;top:0;left:-4px;width:6px;height:6px;border-radius:50%;background:var(--accent);}
 .st-now-tag{position:absolute;bottom:2px;left:4px;font:700 9px/14px var(--font-mono);letter-spacing:.6px;text-transform:uppercase;color:var(--accent-ink);background:var(--accent);padding:0 4px;border-radius:3px;}
 /* input: a label over a field, its unit and Save - at a panel's foot -
    and a refusal under them */
@@ -4474,17 +4495,28 @@ h5 + .dnote{margin-top:0;}
      timeline turned on its side, and a day (ST_VIEW_MS) across the
      viewport, not a week down it. The first lane takes the height the
      others leave; each after it is a slim row (the CSS's 45px), up to
-     ST_MAX_LANES. A sky lane's spans are day, night or none - not known,
-     hatched; a duty lane's are day, night or wocl, and butt square, one
-     piece to the next, its code (a span's label) drawn once at that
-     span's start, over the pieces after it - so a short first piece never
-     clips it. A lane's troughs are a dashed curve over it: -1 at each,
-     +1 midway between two, -cos between (the body clock's), a point an
-     hour. A lane's tag, top-left, is its label - or, a clock lane's, the
-     place under the cursor and its local time there (clockAt(): the
-     span's tz, through the browser's Intl, so right across a clock
-     change), "—" where it isn't known. The now line is the accent,
-     dotted, tagged Now. Everything an app sent is set as text.
+     ST_MAX_LANES, a hairline between. The first lane sits on an hour
+     grid (.st-hours: a square an hour, its lines on the UTC hours, the
+     background sized and offset to the axis at every layout), under its
+     spans; a faint line at each midnight, UTC (.st-mid, as the
+     timeline's day lines), runs through every lane. A sky lane's spans
+     are day, night or none - not known, hatched - hard-edged at sunrise
+     and sunset and faded from the top to nothing halfway down (the CSS's
+     mask), so the grid shows through below; a duty lane's are day, night
+     or wocl, a slim bar low in the row, butting square, one piece to the
+     next - a duty's own two ends rounded, as a block's (.first where it
+     starts, .last where it ends) - its code (a span's label) drawn once
+     above that span's start, so a short first piece never clips it. A
+     lane's troughs are a solid curve over it: -1 at each, +1 midway
+     between two, -cos between (the body clock's), a point every twenty
+     minutes; synced, a dot (.st-dot) sits where the cursor crosses it,
+     moved with the focus, hidden off the troughs. A lane's tag,
+     top-left, is its label - or, a clock lane's, the place under the
+     cursor and its local time there (clockAt(): the span's tz, through
+     the browser's Intl, so right across a clock change), "—" where it
+     isn't known. The now line is the accent, solid with a dot at its
+     head, tagged Now; the cursor's ends are arrowed - the timeline's
+     language, turned on its side. Everything an app sent is set as text.
 
      Synced (s.sync), it's drawn around its group's focus clock exactly
      as a synced timeline is, on its side: the timeline's focus row over
@@ -4512,7 +4544,7 @@ h5 + .dnote{margin-top:0;}
      standing. Unsynced, there's no focus row, cursor or clock tag, and
      it isn't scrolled to a time. */
   const ST_VIEW_MS = 86400000;        // the span one viewport's width shows: a day
-  const ST_CURVE_STEP_MS = 3600000;  // the curve's points: one an hour
+  const ST_CURVE_STEP_MS = 1200000;   // the curve's points: one every twenty minutes
   const ST_MAX_LANES = 3;
   const ST_TONES = ['day', 'night', 'none', 'wocl'];
   function stripsSpec(s){
@@ -4555,9 +4587,20 @@ h5 + .dnote{margin-top:0;}
     const track = scroll.appendChild(el('div','st-track'));
     // The tags over the viewport, not in it: they stay as the track scrolls.
     const tags = view.appendChild(el('div','st-tags'));
-    const rows = lanes.map(l => {
+    const rows = lanes.map((l, li) => {
       const lane = track.appendChild(el('div','st-lane st-'+l.kind));
-      const spans = l.spans.map(x => lane.appendChild(el('div','st-span st-t-'+x.tone)));
+      // The first lane's hour grid, under its sky: a square an hour.
+      const hours = li===0 ? lane.appendChild(el('div','st-hours')) : null;
+      // A duty's pieces butt square; its own two ends are rounded, as a
+      // block's: first where it starts (labelled, or not straight on from
+      // the one before), last where it ends (the next not straight on, or
+      // another duty's).
+      const spans = l.spans.map((x, i) => {
+        const prev = l.spans[i-1], next = l.spans[i+1];
+        const ends = l.kind!=='duty' ? ''
+          : (x.label || !prev || prev.b!==x.a ? ' first' : '') + (!next || next.a!==x.b || next.label ? ' last' : '');
+        return lane.appendChild(el('div','st-span st-t-'+x.tone+ends));
+      });
       // A duty's code, once, at its start - over its pieces, not in one.
       const codes = l.spans.map(x => {
         if(l.kind!=='duty' || !x.label) return null;
@@ -4573,11 +4616,20 @@ h5 + .dnote{margin-top:0;}
         svg.setAttribute('class','st-curve');
         path = svg.appendChild(document.createElementNS('http://www.w3.org/2000/svg','path'));
       }
-      return {l, lane, spans, codes, svg, path, tagText};
+      return {l, lane, spans, codes, svg, path, tagText, hours};
     });
     const line = now!==null ? track.appendChild(el('div','st-now')) : null;
     if(line){ const t = line.appendChild(el('div','st-now-tag')); t.textContent = 'Now'; }
     if(group) view.appendChild(el('div','st-cursor'));
+    // A faint line at each midnight, UTC, as the timeline's - and, as
+    // its, none on an axis of more than TL_MAX_DAY_LINES days.
+    const mids = [];
+    for(let d = Math.ceil(t0 / TL_DAY_MS) * TL_DAY_MS; d <= t1 && mids.length <= TL_MAX_DAY_LINES; d += TL_DAY_MS) mids.push(d);
+    if(mids.length > TL_MAX_DAY_LINES) mids.length = 0;
+    const midEls = mids.map(() => track.appendChild(el('div','st-mid')));
+    const curved = rows.find(r => r.svg);
+    const dot = group && curved ? view.appendChild(el('div','st-dot')) : null;
+    let curveGeom = null;   // {m, amp} the curve was last drawn at
     // The curve at t: -1 at a trough, +1 midway to the next; null off them.
     const curveAt = (lows, t) => {
       if(lows.length < 2 || t < lows[0] || t > lows[lows.length-1]) return null;
@@ -4616,10 +4668,20 @@ h5 + .dnote{margin-top:0;}
               d += (d ? 'L' : 'M') + (pad + (t - t0) * px).toFixed(1) + ' ' + (m + amp - amp * v).toFixed(1);
             }
             r.path.setAttribute('d', d);
+            curveGeom = {m, amp};
           }
+        });
+        mids.forEach((d, i) => { midEls[i].style.left = pad + (d - t0) * px+'px'; });
+        rows.forEach(r => {
+          if(!r.hours) return;
+          const hour = 3600000 * px, first = Math.ceil(t0 / 3600000) * 3600000;
+          r.hours.style.width = width+'px';
+          r.hours.style.backgroundSize = `${hour}px ${hour}px`;
+          r.hours.style.backgroundPosition = `${pad + (first - t0) * px}px 0`;
         });
         if(line) line.style.left = pad + (now - t0) * px+'px';
         laidW = viewW; laidH = h; laidPx = px;
+        placeDot();
       }
       if(!w) return;            // no real width yet: nothing to scroll
       if(group) toFocus();
@@ -4686,6 +4748,14 @@ h5 + .dnote{margin-top:0;}
       }catch(_){ return x.place || '—'; }
     };
     const showTags = at => rows.forEach(r => { if(r.tagText && r.l.clock) r.tagText.textContent = clockAt(r, at); });
+    // The dot where the cursor crosses the curve - its lane's top (the
+    // first's, 0) and the curve's height there.
+    function placeDot(){
+      if(!dot || !curveGeom) return;
+      const v = curveAt(curved.l.troughs, group.focusMs);
+      dot.hidden = v===null;
+      if(v!==null) dot.style.top = (curved.lane.offsetTop || 0) + curveGeom.m + curveGeom.amp - curveGeom.amp * v+'px';
+    }
     const t = {scroll, observer: null, group, show: null};
     if(group){
       // Its own scroll to the focus passes; the user's moves the group's
@@ -4701,6 +4771,7 @@ h5 + .dnote{margin-top:0;}
         readout.textContent = fmtFocus(group.focusMs);
         nowBtn.hidden = group.following;
         showTags(group.focusMs);
+        placeDot();
         if(rescroll) toFocus();
       };
       group.members.add(t);

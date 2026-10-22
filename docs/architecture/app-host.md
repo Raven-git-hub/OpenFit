@@ -279,7 +279,7 @@ the dicts itself.
 | `ctx.rail(cards, side, title=None, sync=None)` | `{"type": "rail", "side", "title", "cards": [{"id", "start", "end", "out", "in", "port"}, ...]}`, plus `"sync"` only when given | A column of fixed-size cards under its title, stacked from the top — four corners each, five at most, the window moving with the focus time: ahead of it on a `"plan"` rail, back from it on a `"report"` rail, the head outlined. With `sync`, it reads that focus group's time and restacks as it moves. See [the rail builders](#the-rail-builders), below. |
 | `ctx.rails(timeline, left=None, right=None)` | `{"type": "rails", "left", "timeline", "right"}` | A timeline drawn exactly as it is alone, a rail either side: four columns, a rail, the two lanes, a rail. In a tile too small for them, the timeline alone. See [the rail builders](#the-rail-builders), below. |
 | `ctx.grid(cols, rows, cells)` | `{"type": "grid", "cols", "rows", "cells": [{"x", "y", "w", "h", "spec"}, ...]}` | A tile split into sub-panels, each drawn as a tile of its own on the Home grid's cells: `cols` by `rows` cells, each sub-panel `w` by `h` from column `x`, row `y` (from 0), its `spec` sized to it as to a tile. Cells lie inside the grid and never overlap. See [the grid builder](#the-grid-builder), below. |
-| `ctx.strips(lanes, now=None, sync=None)` | `{"type": "strips", "now", "lanes": [{"kind", "label", "clock", "spans": [{"start", "end", "tone", "label", "place", "tz"}, ...], "troughs"}, ...]}`, plus `"sync"` only when given | One lane to three of tinted spans on one horizontal time axis, a day across the frame and the rest a scroll away — the first lane taking the height the others leave, each after it a 45px row: a `"sky"` lane's day, night or not known (hatched), a `"duty"` lane's day, night and WOCL pieces butting square, a span's label once at its start, a lane's troughs a dashed curve over it, a tag top-left of each lane — its label, or a clock lane's the place and its local time under the cursor. With `sync`, drawn around the group's focus clock as a synced timeline is, on its side, and scrolled with it both ways. See [the strips builder](#the-strips-builder), below. |
+| `ctx.strips(lanes, now=None, sync=None)` | `{"type": "strips", "now", "lanes": [{"kind", "label", "clock", "spans": [{"start", "end", "tone", "label", "place", "tz"}, ...], "troughs"}, ...]}`, plus `"sync"` only when given | One lane to three of tinted spans on one horizontal time axis, a day across the frame and the rest a scroll away — the first lane taking the height the others leave, on an hour grid, each after it a 45px row: a `"sky"` lane's day, night or not known (hatched), faded from the top, a `"duty"` lane's day, night and WOCL pieces a slim bar butting square, a span's label once above its start, a lane's troughs a solid curve over it, a tag top-left of each lane — its label, or a clock lane's the place and its local time under the cursor. With `sync`, drawn around the group's focus clock as a synced timeline is, on its side, and scrolled with it both ways. See [the strips builder](#the-strips-builder), below. |
 | `ctx.empty(message=None)` | `{"type": "empty", "message"}` | Muted, centred text (default "No data yet"). |
 | `ctx.error(message)` — the host's, or an app's for a part that failed | `{"type": "error", "message"}` | Muted, centred: "Couldn't render <app name>" over the message. The host's when a render fails; an app may return one for a part of its tile — a sub-panel — so the rest is drawn (the FRMS app's `_panel()`). |
 
@@ -706,7 +706,7 @@ Lanes of tinted spans on one horizontal time axis — the circadian panel's.
     span is day or night, not a thing); `place` and `tz` text or `None` —
     an IATA code and an IANA zone, read on a clock lane (else `TypeError`).
   - `troughs` — optional, a list or tuple (else `TypeError`) of instants,
-    each normalised as a start (`ValueError`): a dashed curve over the
+    each normalised as a start (`ValueError`): a solid curve over the
     lane, −1 at each trough, +1 midway between two, `-cos` between — the
     body clock's.
   - `label` — text or `None` (`TypeError`): the lane's tag, top-left.
@@ -724,39 +724,81 @@ span `{start, end, tone, label, place, tz}`, `None` where not given — so the
 page never guesses at a key.
 
 **How it's drawn.** `stripsSpec()` (`SPECS.strips`) is a timeline turned on
-its side, its synced path mirrored line for line, horizontally. The axis runs
-from the earliest span's start to the latest end (or `now`); **a day**
-(`ST_VIEW_MS`) fills the viewport's width (`.st-scroll`, which scrolls
-sideways), so the rest is a scroll away. The lanes are a CSS grid
-(`.st-track`): the first takes the height the others leave (`minmax(0,1fr)`),
-each after it a 45px row (`grid-auto-rows`), 3px apart. A sky span is its
-tone's token (`--sky-day`, `--sky-night`; `"none"` a hatch in `--grid`); a
-duty span is inset 6px top and bottom, `--duty-day` green, `--duty-night`
-amber or `--duty-wocl` red, with **no radius and nothing between them**, so
-a duty's pieces tessellate into one bar. A span's label is its own element
-(`.st-code`, `--duty-ink`) placed at the span's start and laid over the
-pieces after it — the app puts one on a duty's first piece, so a short first
-piece never clips its code. A lane's troughs are an SVG path (`.st-curve`,
-`--curve`, dashed) a point an hour (`ST_CURVE_STEP_MS`), its height the
-lane's. The now line is the accent, **dotted** (`.st-now`), tagged Now at its
-foot. The tags (`.st-tags`) are an overlay on the same grid rows over the
-viewport — so they stay put as the track scrolls — kept clear of a
-scrollbar that takes room under it, so each sits level with its lane: small
-mono pills on a translucent surface, a lane's label (`Home`) as text, or a
-clock lane's `clockAt()` — the span under the cursor's `place` and its local
-time through the browser's `Intl.DateTimeFormat` in its `tz` (`shortOffset`,
-`GMT` said `UTC`: `LHR 01:00 UTC+1`, `HKG 08:00 UTC+8`, `LHR 00:00 UTC+0`
-once London's summer time is over — the zone's own rules), the place alone
-for a zone the browser can't read, and `—` where nothing is known. Every
-token is in all three theme blocks. Everything an app sent is set as text.
+its side, its synced path mirrored line for line, horizontally — and drawn
+in the roster's language: the timeline's day lines, block ends, cursor and
+now line. The axis runs from the earliest span's start to the latest end (or
+`now`); **a day** (`ST_VIEW_MS`) fills the viewport's width (`.st-scroll`,
+which scrolls sideways), so the rest is a scroll away. The lanes are a CSS
+grid (`.st-track`): the first takes the height the others leave
+(`minmax(0,1fr)`), each after it a 45px row (`grid-auto-rows`), with no gap —
+a hairline of `--border` between two (`.st-lane + .st-lane`).
+
+- **The hour grid** — the first lane, whatever its kind, sits on a subtle
+  grid of `--grid` lines, a square an hour (`.st-hours`, first in the lane,
+  so under its spans): one background of two line gradients, sized at every
+  layout to an hour of the axis each way (`hour = 3600000 · px`, the
+  viewport's width over 24) and offset so a vertical line falls on **every
+  UTC hour** (`backgroundPosition` x = `pad + (the first whole UTC hour at
+  or after t0 − t0) · px`). On UTC hours, as the roster's day lines are: a
+  half-hour zone's local hours don't land on a line.
+- **The midnight lines** — a slightly stronger line (`.st-mid`, 1px of
+  `--muted` at 45%) at each midnight UTC from the first at or after the
+  axis' start to its end, in the track, so through every lane — as the
+  timeline's day lines, and as its, none on an axis of more than
+  `TL_MAX_DAY_LINES` days.
+- **A sky** — each span its tone's token (`--sky-day`, `--sky-night`:
+  translucent tints over the frame; `"none"` a hatch in `--grid`), **hard at
+  its ends** — sunrise and sunset — and faded from the top: full colour at
+  the lane's top, nothing halfway down (a `mask-image` gradient on
+  `.st-sky .st-span`), so the grid shows through more and more below. Home's
+  row the same fade, no grid.
+- **A duty** — a slim 14px bar low in its row (`top: 24px`), `--duty-day`
+  green, `--duty-night` amber or `--duty-wocl` red (softer: deeper in the
+  light theme, pastel in the dark, the roster blocks' tone), a hairline of
+  the frame round it (`box-shadow`, as a roster block's). Its pieces **butt
+  square**, nothing between them, so they tessellate into one bar; **the
+  duty's own two ends are rounded** (4px, as a block's): a piece is
+  `.first` where a duty starts — it carries a label, or isn't straight on
+  from the one before — and `.last` where it ends — the next isn't straight
+  on, or carries a label of its own (another duty's, however close). A
+  span's label is its own element (`.st-code`, mono, `--duty-ink`) set
+  **above** the bar at the span's start — the app puts one on a duty's
+  first piece, so a short first piece never clips its code.
+- **The curve** — a lane's troughs are an SVG path (`.st-curve`), **solid**,
+  1.5px, in `--curve` (the roster's purple: `--timeline-b` light,
+  `--timeline-a` dark), no fill, a point every twenty minutes
+  (`ST_CURVE_STEP_MS`), 10px in from its lane's top and bottom.
+- **The now line** — the accent, **solid**, 2px, a dot at its head
+  (`.st-now::before`), tagged Now at its foot: the timeline's now line,
+  turned on its side.
+- **The tags** (`.st-tags`) — an overlay on the same grid rows over the
+  viewport — so they stay put as the track scrolls — kept clear of a
+  scrollbar that takes room under it, so each sits level with its lane. No
+  pill: the first lane's plain mono, a later lane's label in the roster's
+  small uppercase muted heading style (`HOME`), each as text — or a clock
+  lane's `clockAt()`: the span under the cursor's `place` and its local time
+  through the browser's `Intl.DateTimeFormat` in its `tz` (`shortOffset`,
+  `GMT` said `UTC`: `LHR 01:00 UTC+1`, `HKG 08:00 UTC+8`, `LHR 00:00 UTC+0`
+  once London's summer time is over — the zone's own rules), the place alone
+  for a zone the browser can't read, and `—` where nothing is known.
+
+Every colour is a token, in all three theme blocks. Everything an app sent
+is set as text.
 
 **Synced** (`s.sync`), it's drawn around the group's focus clock exactly as
 a synced timeline is: the timeline's own focus row over it (`.tl-focus` —
 `.tl-readout`, the UTC time under the cursor, and `.tl-nowbtn`, Now, while
 the group isn't following), a fixed `--accent` cursor down the middle of the
-viewport (`.st-cursor`, over it, so the track scrolls under it), and the
-track padded half a viewport at each end, so `scrollLeft` is the focus
-time's offset on the axis. It joins the group's `members` as
+viewport (`.st-cursor`, over it, so the track scrolls under it — solid, an
+arrowhead at its top and its foot, as the timeline's cursor has at its two
+ends), and the track padded half a viewport at each end, so `scrollLeft` is
+the focus time's offset on the axis. With a lane of troughs (the first such
+lane), **a dot** (`.st-dot`, the accent, ringed in the surface) sits where
+the cursor crosses the curve: `placeDot()`, on every layout and every
+`show()` — so a scroll by hand, a member's move, Now and the follow tick all
+move it — at the curve's height at the focus time (`curveAt()`, the lane's
+top plus `m + amp − amp · value`, the geometry the curve was last drawn
+at), and hidden off the troughs (before the first, after the last). It joins the group's `members` as
 `{scroll, observer, group, show}` and sits in `timelines`, so
 `releaseTimelines()` lets it go with its tile. **The time is what's shared,
 never a scroll position**: the strips' day across and the timeline's week
@@ -772,7 +814,7 @@ accumulated per gesture as the timeline's is, or any of the four arrow keys
 settles on the nearest mark at `scrollend`. It's laid out at a fallback
 width first, then on the next frame and on every resize (a
 `ResizeObserver`) at the width and height it has. Unsynced, there's no
-focus row, cursor or clock tag, and it isn't scrolled to a time.
+focus row, cursor, dot or clock tag, and it isn't scrolled to a time.
 
 A hand-built spec is drawn as far as it can be: three lanes at most, a kind
 that isn't `"duty"` drawn as a sky, a span without both ends in order left
@@ -1254,7 +1296,7 @@ panel is; with no config, `empty(CONFIG_ERROR)`.
    `place` the port (`""` for none) and its `tz` the port's in the config's
    `destinations` (`None` without one, or one that isn't text), the lane a
    clock — the tag the port and its local time under the cursor — with the
-   body clock's troughs as its dashed curve.
+   body clock's troughs as its curve.
 2. **Home** — a 45px row: `body`, day and night at home base, tagged Home.
 3. **The duties** — a 45px row: `duties`, each duty's day, night and WOCL
    pieces, the duty's code once — on its first piece in the window, not on

@@ -409,7 +409,7 @@ own calls to its device API. Full direction:
   `label` text or `None` and only on a duty lane (a sky's →
   `ValueError`), `place`/`tz` text or `None` (else `TypeError`);
   `troughs` optional, a list or tuple (else `TypeError`) of instants,
-  each normalised (else `ValueError`) — the dashed curve; `label` text or
+  each normalised (else `ValueError`) — the curve; `label` text or
   `None`, the lane's tag; `clock` a bool (default `False`, else
   `TypeError`), the tag the place and its local time under the cursor
   instead — so no `label` with it (`ValueError`); every lane carried as
@@ -770,7 +770,13 @@ own calls to its device API. Full direction:
   piece and `None` on the pieces that continue it (the previous piece's
   `code` and `end` this one's `code` and `start`) — so a duty clipped at
   the window's start labels its first piece in it, and the page draws a
-  code once. The fixture's config has no positions, so its circadian
+  code once. Drawn in the roster's language (the page's styling, no
+  spec change): the local lane on an hour grid under a sky faded from
+  the top, hard at sunrise and sunset; Home the same fade, no grid; the
+  duties a slim bar, the code above it, a duty's ends rounded; the curve
+  solid in the roster's purple, a dot where the cursor crosses it; a
+  line at each UTC midnight; the cursor and now line the timeline's.
+  The fixture's config has no positions, so its circadian
   panel is the engine's `ValueError` ("home base ZZA needs a lat and lon
   in config.json's destinations") as an error in its sub-panel.
   **The circadian engine** (`tests/test_frms_circadian.py`), the panel
@@ -890,12 +896,13 @@ own calls to its device API. Full direction:
   `--timeline-a-ink`/`--timeline-b-ink`, its bands' amber,
   `--layover` (`#c07d18` light, `#e0a83a` dark), and its day lines'
   `--grid` (`--muted` at 22% light, 26% dark); the strips' tones,
-  `--sky-day`/`--sky-night` (`#cfe4f8`/`#5b4fa8` light,
-  `#2f6496`/`#2c2458` dark), the curve's `--curve` (`#1d2433`,
-  `#f3f6f8`), a duty's `--duty-day`/`--duty-night`/`--duty-wocl`
-  (`#3aa76d`/`#d99a2b`/`#d64545`, `#38b26f`/`#e0a83a`/`#e5534b`) and the
-  code on it, `--duty-ink` (`#ffffff`, `#0d1214`) — in all three theme
-  blocks). Under the top bar
+  `--sky-day`/`--sky-night`, translucent tints (`#5d9fe3` and
+  `--timeline-b` at 55% light, `#4f97dc`/`#5b4ccc` at 62% dark), the
+  curve's `--curve` (the roster's purple: `--timeline-b` light,
+  `--timeline-a` dark), a duty's `--duty-day`/`--duty-night`/`--duty-wocl`
+  (`#43a876`/`#d8a03e`/`#d65a55` light, pastel `#7fd0a2`/`#f1c36e`/
+  `#f2857e` dark) and the code above it, `--duty-ink` (`--ink-2`) — in
+  all three theme blocks). Under the top bar
   (date, a `settings` button, the theme toggle) sits the original angled tab
   strip: Home's tabs (far left, one per tab of the layout, drawn by
   `paintTabStrip()` into `#layoutTabs`, a `display: contents` region — until
@@ -1495,26 +1502,49 @@ own calls to its device API. Full direction:
   `.tl-readout` and a `btn sm tl-nowbtn`, as a timeline's, synced only)
   over a `.st-view` holding `.st-scroll` (`overflow-x: auto`, `tabIndex`
   0) — its `.st-track` a CSS grid, the first lane `minmax(0,1fr)`, each
-  after it a 45px row (`grid-auto-rows`), 3px apart — then `.st-tags`
+  after it a 45px row (`grid-auto-rows`), no gap, a `--border`
+  hairline between (`.st-lane + .st-lane`) — then `.st-tags`
   (an overlay on the same rows, its `bottom` the scrollbar's height,
   `offsetHeight − clientHeight`, so level with the lanes under a
   scrollbar that takes room) and, synced, `.st-cursor` (a fixed
-  `--accent` line down the middle, 2px solid). The axis runs from the
+  `--accent` line down the middle, 2px solid, an arrowhead at its top
+  and foot, as the timeline's cursor's ends) and, with a lane of troughs,
+  `.st-dot` (below). The axis runs from the
   earliest span's start to the latest end, or `now`; `ST_VIEW_MS`, a
   day, fills the viewport's width (`px = width / day`), the track padded
   half a viewport each end, so `scrollLeft = (focusMs − t0)·px` puts the
   focus under the cursor. A lane (`.st-lane st-<kind>`, three at most,
   `ST_MAX_LANES`) holds its spans (`.st-span st-t-<tone>`, `ST_TONES`,
   an unknown tone `none`; placed `left`/`width`, no text), a duty
-  span's label a `.st-code` of its own at its start (over the pieces
-  after it, `--duty-ink`), and with two troughs or more an SVG
-  `.st-curve` path, a point an hour (`ST_CURVE_STEP_MS`), `−cos` between
-  troughs, the lane's height; the tones `--sky-day`/`--sky-night`, a
-  hatch in `--grid` for `none`, a duty's inset 6px top and bottom in
-  `--duty-day`/`--duty-night`/`--duty-wocl`, **no radius, nothing
-  between** — a duty's pieces tessellate; `.st-now` a 2px dotted
-  `--accent` line tagged Now (`.st-now-tag`). A tag (`.st-tag`, a mono
-  pill on a translucent surface) a lane: its `label`, or a clock lane's
+  span's label a `.st-code` of its own (mono, `--duty-ink`) above the
+  bar at its start, and with two troughs or more an SVG `.st-curve`
+  path, solid, 1.5px in `--curve`, no fill, a point every twenty
+  minutes (`ST_CURVE_STEP_MS`), `−cos` between troughs, the lane's
+  height less 10px each end. The first lane (whatever its kind) first
+  holds `.st-hours`, an hour grid under its spans: two `--grid` line
+  gradients, `backgroundSize` an hour of the axis each way
+  (`3600000·px`) and `backgroundPosition` x `pad + (the first UTC hour
+  ≥ t0 − t0)·px`, so a line on every UTC hour, set at every layout; and
+  the track a `.st-mid` at each UTC midnight from `t0` to `t1` (1px of
+  `--muted` at 45%, through every lane; none past `TL_MAX_DAY_LINES`,
+  as the timeline's day lines). The tones: a sky's
+  `--sky-day`/`--sky-night`, hard-edged and faded from the top to
+  nothing halfway down (`mask-image` on `.st-sky .st-span`, the grid
+  showing through), a hatch in `--grid` for `none`; a duty's a slim
+  14px bar (`top: 24px`) in `--duty-day`/`--duty-night`/`--duty-wocl`,
+  a hairline of the frame round it, **nothing between** — its pieces
+  tessellate — and the duty's own ends rounded 4px, as a block's: a
+  piece `first` (a class string) where it's labelled or not straight
+  on from the one before, `last` where the next isn't straight on or
+  is labelled. `.st-now` a 2px solid `--accent` line, a dot at its head
+  (`::before`), tagged Now (`.st-now-tag`). Synced, `.st-dot` (the
+  accent, 9px, ringed in `--surface`) where the cursor crosses the
+  first lane with troughs' curve: `placeDot()`, after each layout and
+  in every `show()`, at `curveAt(troughs, focusMs)` on the geometry the
+  curve was drawn at (`lane.offsetTop + m + amp − amp·v`), hidden off
+  the troughs. A tag (`.st-tag`, no pill: the first lane's plain mono,
+  a later lane's small uppercase muted, the roster's heading style) a
+  lane: its `label`, or a clock lane's
   `clockAt()` — the span under the cursor's `place` and its time in its
   `tz` (`Intl.DateTimeFormat('en-GB', {timeZone, hour, minute, hourCycle:
   'h23', timeZoneName: 'shortOffset'})`, `GMT` said `UTC`, a bare one
@@ -1534,8 +1564,8 @@ own calls to its device API. Full direction:
   settled on the nearest at `onscrollend`. Laid out at 480px detached,
   then in a `requestAnimationFrame` and every `ResizeObserver` callback,
   at its `clientWidth`/`clientHeight` (a height change redraws the
-  curve); no width keeps the last. Unsynced: no focus row, cursor or
-  clock tag, not scrolled to a time, still in `timelines`. Hand-built: a
+  curve); no width keeps the last. Unsynced: no focus row, cursor, dot
+  or clock tag, not scrolled to a time, still in `timelines`. Hand-built: a
   kind not `duty` a sky, a span without both ends in order dropped;
   nothing → "Nothing to draw yet". Its CSS a commented block after the
   grid's; no `.tl-*`/`.rail-*` rule, nor `timelineSpec()`, the rails or
@@ -2358,6 +2388,16 @@ same PR:
   timeline, rails or focus clock changed. Deploy: rebuild the image
   first, then Update FRMS (on the old image the circadian panel draws
   "Unknown spec type: strips" — in its sub-panel alone).
+  Then the strips were restyled in the roster's language (page only — no
+  migration, no route, spec, app or engine change): an hour grid under
+  the first lane's sky, which fades from the top and is hard at sunrise
+  and sunset; a faint line at each UTC midnight; a duty a slim bar, its
+  code above, its own ends rounded; the curve solid in the roster's
+  purple with a dot where the cursor crosses it; the cursor arrowed and
+  the now line solid with a dot at its head, as the timeline's; plain
+  tags; a hairline between lanes. Nothing in the timeline, rails, focus
+  clock or the strips' scrolling changed. Deploy: rebuild the image and
+  hard-refresh; no app Update.
   Still to come for it: personalising `cbt_min` from sleep data, the two
   other sub-panels, a sub-panel's error isolated by the host itself (an
   app's own `try` does it today; a `render()` that raises is still the
