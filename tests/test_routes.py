@@ -5267,8 +5267,9 @@ def test_a_grid_places_each_sub_panel_on_its_cells_and_draws_its_spec(client):
 def test_a_grids_sub_panels_wear_a_tiles_face_and_the_tile_drops_its_own(client):
     page = _page(client)
     css = page[: page.index("</style>")]
+    # Its own block: up to the strips', which follows it (and has a test of its own).
     block = css[css.index("/* grid: a tile split into sub-panels") :]
-    block = block[: block.index("/* input:")]
+    block = block[: block.index("/* strips: lanes of tinted spans")]
     assert ".spec-grid{display:grid;gap:var(--tile-gap);min-width:0;min-height:0;}" in block
     # The tile's own face dropped - out of Configure only, where the tile
     # keeps its dashed face and controls and is moved and sized whole -
@@ -5406,15 +5407,17 @@ def test_a_grids_sub_panels_draw_their_specs_as_at_the_top_of_a_tile(client):
 # ---------- strips: the circadian panel's lanes, a day across ----------
 #
 # A strips spec is lanes of tinted spans on one horizontal time axis, a
-# day to the viewport's width: a sky lane's day, night and not known
-# (hatched), a duty lane's pieces butting square, its code once at its
-# start, a dashed curve of the troughs over the first lane, a tag
-# top-left of each lane - the clock lane's the place and its local time
-# under the cursor. Synced, it's drawn around its group's focus clock as
-# a synced timeline is, on its side - a fixed cursor down the middle, the
-# timeline's focus row over it - and scrolls with the group's timelines
-# both ways, by time. Under node, over the stand-in DOM, the clock held
-# as for the focus clock.
+# day to the viewport's width: the first lane on an hour grid, a line at
+# each midnight (UTC) through every lane, a sky lane's day, night and not
+# known (hatched) faded from the top, a duty lane's slim bar of pieces
+# butting square - the duty's own ends rounded - its code once above its
+# start, a solid curve of the troughs over the first lane, a dot where
+# the cursor crosses it, a tag top-left of each lane - the clock lane's
+# the place and its local time under the cursor. Synced, it's drawn
+# around its group's focus clock as a synced timeline is, on its side - a
+# fixed cursor down the middle, the timeline's focus row over it - and
+# scrolls with the group's timelines both ways, by time. Under node, over
+# the stand-in DOM, the clock held as for the focus clock.
 
 STRIPS_PARTS = RAILS_PARTS + ["ST_VIEW_MS", "ST_CURVE_STEP_MS", "ST_MAX_LANES", "ST_TONES", "stripsSpec"]
 
@@ -5525,20 +5528,29 @@ def test_the_strips_tones_are_tokens_in_every_theme_and_a_dutys_pieces_butt_squa
     os_dark = css[css.index("@media (prefers-color-scheme:dark)") : css.index(':root[data-theme="dark"]{')]
     toggle_dark = css[css.index(':root[data-theme="dark"]{') :]
     toggle_dark = toggle_dark[: toggle_dark.index("}")]
+    # The sky a translucent tint over the frame; the curve the roster's
+    # purple (the lighter lane's in the dark, the darker's in the light);
+    # a duty's tones softer - pastel in the dark, deeper in the light - and
+    # its code above the bar in the second ink.
     tones = {
-        "--sky-day": ("#cfe4f8", "#2f6496"), "--sky-night": ("#5b4fa8", "#2c2458"),
-        "--curve": ("#1d2433", "#f3f6f8"), "--duty-day": ("#3aa76d", "#38b26f"),
-        "--duty-night": ("#d99a2b", "#e0a83a"), "--duty-wocl": ("#d64545", "#e5534b"),
-        "--duty-ink": ("#ffffff", "#0d1214"),
+        "--sky-day": ("color-mix(in srgb, #5d9fe3 55%, transparent)", "color-mix(in srgb, #4f97dc 62%, transparent)"),
+        "--sky-night": ("color-mix(in srgb, var(--timeline-b) 55%, transparent)",
+                        "color-mix(in srgb, #5b4ccc 62%, transparent)"),
+        "--curve": ("var(--timeline-b)", "var(--timeline-a)"),
+        "--duty-day": ("#43a876", "#7fd0a2"), "--duty-night": ("#d8a03e", "#f1c36e"),
+        "--duty-wocl": ("#d65a55", "#f2857e"), "--duty-ink": ("var(--ink-2)", "var(--ink-2)"),
     }
     for token, (day, dark) in tones.items():
         assert f"{token}:{day};" in light, token
         assert f"{token}:{dark};" in os_dark and f"{token}:{dark};" in toggle_dark, token
 
-    # The strips' own block: every colour a token, none spelt out.
+    # The strips' own block: every colour a token, none spelt out - bar
+    # the sky's fade, whose #000 is a mask stop (how opaque), not a colour.
     block = css[css.index("/* strips: lanes of tinted spans") :]
     block = block[: block.index("/* input:")]
-    assert not re.search(r"#[0-9a-fA-F]{3,8}\b|rgba?\(", block)
+    fade = "linear-gradient(180deg, #000 0, transparent 50%)"
+    assert block.count(fade) == 2
+    assert not re.search(r"#[0-9a-fA-F]{3,8}\b|rgba?\(", block.replace(fade, ""))
     rules = _css_rules(page)[0]
     # Each tone its token, on its lane's kind.
     for selector, token in ((".st-sky .st-t-day", "--sky-day"), (".st-sky .st-t-night", "--sky-night"),
@@ -5546,24 +5558,61 @@ def test_the_strips_tones_are_tokens_in_every_theme_and_a_dutys_pieces_butt_squa
                             (".st-duty .st-t-wocl", "--duty-wocl")):
         assert _decls(rules, selector)["background"] == f"var({token})", selector
     assert "var(--grid)" in _decls(rules, ".st-sky .st-t-none")["background"]
-    # A duty's pieces butt square: no rule naming a span or a tone rounds
-    # one - only the code is laid over them, in the duty ink.
+    # A sky's spans fade from the top to nothing halfway down - hard at
+    # their ends, sunrise and sunset: no blur, no gradient across.
+    sky = _decls(rules, ".st-sky .st-span")
+    assert sky == {"-webkit-mask-image": fade, "mask-image": fade}
+    # The first lane's hour grid, and the midnight lines, in the neutrals.
+    hours = _decls(rules, ".st-hours")
+    assert hours["background-image"] == ("linear-gradient(90deg, var(--grid) 1px, transparent 1px), "
+                                         "linear-gradient(180deg, var(--grid) 1px, transparent 1px)")
+    assert _decls(rules, ".st-mid")["border-left"] == "1px solid color-mix(in srgb, var(--muted) 45%, transparent)"
+    # A duty is a slim bar low in its row, a hairline of the frame round
+    # it; its pieces butt square - no rule naming a span or a tone rounds
+    # or spaces one - but the duty's own two ends, .first and .last,
+    # rounded as a block's. Its code above the bar, in the duty ink.
     duty = _decls(rules, ".st-duty .st-span")
-    assert (duty["top"], duty["bottom"]) == ("6px", "6px") and "border-radius" not in duty
+    assert (duty["top"], duty["bottom"], duty["height"], duty["box-shadow"]) == (
+        "24px", "auto", "14px", "0 0 0 1px var(--inset)")
+    ends = {".st-duty .st-span.first": {"border-top-left-radius": "4px", "border-bottom-left-radius": "4px"},
+            ".st-duty .st-span.last": {"border-top-right-radius": "4px", "border-bottom-right-radius": "4px"}}
     for sels, body in re.findall(r"([^{}]+)\{([^{}]*)\}", rules):
-        if re.search(r"\.st-(span|t-)", sels):
-            assert "border-radius" not in body and "margin" not in body, sels
-    assert _decls(rules, ".st-code")["color"] == "var(--duty-ink)"
+        if re.search(r"\.st-(span|t-)", sels) and sels.strip() not in ends:
+            assert "radius" not in body and "margin" not in body, sels
+    for selector, decls in ends.items():
+        assert _decls(rules, selector) == decls, selector
+    code = _decls(rules, ".st-code")
+    assert (code["color"], code["top"], code["height"]) == ("var(--duty-ink)", "5px", "16px")
+    assert "var(--font-mono)" in code["font"]
     # The first lane takes the height the others leave, each after it a
-    # 45px row - the tags over them on the same rows.
+    # 45px row - the tags over them on the same rows - a hairline between,
+    # no gap.
     track = _decls(rules, ".st-track")
-    assert (track["grid-template-rows"], track["grid-auto-rows"]) == ("minmax(0,1fr)", "45px")
+    assert (track["grid-template-rows"], track["grid-auto-rows"], track["row-gap"]) == ("minmax(0,1fr)", "45px", "0")
     assert _decls(rules, ".st-tags")["grid-auto-rows"] == "45px"
-    # The cursor solid, the now line dotted - both the accent; the curve dashed.
+    assert _decls(rules, ".st-lane + .st-lane")["border-top"] == "1px solid var(--border)"
+    # The tags plain: the clock tag mono, no pill; the others the roster's
+    # small uppercase muted heading.
+    tag = _decls(rules, ".st-tag > span")
+    assert "var(--font-mono)" in tag["font"] and "background" not in tag and "border-radius" not in tag
+    home = _decls(rules, ".st-tags > .st-tag + .st-tag > span")
+    assert (home["text-transform"], home["color"]) == ("uppercase", "var(--muted)")
+    # The cursor and the now line both solid, the accent, as the
+    # timeline's: the cursor's ends arrowed, the now line's head a dot.
     assert _decls(rules, ".st-cursor")["border-left"] == "2px solid var(--accent)"
-    assert _decls(rules, ".st-now")["border-left"] == "2px dotted var(--accent)"
+    assert _decls(rules, ".st-cursor::before")["border-top"] == "6px solid var(--accent)"
+    assert _decls(rules, ".st-cursor::after")["border-bottom"] == "6px solid var(--accent)"
+    assert _decls(rules, ".st-now")["border-left"] == "2px solid var(--accent)"
+    head = _decls(rules, ".st-now::before")
+    assert (head["border-radius"], head["background"], head["top"]) == ("50%", "var(--accent)", "0")
+    # The curve solid, no fill; the dot where the cursor crosses it the accent.
     curve = _decls(rules, ".st-curve path")
-    assert (curve["stroke"], curve["stroke-dasharray"], curve["fill"]) == ("var(--curve)", "6 5", "none")
+    assert (curve["stroke"], curve["stroke-width"], curve["fill"]) == ("var(--curve)", "1.5", "none")
+    assert "stroke-dasharray" not in curve
+    dot = _decls(rules, ".st-dot")
+    assert (dot["left"], dot["border-radius"], dot["background"]) == ("50%", "50%", "var(--accent)")
+    # Nothing blended, no area under the curve.
+    assert ".st-blend" not in page
     # Drawn by its own renderer.
     assert "    strips: s => stripsSpec(s)," in _js(page, "SPECS")
 
@@ -5594,9 +5643,9 @@ def test_strips_draw_their_lanes_and_join_the_focus_group_as_a_timeline_does(cli
         r.curve = [lanes[0].querySelector('svg').ns, path.attrs.d.split(/[ML]/).filter(Boolean).length];
         // Laid out at the fallback width, off the page: every span, code
         // and the now line placed, the track as wide as the axis.
-        r.laidOut = [track.style.width, ...lanes.flatMap(l => l.children.filter(c => c.tag==='div').map(c => px(c.style.left)
-                     && (c.className==='st-code' || px(c.style.width))))].every(Boolean)
-                     && px(track.children[3].style.left);
+        r.laidOut = [track.style.width, ...lanes.flatMap(l => l.children.filter(c => c.tag==='div' && c.className!=='st-hours')
+                     .map(c => px(c.style.left) && (c.className==='st-code' || px(c.style.width))))].every(Boolean)
+                     && kids(track, 'st-mid').every(m => px(m.style.left)) && px(track.children[3].style.left);
         r.html = [box, ...box.querySelectorAll('*')].map(n => n._html).join('');
 
         // A member of its group, as a timeline is.
@@ -5645,20 +5694,24 @@ def test_strips_draw_their_lanes_and_join_the_focus_group_as_a_timeline_does(cli
     # Now button - and over the track the tags and the cursor.
     assert r["kids"] == ["tl-focus st-focus", "st-view"]
     assert r["focus"] == [["div", "tl-readout"], ["button", "btn sm tl-nowbtn"]]
-    assert r["view"] == ["st-scroll", "st-tags", "st-cursor"]
+    # ... and, the first lane having troughs, the dot where the cursor
+    # crosses the curve.
+    assert r["view"] == ["st-scroll", "st-tags", "st-cursor", "st-dot"]
     # The three lanes, a sky, a sky and the duties, then the now line,
-    # tagged Now.
-    assert r["track"] == ["st-lane st-sky", "st-lane st-sky", "st-lane st-duty", "st-now"]
+    # tagged Now, then a line at each midnight - the 16th to the 30th.
+    assert r["track"] == ["st-lane st-sky", "st-lane st-sky", "st-lane st-duty", "st-now"] + ["st-mid"] * 15
     assert r["nowTag"] == [["st-now-tag", "Now"]]
-    # Each span by its tone; the curve over the first lane; a duty's two
-    # codes, after its five pieces.
-    assert r["lanes"][0] == ["st-span st-t-none", "st-span st-t-day", "st-span st-t-night", "st-span st-t-day",
-                             "st-span st-t-night", "st-curve"]
+    # The first lane's hour grid under its spans; each span by its tone;
+    # the curve over the first lane; a duty's pieces its ends marked, and
+    # its two codes after them.
+    assert r["lanes"][0] == ["st-hours", "st-span st-t-none", "st-span st-t-day", "st-span st-t-night",
+                             "st-span st-t-day", "st-span st-t-night", "st-curve"]
     assert r["lanes"][1] == ["st-span st-t-day", "st-span st-t-night"] * 14
-    assert r["lanes"][2] == ["st-span st-t-night", "st-span st-t-wocl", "st-span st-t-day", "st-span st-t-wocl",
-                             "st-span st-t-day", "st-code", "st-code"]
-    # From the first trough to the last, a point an hour: 13 days of them.
-    assert r["curve"] == ["http://www.w3.org/2000/svg", 13 * 24 + 1]
+    assert r["lanes"][2] == ["st-span st-t-night first", "st-span st-t-wocl", "st-span st-t-day last",
+                             "st-span st-t-wocl first", "st-span st-t-day last", "st-code", "st-code"]
+    # From the first trough to the last, a point every twenty minutes: 13
+    # days of them.
+    assert r["curve"] == ["http://www.w3.org/2000/svg", 13 * 72 + 1]
     assert r["laidOut"] is True
     assert r["html"] == ""
     # In the group as a timeline is - {scroll, observer, group, show} - the
@@ -5813,9 +5866,11 @@ def test_a_dutys_code_is_drawn_once_and_the_clock_tag_tells_the_time_where_you_a
                    '2026-10-29T06:00:00Z', '2026-11-02T00:00:00Z'].map(at);
     """))
 
-    # Five pieces, each only its tone - no text in one - butting.
-    assert r["pieces"] == [["st-span st-t-night", "", 0], ["st-span st-t-wocl", "", 0], ["st-span st-t-day", "", 0],
-                           ["st-span st-t-wocl", "", 0], ["st-span st-t-day", "", 0]]
+    # Five pieces, each only its tone - and a duty's ends - no text in
+    # one, butting.
+    assert r["pieces"] == [["st-span st-t-night first", "", 0], ["st-span st-t-wocl", "", 0],
+                           ["st-span st-t-day last", "", 0], ["st-span st-t-wocl first", "", 0],
+                           ["st-span st-t-day last", "", 0]]
     # One code a duty, as text, at its first piece's start.
     assert r["codes"] == [["CX101", r["lefts"][0]], ["CX100 <i>", r["lefts"][3]]]
     assert r["skyCodes"] == [0, 0]
@@ -5829,6 +5884,204 @@ def test_a_dutys_code_is_drawn_once_and_the_clock_tag_tells_the_time_where_you_a
         "LHR 01:00 UTC+1", "HKG 08:00 UTC+8", "LHR 00:00 UTC+0", "—", "XXX <b>", "—",
     ]
     assert {tags[1] for tags in r["clock"]} == {"Home <b>"}
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
+def test_the_strips_first_lane_sits_on_an_hour_grid_a_line_on_every_utc_hour(client):
+    page = _page(client)
+    # An axis that starts off the hour - 00:20Z on the 18th - so the grid
+    # is offset to land its lines on the hours, not the axis' start.
+    off = {"type": "strips", "sync": "frms", "lanes": [
+        {"kind": "duty", "spans": [_st("2026-10-18T00:20:00Z", "2026-10-18T05:00:00Z", "day", label="CX1")]},
+        {"kind": "sky", "spans": [_st("2026-10-18T00:20:00Z", "2026-10-19T09:00:00Z", "night")]},
+    ]}
+    r = _node(_strips_script(page, f"""
+        const grid = (box, w) => {{
+          const lanes = box.querySelectorAll('.st-lane');
+          const h = box.querySelector('.st-hours');
+          return {{count: box.querySelectorAll('.st-hours').length, perLane: lanes.map(l => kids(l, 'st-hours').length),
+                   first: lanes[0].children[0]===h, width: h.style.width, track: box.querySelector('.st-track').style.width,
+                   size: h.style.backgroundSize, x: parseFloat(h.style.backgroundPosition),
+                   y: h.style.backgroundPosition.split(' ')[1], hour: w / 24, pad: w / 2}};
+        }};
+        const st = renderSpec({json.dumps(STRIPS)}, 'FRMS', 'frms');
+        r.fallback = grid(st, 480);
+        showStrips(st, 600, 200);
+        r.shown = grid(st, 600);
+        const odd = renderSpec({json.dumps(off)}, 'X', 'x');
+        showStrips(odd, 480, 200);
+        r.off = grid(odd, 480);
+    """))
+
+    def on_every_hour(g, t0_ms):
+        # Every UTC hour on the axis falls on a vertical line - a whole
+        # number of squares from the grid's offset.
+        for k in range(48):
+            hour_ms = (t0_ms // 3600000 + k) * 3600000
+            x = g["pad"] + (hour_ms - t0_ms) * g["hour"] / 3600000
+            squares = (x - g["x"]) / g["hour"]
+            assert squares == pytest.approx(round(squares), abs=1e-6), k
+
+    # One grid, in the first lane, under its spans; as wide as the track;
+    # its squares an hour across - the viewport's width over 24 - and as
+    # tall; laid out off the page at the fallback width, then at the
+    # width the page gives it.
+    for g in (r["fallback"], r["shown"]):
+        assert (g["count"], g["perLane"], g["first"]) == (1, [1, 0, 0], True)
+        assert g["width"] == g["track"]
+        assert g["size"] == f"{g['hour']:g}px {g['hour']:g}px"
+        assert g["y"] == "0"
+    # The axis starts at midnight: the grid's offset the pad.
+    assert (r["fallback"]["x"], r["shown"]["x"]) == (240, 300)
+    on_every_hour(r["shown"], 1792195200000)  # 2026-10-16T00:00:00Z
+    # Off the hour: offset the forty minutes to 01:00Z - the first lane a
+    # duty's, its grid the same.
+    assert r["off"]["perLane"] == [1, 0]
+    assert r["off"]["x"] == pytest.approx(240 + 40 * 20 / 60)
+    on_every_hour(r["off"], 1792369200000)    # 2026-10-18T00:20:00Z
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
+def test_a_line_at_each_utc_midnight_runs_through_the_strips(client):
+    page = _page(client)
+    # From 00:20Z on the 18th to 06:00Z on the 20th: two midnights.
+    off = {"type": "strips", "lanes": [
+        {"kind": "sky", "spans": [_st("2026-10-18T00:20:00Z", "2026-10-20T06:00:00Z", "day")]}]}
+    # Over ten years: none, as a timeline's day lines.
+    ages = {"type": "strips", "lanes": [
+        {"kind": "sky", "spans": [_st("2000-01-01T00:00:00Z", "2011-01-01T00:00:00Z", "day")]}]}
+    r = _node(_strips_script(page, f"""
+        const mids = (box, t0, w) => {{
+          const track = box.querySelector('.st-track');
+          return {{n: kids(track, 'st-mid').length,
+                   at: kids(track, 'st-mid').map(m => new Date(t0 + (parseFloat(m.style.left) - w / 2) / (w / DAY)).toISOString()),
+                   inTrack: box.querySelectorAll('.st-mid').every(m => m.parent===track)}};
+        }};
+        const st = renderSpec({json.dumps(STRIPS)}, 'FRMS', 'frms');
+        showStrips(st, 480, 200);
+        r.strips = mids(st, {STRIPS_T0}, 480);
+        const odd = renderSpec({json.dumps(off)}, 'X', 'x');
+        showStrips(odd, 600, 200);
+        r.off = mids(odd, Date.parse('2026-10-18T00:20:00Z'), 600);
+        r.ages = renderSpec({json.dumps(ages)}, 'X', 'x').querySelectorAll('.st-mid').length;
+    """))
+
+    # A line at each midnight from the 16th to the 30th, both ends among
+    # them, each at its midnight's place on the axis - in the track, so
+    # through every lane.
+    assert r["strips"]["n"] == 15
+    assert [t[:10] for t in r["strips"]["at"]] == [f"2026-10-{d}" for d in range(16, 31)]
+    assert {t[10:] for t in r["strips"]["at"]} == {"T00:00:00.000Z"}
+    assert r["strips"]["inTrack"] is True
+    assert r["off"]["at"] == ["2026-10-19T00:00:00.000Z", "2026-10-20T00:00:00.000Z"]
+    assert r["ages"] == 0
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
+def test_a_dutys_own_ends_are_rounded_its_pieces_butting_square(client):
+    page = _page(client)
+    duty = {"type": "strips", "lanes": [{"kind": "duty", "spans": [
+        # Three pieces of one duty.
+        _st("2026-10-18T01:00:00Z", "2026-10-18T02:00:00Z", "day", label="CX1"),
+        _st("2026-10-18T02:00:00Z", "2026-10-18T03:00:00Z", "wocl"),
+        _st("2026-10-18T03:00:00Z", "2026-10-18T04:00:00Z", "night"),
+        # Two duties back to back, one code: the second labelled - a duty of its own.
+        _st("2026-10-19T01:00:00Z", "2026-10-19T02:00:00Z", "day", label="CX2"),
+        _st("2026-10-19T02:00:00Z", "2026-10-19T03:00:00Z", "day", label="CX2"),
+        # A lone piece.
+        _st("2026-10-20T01:00:00Z", "2026-10-20T02:00:00Z", "night", label="CX3"),
+        # Two pieces apart, unlabelled: each its own ends.
+        _st("2026-10-21T01:00:00Z", "2026-10-21T02:00:00Z", "day"),
+        _st("2026-10-21T03:00:00Z", "2026-10-21T04:00:00Z", "day"),
+    ]}, {"kind": "sky", "spans": [_st("2026-10-18T00:00:00Z", "2026-10-18T12:00:00Z", "day")]}]}
+    r = _node(_strips_script(page, f"""
+        const box = renderSpec({json.dumps(duty)}, 'X', 'x');
+        const lanes = box.querySelectorAll('.st-lane');
+        r.duty = kids(lanes[0], 'st-span').map(s => s.className.replace('st-span st-t-', ''));
+        r.sky = kids(lanes[1], 'st-span').map(s => s.className);
+    """))
+
+    assert r["duty"] == [
+        "day first", "wocl", "night last",
+        "day first last", "day first last",
+        "night first last",
+        "day first last", "day first last",
+    ]
+    # A sky's spans have no ends of their own.
+    assert r["sky"] == ["st-span st-t-day"]
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
+def test_a_dot_sits_where_the_cursor_crosses_the_curve_and_moves_with_the_focus(client):
+    page = _page(client)
+    unsynced = {k: v for k, v in STRIPS.items() if k != "sync"}
+    no_troughs = {**STRIPS, "lanes": [HOME_LANE, DUTY_LANE]}
+    second = {**STRIPS, "lanes": [HOME_LANE, LOCAL_LANE]}
+    r = _node(_strips_script(page, f"""
+        r.only = [renderSpec({json.dumps(unsynced)}, 'X', 'x').querySelectorAll('.st-dot').length,
+                  renderSpec({json.dumps(no_troughs)}, 'X', 'x').querySelectorAll('.st-dot').length];
+        const st = renderSpec({json.dumps(STRIPS)}, 'FRMS', 'frms');
+        const dot = st.querySelector('.st-dot');
+        r.where = dot.parent.className;
+        // The first lane 150px tall on the page: the curve 10px in from
+        // its top and bottom - its amplitude 65px.
+        st.querySelector('.st-lane').clientHeight = 150;
+        showStrips(st, 480, 200);
+        const g = focusGroups.get('frms');
+        const top = () => /px$/.test(dot.style.top) ? parseFloat(dot.style.top) : dot.style.top;
+        const at = iso => {{ setFocus(g, Date.parse(iso), false); return [dot.hidden, top()]; }};
+        // On now (12:00Z on the 18th): two thirds of the way from a trough
+        // (20:00Z) to the next - the curve at +0.5.
+        r.onNow = [dot.hidden, top()];
+        r.moves = ['2026-10-19T20:00:00Z', '2026-10-20T08:00:00Z', '2026-10-21T02:00:00Z', '2026-10-16T06:00:00Z',
+                   '2026-10-29T21:00:00Z', '2026-10-22T20:00:00Z'].map(at);
+        // Its points drawn at the same height: the path's y at a trough.
+        const path = st.querySelector('.st-lane').querySelector('path');
+        r.ys = [...new Set(path.attrs.d.split(/[ML]/).filter(Boolean).map(p => +p.split(' ')[1]))];
+        // A hand-built spec's curve on its second lane - 45px tall, 101px
+        // down the frame: the dot that far down too.
+        const two = renderSpec({json.dumps(second)}, 'X', 'x');
+        const lane2 = two.querySelectorAll('.st-lane')[1];
+        lane2.clientHeight = 45; lane2.offsetTop = 101;
+        showStrips(two, 480, 200);
+        setFocus(g, Date.parse('2026-10-19T20:00:00Z'), false);
+        const dot2 = two.querySelector('.st-dot');
+        r.second = [dot2.hidden, parseFloat(dot2.style.top)];
+    """))
+
+    # Synced and over a curve only.
+    assert r["only"] == [0, 0]
+    assert r["where"] == "st-view"
+    # Its top in px, the curve's height there: 10 + 65 - 65 * curve.
+    assert r["onNow"] == [False, pytest.approx(10 + 65 - 65 * 0.5)]
+    assert r["moves"] == [
+        [False, pytest.approx(140)],   # a trough: the curve's foot
+        [False, pytest.approx(10)],    # midway between two: its top
+        [False, pytest.approx(75)],    # a quarter of the way: its middle
+        [True, pytest.approx(75)],     # before the first trough: hidden, where it was
+        [True, pytest.approx(75)],     # past the last: hidden
+        [False, pytest.approx(140)],   # back on one
+    ]
+    assert min(r["ys"]) == pytest.approx(10) and max(r["ys"]) == pytest.approx(140)
+    # A trough on a 45px lane: its foot, 35px into it.
+    assert r["second"] == [False, pytest.approx(101 + 35)]
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
+def test_the_strips_curve_is_one_line_nothing_blended_no_area(client):
+    page = _page(client)
+    r = _node(_strips_script(page, f"""
+        const st = renderSpec({json.dumps(STRIPS)}, 'FRMS', 'frms');
+        showStrips(st, 480, 200);
+        // The SVG's class an attribute, as the page sets it.
+        const svgs = st.querySelectorAll('svg');
+        r.svgs = svgs.filter(v => v.attrs.class==='st-curve').length;
+        r.kids = svgs[0].children.map(c => c.tag);
+        r.closed = /[Zz]/.test(svgs[0].children[0].attrs.d);
+        r.blend = st.querySelectorAll('.st-blend').length;
+    """))
+
+    assert (r["svgs"], r["kids"], r["closed"], r["blend"]) == (1, ["path"], False, 0)
 
 
 # ---------- an uninstalled app's data: Remove data ----------

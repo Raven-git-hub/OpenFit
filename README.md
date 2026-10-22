@@ -511,12 +511,14 @@ base's time zone (the body clock — never adjusted to where you've flown), a
 each destination's `lat`/`lon` in the config, the app works out day and night
 where you are and at home, the body clock's low window (WOCL, 02:00–06:00 home
 time), and each duty cut into pieces of day, night and WOCL against the body
-clock — and draws them as three strips, a day across: where you are, blue by
-day and purple by night, the body clock's curve dashed over it and its tag the
-port and its local time under the cursor (`LHR 01:00 UTC+1`); home, by day
-and night; and the duties, green by day, amber by night and red in the WOCL,
-each duty's flight number once. It scrolls with the roster's timeline and
-rails, and they with it, to the same time.
+clock — and draws them as three strips, a day across, in the roster's look:
+where you are, on an hour grid, blue by day and purple by night (hard at
+sunrise and sunset, fading down from the top), the body clock's curve over it
+with a dot where the cursor crosses it, and its tag the port and its local time
+under the cursor (`LHR 01:00 UTC+1`); home, by day and night; and the duties, a
+slim bar green by day, amber by night and red in the WOCL, each duty's flight
+number once above it. A faint line marks each midnight (UTC). It scrolls with
+the roster's timeline and rails, and they with it, to the same time.
 
 An app isn't limited to OpenFit's metrics: it can **invent its own**. Declare
 what you invent, write what exists — a built-in metric is just written, while a
