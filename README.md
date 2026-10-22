@@ -307,8 +307,10 @@ fixed-size cards, five at a time, that restacks as its sync group's time moves
 `rails` (a timeline drawn as it is, with a rail either side), `grid` (a tile
 split into sub-panels, each drawn as a tile of its own on Home's cells),
 `strips` (up to three lanes of tinted spans on a horizontal axis a day across
-— day and night, a duty's pieces — that, named into a sync group, scrolls with
-the group's timelines both ways, by time), `empty` and `error` (for a part of
+— day and night, a duty's pieces, trips away as bars behind them, a curve with
+a window marked red under it, a lane's tag its label over the place or date and
+time under the cursor — that, named into a sync group, scrolls with the group's
+timelines both ways, by time), `empty` and `error` (for a part of
 a tile that failed). An app that fails to load is logged and
 left out, and one whose `render()` fails shows as an error tile, never a
 broken page.
@@ -514,10 +516,13 @@ time), and each duty cut into pieces of day, night and WOCL against the body
 clock — and draws them as three strips, a day across, in the roster's look:
 where you are, on an hour grid, blue by day and purple by night (hard at
 sunrise and sunset, fading down from the top), the body clock's curve over it
-with a dot where the cursor crosses it, and its tag the port and its local time
-under the cursor (`LHR 01:00 UTC+1`); home, by day and night; and the duties, a
-slim bar green by day, amber by night and red in the WOCL, each duty's flight
-number once above it. A faint line marks each midnight (UTC). It scrolls with
+with a dot where the cursor crosses it and red under it in the WOCL, and its tag
+the port and its local time under the cursor (`LHR 01:00 UTC+1`); home, by day
+and night, tagged HOME over home's date and time under the cursor (`Fri 23 Oct
+20:00`); and the duties, a slim bar green by day, amber by night and red in the
+WOCL, each duty's flight number once above it, with each trip away from base —
+the roster's trips, out to home — an amber bar behind them, its port in it. A
+faint line marks each midnight (UTC). It scrolls with
 the roster's timeline and rails, and they with it, to the same time.
 
 An app isn't limited to OpenFit's metrics: it can **invent its own**. Declare

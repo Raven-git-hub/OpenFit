@@ -80,10 +80,13 @@ for a test to call on their own.
 The circadian panel (_circadian()) draws, over the roster panel's
 window - about six months back to a day past the last duty, or now -
 three strips (ctx.strips()), in the FRMS focus group: where the crew
-member is, day or night there, the body clock's dashed curve over it and
-its tag the port under the cursor and its local time (its destinations
-tz); day or night at home base, tagged Home; and the duties, each cut
-into day, night and WOCL pieces, its code once, on its first piece.
+member is, day or night there, the body clock's curve over it - red
+under it in the WOCL - and its tag the port under the cursor and its
+local time (its destinations tz); day or night at home base, tagged
+Home over home's date and time under the cursor; and the duties, each
+cut into day, night and WOCL pieces, its code once, on its first piece,
+with each trip away from base behind them - the roster's trips(), over
+the duties that count - an amber bar, its port in it.
 
 Its engine is pure module functions, for a test to call on their own:
 sun_times() - a day's sunrise and sunset at a position, from NOAA's
@@ -170,11 +173,15 @@ def _panel(ctx, build):
 def _circadian(ctx):
     """The circadian panel, its sub-panel's spec: three strips over the
     roster's window - where you are, day or night there, the body clock's
-    curve over it and the place and its time under the cursor; day or
-    night at home; each duty cut into day, night and WOCL pieces against
-    the body clock, its code once at its start. In the FRMS focus group,
-    so it scrolls with the roster's timeline and rails, and they with it.
-    Before any duty, the ask, as the roster panel's."""
+    curve over it, red under it in the WOCL, and the place and its time
+    under the cursor; day or night at home, tagged Home over home's date
+    and time under the cursor; each duty cut into day, night and WOCL
+    pieces against the body clock, its code once at its start, and behind
+    them each trip away from base - the roster's trips(), its layover
+    bands' logic, over the duties that count - an amber bar, its port in
+    it. In the FRMS focus group, so it scrolls with the roster's timeline
+    and rails, and they with it. Before any duty, the ask, as the roster
+    panel's."""
     if CONFIG is None:
         return ctx.empty(CONFIG_ERROR)
     # The roster panel's window - about six months back, and every duty
@@ -207,10 +214,19 @@ def _circadian(ctx):
         first = not (prev and prev["code"] == x["code"] and prev["end"] == x["start"])
         duty.append({"start": x["start"], "end": x["end"], "tone": x["tone"], "label": x["code"] if first else None})
         prev = x
+    # Home: its sky, and home base and its zone for the date and time
+    # under the cursor.
+    home, home_tz = c["home"], _personal(CONFIG).get("timezone")
+    # The roster's trips - its layover bands' logic - over the duties
+    # that count, so a trip under way (flown out, rostered home) is one;
+    # one still away at the window's end runs to it.
+    away = [_band(t) for t in trips(_counted(rostered, flown, now), home, _utc_text(end))]
     return ctx.strips([
-        {"kind": "sky", "clock": True, "spans": local, "troughs": c["troughs"]},
-        {"kind": "sky", "label": "Home", "spans": [{"start": x["start"], "end": x["end"], "tone": x["tone"]} for x in c["body"]]},
-        {"kind": "duty", "spans": duty},
+        {"kind": "sky", "clock": True, "spans": local, "troughs": c["troughs"], "wocl": c["wocl"]},
+        {"kind": "sky", "label": "Home", "clock": "date",
+         "spans": [{"start": x["start"], "end": x["end"], "tone": x["tone"], "place": home, "tz": home_tz}
+                   for x in c["body"]]},
+        {"kind": "duty", "spans": duty, "bands": away},
     ], now=now, sync="frms")
 
 
@@ -286,8 +302,9 @@ def _utc_text(moment):
 
 
 def _band(trip):
-    """A trip as a timeline band: its span, labelled with the port it
-    flew out to. Its id stays on the trip - not the timeline's."""
+    """A trip as a band - a timeline lane's, or the duty strip's: its
+    span, labelled with the port it flew out to. Its id stays on the
+    trip - not the spec's."""
     return {"start": trip["start"], "end": trip["end"], "label": trip["out_port"]}
 
 

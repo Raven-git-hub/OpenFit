@@ -145,18 +145,25 @@ the dicts directly):
         overlapping
     {"type": "strips", "now", "lanes": [{"kind", "label", "clock",
                                          "spans": [{"start", "end", "tone", "label", "place", "tz"}, ...],
-                                         "troughs": [instant, ...]}, ...],
+                                         "troughs": [instant, ...],
+                                         "bands": [{"start", "end", "label"}, ...],
+                                         "wocl": [{"start", "end"}, ...]}, ...],
      "sync"}
         one lane to three of tinted spans, stacked on one horizontal time
         axis - a day across the frame, the rest a scroll away - the
         first lane taking the height the others leave, each after it a
         slim row. A "sky" lane's spans are day, night or none (hatched),
         a "duty" lane's day, night or wocl, butting square, a span's
-        label drawn once at its start; troughs a dashed curve over the
-        lane. A lane's tag, top-left, is its label - or, a clock lane's,
-        the place under the cursor and its local time there. `now` and
-        `sync` as a timeline's: synced, the page keeps a cursor at the
-        frame's middle and scrolls every member of the group to one time
+        label drawn once at its start; troughs a solid curve over the
+        lane, a sky lane's wocl spans red under it. A duty lane's bands
+        are bars behind its spans - a trip away, between the flight out
+        and the flight home - each label (the port) in it, past the
+        flight out. A lane's tag, top-left, is its label - over, on a
+        clock lane, the time under the cursor: `clock` "place" the place
+        there and its local time, "date" the date and its local time
+        (false for none). `now` and `sync` as a timeline's: synced, the
+        page keeps a cursor at the frame's middle and scrolls every
+        member of the group to one time
     {"type": "empty", "message"}
     {"type": "error", "message"}
         the host's, when a render fails; an app's for a part of its tile
@@ -754,12 +761,16 @@ def grid(cols, rows, cells):
 
 # A strips spec's lanes: one to three, stacked. Each is of a kind, which
 # says the tones its spans take - a sky's day, night or none (not known:
-# hatched), a duty's day, night or wocl. What a lane and a span take, and
-# nothing else: a misspelt field is refused, as a timeline lane's is.
+# hatched), a duty's day, night or wocl. What a lane, a span and a band
+# take, and nothing else: a misspelt field is refused, as a timeline
+# lane's is. A clock lane's tag tells the time under the cursor - the
+# place and its local time, or the date and its local time.
 STRIP_KINDS = {"sky": ("day", "night", "none"), "duty": ("day", "night", "wocl")}
 STRIP_LANES = (1, 2, 3)
-STRIP_LANE_FIELDS = ("kind", "spans", "troughs", "label", "clock")
+STRIP_LANE_FIELDS = ("kind", "spans", "troughs", "label", "clock", "bands", "wocl")
 STRIP_SPAN_FIELDS = ("start", "end", "tone", "label", "place", "tz")
+STRIP_BAND_FIELDS = ("start", "end", "label")
+STRIP_CLOCKS = ("place", "date")
 
 
 def _strip_span(raw, kind):
@@ -791,9 +802,37 @@ def _strip_span(raw, kind):
     }
 
 
+def _strip_band(raw):
+    """One band of a duty lane - a trip away - as the spec carries it:
+    {start, end, label}, both ends iso_utc()'s UTC text."""
+    return _span(raw, STRIP_BAND_FIELDS, "a strips band")
+
+
+def _strip_wocl(raw):
+    """One span of a sky lane's WOCL - its curve marked under it - as the
+    spec carries it: {start, end}, both ends iso_utc()'s UTC text."""
+    span = _span(raw, ("start", "end"), "a strips wocl span")
+    return {"start": span["start"], "end": span["end"]}
+
+
+def _strip_list(raw, field, kind, only, item):
+    """A lane's `field`, a list of `item`s that only an `only` lane takes:
+    [] when not given - none, None or [], on any lane, so a lane as the
+    spec carries it is one strips() takes back."""
+    what = "a strips lane"
+    value = raw.get(field)
+    if value is None:
+        return []
+    if not isinstance(value, (list, tuple)):
+        raise TypeError(f"{what}'s {field} must be a list: {value!r}")
+    if value and kind != only:
+        raise ValueError(f"{what} takes {field} only if it's a {only} lane, not a {kind}: {value!r}")
+    return [item(x) for x in value]
+
+
 def _strip_lane(raw):
     """One lane of a strips spec, as the spec carries it: {kind, label,
-    clock, spans, troughs}."""
+    clock, spans, troughs, bands, wocl}."""
     what = "a strips lane"
     _fields(raw, STRIP_LANE_FIELDS, what)
     kind = raw.get("kind")
@@ -807,19 +846,21 @@ def _strip_lane(raw):
         troughs = []
     if not isinstance(troughs, (list, tuple)):
         raise TypeError(f"{what}'s troughs must be a list of instants: {troughs!r}")
+    # None, the place and its time, or the date and its time: True is the place's.
     clock = raw.get("clock", False)
-    if not isinstance(clock, bool):
-        raise TypeError(f"{what}'s clock must be True or False: {clock!r}")
-    label = _text_or_none(raw.get("label"), "label", f"{what}'s")
-    if clock and label is not None:
-        # One tag a lane: a clock lane's is the place and time under the cursor.
-        raise ValueError(f"{what} with a clock takes no label - its tag is the clock: {label!r}")
+    if clock is True:
+        clock = "place"
+    if clock is not False and clock not in STRIP_CLOCKS:
+        raise ValueError(f"{what}'s clock is False, True, 'place' or 'date', not {clock!r}")
     return {
         "kind": kind,
-        "label": label,
+        # With a clock, the tag is the label over it.
+        "label": _text_or_none(raw.get("label"), "label", f"{what}'s"),
         "clock": clock,
         "spans": [_strip_span(span, kind) for span in spans],
         "troughs": [_session_instant(t, f"{what}'s trough") for t in troughs],
+        "bands": _strip_list(raw, "bands", kind, "duty", _strip_band),
+        "wocl": _strip_list(raw, "wocl", kind, "sky", _strip_wocl),
     }
 
 
@@ -829,29 +870,41 @@ def strips(lanes, now=None, sync=None):
     height the others leave, each after it a slim row.
 
     `lanes` is a list of one to three dicts {kind, spans, troughs, label,
-    clock}: `kind` "sky" (spans toned "day", "night" or "none" - none
-    drawn hatched) or "duty" (spans toned "day", "night" or "wocl");
-    `spans` a list of {start, end, tone, label, place, tz}, ends as a
-    session's (datetime or ISO-8601 text, UTC), end never before start;
-    on a duty lane a span's `label` (text or None) is drawn once at its
-    start, over the spans after it; `troughs` optional, a list of
-    instants - a dashed curve drawn over the lane, -1 at each, +1 midway
+    clock, bands, wocl}: `kind` "sky" (spans toned "day", "night" or
+    "none" - none drawn hatched) or "duty" (spans toned "day", "night" or
+    "wocl"); `spans` a list of {start, end, tone, label, place, tz}, ends
+    as a session's (datetime or ISO-8601 text, UTC), end never before
+    start; on a duty lane a span's `label` (text or None) is drawn once at
+    its start, over the spans after it; `troughs` optional, a list of
+    instants - a solid curve drawn over the lane, -1 at each, +1 midway
     between two. `label` (text or None) is the lane's tag, top-left;
-    `clock` True makes the tag the time under the cursor instead - the
-    span there's `place` (text) and its local time in `tz` (an IANA
-    name), e.g. "LHR 01:00 UTC+1" - a clock lane takes no `label`. `now`
-    and `sync` are a timeline's: where the now line is drawn, and the
-    focus group it joins - the page keeps a cursor on it and scrolls
-    every member of the group to one time. Raises TypeError or
-    ValueError for anything it can't draw.
+    `clock` makes the tag tell the time under the cursor - False (or
+    absent) for none, True or "place" for the span there's `place` (text)
+    and its local time in `tz` (an IANA name), "LHR 01:00 UTC+1", and
+    "date" for the date and its local time there, "Fri 23 Oct 20:00" -
+    with a `label` too, the label over the clock. `bands`, on a duty lane
+    only, optional: a list of {start, end, label} - a trip away from
+    base, its ends as a span's - each a bar behind the lane's spans,
+    showing between the flight out and the flight home, its label (the
+    port, text or None) in it past the flight out. `wocl`, on a sky lane
+    only, optional: a list of {start, end} - the window of circadian low -
+    under which the lane's curve is marked red (drawn only where there's
+    a curve). `now` and `sync` are a timeline's: where the now line is
+    drawn, and the focus group it joins - the page keeps a cursor on it
+    and scrolls every member of the group to one time. Raises TypeError
+    or ValueError for anything it can't draw.
 
-    In the spec each lane is {kind, label, clock, spans, troughs} and
-    each span {start, end, tone, label, place, tz}, every key there -
-    None where not given - its times iso_utc()'s UTC text; `sync` only
-    when given (None or "" adds no key), as a timeline's. A sky span's
-    label is refused (a sky's span is day or night, not a thing); place
-    and tz are carried on any span, and drawn only on a clock lane's -
-    a tz the page can't read shows the place alone.
+    In the spec each lane is {kind, label, clock, spans, troughs, bands,
+    wocl} - `clock` False, "place" or "date" (True carried as "place"),
+    `bands` and `wocl` [] when not given (none, None or [] - an empty
+    list taken on either kind) - each span {start, end, tone, label,
+    place, tz}, each band {start, end, label} and each wocl span {start,
+    end}, every key there - None where not given - its times iso_utc()'s
+    UTC text; `sync` only when given (None or "" adds no key), as a
+    timeline's. A sky span's label is refused (a sky's span is day or
+    night, not a thing); place and tz are carried on any span, and drawn
+    only on a clock lane's - a tz the page can't read shows the place
+    alone (a date clock, a dash).
     """
     if not isinstance(lanes, (list, tuple)):
         raise TypeError(f"a strips spec's lanes must be a list of one to three lanes: {lanes!r}")

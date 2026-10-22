@@ -5411,15 +5411,18 @@ def test_a_grids_sub_panels_draw_their_specs_as_at_the_top_of_a_tile(client):
 # each midnight (UTC) through every lane, a sky lane's day, night and not
 # known (hatched) faded from the top, a duty lane's slim bar of pieces
 # butting square - the duty's own ends rounded - its code once above its
-# start, a solid curve of the troughs over the first lane, a dot where
-# the cursor crosses it, a tag top-left of each lane - the clock lane's
-# the place and its local time under the cursor. Synced, it's drawn
+# start, a solid curve of the troughs over the first lane, the WOCL red
+# under it, a dot where the cursor crosses it, a duty lane's trips away
+# amber bars behind its pieces, each port in it past the flight out, a
+# tag top-left of each lane - its label, over a clock lane's place (or
+# date) and its local time under the cursor. Synced, it's drawn
 # around its group's focus clock as a synced timeline is, on its side - a
 # fixed cursor down the middle, the timeline's focus row over it - and
 # scrolls with the group's timelines both ways, by time. Under node, over
 # the stand-in DOM, the clock held as for the focus clock.
 
-STRIPS_PARTS = RAILS_PARTS + ["ST_VIEW_MS", "ST_CURVE_STEP_MS", "ST_MAX_LANES", "ST_TONES", "stripsSpec"]
+STRIPS_PARTS = RAILS_PARTS + ["ST_VIEW_MS", "ST_CURVE_STEP_MS", "ST_WOCL_PX", "ST_WOCL_STEP_MS", "stWoclIds",
+                               "ST_MAX_LANES", "ST_TONES", "stripsSpec"]
 
 STRIPS_HARNESS = r"""
     // The curve's SVG, as the page makes it.
@@ -5591,12 +5594,37 @@ def test_the_strips_tones_are_tokens_in_every_theme_and_a_dutys_pieces_butt_squa
     assert (track["grid-template-rows"], track["grid-auto-rows"], track["row-gap"]) == ("minmax(0,1fr)", "45px", "0")
     assert _decls(rules, ".st-tags")["grid-auto-rows"] == "45px"
     assert _decls(rules, ".st-lane + .st-lane")["border-top"] == "1px solid var(--border)"
-    # The tags plain: the clock tag mono, no pill; the others the roster's
-    # small uppercase muted heading.
+    # The tags plain: a clock mono, no pill; a label the roster's small
+    # uppercase muted heading - over its clock, the two nudged up together.
     tag = _decls(rules, ".st-tag > span")
     assert "var(--font-mono)" in tag["font"] and "background" not in tag and "border-radius" not in tag
-    home = _decls(rules, ".st-tags > .st-tag + .st-tag > span")
-    assert (home["text-transform"], home["color"]) == ("uppercase", "var(--muted)")
+    label = _decls(rules, ".st-tag > .st-tag-l")
+    assert (label["text-transform"], label["color"]) == ("uppercase", "var(--muted)")
+    assert ".st-tags > .st-tag + .st-tag > span" not in rules
+    two = _decls(rules, ".st-tags > .st-tag.two")
+    assert (two["flex-direction"], two["justify-content"]) == ("column", "center")
+    assert _decls(rules, ".st-tag.two > span") == {"line-height": "14px"}
+    # A trip away: an amber bar of the duty bar's height and place, behind
+    # it - the timeline band's tint and dashed edge, its corners a block's
+    # - its port in it, mono, as the timeline band's label. The WOCL under
+    # the curve: no stroke, a fill fading from 55% of the WOCL red to none.
+    for rule in (
+        ".st-band{position:absolute;top:24px;height:14px;box-sizing:border-box;pointer-events:none;"
+        "background:color-mix(in srgb, var(--layover) 18%, transparent);"
+        "border:1px dashed color-mix(in srgb, var(--layover) 60%, transparent);border-radius:4px;}",
+        ".st-band-label{position:absolute;top:24px;height:14px;padding-left:5px;font:600 10px/14px var(--font-mono);"
+        "color:color-mix(in srgb, var(--layover) 80%, var(--ink));white-space:nowrap;pointer-events:none;}",
+        ".st-curve path.st-wocl{stroke:none;}",
+        ".st-wocl-a{stop-color:var(--duty-wocl);stop-opacity:.55;}",
+        ".st-wocl-b{stop-color:var(--duty-wocl);stop-opacity:0;}",
+        ".st-tag > .st-tag-l{font:600 10.5px/16px var(--font-body);text-transform:uppercase;letter-spacing:.8px;"
+        "color:var(--muted);}",
+        ".st-tags > .st-tag.two{flex-direction:column;align-items:flex-start;justify-content:center;gap:0;}",
+        ".st-tag.two > span{line-height:14px;}",
+    ):
+        assert "\n" + rule + "\n" in block, rule
+    band = _decls(rules, ".st-band")
+    assert (band["top"], band["height"]) == (duty["top"], duty["height"])
     # The cursor and the now line both solid, the accent, as the
     # timeline's: the cursor's ends arrowed, the now line's head a dot.
     assert _decls(rules, ".st-cursor")["border-left"] == "2px solid var(--accent)"
@@ -6024,7 +6052,8 @@ def test_a_dot_sits_where_the_cursor_crosses_the_curve_and_moves_with_the_focus(
         const dot = st.querySelector('.st-dot');
         r.where = dot.parent.className;
         // The first lane 150px tall on the page: the curve 10px in from
-        // its top and bottom - its amplitude 65px.
+        // its top, and room under its trough for the WOCL's red - 26px,
+        // and 6 to spare - so its amplitude (150 - 10 - 26 - 6) / 2, 54px.
         st.querySelector('.st-lane').clientHeight = 150;
         showStrips(st, 480, 200);
         const g = focusGroups.get('frms');
@@ -6052,19 +6081,20 @@ def test_a_dot_sits_where_the_cursor_crosses_the_curve_and_moves_with_the_focus(
     # Synced and over a curve only.
     assert r["only"] == [0, 0]
     assert r["where"] == "st-view"
-    # Its top in px, the curve's height there: 10 + 65 - 65 * curve.
-    assert r["onNow"] == [False, pytest.approx(10 + 65 - 65 * 0.5)]
+    # Its top in px, the curve's height there: 10 + 54 - 54 * curve.
+    assert r["onNow"] == [False, pytest.approx(10 + 54 - 54 * 0.5)]
     assert r["moves"] == [
-        [False, pytest.approx(140)],   # a trough: the curve's foot
+        [False, pytest.approx(118)],   # a trough: the curve's foot, 32px off the lane's
         [False, pytest.approx(10)],    # midway between two: its top
-        [False, pytest.approx(75)],    # a quarter of the way: its middle
-        [True, pytest.approx(75)],     # before the first trough: hidden, where it was
-        [True, pytest.approx(75)],     # past the last: hidden
-        [False, pytest.approx(140)],   # back on one
+        [False, pytest.approx(64)],    # a quarter of the way: its middle
+        [True, pytest.approx(64)],     # before the first trough: hidden, where it was
+        [True, pytest.approx(64)],     # past the last: hidden
+        [False, pytest.approx(118)],   # back on one
     ]
-    assert min(r["ys"]) == pytest.approx(10) and max(r["ys"]) == pytest.approx(140)
-    # A trough on a 45px lane: its foot, 35px into it.
-    assert r["second"] == [False, pytest.approx(101 + 35)]
+    assert min(r["ys"]) == pytest.approx(10) and max(r["ys"]) == pytest.approx(118)
+    # A trough on a 45px lane - (45 - 42) / 2, an amplitude of 1.5px: its
+    # foot, 13px into it.
+    assert r["second"] == [False, pytest.approx(101 + 13)]
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
@@ -6082,6 +6112,215 @@ def test_the_strips_curve_is_one_line_nothing_blended_no_area(client):
     """))
 
     assert (r["svgs"], r["kids"], r["closed"], r["blend"]) == (1, ["path"], False, 0)
+
+
+# Home, as FRMS draws it: tagged Home over its date and time under the
+# cursor - Hong Kong's, to the 29th; then a port whose zone isn't one.
+HOME_CLOCK_LANE = {"kind": "sky", "label": "Home", "clock": "date", "troughs": [], "bands": [], "wocl": [], "spans": [
+    _st("2026-10-16T00:00:00Z", "2026-10-29T00:00:00Z", "day", place="HKG", tz="Asia/Hong_Kong"),
+    _st("2026-10-29T00:00:00Z", "2026-10-30T00:00:00Z", "night", place="XXX", tz="Not/AZone"),
+]}
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
+def test_a_lanes_label_rides_over_its_clock_homes_date_and_time_under_the_cursor(client):
+    page = _page(client)
+    synced = {**STRIPS, "lanes": [LOCAL_LANE, HOME_CLOCK_LANE, DUTY_LANE]}
+    unsynced = {k: v for k, v in synced.items() if k != "sync"}
+    no_zone = {**STRIPS, "lanes": [{**HOME_CLOCK_LANE, "spans": [
+        _st("2026-10-16T00:00:00Z", "2026-10-30T00:00:00Z", "day", place="HKG")]}]}
+    r = _node(_strips_script(page, f"""
+        const tagOf = (box, i) => {{
+          const t = box.querySelectorAll('.st-tag')[i];
+          return [t.className, t.children.map(c => [c.className, c.textContent])];
+        }};
+        const st = renderSpec({json.dumps(synced)}, 'FRMS', 'frms');
+        showStrips(st, 480, 200);
+        const g = focusGroups.get('frms');
+        // On now, 12:00Z on Sunday 18 October: 20:00 in Hong Kong.
+        r.onNow = [tagOf(st, 0), tagOf(st, 1), tagOf(st, 2)];
+        // The group's focus moves - from anywhere - and the tag with it.
+        const at = iso => {{ setFocus(g, Date.parse(iso), false); return st.querySelectorAll('.st-tag').map(t => t.textContent); }};
+        r.clock = ['2026-10-23T12:00:00Z', '2026-10-25T17:30:00Z', '2026-10-29T06:00:00Z', '2026-10-31T06:00:00Z',
+                   '2026-10-15T06:00:00Z'].map(at);
+        r.html = [st, ...st.querySelectorAll('*')].map(n => n._html).join('');
+        // Unsynced: no cursor, no clock - the label alone.
+        const plain = renderSpec({json.dumps(unsynced)}, 'FRMS', 'frms');
+        r.plain = [tagOf(plain, 0), tagOf(plain, 1)];
+        // A date clock with no zone to tell it by: a dash, not the place.
+        const bare = renderSpec({json.dumps(no_zone)}, 'X', 'x');
+        showStrips(bare, 480, 200);
+        r.bare = tagOf(bare, 0);
+    """))
+
+    # Home: the label over the clock - the two lines (.two) - its date
+    # and time in Hong Kong, as text; the place clock's tag as it was, the
+    # duty lane's none.
+    assert r["onNow"] == [
+        ["st-tag", [["st-tag-c", "LHR 13:00 UTC+1"]]],
+        ["st-tag two", [["st-tag-l", "Home"], ["st-tag-c", "Sun 18 Oct 20:00"]]],
+        ["st-tag", []],
+    ]
+    # Fri 23 Oct 12:00Z is 20:00 in Hong Kong; 17:30Z on the 25th the next
+    # morning there; then the zone that isn't one, and off the spans
+    # either side: a dash - never the place, as the place clock gives it.
+    # The place clock beside it, as ever.
+    assert r["clock"] == [
+        ["LHR 13:00 UTC+1", "HomeFri 23 Oct 20:00", ""],
+        ["HKG 01:30 UTC+8", "HomeMon 26 Oct 01:30", ""],
+        ["XXX <b>", "Home—", ""],
+        ["—", "Home—", ""],
+        ["—", "Home—", ""],
+    ]
+    assert r["html"] == ""
+    assert r["plain"] == [["st-tag", []], ["st-tag", [["st-tag-l", "Home"]]]]
+    assert r["bare"] == ["st-tag two", [["st-tag-l", "Home"], ["st-tag-c", "—"]]]
+
+
+# A duty lane's bands: CX255 out to London in three pieces, the layover,
+# CX256 home in one - the trip a band from the flight out's start to the
+# flight home's end; then a band with no duty over its start, and one
+# with no label.
+LAYOVER_LANE = {"kind": "duty", "label": None, "clock": False, "troughs": [], "wocl": [], "spans": [
+    _st("2026-10-23T01:00:00Z", "2026-10-23T05:00:00Z", "night", label="CX255"),
+    _st("2026-10-23T05:00:00Z", "2026-10-23T08:00:00Z", "wocl"),
+    _st("2026-10-23T08:00:00Z", "2026-10-23T14:00:00Z", "day"),
+    _st("2026-10-25T10:00:00Z", "2026-10-25T22:00:00Z", "day", label="CX256"),
+], "bands": [
+    {"start": "2026-10-23T01:00:00Z", "end": "2026-10-25T22:00:00Z", "label": "LHR <b>"},
+    {"start": "2026-10-27T00:00:00Z", "end": "2026-10-28T00:00:00Z", "label": "SYD"},
+    {"start": "2026-10-28T06:00:00Z", "end": "2026-10-28T12:00:00Z", "label": None},
+]}
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
+def test_a_duty_lanes_trips_are_amber_bars_behind_its_pieces_the_port_past_the_flight_out(client):
+    page = _page(client)
+    spec = {**STRIPS, "lanes": [LOCAL_LANE, HOME_CLOCK_LANE, LAYOVER_LANE]}
+    r = _node(_strips_script(page, f"""
+        const st = renderSpec({json.dumps(spec)}, 'FRMS', 'frms');
+        showStrips(st, 480, 200);
+        const lane = st.querySelectorAll('.st-lane')[2];
+        // The lane's children in order: the bands - each its label after
+        // it - first, so under the pieces and their codes.
+        r.order = lane.children.map(c => c.className);
+        const x = iso => 240 + (Date.parse(iso) - {STRIPS_T0}) * 480 / DAY;
+        r.bands = kids(lane, 'st-band').map(b => [parseFloat(b.style.left), parseFloat(b.style.width), b.textContent]);
+        r.labels = kids(lane, 'st-band-label').map(t => [t.textContent, parseFloat(t.style.left)]);
+        r.want = {{bands: [['2026-10-23T01:00:00Z', '2026-10-25T22:00:00Z'], ['2026-10-27T00:00:00Z', '2026-10-28T00:00:00Z'],
+                           ['2026-10-28T06:00:00Z', '2026-10-28T12:00:00Z']].map(([a, b]) => [x(a), x(b) - x(a), '']),
+                   labels: [['LHR <b>', x('2026-10-23T14:00:00Z')], ['SYD', x('2026-10-27T00:00:00Z')]]}};
+        r.html = [st, ...st.querySelectorAll('*')].map(n => n._html).join('');
+    """))
+
+    assert r["order"] == [
+        "st-band", "st-band-label", "st-band", "st-band-label", "st-band",
+        "st-span st-t-night first", "st-span st-t-wocl", "st-span st-t-day last", "st-span st-t-day first last",
+        "st-code", "st-code",
+    ]
+    # Each bar its trip's span on the axis, nothing written in it.
+    assert r["bands"] == [[pytest.approx(a), pytest.approx(w), t] for a, w, t in r["want"]["bands"]]
+    # Its port, as text, past whatever covers its start - the flight out,
+    # all three of its pieces - so on the layover; with no duty over its
+    # start, at its start; with no label, none.
+    assert r["labels"] == [[t, pytest.approx(at)] for t, at in r["want"]["labels"]]
+    assert r["html"] == ""
+
+
+# The first lane's curve, as FRMS draws it - the troughs at 20:00Z, 04:00
+# in Hong Kong - with the WOCL, 02:00 to 06:00 there, 18:00Z to 22:00Z,
+# three nights of it: the trough inside each.
+WOCL_LANE = {**LOCAL_LANE, "wocl": [
+    {"start": f"2026-10-{d}T18:00:00Z", "end": f"2026-10-{d}T22:00:00Z"} for d in (17, 18, 19)]}
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
+def test_the_wocl_is_red_under_the_curve_fading_down_from_it(client):
+    page = _page(client)
+    spec = {**STRIPS, "lanes": [WOCL_LANE, HOME_CLOCK_LANE, DUTY_LANE]}
+    no_curve = {**STRIPS, "lanes": [{**WOCL_LANE, "troughs": []}]}
+    r = _node(_strips_script(page, f"""
+        const draw = (sp, h) => {{
+          const st = renderSpec(sp, 'FRMS', 'frms');
+          st.querySelector('.st-lane').clientHeight = h;
+          showStrips(st, 480, 200);
+          return st;
+        }};
+        const st = draw({json.dumps(spec)}, 150);
+        const svg = st.querySelector('svg');
+        r.kids = svg.children.map(c => [c.tag, c.attrs.class || null]);
+        const grad = svg.children[0].children[0];
+        r.grad = [grad.tag, grad.attrs, grad.children.map(c => [c.tag, c.attrs])];
+        const wocl = svg.children[1];
+        r.fill = [wocl.style.fill, wocl.attrs.fill || null];
+        // Its subpaths, each a list of [x, y]: one closed a span.
+        const pts = d => d.split(/[ML]/).filter(Boolean).map(p => p.replace('Z', '').trim().split(' ').map(Number));
+        const subs = wocl.attrs.d.split('Z').filter(Boolean);
+        r.subs = [subs.length, (wocl.attrs.d.match(/M/g) || []).length, wocl.attrs.d.endsWith('Z')];
+        r.points = subs.map(pts);
+        r.curve = pts(svg.children[2].attrs.d);
+        const x = iso => 240 + (Date.parse(iso) - {STRIPS_T0}) * 480 / DAY;
+        r.x = {{a: x('2026-10-18T18:00:00Z'), trough: x('2026-10-18T20:00:00Z'), b: x('2026-10-18T22:00:00Z')}};
+        // Two strips: each gradient its own id.
+        r.ids = [grad.attrs.id, draw({json.dumps(spec)}, 150).querySelector('linearGradient').attrs.id];
+        // No curve - no troughs - no svg at all, WOCL or not.
+        r.noCurve = draw({json.dumps(no_curve)}, 150).querySelectorAll('svg').length;
+        // No WOCL: the one path, no gradient.
+        r.without = draw({json.dumps(STRIPS)}, 150).querySelector('svg').children.map(c => c.tag);
+    """))
+
+    # A gradient in its defs, the WOCL's path, then the curve over it.
+    assert r["kids"] == [["defs", None], ["path", "st-wocl"], ["path", None]]
+    # Top to bottom, from the -a stop (55% of the red) to the -b (none):
+    # the CSS's, by class.
+    tag, attrs, stops = r["grad"]
+    assert tag == "linearGradient" and re.fullmatch(r"st-wocl-\d+", attrs["id"])
+    assert {k: v for k, v in attrs.items() if k != "id"} == {"x1": "0", "y1": "0", "x2": "0", "y2": "1"}
+    assert stops == [["stop", {"offset": "0", "class": "st-wocl-a"}], ["stop", {"offset": "1", "class": "st-wocl-b"}]]
+    # Filled by its style - the CSS's fill:none outdoes an attribute.
+    assert r["fill"] == [f"url(#{attrs['id']})", None]
+    # One closed subpath a span.
+    assert r["subs"] == [3, 3, True]
+    # Each the curve along its top, a point every ten minutes from the
+    # span's start to its end, then back along the same curve 26px lower.
+    first, second, third = r["points"]
+    assert len(second) == 2 * 25
+    top, foot = second[:25], second[25:]
+    assert [p[0] for p in foot] == [p[0] for p in reversed(top)]
+    assert [p[1] for p in foot] == [pytest.approx(p[1] + 26) for p in reversed(top)]
+    assert (top[0][0], top[-1][0]) == (pytest.approx(r["x"]["a"], abs=0.06), pytest.approx(r["x"]["b"], abs=0.06))
+    # On its trough the top the curve's foot - 10 + 2 * 54 - its foot
+    # 26px lower; the curve's own point there the same.
+    [at_trough] = [p for p in top if abs(p[0] - r["x"]["trough"]) < 0.06]
+    assert at_trough[1] == pytest.approx(118) and max(p[1] for p in foot) == pytest.approx(118 + 26)
+    assert [p[1] for p in r["curve"] if abs(p[0] - r["x"]["trough"]) < 0.06] == [pytest.approx(118)]
+    assert max(p[1] for p in r["curve"]) == pytest.approx(118)
+    assert len(first) == len(third) == 50
+    assert r["ids"][0] != r["ids"][1]
+    assert r["noCurve"] == 0
+    assert r["without"] == ["path"]
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
+def test_the_curve_leaves_room_under_its_trough_for_the_wocl_with_or_without_it(client):
+    page = _page(client)
+    r = _node(_strips_script(page, f"""
+        const foot = (lane, h) => {{
+          const st = renderSpec({{...{json.dumps(STRIPS)}, lanes: [lane]}}, 'X', 'x');
+          st.querySelector('.st-lane').clientHeight = h;
+          showStrips(st, 480, 200);
+          const d = [...st.querySelectorAll('path')].pop().attrs.d;
+          const ys = d.split(/[ML]/).filter(Boolean).map(p => +p.split(' ')[1]);
+          return [Math.min(...ys), Math.max(...ys)];
+        }};
+        r.feet = [[{json.dumps(WOCL_LANE)}, 150], [{json.dumps(LOCAL_LANE)}, 150], [{json.dumps(LOCAL_LANE)}, 100],
+                  [{json.dumps(LOCAL_LANE)}, 30]].map(([l, h]) => foot(l, h));
+    """))
+
+    # The trough at m + 2 * amp, amp = (h - 10 - 26 - 6) / 2 - 32px off the
+    # lane's foot, WOCL or not; a lane too short for it a flat line, never
+    # turned over.
+    assert r["feet"] == [[10, 118], [10, 118], [10, 68], [10, 10]]
 
 
 # ---------- an uninstalled app's data: Remove data ----------
