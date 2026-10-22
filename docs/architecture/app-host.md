@@ -1270,7 +1270,7 @@ only carries the file.
 id: frms
 name: FRMS
 sizes: [{ w: 6, h: 4 }]
-reads: [duties_rostered, duties_complete]
+reads: [duties_rostered, duties_complete, sleep]
 ```
 
 One size, 6×4, so no size picker. No `metrics:`: the app files sessions and
