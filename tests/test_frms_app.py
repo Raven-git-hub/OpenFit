@@ -640,8 +640,10 @@ def test_a_good_config_loads():
 #
 # The tile's top-left sub-panel: circadian() - test_frms_circadian.py's -
 # over the roster panel's window, drawn as three strips in the FRMS focus
-# group: where you are, its tag the port and its local time; home, tagged
-# Home; the duties, each in pieces, its code once, on its first. The
+# group: where you are, its tag the port and its local time, the WOCL red
+# under its curve; home, tagged Home over its date and time; the duties,
+# each in pieces, its code once, on its first, and each trip away a bar
+# behind them - the roster's trips(), over the duties that count. The
 # fixture's config has no positions, so these load the app with one of
 # the real shape - home Hong Kong, Sydney and London away - and file two
 # trips about now: one flown, one still to come, so whatever the date the
@@ -696,14 +698,15 @@ def test_the_circadian_panel_is_three_strips_in_the_frms_group(tmp_path, conn):
     after = datetime.now(timezone.utc)
     strips = _circadian_cell(spec)
 
-    # Three strips - where you are, its tag the clock; home, tagged Home;
-    # the duties - with the line at now, the render's own, in the FRMS
-    # focus group: it scrolls with the roster's timeline and rails.
+    # Three strips - where you are, its tag the place and its time; home,
+    # tagged Home over its date and time; the duties - with the line at
+    # now, the render's own, in the FRMS focus group: it scrolls with the
+    # roster's timeline and rails.
     assert (strips["type"], strips["sync"]) == ("strips", "frms")
     assert iso_utc(before) <= strips["now"] <= iso_utc(after)
     local, home, duties = strips["lanes"]
     assert [(lane["kind"], lane["label"], lane["clock"]) for lane in strips["lanes"]] == [
-        ("sky", None, True), ("sky", "Home", False), ("duty", None, False),
+        ("sky", None, "place"), ("sky", "Home", "date"), ("duty", None, False),
     ]
 
     # circadian()'s, for the same duties, now and window - the roster
@@ -720,6 +723,9 @@ def test_the_circadian_panel_is_three_strips_in_the_frms_group(tmp_path, conn):
     assert spans_of(home["spans"]) == spans_of(engine["body"])
     assert spans_of(duties["spans"]) == spans_of(engine["duties"])
     assert local["troughs"] == engine["troughs"] and home["troughs"] == duties["troughs"] == []
+    # The WOCL under the curve, the engine's; none on the other lanes.
+    assert local["wocl"] == engine["wocl"] and engine["wocl"]
+    assert home["wocl"] == duties["wocl"] == [] and local["bands"] == home["bands"] == []
     assert (local["spans"][0]["start"], local["spans"][-1]["end"]) == (iso_utc(start), iso_utc(end))
     assert (home["spans"][0]["start"], home["spans"][-1]["end"]) == (iso_utc(start), iso_utc(end))
 
@@ -791,8 +797,83 @@ def test_labels_and_places_are_mapped_from_the_engine_never_passed_through(tmp_p
         ("", None), ("SYD", "Australia/Sydney"), ("XXX", None), ("MNL", None), ("BKK", None), ("CEB", None),
         ("LHR", "Europe/London"),
     ]
+    # Home's spans home base and its zone, from the config - the date
+    # clock's - whatever the engine says of where you are.
     assert home["spans"] == [{"start": "2026-10-20T00:00:00Z", "end": "2026-10-23T00:00:00Z", "tone": "day",
-                              "label": None, "place": None, "tz": None}]
+                              "label": None, "place": "HKG", "tz": "Asia/Hong_Kong"}]
+    assert local["wocl"] == engine["wocl"] == []
+
+
+def counted_trips(app, conn, end):
+    """trips() over the duties the circadian panel counts - the flown
+    over by now, the rostered ending after it - as its bands, `end` the
+    open trip's."""
+    ctx = host.Ctx(conn)
+    since = (date.today() - timedelta(days=183)).isoformat()
+    counted = app._counted(ctx.sessions("duties_rostered", since=since), ctx.sessions("duties_complete", since=since),
+                           datetime.now(timezone.utc))
+    return [{"start": t["start"], "end": t["end"], "label": t["out_port"]} for t in app.trips(counted, "HKG", end)]
+
+
+def test_the_duty_strips_bands_are_the_rosters_trips_and_home_tells_its_date(tmp_path, conn):
+    app = real_app(tmp_path)
+    filed = file_trips(conn)
+    # A day return, rostered after the London trip: base to base, no trip.
+    base = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+    day = (iso_utc(base + timedelta(hours=100)), iso_utc(base + timedelta(hours=110)))
+    file_flight(conn, "duties_rostered", *day, "CX903", "HKG-HKG")
+    conn.commit()
+
+    local, home, duties = _circadian_cell(app.render(host.Ctx(conn), {}))["lanes"]
+
+    # Each trip away a band - out of base at the flight out's start, home
+    # at the flight home's end - labelled with its port: Sydney, flown,
+    # and London, rostered. The day return none.
+    (_, out_syd, _), (_, _, home_syd), (_, out_lhr, _), (_, _, home_lhr) = filed
+    assert duties["bands"] == [
+        {"start": out_syd, "end": home_syd, "label": "SYD"},
+        {"start": out_lhr, "end": home_lhr, "label": "LHR"},
+    ]
+    # Exactly the roster's trips() over the duties that count.
+    assert duties["bands"] == counted_trips(app, conn, None)
+    # The day return is still drawn, as a duty.
+    assert "CX903" in [s["label"] for s in duties["spans"]]
+    # Home: tagged Home over its date and time, every span home base in
+    # its zone; the WOCL, circadian()'s, under the curve of the first.
+    assert (home["label"], home["clock"]) == ("Home", "date")
+    assert {(s["place"], s["tz"]) for s in home["spans"]} == {("HKG", "Asia/Hong_Kong")}
+    ctx = host.Ctx(conn)
+    since = date.today() - timedelta(days=183)
+    rostered = ctx.sessions("duties_rostered", since=since.isoformat())
+    flown = ctx.sessions("duties_complete", since=since.isoformat())
+    start = datetime.combine(since, datetime.min.time(), tzinfo=timezone.utc)
+    end = datetime.fromisoformat(day[1]) + timedelta(days=1)
+    engine = app.circadian(rostered, flown, datetime.now(timezone.utc), start, end)
+    assert local["wocl"] == engine["wocl"]
+
+
+def test_a_trip_under_way_is_one_band_and_one_still_away_runs_to_the_windows_end(tmp_path, conn):
+    app = real_app(tmp_path)
+    base = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+    at = lambda hours: iso_utc(base + timedelta(hours=hours))
+    # Out to London, flown; home, still rostered: under way, one trip.
+    # Then out to Sydney, rostered, and the roster ends before it's home.
+    # A past rostered copy of the flight out - a backfill - doesn't count.
+    file_flight(conn, "duties_complete", at(-30), at(-16), "CX255", "HKG-LHR")
+    file_flight(conn, "duties_rostered", at(-30), at(-16), "CX255", "HKG-LHR")
+    file_flight(conn, "duties_rostered", at(20), at(34), "CX256", "LHR-HKG")
+    file_flight(conn, "duties_rostered", at(60), at(69), "CX101", "HKG-SYD")
+    conn.commit()
+
+    [_, _, duties] = _circadian_cell(app.render(host.Ctx(conn), {}))["lanes"]
+
+    # The window's end: a day past the last duty's.
+    end = iso_utc(base + timedelta(hours=69, days=1))
+    assert duties["bands"] == [
+        {"start": at(-30), "end": at(34), "label": "LHR"},
+        {"start": at(60), "end": end, "label": "SYD"},
+    ]
+    assert duties["bands"] == counted_trips(app, conn, end)
 
 
 def test_a_panel_that_fails_is_an_error_in_its_own_sub_panel(tmp_path, conn, monkeypatch, capsys):

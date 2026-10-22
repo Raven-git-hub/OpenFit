@@ -148,7 +148,10 @@ WOCL, duties cut into day/night/WOCL pieces against the body clock, the
 curve's troughs — pure functions, drawn by a later brick. Then the strips spec —
 lanes of tinted spans on a horizontal day-wide axis, synced to a focus group
 both ways — and FRMS's circadian panel drawn with it, scrolling with the
-roster; each FRMS panel isolated from the others' faults. Next: the rest of the
+roster; each FRMS panel isolated from the others' faults. Then the circadian
+panel's glance additions: home's date and time under the cursor, each trip's
+layover as an amber bar on the duty strip (the roster's trips), and the WOCL in
+red under the body clock's curve. Next: the rest of the
 Library (the writes ticker, now apps write back; alerts;
 Browse / Build / Create are still placeholders), and the grid pass (free cell
 placement, a second layout mode on the same sizes).

@@ -864,10 +864,17 @@ h5 + .dnote{margin-top:0;}
    from the top to nothing halfway down; a faint line at each midnight
    (UTC) runs through every lane, as the timeline's day lines. A duty is
    a slim bar, its pieces butting square and its own ends rounded as a
-   block's, its code above it. The body clock's curve is solid in the
-   roster's purple, a dot where the cursor crosses it; the cursor's ends
-   arrowed and the now line solid with a dot at its head, as the
-   timeline's. */
+   block's, its code above it; behind the duties, each trip away a
+   translucent amber bar of the same height (.st-band, the timeline
+   band's colours), showing between the flight out and the flight home,
+   its port in it past the flight out. The body clock's curve is solid
+   in the roster's purple, a dot where the cursor crosses it, and over
+   each WOCL span a red fill hangs under it, fading to nothing a little
+   way down (.st-wocl, its gradient's stops the -a and -b). A tag is its
+   lane's label - the roster's small uppercase heading - over, on a
+   clock lane, the time under the cursor in mono (.two: the two lines,
+   nudged up together). The cursor's ends arrowed and the now line solid
+   with a dot at its head, as the timeline's. */
 .spec-strips{display:flex;flex-direction:column;gap:6px;min-height:0;min-width:0;}
 .st-view{position:relative;flex:1;min-height:0;border:1px solid var(--border);border-radius:var(--radius-sm);overflow:hidden;background:var(--inset);}
 .st-scroll{position:absolute;inset:0;overflow-x:auto;overflow-y:hidden;scrollbar-width:thin;overflow-anchor:none;outline:none;}
@@ -877,7 +884,14 @@ h5 + .dnote{margin-top:0;}
 .st-tag{padding:6px 8px;min-width:0;}
 .st-tag > span{display:inline-block;font:600 11.5px/16px var(--font-mono);color:var(--ink);white-space:nowrap;}
 .st-tags > .st-tag + .st-tag{display:flex;align-items:center;padding-top:0;padding-bottom:0;}
-.st-tags > .st-tag + .st-tag > span{font:600 10.5px/16px var(--font-body);text-transform:uppercase;letter-spacing:.8px;color:var(--muted);}
+.st-tag > .st-tag-l{font:600 10.5px/16px var(--font-body);text-transform:uppercase;letter-spacing:.8px;color:var(--muted);}
+.st-tags > .st-tag.two{flex-direction:column;align-items:flex-start;justify-content:center;gap:0;}
+.st-tag.two > span{line-height:14px;}
+.st-band{position:absolute;top:24px;height:14px;box-sizing:border-box;pointer-events:none;background:color-mix(in srgb, var(--layover) 18%, transparent);border:1px dashed color-mix(in srgb, var(--layover) 60%, transparent);border-radius:4px;}
+.st-band-label{position:absolute;top:24px;height:14px;padding-left:5px;font:600 10px/14px var(--font-mono);color:color-mix(in srgb, var(--layover) 80%, var(--ink));white-space:nowrap;pointer-events:none;}
+.st-curve path.st-wocl{stroke:none;}
+.st-wocl-a{stop-color:var(--duty-wocl);stop-opacity:.55;}
+.st-wocl-b{stop-color:var(--duty-wocl);stop-opacity:0;}
 .st-lane{position:relative;overflow:hidden;}
 .st-lane + .st-lane{border-top:1px solid var(--border);}
 .st-span{position:absolute;top:0;bottom:0;}
@@ -4507,13 +4521,24 @@ h5 + .dnote{margin-top:0;}
      next - a duty's own two ends rounded, as a block's (.first where it
      starts, .last where it ends) - its code (a span's label) drawn once
      above that span's start, so a short first piece never clips it. A
-     lane's troughs are a solid curve over it: -1 at each, +1 midway
-     between two, -cos between (the body clock's), a point every twenty
-     minutes; synced, a dot (.st-dot) sits where the cursor crosses it,
-     moved with the focus, hidden off the troughs. A lane's tag,
-     top-left, is its label - or, a clock lane's, the place under the
-     cursor and its local time there (clockAt(): the span's tz, through
-     the browser's Intl, so right across a clock change), "—" where it
+     duty lane's bands - each a trip away from base - are bars the
+     duty bar's height and place behind its spans (.st-band, first in the
+     lane after the grid), so they show in the gap between the flight
+     out and the flight home: the layover; a band's label (the port) is
+     set past whatever covers its start - the flight out - as the
+     roster's band places its own. A lane's troughs are a solid curve
+     over it: -1 at each, +1 midway between two, -cos between (the body
+     clock's), a point every twenty minutes, the trough lifted clear of
+     the lane's foot (ST_WOCL_PX, and 6 more) - room for a sky lane's
+     WOCL: over each of its wocl spans, a red fill hanging under the
+     curve and fading to nothing ST_WOCL_PX down (path.st-wocl, the curve
+     along its top and again along its foot, filled by a gradient of its
+     own id). Synced, a dot (.st-dot) sits where the cursor crosses the
+     curve, moved with the focus, hidden off the troughs. A lane's tag,
+     top-left, is its label - over, a clock lane's, the time under the
+     cursor (clockAt(), the span's tz through the browser's Intl, so
+     right across a clock change): a place clock the place there and its
+     local time, a date clock the date and its local time; "—" where it
      isn't known. The now line is the accent, solid with a dot at its
      head, tagged Now; the cursor's ends are arrowed - the timeline's
      language, turned on its side. Everything an app sent is set as text.
@@ -4541,10 +4566,13 @@ h5 + .dnote{margin-top:0;}
      fallback width first, then on the next frame and on every resize
      (a ResizeObserver), at the width and height it has - the curve's
      height is its lane's - with no width at all, the last layout
-     standing. Unsynced, there's no focus row, cursor or clock tag, and
-     it isn't scrolled to a time. */
+     standing. Unsynced, there's no focus row, cursor or clock - a tag
+     is its label alone - and it isn't scrolled to a time. */
   const ST_VIEW_MS = 86400000;        // the span one viewport's width shows: a day
   const ST_CURVE_STEP_MS = 1200000;   // the curve's points: one every twenty minutes
+  const ST_WOCL_PX = 26;              // the WOCL's red, how far down from the curve it fades
+  const ST_WOCL_STEP_MS = 600000;     // ... its edge's points: one every ten minutes
+  let stWoclIds = 0;                  // each strips' WOCL gradient its own id
   const ST_MAX_LANES = 3;
   const ST_TONES = ['day', 'night', 'none', 'wocl'];
   function stripsSpec(s){
@@ -4555,8 +4583,11 @@ h5 + .dnote{margin-top:0;}
     // most, a span without both ends, in order, left out.
     const lanes = (Array.isArray(s.lanes) ? s.lanes : []).slice(0, ST_MAX_LANES).map(l => ({
       kind: l && l.kind==='duty' ? 'duty' : 'sky',
-      label: l && typeof l.label==='string' ? l.label : '', clock: !!(l && l.clock),
+      label: l && typeof l.label==='string' ? l.label : '', clock: l && l.clock==='date' ? 'date' : l && l.clock ? 'place' : '',
       troughs: (l && Array.isArray(l.troughs) ? l.troughs : []).map(ms).filter(v => v!==null).sort((a, b) => a - b),
+      wocl: (l && Array.isArray(l.wocl) ? l.wocl : []).map(x => ({a: ms(x && x.start), b: ms(x && x.end)})).filter(x => x.a!==null && x.b!==null && x.b > x.a),
+      bands: (l && Array.isArray(l.bands) ? l.bands : []).map(x => ({a: ms(x && x.start), b: ms(x && x.end),
+        label: x && typeof x.label==='string' ? x.label : ''})).filter(x => x.a!==null && x.b!==null && x.b > x.a),
       spans: (l && Array.isArray(l.spans) ? l.spans : []).map(x => ({a: ms(x && x.start), b: ms(x && x.end),
         tone: ST_TONES.includes(x && x.tone) ? x.tone : 'none',
         label: x && typeof x.label==='string' ? x.label : '', tz: x && typeof x.tz==='string' ? x.tz : null,
@@ -4591,6 +4622,13 @@ h5 + .dnote{margin-top:0;}
       const lane = track.appendChild(el('div','st-lane st-'+l.kind));
       // The first lane's hour grid, under its sky: a square an hour.
       const hours = li===0 ? lane.appendChild(el('div','st-hours')) : null;
+      // A lane's bands - a trip away, as the timeline's - behind its spans.
+      const bands = l.bands.map(b => {
+        const e = lane.appendChild(el('div','st-band'));
+        const t = b.label ? lane.appendChild(el('div','st-band-label')) : null;
+        if(t) t.textContent = b.label;
+        return {b, e, t};
+      });
       // A duty's pieces butt square; its own two ends are rounded, as a
       // block's: first where it starts (labelled, or not straight on from
       // the one before), last where it ends (the next not straight on, or
@@ -4606,17 +4644,28 @@ h5 + .dnote{margin-top:0;}
         if(l.kind!=='duty' || !x.label) return null;
         const c = lane.appendChild(el('div','st-code')); c.textContent = x.label; return c;
       });
-      const tag = tags.appendChild(el('div','st-tag'));
-      // A clock lane's tag is the time under the cursor: synced only.
-      const tagText = (l.clock ? group : l.label) ? tag.appendChild(el('span')) : null;
-      if(tagText && !l.clock) tagText.textContent = l.label;
-      let svg = null, path = null;
+      // A lane's tag: its label, over the time under the cursor if it's
+      // a clock lane (synced only).
+      const tag = tags.appendChild(el('div','st-tag'+(l.label && l.clock && group ? ' two' : '')));
+      const tagLabel = l.label ? tag.appendChild(el('span','st-tag-l')) : null;
+      if(tagLabel) tagLabel.textContent = l.label;
+      const tagText = l.clock && group ? tag.appendChild(el('span','st-tag-c')) : null;
+      let svg = null, path = null, woclPath = null;
       if(l.troughs.length > 1){
         svg = lane.appendChild(document.createElementNS('http://www.w3.org/2000/svg','svg'));
         svg.setAttribute('class','st-curve');
+        // The WOCL under the curve: red, fading a little way down from it.
+        if(l.wocl.length){
+          const NS = 'http://www.w3.org/2000/svg', id = 'st-wocl-'+(++stWoclIds);
+          const g = svg.appendChild(document.createElementNS(NS,'defs')).appendChild(document.createElementNS(NS,'linearGradient'));
+          g.setAttribute('id', id); g.setAttribute('x1','0'); g.setAttribute('y1','0'); g.setAttribute('x2','0'); g.setAttribute('y2','1');
+          [['0','st-wocl-a'], ['1','st-wocl-b']].forEach(([o, c]) => { const st = g.appendChild(document.createElementNS(NS,'stop')); st.setAttribute('offset', o); st.setAttribute('class', c); });
+          woclPath = svg.appendChild(document.createElementNS(NS,'path'));
+          woclPath.setAttribute('class','st-wocl'); woclPath.style.fill = `url(#${id})`;
+        }
         path = svg.appendChild(document.createElementNS('http://www.w3.org/2000/svg','path'));
       }
-      return {l, lane, spans, codes, svg, path, tagText, hours};
+      return {l, lane, spans, codes, svg, path, woclPath, tagText, hours, bands};
     });
     const line = now!==null ? track.appendChild(el('div','st-now')) : null;
     if(line){ const t = line.appendChild(el('div','st-now-tag')); t.textContent = 'Now'; }
@@ -4659,7 +4708,9 @@ h5 + .dnote{margin-top:0;}
             if(r.codes[i]) r.codes[i].style.left = pad + (x.a - t0) * px+'px';
           });
           if(r.svg){
-            const lh = r.lane.clientHeight || 100, m = 10, amp = (lh - 2*m) / 2;
+            // Room under the trough for the WOCL's red to fade; never
+            // turned over in a lane too short for it.
+            const lh = r.lane.clientHeight || 100, m = 10, amp = Math.max(0, (lh - m - ST_WOCL_PX - 6) / 2);
             r.svg.setAttribute('width', width); r.svg.setAttribute('height', lh);
             const lows = r.l.troughs; let d = '';
             for(let t = Math.max(t0, lows[0]); t <= Math.min(t1, lows[lows.length-1]); t += ST_CURVE_STEP_MS){
@@ -4669,9 +4720,34 @@ h5 + .dnote{margin-top:0;}
             }
             r.path.setAttribute('d', d);
             curveGeom = {m, amp};
+            if(r.woclPath){
+              // Each WOCL span: the curve along its top, the same curve
+              // ST_WOCL_PX lower along its foot.
+              let w = '';
+              r.l.wocl.forEach(x => {
+                const pts = [];
+                for(let t = x.a; t < x.b + ST_WOCL_STEP_MS; t += ST_WOCL_STEP_MS){
+                  const at = Math.min(t, x.b), v = curveAt(lows, at);
+                  if(v!==null) pts.push([pad + (at - t0) * px, m + amp - amp * v]);
+                }
+                if(pts.length < 2) return;
+                w += 'M' + pts.map(([X, Y]) => X.toFixed(1)+' '+Y.toFixed(1)).join('L')
+                   + 'L' + pts.slice().reverse().map(([X, Y]) => X.toFixed(1)+' '+(Y + ST_WOCL_PX).toFixed(1)).join('L') + 'Z';
+              });
+              r.woclPath.setAttribute('d', w);
+            }
           }
         });
         mids.forEach((d, i) => { midEls[i].style.left = pad + (d - t0) * px+'px'; });
+        rows.forEach(r => r.bands.forEach(({b, e, t}) => {
+          e.style.left = pad + (b.a - t0) * px+'px';
+          e.style.width = (b.b - b.a) * px+'px';
+          if(!t) return;
+          // Its label past whatever covers its start - the flight out - so on the layover.
+          let at = b.a;
+          for(const x of r.l.spans) if(x.a <= at && at < x.b) at = x.b;
+          t.style.left = pad + (Math.min(at, b.b) - t0) * px+'px';
+        }));
         rows.forEach(r => {
           if(!r.hours) return;
           const hour = 3600000 * px, first = Math.ceil(t0 / 3600000) * 3600000;
@@ -4738,16 +4814,24 @@ h5 + .dnote{margin-top:0;}
       if(!scroll.clientWidth || !laidPx) return;
       const at = midMs(); if(onMark(at)===null) toMark(Math.round(at / TL_MARK_MS) * TL_MARK_MS);
     };
-    // The clock lane's tag: the place and its local time under the cursor.
+    // A clock lane's tag: the place and its local time under the cursor -
+    // or, a date clock's, the date and its local time there.
     const clockAt = (r, at) => {
       const x = r.l.spans.find(x => x.a <= at && at < x.b);
+      if(r.l.clock==='date' && !(x && x.tz)) return '—';
       if(!x || !x.tz) return x && x.place ? x.place : '—';
+      if(r.l.clock==='date') try{
+        const p = {};
+        new Intl.DateTimeFormat('en-GB', {timeZone: x.tz, weekday: 'short', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit', hourCycle: 'h23'})
+          .formatToParts(new Date(at)).forEach(q => { p[q.type] = q.value; });
+        return `${p.weekday} ${p.day} ${p.month} ${p.hour}:${p.minute}`;
+      }catch(_){ return '—'; }
       try{
         const f = new Intl.DateTimeFormat('en-GB', {timeZone: x.tz, hour: '2-digit', minute: '2-digit', hourCycle: 'h23', timeZoneName: 'shortOffset'});
         return (x.place ? x.place+' ' : '') + f.format(new Date(at)).replace('GMT', 'UTC').replace(/UTC$/, 'UTC+0');
       }catch(_){ return x.place || '—'; }
     };
-    const showTags = at => rows.forEach(r => { if(r.tagText && r.l.clock) r.tagText.textContent = clockAt(r, at); });
+    const showTags = at => rows.forEach(r => { if(r.tagText) r.tagText.textContent = clockAt(r, at); });
     // The dot where the cursor crosses the curve - its lane's top (the
     // first's, 0) and the curve's height there.
     function placeDot(){

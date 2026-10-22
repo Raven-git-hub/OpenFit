@@ -279,7 +279,7 @@ the dicts itself.
 | `ctx.rail(cards, side, title=None, sync=None)` | `{"type": "rail", "side", "title", "cards": [{"id", "start", "end", "out", "in", "port"}, ...]}`, plus `"sync"` only when given | A column of fixed-size cards under its title, stacked from the top — four corners each, five at most, the window moving with the focus time: ahead of it on a `"plan"` rail, back from it on a `"report"` rail, the head outlined. With `sync`, it reads that focus group's time and restacks as it moves. See [the rail builders](#the-rail-builders), below. |
 | `ctx.rails(timeline, left=None, right=None)` | `{"type": "rails", "left", "timeline", "right"}` | A timeline drawn exactly as it is alone, a rail either side: four columns, a rail, the two lanes, a rail. In a tile too small for them, the timeline alone. See [the rail builders](#the-rail-builders), below. |
 | `ctx.grid(cols, rows, cells)` | `{"type": "grid", "cols", "rows", "cells": [{"x", "y", "w", "h", "spec"}, ...]}` | A tile split into sub-panels, each drawn as a tile of its own on the Home grid's cells: `cols` by `rows` cells, each sub-panel `w` by `h` from column `x`, row `y` (from 0), its `spec` sized to it as to a tile. Cells lie inside the grid and never overlap. See [the grid builder](#the-grid-builder), below. |
-| `ctx.strips(lanes, now=None, sync=None)` | `{"type": "strips", "now", "lanes": [{"kind", "label", "clock", "spans": [{"start", "end", "tone", "label", "place", "tz"}, ...], "troughs"}, ...]}`, plus `"sync"` only when given | One lane to three of tinted spans on one horizontal time axis, a day across the frame and the rest a scroll away — the first lane taking the height the others leave, on an hour grid, each after it a 45px row: a `"sky"` lane's day, night or not known (hatched), faded from the top, a `"duty"` lane's day, night and WOCL pieces a slim bar butting square, a span's label once above its start, a lane's troughs a solid curve over it, a tag top-left of each lane — its label, or a clock lane's the place and its local time under the cursor. With `sync`, drawn around the group's focus clock as a synced timeline is, on its side, and scrolled with it both ways. See [the strips builder](#the-strips-builder), below. |
+| `ctx.strips(lanes, now=None, sync=None)` | `{"type": "strips", "now", "lanes": [{"kind", "label", "clock", "spans": [{"start", "end", "tone", "label", "place", "tz"}, ...], "troughs", "bands": [{"start", "end", "label"}, ...], "wocl": [{"start", "end"}, ...]}, ...]}`, plus `"sync"` only when given | One lane to three of tinted spans on one horizontal time axis, a day across the frame and the rest a scroll away — the first lane taking the height the others leave, on an hour grid, each after it a 45px row: a `"sky"` lane's day, night or not known (hatched), faded from the top, a `"duty"` lane's day, night and WOCL pieces a slim bar butting square, a span's label once above its start, a duty lane's bands (trips away) amber bars behind its pieces, each port in it past the flight out, a lane's troughs a solid curve over it, a sky lane's WOCL red under the curve, a tag top-left of each lane — its label, over a clock lane's time under the cursor: the place and its local time (`"place"`), or the date and its local time (`"date"`). With `sync`, drawn around the group's focus clock as a synced timeline is, on its side, and scrolled with it both ways. See [the strips builder](#the-strips-builder), below. |
 | `ctx.empty(message=None)` | `{"type": "empty", "message"}` | Muted, centred text (default "No data yet"). |
 | `ctx.error(message)` — the host's, or an app's for a part that failed | `{"type": "error", "message"}` | Muted, centred: "Couldn't render <app name>" over the message. The host's when a render fails; an app may return one for a part of its tile — a sub-panel — so the rest is drawn (the FRMS app's `_panel()`). |
 
@@ -677,14 +677,17 @@ Not yet: titles on sub-panels.
 
 ```python
 ctx.strips([
-    {"kind": "sky", "clock": True, "troughs": troughs, "spans": [
+    {"kind": "sky", "clock": True, "troughs": troughs, "wocl": [{"start": ..., "end": ...}, ...], "spans": [
         {"start": ..., "end": ..., "tone": "day", "place": "LHR", "tz": "Europe/London"}, ...]},
-    {"kind": "sky", "label": "Home", "spans": [{"start": ..., "end": ..., "tone": "night"}, ...]},
-    {"kind": "duty", "spans": [{"start": ..., "end": ..., "tone": "wocl", "label": "CX256"}, ...]},
+    {"kind": "sky", "label": "Home", "clock": "date", "spans": [
+        {"start": ..., "end": ..., "tone": "night", "place": "HKG", "tz": "Asia/Hong_Kong"}, ...]},
+    {"kind": "duty", "spans": [{"start": ..., "end": ..., "tone": "wocl", "label": "CX256"}, ...],
+     "bands": [{"start": ..., "end": ..., "label": "LHR"}, ...]},
 ], now=now, sync="frms")
 # -> {"type": "strips", "now": "...Z", "sync": "frms", "lanes": [
-#      {"kind": "sky", "label": None, "clock": True, "troughs": [...],
-#       "spans": [{"start", "end", "tone", "label", "place", "tz"}, ...]}, ...]}
+#      {"kind": "sky", "label": None, "clock": "place", "troughs": [...],
+#       "spans": [{"start", "end", "tone", "label", "place", "tz"}, ...],
+#       "bands": [], "wocl": [{"start", "end"}, ...]}, ...]}
 ```
 
 Lanes of tinted spans on one horizontal time axis — the circadian panel's.
@@ -709,19 +712,40 @@ Lanes of tinted spans on one horizontal time axis — the circadian panel's.
     each normalised as a start (`ValueError`): a solid curve over the
     lane, −1 at each trough, +1 midway between two, `-cos` between — the
     body clock's.
-  - `label` — text or `None` (`TypeError`): the lane's tag, top-left.
-  - `clock` — a bool (default `False`; else `TypeError`): the tag is the
-    time under the cursor instead — the span there's `place` and its local
-    time in its `tz`, `LHR 01:00 UTC+1` — so a clock lane takes no `label`
-    (`ValueError`).
+  - `label` — text or `None` (`TypeError`): the lane's tag, top-left — over
+    its clock, on a clock lane.
+  - `clock` — `False` (the default: no clock), `True` or `"place"`, or
+    `"date"` (`STRIP_CLOCKS`; anything else — `"time"`, `1`, `None` —
+    `ValueError`): the tag tells the time under the cursor — `"place"` the
+    span there's `place` and its local time in its `tz`, `LHR 01:00 UTC+1`;
+    `"date"` the date and its local time there, `Fri 23 Oct 20:00`. With a
+    `label` too, the tag is the label over the clock (Home over its date
+    and time). Carried as `False`, `"place"` or `"date"` — `True` as
+    `"place"`.
+  - `bands` — optional, a duty lane's only: a list or tuple (else
+    `TypeError`) of dicts of only `STRIP_BAND_FIELDS` (`start`, `end`,
+    `label`), each checked as a timeline band is (`_span()`, the messages
+    naming "a strips band"): both ends required and normalised, the end
+    never before the start, `label` text or `None` — a trip away from base,
+    drawn as a bar behind the lane's spans, its label (the port) in it.
+    A non-empty list on a sky lane → `ValueError`.
+  - `wocl` — optional, a sky lane's only: a list or tuple (else
+    `TypeError`) of `{start, end}` (only those two; "a strips wocl span"),
+    checked the same way — the window of circadian low, under which the
+    lane's curve is marked red. Drawn only where there's a curve: on a lane
+    without troughs it's carried and draws nothing. A non-empty list on a
+    duty lane → `ValueError`.
 - **`now`** — a time, normalised the same way, or `None`: where the now
   line is drawn.
 - **`sync`** — a focus group's name, text or `None` (else `TypeError`), as
   a timeline's: `None` or `""` adds no key.
 
-In the spec every lane is `{kind, label, clock, spans, troughs}` and every
-span `{start, end, tone, label, place, tz}`, `None` where not given — so the
-page never guesses at a key.
+In the spec every lane is `{kind, label, clock, spans, troughs, bands,
+wocl}` — `bands` and `wocl` `[]` when not given (absent, `None` or `[]`, on
+either kind, so a lane as the spec carries it is one `strips()` takes back)
+— every span `{start, end, tone, label, place, tz}`, every band `{start,
+end, label}` and every WOCL span `{start, end}`, `None` where not given — so
+the page never guesses at a key.
 
 **How it's drawn.** `stripsSpec()` (`SPECS.strips`) is a timeline turned on
 its side, its synced path mirrored line for line, horizontally — and drawn
@@ -764,23 +788,54 @@ a hairline of `--border` between two (`.st-lane + .st-lane`).
   span's label is its own element (`.st-code`, mono, `--duty-ink`) set
   **above** the bar at the span's start — the app puts one on a duty's
   first piece, so a short first piece never clips its code.
+- **A trip away** — each of a duty lane's bands is a translucent amber bar
+  (`.st-band`), the duty bar's height and place (`top: 24px`, 14px), the
+  timeline band's colours — `--layover` at 18% with a dashed edge at 60% —
+  and a block's 4px corners, first in its lane after the hour grid, so
+  **behind** the duties: it shows in the gap between the flight out and the
+  flight home, the layover. Its label (`.st-band-label`, mono 10px, the
+  timeline band label's amber ink) is set as the roster's band places its
+  own: **past whatever covers the band's start** — the flight out, all its
+  pieces — so on the layover; with nothing over its start, at its start; no
+  label, no element. Placed in the same layout pass as the spans.
 - **The curve** — a lane's troughs are an SVG path (`.st-curve`), **solid**,
   1.5px, in `--curve` (the roster's purple: `--timeline-b` light,
   `--timeline-a` dark), no fill, a point every twenty minutes
-  (`ST_CURVE_STEP_MS`), 10px in from its lane's top and bottom.
+  (`ST_CURVE_STEP_MS`), 10px in from its lane's top and lifted clear of its
+  foot: `amp = (lane height − 10 − ST_WOCL_PX − 6) / 2`, so a trough sits
+  32px off the lane's foot — room for the WOCL's red to fade (never below
+  0: a lane too short for it draws the curve flat, not turned over).
+- **The WOCL under the curve** — a sky lane's `wocl` spans, where it has a
+  curve: one `path.st-wocl` under the curve's own, in the same SVG, a closed
+  subpath per span — the curve along its top, a point every ten minutes
+  (`ST_WOCL_STEP_MS`) from the span's start to its end, and back along the
+  same curve `ST_WOCL_PX` (26px) lower — filled by a vertical
+  `linearGradient` in the SVG's `defs` (an id of its own a strips,
+  `st-wocl-<n>`), from `--duty-wocl` at 55% opacity (`.st-wocl-a`) to none
+  (`.st-wocl-b`): a red fill hanging under the curve and fading to nothing
+  a little way down, lined up with the duties' red WOCL pieces below. Set
+  by `style.fill` — the CSS's `fill: none` on the curve's paths outranks an
+  attribute — and `stroke: none`. No WOCL: no gradient, no extra path.
 - **The now line** — the accent, **solid**, 2px, a dot at its head
   (`.st-now::before`), tagged Now at its foot: the timeline's now line,
   turned on its side.
 - **The tags** (`.st-tags`) — an overlay on the same grid rows over the
   viewport — so they stay put as the track scrolls — kept clear of a
   scrollbar that takes room under it, so each sits level with its lane. No
-  pill: the first lane's plain mono, a later lane's label in the roster's
-  small uppercase muted heading style (`HOME`), each as text — or a clock
-  lane's `clockAt()`: the span under the cursor's `place` and its local time
-  through the browser's `Intl.DateTimeFormat` in its `tz` (`shortOffset`,
-  `GMT` said `UTC`: `LHR 01:00 UTC+1`, `HKG 08:00 UTC+8`, `LHR 00:00 UTC+0`
-  once London's summer time is over — the zone's own rules), the place alone
-  for a zone the browser can't read, and `—` where nothing is known.
+  pill: a lane's label (`.st-tag-l`) in the roster's small uppercase muted
+  heading style (`HOME`), and under it, on a clock lane (synced only), the
+  clock (`.st-tag-c`) in plain mono — the two lines (`.two`: a column of
+  14px lines, centred, so the label sits nudged up) — each as text. A clock
+  is `clockAt()`: a `"place"` clock the span under the cursor's `place` and
+  its local time through the browser's `Intl.DateTimeFormat` in its `tz`
+  (`shortOffset`, `GMT` said `UTC`: `LHR 01:00 UTC+1`, `HKG 08:00 UTC+8`,
+  `LHR 00:00 UTC+0` once London's summer time is over — the zone's own
+  rules), the place alone for a zone the browser can't read, and `—` where
+  nothing is known; a `"date"` clock the date and local time in the span's
+  `tz` (`weekday`, `day`, `month`, `hour`, `minute`, `h23`, put together as
+  `Fri 23 Oct 20:00`), and `—` with no span, no `tz` or one the browser
+  can't read — never the place alone. Every clock tag is refreshed on every
+  `show()`.
 
 Every colour is a token, in all three theme blocks. Everything an app sent
 is set as text.
@@ -1296,13 +1351,24 @@ panel is; with no config, `empty(CONFIG_ERROR)`.
    `place` the port (`""` for none) and its `tz` the port's in the config's
    `destinations` (`None` without one, or one that isn't text), the lane a
    clock — the tag the port and its local time under the cursor — with the
-   body clock's troughs as its curve.
-2. **Home** — a 45px row: `body`, day and night at home base, tagged Home.
+   body clock's troughs as its curve, and its `wocl` the engine's (02:00–06:00
+   home local, each night): red under the curve, lined up with the duties'
+   WOCL pieces below.
+2. **Home** — a 45px row: `body`, day and night at home base, tagged Home
+   over **home's date and time under the cursor** (`clock: "date"`, every
+   span's `place` home base and its `tz` the config's `personal.timezone`:
+   `Fri 23 Oct 20:00`).
 3. **The duties** — a 45px row: `duties`, each duty's day, night and WOCL
    pieces, the duty's code once — on its first piece in the window, not on
    the pieces that continue it (`prev`'s code and end the same as this
    piece's), so a duty clipped at the window's start labels its first piece
-   in it.
+   in it. Behind them, **each trip away an amber bar**, its port in it: the
+   lane's `bands`, the roster's own layover logic — `trips()`, unchanged,
+   over the duties that count (`_counted()`: the flown over by now and the
+   rostered ending after it, so a trip under way — flown out, rostered home
+   — is one bar), from the flight out of base to the flight home landing,
+   one still away running to the window's end; each `_band()`ed as the
+   roster's timeline bands are. A day return opens no trip, so has none.
 
 The engine's keys (`port`, `code`) are mapped, never passed through: the
 builder takes only its own. A config without the positions the engine needs
