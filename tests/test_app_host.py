@@ -1545,9 +1545,9 @@ def span(tone="day", **more):
         (["sky"], TypeError, "a strips lane must be a mapping"),
         ([{**HOME, "colour": "blue"}], ValueError,
          "a strips lane takes kind, spans, troughs, label, clock, bands, wocl - not 'colour'"),
-        ([{**HOME, "kind": "sun"}], ValueError, "a strips lane's kind is 'sky' or 'duty', not 'sun'"),
-        ([{**HOME, "kind": None}], ValueError, "a strips lane's kind is 'sky' or 'duty', not None"),
-        ([{"spans": []}], ValueError, "a strips lane's kind is 'sky' or 'duty', not None"),
+        ([{**HOME, "kind": "sun"}], ValueError, "a strips lane's kind is 'sky' or 'duty' or 'sleep' or 'ticks', not 'sun'"),
+        ([{**HOME, "kind": None}], ValueError, "a strips lane's kind is 'sky' or 'duty' or 'sleep' or 'ticks', not None"),
+        ([{"spans": []}], ValueError, "a strips lane's kind is 'sky' or 'duty' or 'sleep' or 'ticks', not None"),
         ([{"kind": "sky"}], TypeError, "a strips lane's spans must be a list: None"),
         ([sky(troughs="2026-10-21T04:00:00Z")], TypeError, "a strips lane's troughs must be a list of instants"),
         ([sky(troughs=["at four"])], ValueError, "a strips lane's trough must be a datetime or ISO-8601 timestamp"),
@@ -1562,9 +1562,9 @@ def span(tone="day", **more):
         ([sky(label=3)], TypeError, "a strips lane's label must be text: 3"),
         # A span: of only its fields, both ends, in order, a tone its kind has.
         ([sky("night")], TypeError, "a strips span must be a mapping"),
-        ([sky(span(colour="blue"))], ValueError, "a strips span takes start, end, tone, label, place, tz - not 'colour'"),
-        ([sky(span("wocl"))], ValueError, "a strips span's tone on a sky lane is one of day, night, none, not 'wocl'"),
-        ([sky(span(None))], ValueError, "a strips span's tone on a sky lane is one of day, night, none, not None"),
+        ([sky(span(colour="blue"))], ValueError, "a strips span takes start, end, tone, label, place, tz, stage - not 'colour'"),
+        ([sky(span("wocl"))], ValueError, "a strips span's tone on a sky lane is one of day, night, none, rest, not 'wocl'"),
+        ([sky(span(None))], ValueError, "a strips span's tone on a sky lane is one of day, night, none, rest, not None"),
         ([{"kind": "duty", "spans": [span("none")]}], ValueError,
          "a strips span's tone on a duty lane is one of day, night, wocl, not 'none'"),
         ([sky(span(end=None))], ValueError, "a strips span needs a start and an end"),
@@ -1603,6 +1603,87 @@ def span(tone="day", **more):
     ],
 )
 def test_strips_refuse_what_they_cant_draw(lanes, error, says):
+    with pytest.raises(error, match=re.escape(says)):
+        host.strips(lanes)
+
+
+# A sleep lane's spans are stretches of one stage, toned in or out of the
+# rest window; a ticks lane's, stretches marked disturbed; a sky's span
+# may be the rest window. Only a sleep span takes a stage, and it must.
+SLEEP_LANE = {"kind": "sleep", "label": "Sleep stages", "spans": [
+    {"start": "2026-10-20T13:30:00Z", "end": "2026-10-20T14:00:00Z", "tone": "out", "stage": "light"},
+    {"start": "2026-10-20T14:00:00Z", "end": "2026-10-20T14:25:00Z", "tone": "in", "stage": "deep"},
+    {"start": "2026-10-20T14:25:00Z", "end": "2026-10-20T14:40:00Z", "tone": "in", "stage": "rem"},
+]}
+BODY_LANE = {"kind": "sky", "label": "Body clock", "clock": "date", "spans": [
+    {"start": "2026-10-20T00:00:00Z", "end": "2026-10-20T14:00:00Z", "tone": "day", "place": "HKG", "tz": "Asia/Hong_Kong"},
+    {"start": "2026-10-20T14:00:00Z", "end": "2026-10-21T00:00:00Z", "tone": "rest", "place": "HKG", "tz": "Asia/Hong_Kong"},
+]}
+TICKS_LANE = {"kind": "ticks", "label": "Disturbed cycles", "spans": [
+    {"start": "2026-10-20T17:00:00Z", "end": "2026-10-20T18:30:00Z", "tone": "disturbed"},
+]}
+
+
+def test_strips_draw_sleep_stages_the_rest_window_and_disturbed_ticks():
+    spec = host.strips([SLEEP_LANE, BODY_LANE, TICKS_LANE], now="2026-10-22T08:00:00Z", sync="frms", hours=72)
+
+    assert spec == {"type": "strips", "now": "2026-10-22T08:00:00Z", "lanes": [
+        {"kind": "sleep", "label": "Sleep stages", "clock": False, "spans": [
+            {**strip_span("2026-10-20T13:30:00Z", "2026-10-20T14:00:00Z", "out"), "stage": "light"},
+            {**strip_span("2026-10-20T14:00:00Z", "2026-10-20T14:25:00Z", "in"), "stage": "deep"},
+            {**strip_span("2026-10-20T14:25:00Z", "2026-10-20T14:40:00Z", "in"), "stage": "rem"},
+        ], "troughs": [], "bands": [], "wocl": []},
+        {"kind": "sky", "label": "Body clock", "clock": "date", "spans": [
+            strip_span("2026-10-20T00:00:00Z", "2026-10-20T14:00:00Z", "day", place="HKG", tz="Asia/Hong_Kong"),
+            strip_span("2026-10-20T14:00:00Z", "2026-10-21T00:00:00Z", "rest", place="HKG", tz="Asia/Hong_Kong"),
+        ], "troughs": [], "bands": [], "wocl": []},
+        {"kind": "ticks", "label": "Disturbed cycles", "clock": False, "spans": [
+            strip_span("2026-10-20T17:00:00Z", "2026-10-20T18:30:00Z", "disturbed"),
+        ], "troughs": [], "bands": [], "wocl": []},
+    ], "sync": "frms", "hours": 72}
+    assert json.loads(json.dumps(spec, allow_nan=False)) == spec
+    # Only a sleep span carries a stage: a sky's and a tick's have no key.
+    assert "stage" not in spec["lanes"][1]["spans"][0] and "stage" not in spec["lanes"][2]["spans"][0]
+
+
+def test_strips_hours_are_a_day_unless_given():
+    # Not given (or None): no key, the spec as a day's always was.
+    assert "hours" not in host.strips([HOME]) and "hours" not in host.strips([HOME], hours=None)
+    assert [host.strips([HOME], hours=h)["hours"] for h in (12, 24, 72, 168)] == [12, 24, 72, 168]
+    for hours in (11, 169, 0, -24, True, 72.0, "72"):
+        with pytest.raises(ValueError, match="a strips spec's hours must be a whole number from 12 to 168"):
+            host.strips([HOME], hours=hours)
+
+
+def sleep_span(**more):
+    return {"start": "2026-10-20T14:00:00Z", "end": "2026-10-20T14:25:00Z", "tone": "in", "stage": "deep", **more}
+
+
+@pytest.mark.parametrize(
+    "lanes, error, says",
+    [
+        ([{"kind": "sleep", "spans": [sleep_span(stage=None)]}], ValueError,
+         "a strips span's stage on a sleep lane is one of light, deep, rem, not None"),
+        ([{"kind": "sleep", "spans": [sleep_span(stage="awake")]}], ValueError,
+         "a strips span's stage on a sleep lane is one of light, deep, rem, not 'awake'"),
+        ([{"kind": "sleep", "spans": [sleep_span(tone="day")]}], ValueError,
+         "a strips span's tone on a sleep lane is one of in, out, not 'day'"),
+        ([{"kind": "sleep", "spans": [sleep_span(label="N1")]}], ValueError,
+         "a strips span's label is only for a duty lane, not a sleep"),
+        ([sky(span(stage="deep"))], ValueError, "a strips span's stage is only for a sleep lane, not a sky: 'deep'"),
+        ([{"kind": "ticks", "spans": [span("disturbed", stage="light")]}], ValueError,
+         "a strips span's stage is only for a sleep lane, not a ticks: 'light'"),
+        ([{"kind": "ticks", "spans": [span("in")]}], ValueError,
+         "a strips span's tone on a ticks lane is one of disturbed, not 'in'"),
+        ([{"kind": "duty", "spans": [span("rest")]}], ValueError,
+         "a strips span's tone on a duty lane is one of day, night, wocl, not 'rest'"),
+        ([{"kind": "sleep", "spans": [sleep_span()], "wocl": [wocl()]}], ValueError,
+         "a strips lane takes wocl only if it's a sky lane, not a sleep"),
+        ([{"kind": "ticks", "spans": [], "bands": [band()]}], ValueError,
+         "a strips lane takes bands only if it's a duty lane, not a ticks"),
+    ],
+)
+def test_strips_refuse_a_sleep_or_ticks_lane_they_cant_draw(lanes, error, says):
     with pytest.raises(error, match=re.escape(says)):
         host.strips(lanes)
 

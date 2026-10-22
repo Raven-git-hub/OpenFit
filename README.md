@@ -313,8 +313,9 @@ fixed-size cards, five at a time, that restacks as its sync group's time moves
 — looking ahead of it, or back)
 `rails` (a timeline drawn as it is, with a rail either side), `grid` (a tile
 split into sub-panels, each drawn as a tile of its own on Home's cells),
-`strips` (up to three lanes of tinted spans on a horizontal axis a day across
-— day and night, a duty's pieces, trips away as bars behind them, a curve with
+`strips` (up to three lanes of tinted spans on a horizontal axis a day across,
+or as many hours as it says — day and night, a duty's pieces, sleep stages as
+bars, a rest window, ticks, trips away as bars behind them, a curve with
 a window marked red under it, a lane's tag its label over the place or date and
 time under the cursor — that, named into a sync group, scrolls with the group's
 timelines both ways, by time), `empty` and `error` (for a part of
@@ -455,9 +456,9 @@ The **FRMS** app (`tests/fixtures/apps/frms/`) puts the two together. It's
 the whole FRMS suite as one app — one tile, 6 wide by 4 tall (its only size),
 and one `config.json` — drawn as four sub-panels, each like a tile of its own:
 its roster panel, the timeline and rails below, 2×2 at the bottom left, its
-circadian panel (below) 3×2 at the top left, and two placeholders, more panels
-to come. A panel that fails shows its error in its own sub-panel; the others
-are drawn as ever.
+circadian panel (below) 3×2 at the top left, its sleep panel (below) 3×2 at
+the top right, and a placeholder, one more panel to come. A panel that fails
+shows its error in its own sub-panel; the others are drawn as ever.
 All its code is in its one `app.py`, by design. You upload a duty roster's
 `.ics` export, and the app — not OpenFit — reads it.
 Every event with real times is a work duty (an all-day one is a day off or
@@ -531,6 +532,14 @@ WOCL, each duty's flight number once above it, with each trip away from base —
 the roster's trips, out to home — an amber bar behind them, its port in it. A
 faint line marks each midnight (UTC). It scrolls with
 the roster's timeline and rails, and they with it, to the same time.
+The sleep panel, beside it, shows three days across: each night's sleep
+stages, from a sleep source that records them, a bar each its stage's height —
+green inside the body's rest window (22:00–08:00 home time unless the config
+says) and red outside it; the rest window itself, tagged Body clock over
+home's date and time; and the disturbed cycles — each stretch a flown duty
+ran into the rest window, cut into 90-minute slots, a slot with under 15
+minutes of sleep in it marked with red ticks. It scrolls with the other
+panels, by time.
 
 An app isn't limited to OpenFit's metrics: it can **invent its own**. Declare
 what you invent, write what exists — a built-in metric is just written, while a

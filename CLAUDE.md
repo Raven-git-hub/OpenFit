@@ -394,21 +394,29 @@ own calls to its device API. Full direction:
   "grid cells overlap"); a cell none covers left empty; a cell of only
   those five keys (`GRID_CELL_FIELDS`, `_fields()`: another, a misspelt
   `wdith`, `ValueError`); each cell carried as those five keys, in order),
-  `strips(lanes, now=None, sync=None)` → `{"type": "strips", now, lanes:
+  `strips(lanes, now=None, sync=None, hours=None)` → `{"type": "strips", now, lanes:
   [{kind, label, clock, spans: [{start, end, tone, label, place, tz}],
   troughs, bands: [{start, end, label}], wocl: [{start, end}]}]}`, plus
-  `sync` only when given (lanes of tinted spans on one
+  `sync` and `hours` only when given (`hours` 12 to 168, the hours the
+  frame's width shows, a day by default; kinds `sky` - tones day, night,
+  none, rest - `duty`, `sleep` - tones in, out, each span a `stage`,
+  light, deep or rem, the only span with one - and `ticks` - tone
+  disturbed; `STRIP_KINDS`, `STRIP_STAGES`, `STRIP_HOURS`) (lanes of tinted spans on one
   horizontal time axis, a day across, the circadian panel's: `lanes` a
   list or tuple (else `TypeError`) of 1–3 (`STRIP_LANES`, else
   `ValueError`), top to bottom, each of only `STRIP_LANE_FIELDS`
-  (`_fields()`) — `kind` `"sky"` or `"duty"` (`STRIP_KINDS`, which says
-  its spans' tones: a sky's `day`/`night`/`none`, a duty's
-  `day`/`night`/`wocl`; else `ValueError`); `spans` a list or tuple
+  (`_fields()`) — `kind` `"sky"`, `"duty"`, `"sleep"` or `"ticks"`
+  (`STRIP_KINDS`, which says its spans' tones: a sky's
+  `day`/`night`/`none`/`rest`, a duty's `day`/`night`/`wocl`, a sleep's
+  `in`/`out`, a ticks' `disturbed`; else `ValueError`); `spans` a list or tuple
   (required, else `TypeError`) of only `STRIP_SPAN_FIELDS` — `start` and
   `end` both required and normalised by `_session_instant()`, `end >=
   start` (as those strings), `tone` its kind's (else `ValueError`),
   `label` text or `None` and only on a duty lane (a sky's →
-  `ValueError`), `place`/`tz` text or `None` (else `TypeError`);
+  `ValueError`), `place`/`tz` text or `None` (else `TypeError`),
+  `stage` a sleep span's alone and required there, one of
+  `STRIP_STAGES` (`light`/`deep`/`rem`; else `ValueError`, as is a
+  stage on any other lane's span);
   `troughs` optional, a list or tuple (else `TypeError`) of instants,
   each normalised (else `ValueError`) — the curve; `label` text or
   `None`, the lane's tag; `clock` `False` (default: none), `True` or
@@ -417,21 +425,23 @@ own calls to its device API. Full direction:
   `STRIP_CLOCKS`; anything else (`"time"`, `1`, `None`) `ValueError` —
   carried as `False`/`"place"`/`"date"` (`True` as `"place"`), and with a
   `label` the tag is the label over the clock; `bands` optional, a duty
-  lane's (`_strip_list()`: a non-empty list on a sky lane `ValueError`,
+  lane's (`_strip_list()`: a non-empty list on any other lane `ValueError`,
   not a list `TypeError`), each of only `STRIP_BAND_FIELDS` (`start`,
   `end`, `label`) checked as a timeline band is (`_strip_band()` →
   `_span()`, "a strips band"), a trip away drawn as a bar behind the
   lane's spans, its label (the port) in it; `wocl` optional, a sky
-  lane's (non-empty on a duty lane `ValueError`), each `{start, end}`
+  lane's (non-empty on any other lane `ValueError`), each `{start, end}`
   only (`_strip_wocl()`, "a strips wocl span"), the spans the lane's
   curve is marked red under — drawn only with troughs; `bands`/`wocl`
-  absent, `None` or `[]` → `[]` on either kind, so a carried lane is
+  absent, `None` or `[]` → `[]` on any kind, so a carried lane is
   taken back as it is; every lane carried as those seven keys, every
-  span as its six, every band its three and every wocl span its two,
+  span as its six (a sleep span seven, its `stage` too), every band its
+  three and every wocl span its two,
   `None` where not given;
   `now` normalised the same way or `None`; `sync` a focus group's name,
   text or `None` (else `TypeError`), `None`/`""` no key — a timeline's
-  rules),
+  rules; `hours` a whole number 12–168 (`STRIP_HOURS`; a bool, a float
+  or text `ValueError`), `None` no key — a day across),
   `empty(message)`, and `error(message)` → `{"type": "error",
   "message"}` — the host's own for a render that fails, and an app's
   (`ctx.error`, bound on `Ctx` with the builders) for a part of its tile
@@ -600,8 +610,11 @@ own calls to its device API. Full direction:
   flights and ports). The whole FRMS suite is this one app: one tile, one
   `config.json`, drawn as four sub-panels on a 6×4 `ctx.grid()` —
   the circadian panel top-left (x 0, y 0, 3×2, `_circadian(ctx)`, three
-  strips — below), a placeholder top-right (x 3, y 0, 3×2,
-  `empty("Coming soon")`), the roster panel bottom-left (x 0, y 2, 2×2,
+  strips — below), the sleep panel top-right (x 3, y 0, 3×2,
+  `_sleep(ctx)`: strips three days across - stages, the body's rest
+  window, disturbed cycles; its engine rest_windows(), rest_strip(),
+  sleep_nights(), stage_pieces(), disturbed_slots(), tested in
+  `tests/test_frms_sleep.py`), the roster panel bottom-left (x 0, y 2, 2×2,
   `_roster(ctx)`) and a placeholder beside it (x 2, y 2, 4×2,
   `empty("Coming soon")`): `render()` is the layout, `_roster()` the
   roster panel — the timeline and its rails — its spec the one the whole
@@ -618,7 +631,7 @@ own calls to its device API. Full direction:
   scrolls the other, to one time. Its `app.yaml`: id `frms`
   (so it files under `app:frms`, session ids `app:frms:<kind>:<start>`),
   name "FRMS", `sizes: [{ w: 6, h: 4 }]` — the one size, so no picker —
-  and `reads: [duties_rostered, duties_complete]`; no `metrics:` (its
+  and `reads: [duties_rostered, duties_complete, sleep]`; no `metrics:` (its
   duty-hour metrics were dropped: a report reads duty hours from the
   sessions). All its code is in `app.py`, by decision: the host imports
   it by path (nothing on `sys.path`, so a sibling module couldn't be
@@ -1536,7 +1549,8 @@ own calls to its device API. Full direction:
   and foot, as the timeline's cursor's ends) and, with a lane of troughs,
   `.st-dot` (below). The axis runs from the
   earliest span's start to the latest end, or `now`; `ST_VIEW_MS`, a
-  day, fills the viewport's width (`px = width / day`), the track padded
+  day — or `s.hours` hours, a whole number 12–168 (`viewMs`) — fills
+  the viewport's width (`px = width / viewMs`), the track padded
   half a viewport each end, so `scrollLeft = (focusMs − t0)·px` puts the
   focus under the cursor. A lane (`.st-lane st-<kind>`, three at most,
   `ST_MAX_LANES`) holds its spans (`.st-span st-t-<tone>`, `ST_TONES`,
@@ -1570,8 +1584,11 @@ own calls to its device API. Full direction:
   without a label. The first lane (whatever its kind) first
   holds `.st-hours`, an hour grid under its spans: two `--grid` line
   gradients, `backgroundSize` an hour of the axis each way
-  (`3600000·px`) and `backgroundPosition` x `pad + (the first UTC hour
-  ≥ t0 − t0)·px`, so a line on every UTC hour, set at every layout; and
+  (`3600000·px`; as many hours as the view shows days,
+  `round(viewMs / ST_VIEW_MS)`, three at three days across) and
+  `backgroundPosition` x `pad + (the first UTC hour ≥ t0 − t0)·px`, so
+  a line on every UTC hour (every third, three days across), set at
+  every layout; and
   the track a `.st-mid` at each UTC midnight from `t0` to `t1` (1px of
   `--muted` at 45%, through every lane; none past `TL_MAX_DAY_LINES`,
   as the timeline's day lines). The tones: a sky's
@@ -1583,7 +1600,17 @@ own calls to its device API. Full direction:
   tessellate — and the duty's own ends rounded 4px, as a block's: a
   piece `first` (a class string) where it's labelled or not straight
   on from the one before, `last` where the next isn't straight on or
-  is labelled. `.st-now` a 2px solid `--accent` line, a dot at its head
+  is labelled. A sky's `rest` tone `--sky-rest` (`--good` at 50%),
+  faded as day and night are; a sleep lane's spans (`.st-sleep`) bars
+  rising from the lane's foot to their stage's level (`.st-s-<stage>`:
+  deep `top: 26px`, REM and light 36% and 68% of the way down from
+  there) in `--sleep-in`/`--sleep-out` (`--good`/`--crit`), over a
+  `--grid` hairline a level (`.st-lvl`) and its hour grid's upright
+  lines only (`.st-hours-v`), its tag (`.st-tag-sleep`) naming the
+  levels at the right (`.st-lv`, Deep, REM, Light, each on `--inset`
+  at 85%); a ticks lane's (`.st-ticks`) red ticks in `--tick`
+  (`--crit`), `top: 20px` to `bottom: 5px`, 1.5px in from each end.
+  `.st-now` a 2px solid `--accent` line, a dot at its head
   (`::before`), tagged Now (`.st-now-tag`). Synced, `.st-dot` (the
   accent, 9px, ringed in `--surface`) where the cursor crosses the
   first lane with troughs' curve: `placeDot()`, after each layout and
@@ -1620,7 +1647,10 @@ own calls to its device API. Full direction:
   at its `clientWidth`/`clientHeight` (a height change redraws the
   curve); no width keeps the last. Unsynced: no focus row, cursor, dot
   or clock tag, not scrolled to a time, still in `timelines`. Hand-built: a
-  kind not `duty` a sky, a span without both ends in order dropped;
+  kind not in `ST_KINDS` a sky, a span without both ends in order
+  dropped, a sleep span without a stage in `ST_STAGES` dropped (a stage
+  on another lane's span ignored), `hours` not a whole number 12–168 a
+  day;
   nothing → "Nothing to draw yet"; a band or wocl span without both
   ends in order dropped, a lane's bands drawn on any kind it's handed
   (the host refuses them on a sky lane). Its CSS a commented block after
@@ -2472,8 +2502,29 @@ same PR:
   it room, in line with the duties' WOCL pieces. Deploy: rebuild the
   image first, then Update FRMS (the old builder refuses the new lane
   keys — an error in the circadian panel only).
-  Still to come for it: personalising `cbt_min` from sleep data, the two
-  other sub-panels, a sub-panel's error isolated by the host itself (an
+  Then the sleep panel landed (no migration, no route change): FRMS's
+  top-right sub-panel, `_sleep(ctx)` — three strips three days across
+  (`ctx.strips(..., hours=72)`), in `"frms"`: each night's sleep stages
+  (the sleep sessions' `stages`; where two sources' nights overlap, the
+  first served), a bar each its stage's height, green in the body's
+  rest window and red out of it; the rest window itself (22:00–08:00
+  home local unless `personal.rest_start`/`rest_end` say), tagged Body
+  clock over home's date and time; and the disturbed cycles — each
+  stretch a flown duty overlapped the rest window, in 90-minute slots
+  (a last part slot counted from half a slot), a slot over by now with
+  under 15 minutes of sleep red ticks (the config's `sleep:
+  {slot_minutes, min_sleep_minutes}` to change them). For it,
+  `strips()` gained, all additive: kinds `sleep` (tones `in`/`out`,
+  each span a `stage`) and `ticks` (`disturbed`), a sky's `rest` tone,
+  and `hours` (12–168, the viewport's width; no key unless given), so
+  every strips spec from before is byte-identical. Deploy: rebuild the
+  image first, then Update FRMS with the new `app.py` and `app.yaml`
+  (keep `config.json`; its new keys are optional) — the wrong order
+  errors the sleep sub-panel only.
+  Still to come for it: personalising `cbt_min` from sleep data, the
+  last sub-panel (bottom-right), Garmin's stage timelines, the cycle
+  rule for the rest reports, a sub-panel's error isolated by the host
+  itself (an
   app's own `try` does it today; a `render()` that raises is still the
   whole tile's error), reading `destinations` for the time-zone shifts
   beyond the clock tag, the

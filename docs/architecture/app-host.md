@@ -279,7 +279,7 @@ the dicts itself.
 | `ctx.rail(cards, side, title=None, sync=None)` | `{"type": "rail", "side", "title", "cards": [{"id", "start", "end", "out", "in", "port"}, ...]}`, plus `"sync"` only when given | A column of fixed-size cards under its title, stacked from the top — four corners each, five at most, the window moving with the focus time: ahead of it on a `"plan"` rail, back from it on a `"report"` rail, the head outlined. With `sync`, it reads that focus group's time and restacks as it moves. See [the rail builders](#the-rail-builders), below. |
 | `ctx.rails(timeline, left=None, right=None)` | `{"type": "rails", "left", "timeline", "right"}` | A timeline drawn exactly as it is alone, a rail either side: four columns, a rail, the two lanes, a rail. In a tile too small for them, the timeline alone. See [the rail builders](#the-rail-builders), below. |
 | `ctx.grid(cols, rows, cells)` | `{"type": "grid", "cols", "rows", "cells": [{"x", "y", "w", "h", "spec"}, ...]}` | A tile split into sub-panels, each drawn as a tile of its own on the Home grid's cells: `cols` by `rows` cells, each sub-panel `w` by `h` from column `x`, row `y` (from 0), its `spec` sized to it as to a tile. Cells lie inside the grid and never overlap. See [the grid builder](#the-grid-builder), below. |
-| `ctx.strips(lanes, now=None, sync=None)` | `{"type": "strips", "now", "lanes": [{"kind", "label", "clock", "spans": [{"start", "end", "tone", "label", "place", "tz"}, ...], "troughs", "bands": [{"start", "end", "label"}, ...], "wocl": [{"start", "end"}, ...]}, ...]}`, plus `"sync"` only when given | One lane to three of tinted spans on one horizontal time axis, a day across the frame and the rest a scroll away — the first lane taking the height the others leave, on an hour grid, each after it a 45px row: a `"sky"` lane's day, night or not known (hatched), faded from the top, a `"duty"` lane's day, night and WOCL pieces a slim bar butting square, a span's label once above its start, a duty lane's bands (trips away) amber bars behind its pieces, each port in it past the flight out, a lane's troughs a solid curve over it, a sky lane's WOCL red under the curve, a tag top-left of each lane — its label, over a clock lane's time under the cursor: the place and its local time (`"place"`), or the date and its local time (`"date"`). With `sync`, drawn around the group's focus clock as a synced timeline is, on its side, and scrolled with it both ways. See [the strips builder](#the-strips-builder), below. |
+| `ctx.strips(lanes, now=None, sync=None, hours=None)` | `{"type": "strips", "now", "lanes": [{"kind", "label", "clock", "spans": [{"start", "end", "tone", "label", "place", "tz"}, ...], "troughs", "bands": [{"start", "end", "label"}, ...], "wocl": [{"start", "end"}, ...]}, ...]}`, plus `"sync"` and `"hours"` only when given, and a sleep lane's spans each a `"stage"` too | One lane to three of tinted spans on one horizontal time axis, a day across the frame and the rest a scroll away — the first lane taking the height the others leave, on an hour grid, each after it a 45px row: a `"sky"` lane's day, night or not known (hatched), faded from the top, a `"duty"` lane's day, night and WOCL pieces a slim bar butting square, a span's label once above its start, a duty lane's bands (trips away) amber bars behind its pieces, each port in it past the flight out, a lane's troughs a solid curve over it, a sky lane's WOCL red under the curve, a tag top-left of each lane — its label, over a clock lane's time under the cursor: the place and its local time (`"place"`), or the date and its local time (`"date"`). A `"sky"` lane's span may also be `"rest"` (the body's rest window, a green tint); a `"sleep"` lane's spans are sleep stages, each a bar rising to its stage's level, `"in"` (green) or `"out"` (red) of the rest window; a `"ticks"` lane's are `"disturbed"` stretches, red ticks. `hours` (12 to 168) sets how many hours the frame's width shows. With `sync`, drawn around the group's focus clock as a synced timeline is, on its side, and scrolled with it both ways. See [the strips builder](#the-strips-builder), below. |
 | `ctx.empty(message=None)` | `{"type": "empty", "message"}` | Muted, centred text (default "No data yet"). |
 | `ctx.error(message)` — the host's, or an app's for a part that failed | `{"type": "error", "message"}` | Muted, centred: "Couldn't render <app name>" over the message. The host's when a render fails; an app may return one for a part of its tile — a sub-panel — so the rest is drawn (the FRMS app's `_panel()`). |
 
@@ -746,6 +746,29 @@ either kind, so a lane as the spec carries it is one `strips()` takes back)
 — every span `{start, end, tone, label, place, tz}`, every band `{start,
 end, label}` and every WOCL span `{start, end}`, `None` where not given — so
 the page never guesses at a key.
+
+**The sleep panel's lanes.** Two more kinds, and a tone more for a sky:
+
+- a **`"sky"`** span may be **`"rest"`** — the body's rest window — tinted
+  green (`--sky-rest`) and faded as day and night are;
+- a **`"sleep"`** lane's spans are toned **`"in"`** or **`"out"`** (of the
+  rest window) and each carries a **`stage`**, `"light"`, `"deep"` or
+  `"rem"` (`STRIP_STAGES`; another, or none, `ValueError`) — the only span
+  that takes one (a stage on another lane's span, `ValueError`), and the
+  only span the spec gives the key. Each is a bar rising from the lane's
+  foot to its stage's level — deep highest, then REM, then light — in
+  `--sleep-in` (green) or `--sleep-out` (red), over a hairline at each level
+  (`.st-lvl`), the hour grid's lines upright only (`.st-hours-v`), the
+  levels named at the right of the lane's tag (`.st-lv`);
+- a **`"ticks"`** lane's spans are toned **`"disturbed"`**, each red ticks
+  (`--tick`) hanging in the row under its tag.
+
+A label is still a duty span's alone; bands a duty lane's, WOCL a sky's.
+**`hours`** — a whole number from 12 to 168 (`STRIP_HOURS`; else
+`ValueError`) — is how many hours the viewport's width shows: a day when not
+given, and then no key, so a day's strips are as before. The hour grid's
+square grows with it — an hour at a day across, three hours at three days.
+The page draws a hand-built sleep span with no stage it knows not at all.
 
 **How it's drawn.** `stripsSpec()` (`SPECS.strips`) is a timeline turned on
 its side, its synced path mirrored line for line, horizontally — and drawn
@@ -1223,10 +1246,13 @@ a synthetic roster, `tests/fixtures/rosters/sample.ics`. It was the Roster
 app until it became FRMS: the whole FRMS suite as one app, with one tile and
 one `config.json`, drawn as four sub-panels on a 6×4 grid (`ctx.grid()`,
 above): the circadian panel top-left (3×2) — three strips, below — the roster
-panel bottom-left (2×2) — the timeline and its rails, below — and two more to
-come, top-right (3×2) and bottom-right (4×2), placeholders until they're
-built (`empty("Coming soon")`). `render()` is the layout; the circadian panel
-is `_circadian(ctx)` and the roster panel `_roster(ctx)`, its spec the one the
+panel bottom-left (2×2) — the timeline and its rails, below — the sleep
+panel top-right (3×2, `_sleep(ctx)`: three strips three days across — each
+night's stages, the body's rest window, and the disturbed cycles: each
+90-minute slot of a flown duty in the rest window with under 15 minutes of
+sleep in it) and one more to come bottom-right (4×2), a placeholder until
+it's built (`empty("Coming soon")`). `render()` is the layout; the circadian
+panel is `_circadian(ctx)` and the roster panel `_roster(ctx)`, its spec the one the
 whole tile was before the grid. Each is built through `_panel(ctx, build)`,
 which returns `build(ctx)` — or, if it raises, prints `[apps] frms: the
 <panel> panel failed` and the traceback, as the host logs a failed render,
@@ -1244,7 +1270,7 @@ only carries the file.
 id: frms
 name: FRMS
 sizes: [{ w: 6, h: 4 }]
-reads: [duties_rostered, duties_complete]
+reads: [duties_rostered, duties_complete, sleep]
 ```
 
 One size, 6×4, so no size picker. No `metrics:`: the app files sessions and
