@@ -760,15 +760,28 @@ def grid(cols, rows, cells):
 
 
 # A strips spec's lanes: one to three, stacked. Each is of a kind, which
-# says the tones its spans take - a sky's day, night or none (not known:
-# hatched), a duty's day, night or wocl. What a lane, a span and a band
-# take, and nothing else: a misspelt field is refused, as a timeline
-# lane's is. A clock lane's tag tells the time under the cursor - the
-# place and its local time, or the date and its local time.
-STRIP_KINDS = {"sky": ("day", "night", "none"), "duty": ("day", "night", "wocl")}
+# says the tones its spans take - a sky's day, night, none (not known:
+# hatched) or rest (the body's rest window), a duty's day, night or wocl,
+# a sleep lane's in or out (of the rest window), a ticks lane's
+# disturbed. A sleep lane's span is a stretch of one sleep stage - its
+# `stage` light, deep or rem, drawn as a bar that tall - and only a sleep
+# lane's span takes one. What a lane, a span and a band take, and nothing
+# else: a misspelt field is refused, as a timeline lane's is. A clock
+# lane's tag tells the time under the cursor - the place and its local
+# time, or the date and its local time.
+STRIP_KINDS = {
+    "sky": ("day", "night", "none", "rest"),
+    "duty": ("day", "night", "wocl"),
+    "sleep": ("in", "out"),
+    "ticks": ("disturbed",),
+}
+STRIP_STAGES = ("light", "deep", "rem")
 STRIP_LANES = (1, 2, 3)
 STRIP_LANE_FIELDS = ("kind", "spans", "troughs", "label", "clock", "bands", "wocl")
-STRIP_SPAN_FIELDS = ("start", "end", "tone", "label", "place", "tz")
+STRIP_SPAN_FIELDS = ("start", "end", "tone", "label", "place", "tz", "stage")
+# How many hours one viewport's width shows: a day unless the spec says,
+# and never less than half a day or more than a week.
+STRIP_HOURS = (12, 168)
 STRIP_BAND_FIELDS = ("start", "end", "label")
 STRIP_CLOCKS = ("place", "date")
 
@@ -776,7 +789,7 @@ STRIP_CLOCKS = ("place", "date")
 def _strip_span(raw, kind):
     """One span of a strips lane of `kind`, as the spec carries it: {start,
     end, tone, label, place, tz} - both ends iso_utc()'s UTC text, the
-    rest text or None."""
+    rest text or None - and, on a sleep lane only, its `stage` too."""
     what = "a strips span"
     _fields(raw, STRIP_SPAN_FIELDS, what)
     if raw.get("start") is None or raw.get("end") is None:
@@ -795,11 +808,20 @@ def _strip_span(raw, kind):
     if label is not None and kind != "duty":
         # A sky's span is a stretch of day or night: a duty's is a duty's.
         raise ValueError(f"{what}'s label is only for a duty lane, not a {kind}: {label!r}")
-    return {
+    stage = raw.get("stage")
+    if kind == "sleep" and stage not in STRIP_STAGES:
+        raise ValueError(f"{what}'s stage on a sleep lane is one of {', '.join(STRIP_STAGES)}, not {stage!r}")
+    if kind != "sleep" and stage is not None:
+        # A stage is a sleep's: a sky's, duty's or tick's span has none.
+        raise ValueError(f"{what}'s stage is only for a sleep lane, not a {kind}: {stage!r}")
+    span = {
         "start": start, "end": end, "tone": tone, "label": label,
         "place": _text_or_none(raw.get("place"), "place", f"{what}'s"),
         "tz": _text_or_none(raw.get("tz"), "tz", f"{what}'s"),
     }
+    if kind == "sleep":
+        span["stage"] = stage
+    return span
 
 
 def _strip_band(raw):
@@ -864,15 +886,19 @@ def _strip_lane(raw):
     }
 
 
-def strips(lanes, now=None, sync=None):
+def strips(lanes, now=None, sync=None, hours=None):
     """Lanes of tinted spans on one horizontal time axis - a day across
-    the viewport, the rest a scroll away - the first lane filling the
-    height the others leave, each after it a slim row.
+    the viewport (or `hours` across), the rest a scroll away - the first
+    lane filling the height the others leave, each after it a slim row.
 
     `lanes` is a list of one to three dicts {kind, spans, troughs, label,
-    clock, bands, wocl}: `kind` "sky" (spans toned "day", "night" or
-    "none" - none drawn hatched) or "duty" (spans toned "day", "night" or
-    "wocl"); `spans` a list of {start, end, tone, label, place, tz}, ends
+    clock, bands, wocl}: `kind` "sky" (spans toned "day", "night", "none"
+    - none drawn hatched - or "rest", the body's rest window), "duty"
+    (spans toned "day", "night" or "wocl"), "sleep" (spans toned "in" or
+    "out" - of the rest window - each with a `stage`, "light", "deep" or
+    "rem", drawn as a bar rising that high from the lane's foot) or
+    "ticks" (spans toned "disturbed", each drawn as red ticks hanging in
+    the lane); `spans` a list of {start, end, tone, label, place, tz}, ends
     as a session's (datetime or ISO-8601 text, UTC), end never before
     start; on a duty lane a span's `label` (text or None) is drawn once at
     its start, over the spans after it; `troughs` optional, a list of
@@ -904,7 +930,11 @@ def strips(lanes, now=None, sync=None):
     timeline's. A sky span's label is refused (a sky's span is day or
     night, not a thing); place and tz are carried on any span, and drawn
     only on a clock lane's - a tz the page can't read shows the place
-    alone (a date clock, a dash).
+    alone (a date clock, a dash). A sleep span carries its `stage` too,
+    and no other span takes one. `hours` is how many hours one viewport's
+    width shows, a whole number from 12 to 168 - 24, a day, when not
+    given; the spec carries it only when given (None adds no key), so a
+    day's strips are as before.
     """
     if not isinstance(lanes, (list, tuple)):
         raise TypeError(f"a strips spec's lanes must be a list of one to three lanes: {lanes!r}")
@@ -912,6 +942,10 @@ def strips(lanes, now=None, sync=None):
         raise ValueError(f"a strips spec has one lane to three, not {len(lanes)}")
     if sync is not None and not isinstance(sync, str):
         raise TypeError(f"a strips spec's sync must be text, a focus group's name: {sync!r}")
+    if hours is not None and (not isinstance(hours, int) or isinstance(hours, bool)
+                              or not STRIP_HOURS[0] <= hours <= STRIP_HOURS[1]):
+        raise ValueError(f"a strips spec's hours must be a whole number from {STRIP_HOURS[0]} "
+                         f"to {STRIP_HOURS[1]}: {hours!r}")
     spec = {
         "type": "strips",
         "now": None if now is None else _session_instant(now, "a strips spec's now"),
@@ -919,6 +953,8 @@ def strips(lanes, now=None, sync=None):
     }
     if sync:
         spec["sync"] = sync
+    if hours is not None:
+        spec["hours"] = hours
     return spec
 
 

@@ -100,6 +100,15 @@
   --duty-night:#d8a03e;
   --duty-wocl:#d65a55;
   --duty-ink:var(--ink-2);
+  /* ... and the sleep panel's: a sleep lane's stage bars in the status
+     green inside the body's rest window and its red outside it, a sky
+     lane's rest window a green tint (faded as day and night are), a
+     ticks lane's disturbed stretches red ticks. Built on --good and
+     --crit, so the dark themes' own greens and reds carry through. */
+  --sky-rest:color-mix(in srgb, var(--good) 50%, transparent);
+  --sleep-in:var(--good);
+  --sleep-out:var(--crit);
+  --tick:var(--crit);
 
   --radius:14px;
   --radius-sm:9px;
@@ -908,6 +917,31 @@ h5 + .dnote{margin-top:0;}
 .st-duty .st-t-night{background:var(--duty-night);}
 .st-duty .st-t-wocl{background:var(--duty-wocl);}
 .st-code{position:absolute;top:5px;height:16px;display:flex;align-items:center;padding-left:1px;font:600 10.5px/16px var(--font-mono);color:var(--duty-ink);white-space:nowrap;pointer-events:none;z-index:1;}
+/* a sky lane's rest window, tinted green as day and night are tinted */
+.st-sky .st-t-rest{background:var(--sky-rest);}
+/* a sleep lane: each stage a bar rising from the lane's foot to its
+   level - deep highest, then REM, then light - under the tag's row,
+   green in the rest window and red out of it; a hairline at each level,
+   and the hour grid's lines upright only. Its levels are named at the
+   right of its tag, each on a backing of the frame's own colour so a
+   night running under it never hides it. */
+.st-sleep .st-span{top:auto;bottom:0;}
+.st-sleep .st-s-deep{top:26px;}
+.st-sleep .st-s-rem{top:calc(26px + (100% - 26px) * .36);}
+.st-sleep .st-s-light{top:calc(26px + (100% - 26px) * .68);}
+.st-sleep .st-t-in{background:var(--sleep-in);}
+.st-sleep .st-t-out{background:var(--sleep-out);}
+.st-lvl{position:absolute;left:0;right:0;height:0;border-top:1px solid var(--grid);pointer-events:none;}
+.st-hours.st-hours-v{background-image:linear-gradient(90deg, var(--grid) 1px, transparent 1px);}
+.st-tag.st-tag-sleep{position:relative;}
+.st-tag > .st-lv{position:absolute;right:6px;margin-top:-14px;padding:0 3px;border-radius:3px;background:color-mix(in srgb, var(--inset) 85%, transparent);font:600 9.5px/12px var(--font-body);text-transform:uppercase;letter-spacing:.8px;color:var(--muted);}
+.st-lv.st-s-deep{top:26px;}
+.st-lv.st-s-rem{top:calc(26px + (100% - 26px) * .36);}
+.st-lv.st-s-light{top:calc(26px + (100% - 26px) * .68);}
+/* a ticks lane: each disturbed stretch red ticks hanging under the tag's
+   row, a hair in from its ends so two side by side stay apart */
+.st-ticks .st-span{top:20px;bottom:5px;padding:0 1.5px;box-sizing:border-box;
+  background:repeating-linear-gradient(90deg, var(--tick) 0 1.5px, transparent 1.5px 3px) content-box;}
 .st-curve{position:absolute;top:0;left:0;pointer-events:none;overflow:visible;z-index:1;}
 .st-curve path{fill:none;stroke:var(--curve);stroke-width:1.5;stroke-linecap:round;}
 .st-dot{position:absolute;left:50%;width:9px;height:9px;margin:-4.5px 0 0 -4.5px;border-radius:50%;background:var(--accent);box-shadow:0 0 0 2px var(--surface);z-index:4;pointer-events:none;}
@@ -4543,6 +4577,20 @@ h5 + .dnote{margin-top:0;}
      head, tagged Now; the cursor's ends are arrowed - the timeline's
      language, turned on its side. Everything an app sent is set as text.
 
+     The sleep panel's lanes: a sky lane's span may be the body's rest
+     window (rest, tinted green); a sleep lane's spans are stretches of
+     one stage (its stage: light, deep or rem - ST_STAGES), each a bar
+     rising from the lane's foot to its stage's level (.st-s-<stage>),
+     green in the rest window (in) and red out of it (out), over a
+     hairline at each level (.st-lvl) and the hour grid's upright lines
+     only (.st-hours-v), its levels named at the right of its tag (.st-lv);
+     a ticks lane's spans (disturbed) are red ticks hanging in the row. A
+     hand-built sleep span with no stage it knows is left out. s.hours,
+     when it's a whole number from 12 to 168, is how many hours the
+     viewport's width shows - a day (ST_VIEW_MS) otherwise - and the hour
+     grid's square grows with it: a square an hour at a day across, three
+     at three days.
+
      Synced (s.sync), it's drawn around its group's focus clock exactly
      as a synced timeline is, on its side: the timeline's focus row over
      it (.tl-focus - the readout, the time under the cursor, and a Now
@@ -4574,15 +4622,19 @@ h5 + .dnote{margin-top:0;}
   const ST_WOCL_STEP_MS = 600000;     // ... its edge's points: one every ten minutes
   let stWoclIds = 0;                  // each strips' WOCL gradient its own id
   const ST_MAX_LANES = 3;
-  const ST_TONES = ['day', 'night', 'none', 'wocl'];
+  const ST_TONES = ['day', 'night', 'none', 'wocl', 'rest', 'in', 'out', 'disturbed'];
+  const ST_KINDS = ['sky', 'duty', 'sleep', 'ticks'];
+  const ST_STAGES = ['light', 'deep', 'rem'];
   function stripsSpec(s){
     const ms = t => { const v = typeof t==='string' ? Date.parse(t) : NaN; return Number.isFinite(v) ? v : null; };
     const group = typeof s.sync==='string' && s.sync ? focusGroup(s.sync) : null;
     const now = ms(s.now);
     // A hand-built spec is drawn as far as it can be: three lanes at
     // most, a span without both ends, in order, left out.
+    // How much of the axis one viewport shows: a day, unless it says.
+    const viewMs = Number.isInteger(s.hours) && s.hours >= 12 && s.hours <= 168 ? s.hours * 3600000 : ST_VIEW_MS;
     const lanes = (Array.isArray(s.lanes) ? s.lanes : []).slice(0, ST_MAX_LANES).map(l => ({
-      kind: l && l.kind==='duty' ? 'duty' : 'sky',
+      kind: l && ST_KINDS.includes(l.kind) ? l.kind : 'sky',
       label: l && typeof l.label==='string' ? l.label : '', clock: l && l.clock==='date' ? 'date' : l && l.clock ? 'place' : '',
       troughs: (l && Array.isArray(l.troughs) ? l.troughs : []).map(ms).filter(v => v!==null).sort((a, b) => a - b),
       wocl: (l && Array.isArray(l.wocl) ? l.wocl : []).map(x => ({a: ms(x && x.start), b: ms(x && x.end)})).filter(x => x.a!==null && x.b!==null && x.b > x.a),
@@ -4591,8 +4643,9 @@ h5 + .dnote{margin-top:0;}
       spans: (l && Array.isArray(l.spans) ? l.spans : []).map(x => ({a: ms(x && x.start), b: ms(x && x.end),
         tone: ST_TONES.includes(x && x.tone) ? x.tone : 'none',
         label: x && typeof x.label==='string' ? x.label : '', tz: x && typeof x.tz==='string' ? x.tz : null,
-        place: x && typeof x.place==='string' ? x.place : ''}))
-        .filter(x => x.a!==null && x.b!==null && x.b > x.a),
+        place: x && typeof x.place==='string' ? x.place : '',
+        stage: l && l.kind==='sleep' && ST_STAGES.includes(x && x.stage) ? x.stage : null}))
+        .filter(x => x.a!==null && x.b!==null && x.b > x.a && (!(l && l.kind==='sleep') || x.stage)),
     }));
     // The axis spans every span, and now.
     let t0 = Infinity, t1 = -Infinity;
@@ -4620,8 +4673,10 @@ h5 + .dnote{margin-top:0;}
     const tags = view.appendChild(el('div','st-tags'));
     const rows = lanes.map((l, li) => {
       const lane = track.appendChild(el('div','st-lane st-'+l.kind));
-      // The first lane's hour grid, under its sky: a square an hour.
-      const hours = li===0 ? lane.appendChild(el('div','st-hours')) : null;
+      // The first lane's hour grid, under its sky: a square an hour (a
+      // sleep lane's, its upright lines only, over a hairline a level).
+      const hours = li===0 ? lane.appendChild(el('div','st-hours'+(l.kind==='sleep' ? ' st-hours-v' : ''))) : null;
+      if(l.kind==='sleep') ST_STAGES.forEach(st => lane.appendChild(el('div','st-lvl st-s-'+st)));
       // A lane's bands - a trip away, as the timeline's - behind its spans.
       const bands = l.bands.map(b => {
         const e = lane.appendChild(el('div','st-band'));
@@ -4637,7 +4692,7 @@ h5 + .dnote{margin-top:0;}
         const prev = l.spans[i-1], next = l.spans[i+1];
         const ends = l.kind!=='duty' ? ''
           : (x.label || !prev || prev.b!==x.a ? ' first' : '') + (!next || next.a!==x.b || next.label ? ' last' : '');
-        return lane.appendChild(el('div','st-span st-t-'+x.tone+ends));
+        return lane.appendChild(el('div','st-span st-t-'+x.tone+ends+(x.stage ? ' st-s-'+x.stage : '')));
       });
       // A duty's code, once, at its start - over its pieces, not in one.
       const codes = l.spans.map(x => {
@@ -4646,9 +4701,12 @@ h5 + .dnote{margin-top:0;}
       });
       // A lane's tag: its label, over the time under the cursor if it's
       // a clock lane (synced only).
-      const tag = tags.appendChild(el('div','st-tag'+(l.label && l.clock && group ? ' two' : '')));
+      const tag = tags.appendChild(el('div','st-tag'+(l.label && l.clock && group ? ' two' : '')+(l.kind==='sleep' ? ' st-tag-sleep' : '')));
       const tagLabel = l.label ? tag.appendChild(el('span','st-tag-l')) : null;
       if(tagLabel) tagLabel.textContent = l.label;
+      // A sleep lane's levels, named at its right.
+      if(l.kind==='sleep') [['deep', 'Deep'], ['rem', 'REM'], ['light', 'Light']]
+        .forEach(([st, name]) => { tag.appendChild(el('span','st-lv st-s-'+st)).textContent = name; });
       const tagText = l.clock && group ? tag.appendChild(el('span','st-tag-c')) : null;
       let svg = null, path = null, woclPath = null;
       if(l.troughs.length > 1){
@@ -4697,7 +4755,7 @@ h5 + .dnote{margin-top:0;}
       tags.style.bottom = Math.max(0, (scroll.offsetHeight - scroll.clientHeight) || 0)+'px';
       // Half a viewport of axis past each end, so the cursor - its middle
       // - can reach every time on it.
-      const viewW = w || 480, px = viewW / ST_VIEW_MS, pad = viewW / 2;
+      const viewW = w || 480, px = viewW / viewMs, pad = viewW / 2;
       if(viewW!==laidW || h!==laidH){
         const width = pad * 2 + (t1 - t0) * px;
         track.style.width = width+'px';
@@ -4750,7 +4808,9 @@ h5 + .dnote{margin-top:0;}
         }));
         rows.forEach(r => {
           if(!r.hours) return;
-          const hour = 3600000 * px, first = Math.ceil(t0 / 3600000) * 3600000;
+          // A square an hour at a day across; wider, a square as many.
+          const step = 3600000 * Math.max(1, Math.round(viewMs / ST_VIEW_MS));
+          const hour = step * px, first = Math.ceil(t0 / step) * step;
           r.hours.style.width = width+'px';
           r.hours.style.backgroundSize = `${hour}px ${hour}px`;
           r.hours.style.backgroundPosition = `${pad + (first - t0) * px}px 0`;

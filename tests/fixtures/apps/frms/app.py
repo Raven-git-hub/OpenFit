@@ -106,6 +106,22 @@ flown is unknown, not the plan: from the moment a duty starts you're at
 its final destination - a flight's arr (where you were, without one),
 home base for any other duty. Times come back as UTC text, every span
 half-open.
+
+The sleep panel (_sleep()) draws, over the same window and three days
+across (ctx.strips(hours=72)), in the FRMS focus group: the sleep
+sessions' stage timelines - each stage a bar its height, green inside
+the body's rest window and red outside it; the rest window itself, home
+local (22:00 to 08:00 unless the config's personal rest_start and
+rest_end say otherwise), tagged Body clock over home's date and time
+under the cursor; and the disturbed cycles - each stretch a flown duty
+overlapped the rest window, cut into 90-minute slots, a slot with under
+15 minutes of sleep in it marked with red ticks. Its engine, pure as
+the circadian one: rest_windows() - the rest window each day;
+rest_strip() - rest and wake over a window; sleep_nights() - the sleep
+sessions with a stage timeline, one a night; stage_pieces() - their
+stages to draw, cut at the rest window's edges; disturbed_slots() - each
+duty's slots in the rest window and the sleep in each. Like the body
+clock, the rest window is home's, always.
 """
 
 import bisect
@@ -152,7 +168,7 @@ except (OSError, ValueError) as _e:
 def render(ctx, cfg):
     return ctx.grid(6, 4, [
         {"x": 0, "y": 0, "w": 3, "h": 2, "spec": _panel(ctx, _circadian)},
-        {"x": 3, "y": 0, "w": 3, "h": 2, "spec": ctx.empty("Coming soon")},
+        {"x": 3, "y": 0, "w": 3, "h": 2, "spec": _panel(ctx, _sleep)},
         {"x": 0, "y": 2, "w": 2, "h": 2, "spec": _panel(ctx, _roster)},
         {"x": 2, "y": 2, "w": 4, "h": 2, "spec": ctx.empty("Coming soon")},
     ])
@@ -228,6 +244,43 @@ def _circadian(ctx):
                    for x in c["body"]]},
         {"kind": "duty", "spans": duty, "bands": away},
     ], now=now, sync="frms")
+
+
+def _sleep(ctx):
+    """The sleep panel, its sub-panel's spec: three strips over the roster's
+    window, three days across - each night's sleep stages, a bar each its
+    height, green in the body's rest window and red out of it; the rest
+    window itself, tagged Body clock over home's date and time under the
+    cursor; and the disturbed cycles, each 90-minute slot of a flown duty
+    in the rest window with under 15 minutes of sleep in it, red ticks.
+    In the FRMS focus group, so it scrolls with the other panels by time.
+    Before any sleep with stages, the ask."""
+    if CONFIG is None:
+        return ctx.empty(CONFIG_ERROR)
+    since = date.fromisoformat(ctx.today()) - timedelta(days=183)
+    # A night that began the evening before the window's first day is in it.
+    nights = sleep_nights(ctx.sessions(SLEEP, since=(since - timedelta(days=1)).isoformat()))
+    if not nights:
+        return ctx.empty("No sleep stages yet - sync a sleep source that gives them")
+    rostered = ctx.sessions(ROSTERED, since=since.isoformat())
+    flown = ctx.sessions(COMPLETE, since=since.isoformat())
+    # The circadian panel's window, so the two scroll over one axis: to
+    # the latest duty's end (or sleep's, or now) and a day past it.
+    now = datetime.now(timezone.utc)
+    ends = [_utc(s.end, "a duty's end") for s in (*rostered, *flown) if s.end is not None]
+    ends += [_utc(n["end"], "a sleep's end") for n in nights]
+    start = datetime.combine(since, time(), tzinfo=timezone.utc)
+    end = max([now, *ends]) + timedelta(days=1)
+    windows = rest_windows(start, end)
+    home, home_tz = _personal(CONFIG).get("home_base"), _personal(CONFIG).get("timezone")
+    slots = disturbed_slots(flown, nights, windows, now)
+    return ctx.strips([
+        {"kind": "sleep", "label": "Sleep stages", "spans": stage_pieces(nights, windows)},
+        {"kind": "sky", "label": "Body clock", "clock": "date",
+         "spans": [{**x, "place": home, "tz": home_tz} for x in rest_strip(start, end)]},
+        {"kind": "ticks", "label": "Disturbed cycles",
+         "spans": [{"start": x["start"], "end": x["end"], "tone": "disturbed"} for x in slots if x["disturbed"]]},
+    ], now=now, sync="frms", hours=72)
 
 
 def _roster(ctx):
@@ -772,6 +825,15 @@ _OBLIQUITY = 23.4397        # degrees: the Earth's axial tilt
 WOCL = ((2, 0), (6, 0))     # the window of circadian low, home local: [02:00, 06:00)
 CBT_MIN = "04:00"           # the body clock's low, home local, unless the config gives one
 
+SLEEP = "sleep"
+REST_WINDOW = ("22:00", "08:00")   # the body's rest window, home local, unless personal gives rest_start, rest_end
+SLOT_MINUTES = 90                  # a disturbed-cycle check's slot, unless the config's sleep block gives slot_minutes
+MIN_SLEEP_MINUTES = 15             # ... a slot with less sleep than this is disturbed, unless it gives min_sleep_minutes
+# A stage drawn, and at what level: a stage-less sleep (asleep, restless:
+# a short nap a device doesn't stage) at light's. Every stage drawn is
+# sleep for a slot; awake, out_of_bed and unknown aren't, and aren't drawn.
+DRAWN_STAGES = {"light": "light", "deep": "deep", "rem": "rem", "asleep": "light", "restless": "light"}
+
 
 def sun_times(day, lat, lon):
     """Sunrise and sunset around local solar noon of `day` (a date) at
@@ -934,6 +996,152 @@ def circadian(rostered, flown, now, start, end, config=None):
         "wocl": clock["wocl"],
         "troughs": clock["troughs"],
     }
+
+
+def rest_windows(start, end, config=None):
+    """The body's rest window each day, clipped to [start, end): [{start,
+    end}] in order - rest_start to rest_end home local (personal's, HH:MM;
+    22:00 to 08:00 by default), over midnight when it ends no later than
+    it starts. ValueError for a time that isn't HH:MM, or a window that
+    starts when it ends."""
+    config = _config(config)
+    start, end = _utc(start, "start"), _utc(end, "end")
+    return [_text(s, e) for s, e in _rest_windows(start, end, config)]
+
+
+def rest_strip(start, end, config=None):
+    """[start, end) as the body clock's rest and wake: contiguous {start,
+    end, tone}, in order - tone "rest" in a rest window, else "day"."""
+    config = _config(config)
+    start, end = _utc(start, "start"), _utc(end, "end")
+    layers = [(s, e, "rest") for s, e in _rest_windows(start, end, config)]
+    return [_text(s, e, tone=tone) for s, e, tone in _tones(start, end, "day", layers)]
+
+
+def sleep_nights(sessions):
+    """The sleep sessions with a stage timeline, one a night: [{start, end,
+    source, stages}] by start, stages each {start, end, stage} by start,
+    as the session's summary carries them - one without a stage, or a
+    start and end in order, left out. Taken in the order they're served
+    (the host's source priority): a session overlapping one already taken
+    is left out, so a night two devices tracked is drawn once. A session
+    with no end, or no timeline (a source that gives only totals), is no
+    night."""
+    taken = []
+    for session in sessions:
+        summary = session.summary if isinstance(session.summary, dict) else {}
+        raw = summary.get("stages")
+        if session.end is None or not isinstance(raw, list):
+            continue
+        stages = []
+        for seg in raw:
+            if not isinstance(seg, dict) or not isinstance(seg.get("stage"), str):
+                continue
+            try:
+                a, b = _utc(seg.get("start"), "a stage's start"), _utc(seg.get("end"), "a stage's end")
+            except ValueError:
+                continue
+            if a < b:
+                stages.append((a, b, seg["stage"]))
+        if not stages:
+            continue
+        a, b = _utc(session.start, "a sleep's start"), _utc(session.end, "a sleep's end")
+        if any(a < tb and ta < b for ta, tb, _, _ in taken):
+            continue
+        taken.append((a, b, session.source, sorted(stages, key=lambda x: x[0])))
+    return [{"start": _utc_text(a), "end": _utc_text(b), "source": source,
+             "stages": [_text(x, y, stage=stage) for x, y, stage in segs]}
+            for a, b, source, segs in sorted(taken, key=lambda night: night[0])]
+
+
+def stage_pieces(nights, windows):
+    """The nights' stages to draw: [{start, end, stage, tone}] by start -
+    light, deep and rem as they are, a stage-less asleep or restless at
+    light's level (DRAWN_STAGES), awake and anything else not drawn - each
+    cut at the rest window's edges, tone "in" inside one of `windows`
+    ({start, end}, as rest_windows() gives them), "out" outside."""
+    wins = [(_utc(w["start"], "a rest window's start"), _utc(w["end"], "a rest window's end")) for w in windows]
+    pieces = []
+    for night in nights:
+        for seg in night["stages"]:
+            stage = DRAWN_STAGES.get(seg["stage"])
+            if stage is None:
+                continue
+            a, b = _utc(seg["start"], "a stage's start"), _utc(seg["end"], "a stage's end")
+            under = [(s, e, "in") for s, e in wins if s < b and a < e]
+            pieces += [_text(x, y, stage=stage, tone=tone) for x, y, tone in _tones(a, b, "out", under)]
+    return sorted(pieces, key=lambda piece: piece["start"])
+
+
+def disturbed_slots(duties, nights, windows, now, config=None):
+    """Each stretch a duty overlapped the rest window, in slots: [{start,
+    end, asleep, disturbed}] by start. A duty's overlap with each of
+    `windows` is cut into slots of slot_minutes (the config's sleep
+    block's; 90 by default) from where the overlap starts, the last a
+    part slot counted only if it's at least half a slot. `asleep` is the
+    whole minutes of sleep in the slot - every stage DRAWN_STAGES draws -
+    and `disturbed` is True when that's under min_sleep_minutes (15 by
+    default). Only slots over by `now`: a slot still to come has no sleep
+    to count yet. `duties` are sessions (.start, .end) - the flown ones,
+    as the circadian panel takes the past; one with no end is none."""
+    config = _config(config)
+    now = _utc(now, "now")
+    slot, least = _slot_rules(config)
+    wins = [(_utc(w["start"], "a rest window's start"), _utc(w["end"], "a rest window's end")) for w in windows]
+    asleep = [(_utc(seg["start"], "a stage's start"), _utc(seg["end"], "a stage's end"))
+              for night in nights for seg in night["stages"] if seg["stage"] in DRAWN_STAGES]
+    found = []
+    for duty in duties:
+        if duty.end is None:
+            continue
+        ds, de = _utc(duty.start, "a duty's start"), _utc(duty.end, "a duty's end")
+        for ws, we in wins:
+            a, b = max(ds, ws), min(de, we)
+            while a < b:
+                e = min(a + slot, b)
+                if e - a >= slot / 2 and e <= now:
+                    seconds = sum(max(0.0, (min(e, y) - max(a, x)).total_seconds()) for x, y in asleep)
+                    minutes = int(seconds // 60)
+                    found.append({**_text(a, e), "asleep": minutes, "disturbed": seconds < least.total_seconds()})
+                a = e
+    return sorted(found, key=lambda x: x["start"])
+
+
+def _rest_windows(start, end, config):
+    tz = _home_zone(config)
+    begin, finish = _rest_times(config)
+    spans = []
+    for day in _home_days(start, end, tz, margin=1):
+        s = _home_local(day, begin, tz)
+        e = _home_local(day + timedelta(days=1) if finish <= begin else day, finish, tz)
+        s, e = max(s, start), min(e, end)
+        if s < e:
+            spans.append((s, e))
+    return spans
+
+
+def _rest_times(config):
+    personal, times = _personal(config), []
+    for key, default in (("rest_start", REST_WINDOW[0]), ("rest_end", REST_WINDOW[1])):
+        raw = personal.get(key)
+        raw = default if raw is None else raw
+        found = re.fullmatch(r"(\d{1,2}):(\d{2})", raw) if isinstance(raw, str) else None
+        if not found or int(found[1]) > 23 or int(found[2]) > 59:
+            raise ValueError(f"config.json's personal {key} must be HH:MM, home local: {raw!r}")
+        times.append((int(found[1]), int(found[2])))
+    if times[0] == times[1]:
+        raise ValueError("config.json's personal rest_start and rest_end can't be the same time")
+    return tuple(times)
+
+
+def _slot_rules(config):
+    block = config.get("sleep")
+    block = block if isinstance(block, dict) else {}
+    slot, least = block.get("slot_minutes", SLOT_MINUTES), block.get("min_sleep_minutes", MIN_SLEEP_MINUTES)
+    for key, value, top in (("slot_minutes", slot, 24 * 60), ("min_sleep_minutes", least, slot)):
+        if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= top:
+            raise ValueError(f"config.json's sleep {key} must be a whole number of minutes, 1 to {top}: {value!r}")
+    return timedelta(minutes=slot), timedelta(minutes=least)
 
 
 def _config(config):

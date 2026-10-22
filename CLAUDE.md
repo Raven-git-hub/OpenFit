@@ -394,10 +394,14 @@ own calls to its device API. Full direction:
   "grid cells overlap"); a cell none covers left empty; a cell of only
   those five keys (`GRID_CELL_FIELDS`, `_fields()`: another, a misspelt
   `wdith`, `ValueError`); each cell carried as those five keys, in order),
-  `strips(lanes, now=None, sync=None)` → `{"type": "strips", now, lanes:
+  `strips(lanes, now=None, sync=None, hours=None)` → `{"type": "strips", now, lanes:
   [{kind, label, clock, spans: [{start, end, tone, label, place, tz}],
   troughs, bands: [{start, end, label}], wocl: [{start, end}]}]}`, plus
-  `sync` only when given (lanes of tinted spans on one
+  `sync` and `hours` only when given (`hours` 12 to 168, the hours the
+  frame's width shows, a day by default; kinds `sky` - tones day, night,
+  none, rest - `duty`, `sleep` - tones in, out, each span a `stage`,
+  light, deep or rem, the only span with one - and `ticks` - tone
+  disturbed; `STRIP_KINDS`, `STRIP_STAGES`, `STRIP_HOURS`) (lanes of tinted spans on one
   horizontal time axis, a day across, the circadian panel's: `lanes` a
   list or tuple (else `TypeError`) of 1–3 (`STRIP_LANES`, else
   `ValueError`), top to bottom, each of only `STRIP_LANE_FIELDS`
@@ -600,8 +604,11 @@ own calls to its device API. Full direction:
   flights and ports). The whole FRMS suite is this one app: one tile, one
   `config.json`, drawn as four sub-panels on a 6×4 `ctx.grid()` —
   the circadian panel top-left (x 0, y 0, 3×2, `_circadian(ctx)`, three
-  strips — below), a placeholder top-right (x 3, y 0, 3×2,
-  `empty("Coming soon")`), the roster panel bottom-left (x 0, y 2, 2×2,
+  strips — below), the sleep panel top-right (x 3, y 0, 3×2,
+  `_sleep(ctx)`: strips three days across - stages, the body's rest
+  window, disturbed cycles; its engine rest_windows(), rest_strip(),
+  sleep_nights(), stage_pieces(), disturbed_slots(), tested in
+  `tests/test_frms_sleep.py`), the roster panel bottom-left (x 0, y 2, 2×2,
   `_roster(ctx)`) and a placeholder beside it (x 2, y 2, 4×2,
   `empty("Coming soon")`): `render()` is the layout, `_roster()` the
   roster panel — the timeline and its rails — its spec the one the whole

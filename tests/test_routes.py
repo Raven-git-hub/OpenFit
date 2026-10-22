@@ -5422,7 +5422,7 @@ def test_a_grids_sub_panels_draw_their_specs_as_at_the_top_of_a_tile(client):
 # the stand-in DOM, the clock held as for the focus clock.
 
 STRIPS_PARTS = RAILS_PARTS + ["ST_VIEW_MS", "ST_CURVE_STEP_MS", "ST_WOCL_PX", "ST_WOCL_STEP_MS", "stWoclIds",
-                               "ST_MAX_LANES", "ST_TONES", "stripsSpec"]
+                               "ST_MAX_LANES", "ST_TONES", "ST_KINDS", "ST_STAGES", "stripsSpec"]
 
 STRIPS_HARNESS = r"""
     // The curve's SVG, as the page makes it.
@@ -5756,6 +5756,85 @@ def test_strips_draw_their_lanes_and_join_the_focus_group_as_a_timeline_does(cli
     # Hand-built.
     assert r["odd"] == [["st-lane st-sky", "st-lane st-sky", "st-lane st-duty"], ["st-span st-t-none"], ["st-view"]]
     assert r["none"] == ["Nothing to draw yet", "Nothing to draw yet"]
+
+
+# The sleep panel's lanes: stage bars, the rest window, disturbed ticks -
+# three days across.
+SLEEP_STRIPS = {"type": "strips", "now": "2026-10-22T08:00:00Z", "sync": "frms", "hours": 72, "lanes": [
+    {"kind": "sleep", "label": "Sleep stages", "clock": False, "troughs": [], "bands": [], "wocl": [], "spans": [
+        {**_st("2026-10-20T13:30:00Z", "2026-10-20T14:00:00Z", "out"), "stage": "light"},
+        {**_st("2026-10-20T14:00:00Z", "2026-10-20T14:25:00Z", "in"), "stage": "deep"},
+        {**_st("2026-10-20T14:25:00Z", "2026-10-20T14:40:00Z", "in"), "stage": "rem"},
+    ]},
+    {"kind": "sky", "label": "Body clock", "clock": "date", "troughs": [], "bands": [], "wocl": [], "spans": [
+        _st("2026-10-19T00:00:00Z", "2026-10-20T14:00:00Z", "day", place="HKG", tz="Asia/Hong_Kong"),
+        _st("2026-10-20T14:00:00Z", "2026-10-21T00:00:00Z", "rest", place="HKG", tz="Asia/Hong_Kong"),
+        _st("2026-10-21T00:00:00Z", "2026-10-22T12:00:00Z", "day", place="HKG", tz="Asia/Hong_Kong"),
+    ]},
+    {"kind": "ticks", "label": "Disturbed cycles", "clock": False, "troughs": [], "bands": [], "wocl": [], "spans": [
+        _st("2026-10-20T17:00:00Z", "2026-10-20T18:30:00Z", "disturbed"),
+    ]},
+]}
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
+def test_strips_draw_sleep_stages_the_rest_window_and_disturbed_ticks_three_days_across(client):
+    page = _page(client)
+    r = _node(_strips_script(page, f"""
+        const box = renderSpec({json.dumps(SLEEP_STRIPS)}, 'FRMS', 'frms');
+        const track = box.querySelector('.st-track');
+        const lanes = kids(track, 'st-lane');
+        r.lanes = lanes.map(l => [l.className, l.children.map(c => c.className)]);
+        r.tags = box.querySelectorAll('.st-tag').map(t => [t.className, t.children.map(c => [c.className, c.textContent])]);
+        // Laid out 480 wide: three days across - the track the axis at
+        // that scale, padded half a viewport each end; the grid's square
+        // three hours.
+        showStrips(box, 480, 200);
+        const t0 = Date.parse('2026-10-19T00:00:00Z'), t1 = Date.parse('2026-10-22T12:00:00Z'), H = 3600000;
+        r.width = [parseFloat(track.style.width), 480 + (t1 - t0) * 480 / (72 * H)];
+        r.grid = lanes[0].children[0].style.backgroundSize;
+        const deep = lanes[0].children.find(c => c.className.includes('st-s-deep') && c.className.includes('st-span'));
+        r.deep = [parseFloat(deep.style.width), 25 * 60000 * 480 / (72 * H)];
+        // The group moved to a time: it's under the cursor, by the
+        // three-day scale.
+        setFocus(focusGroups.get('frms'), Date.parse('2026-10-20T18:00:00Z'), false);
+        r.atCursor = new Date(t0 + box.querySelector('.st-scroll').scrollLeft / (480 / (72 * H))).toISOString();
+
+        // Hand-built: a sleep span with no stage, or one it doesn't know,
+        // left out; a stage on another lane's span ignored; hours it
+        // can't take, a day.
+        const odd = renderSpec({{type: 'strips', hours: 7, lanes: [
+          {{kind: 'sleep', spans: [{{start: '2026-10-20T14:00:00Z', end: '2026-10-20T14:25:00Z', tone: 'in'}},
+                                   {{start: '2026-10-20T14:25:00Z', end: '2026-10-20T14:40:00Z', tone: 'in', stage: 'awake'}},
+                                   {{start: '2026-10-20T14:40:00Z', end: '2026-10-20T15:00:00Z', tone: 'in', stage: 'light'}}]}},
+          {{kind: 'sky', spans: [{{start: '2026-10-20T00:00:00Z', end: '2026-10-21T00:00:00Z', tone: 'rest', stage: 'deep'}}]}},
+        ]}}, 'X', 'x');
+        r.odd = odd.querySelectorAll('.st-span').map(c => c.className);
+        showStrips(odd, 480, 200);
+        r.oddGrid = odd.querySelector('.st-hours').style.backgroundSize;
+    """))
+
+    # The sleep lane: its grid upright only, a hairline a level, then its
+    # bars, each its tone and stage; the sky's rest window a span of its
+    # own; the ticks lane its disturbed stretch.
+    assert r["lanes"] == [
+        ["st-lane st-sleep", ["st-hours st-hours-v", "st-lvl st-s-light", "st-lvl st-s-deep", "st-lvl st-s-rem",
+                              "st-span st-t-out st-s-light", "st-span st-t-in st-s-deep", "st-span st-t-in st-s-rem"]],
+        ["st-lane st-sky", ["st-span st-t-day", "st-span st-t-rest", "st-span st-t-day"]],
+        ["st-lane st-ticks", ["st-span st-t-disturbed"]],
+    ]
+    # Each lane's tag; the sleep lane's names its levels at its right, the
+    # body clock's is a date clock - the label over home's date and time.
+    assert r["tags"][0] == ["st-tag st-tag-sleep", [["st-tag-l", "Sleep stages"], ["st-lv st-s-deep", "Deep"],
+                                                    ["st-lv st-s-rem", "REM"], ["st-lv st-s-light", "Light"]]]
+    assert r["tags"][1][0] == "st-tag two" and r["tags"][1][1][0] == ["st-tag-l", "Body clock"]
+    assert r["tags"][2] == ["st-tag", [["st-tag-l", "Disturbed cycles"]]]
+    assert abs(r["width"][0] - r["width"][1]) < 0.01
+    assert r["grid"] == "20px 20px"   # three hours at 480px for 72h
+    assert abs(r["deep"][0] - r["deep"][1]) < 0.001
+    assert r["atCursor"] == "2026-10-20T18:00:00.000Z"
+    assert r["odd"] == ["st-span st-t-in st-s-light", "st-span st-t-rest"]
+    assert r["oddGrid"] == "20px 20px"   # an hour at 480px for a day
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")

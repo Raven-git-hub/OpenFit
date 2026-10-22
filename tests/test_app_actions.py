@@ -1365,7 +1365,7 @@ def test_the_frms_app_installs_and_is_listed(client, apps_dir):
     # It reads the two duty kinds and invents no metric.
     assert client.get("/api/apps").get_json() == [
         {"id": "frms", "name": "FRMS", "default_size": {"w": 6, "h": 4}, "sizes": [{"w": 6, "h": 4}],
-         "reads": ["duties_rostered", "duties_complete"], "config": [], "metrics": [],
+         "reads": ["duties_rostered", "duties_complete", "sleep"], "config": [], "metrics": [],
          "files": ["app.py", "app.yaml", "config.json"]},
     ]
     # Nothing yet: it says so, over its picker.
@@ -1380,11 +1380,13 @@ def test_the_frms_tile_is_drawn_as_four_sub_panels(client, apps_dir):
     spec = client.post("/api/app/frms/render").get_json()
 
     # One grid spec, from the render route: the circadian panel - before
-    # any duty, the ask, as the roster's - two more to come as
-    # placeholders, the roster's panel 2x2 bottom-left.
+    # any duty, the ask, as the roster's - the sleep panel, before any
+    # sleep with stages its own ask, one more to come as a placeholder,
+    # the roster's panel 2x2 bottom-left.
     assert spec == {"type": "grid", "cols": 6, "rows": 4, "cells": [
         {"x": 0, "y": 0, "w": 3, "h": 2, "spec": {"type": "empty", "message": "Upload your roster .ics"}},
-        {"x": 3, "y": 0, "w": 3, "h": 2, "spec": {"type": "empty", "message": "Coming soon"}},
+        {"x": 3, "y": 0, "w": 3, "h": 2, "spec": {"type": "empty",
+                                                   "message": "No sleep stages yet - sync a sleep source that gives them"}},
         {"x": 0, "y": 2, "w": 2, "h": 2, "spec": {"type": "panel", "children": [
             {"type": "empty", "message": "Upload your roster .ics"}, ROSTER_PICKER]}},
         {"x": 2, "y": 2, "w": 4, "h": 2, "spec": {"type": "empty", "message": "Coming soon"}},
