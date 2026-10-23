@@ -660,9 +660,10 @@ own calls to its device API. Full direction:
   sessions). All its code is in `app.py`, by decision: the host imports
   it by path (nothing on `sys.path`, so a sibling module couldn't be
   imported by name) and reloads it only when `app.yaml` or `app.py`
-  changes. Config-driven: three files, `app.yaml`,
-  `app.py` (the engine) and `config.json` (the reference it reads — the
-  round trip installs all three). The config: `duty_types`, an ordered
+  changes. Config-driven: `app.yaml`, `app.py` (the engine) and
+  `config.json` (the reference it reads), and beside them the flash's two
+  images, `flash-light.txt` and `flash-dark.txt` — the round trip installs
+  all five. The config: `duty_types`, an ordered
   list of rules `{type, prefixes: [...]}` or `{type, regex}`, the first
   match winning; `default_type`; `personal` (`home_base`, `timezone` — an
   IANA zone, the body clock's — and `cbt_min`, `"HH:MM"` home local, the

@@ -478,8 +478,8 @@ route, and the roster's description verbatim. A duty's route is where it
 started and where it ended — the first leg's departure to the last leg's
 arrival, read from the description's list of sectors (the title if it has
 none) — so a day turn, out and back in one duty, starts and ends at base. The labels aren't written into
-the code: the app is three files, `app.yaml`, `app.py` and a `config.json`
-beside them that holds the duty-code rules (a code's prefix or a pattern for
+the code: the app is five files, `app.yaml`, `app.py`, the flash's two images
+(`flash-light.txt` and `flash-dark.txt`) and a `config.json` beside them that holds the duty-code rules (a code's prefix or a pattern for
 each type, the first match winning, and the type for a code none match), your
 home base and timezone, and a table of destinations, so adding a carrier or a
 duty code is a config edit, made with Update. The committed copy's config is a
