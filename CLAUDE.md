@@ -640,10 +640,10 @@ own calls to its device API. Full direction:
   <panel> panel failed` and the traceback printed, as the host logs a
   failed render, and `ctx.error(str(e))` (its type's name for an
   exception with no message) in its place: a fault in one panel is an
-  error in its own sub-panel, the others drawn as ever (the placeholders
-  aren't built, so need none). The circadian panel and the roster's
-  timeline and rails are one focus group, `"frms"`: scrolling either
-  scrolls the other, to one time. Its `app.yaml`: id `frms`
+  error in its own sub-panel, the others drawn as ever. The circadian
+  and sleep panels and the roster's timeline and rails are one focus
+  group, `"frms"`: scrolling any scrolls the others, to one time; the
+  rest budget isn't in it — it's always now. Its `app.yaml`: id `frms`
   (so it files under `app:frms`, session ids `app:frms:<kind>:<start>`),
   name "FRMS", `sizes: [{ w: 6, h: 4 }]` — the one size, so no picker —
   and `reads: [duties_rostered, duties_complete, sleep]`; no `metrics:` (its
