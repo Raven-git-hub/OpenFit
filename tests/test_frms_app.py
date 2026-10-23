@@ -305,20 +305,28 @@ def drawn(conn):
     return spec, before, datetime.now(timezone.utc)
 
 
-def test_the_tile_is_four_sub_panels_on_a_six_by_four_grid(conn):
+def test_the_tile_is_four_sub_panels_and_the_flash_on_a_six_by_five_grid(conn):
     file_duty(conn, "duties_rostered", "2099-11-05T15:10:00Z", "2099-11-06T04:10:00Z", "CX9102")
     conn.commit()
 
     spec = frms.render(host.Ctx(conn, today=TODAY), {})
 
     # The whole tile, its cells: circadian top-left, sleep top-right, the
-    # roster bottom-left at 2x2, the rest budget beside it -
+    # roster bottom-left at 2x2, the rest budget beside it, and under
+    # them the flash, 4x1 along the bottom right -
     # the roster panel the one _roster() draws, as it was alone.
-    assert (spec["type"], spec["cols"], spec["rows"]) == ("grid", 6, 4)
+    assert (spec["type"], spec["cols"], spec["rows"]) == ("grid", 6, 5)
     assert [(c["x"], c["y"], c["w"], c["h"]) for c in spec["cells"]] == [
-        (0, 0, 3, 2), (3, 0, 3, 2), (0, 2, 2, 2), (2, 2, 4, 2),
+        (0, 0, 3, 2), (3, 0, 3, 2), (0, 2, 2, 2), (2, 2, 4, 2), (2, 4, 4, 1),
     ]
-    [circadian, top_right, roster, bottom_right] = [c["spec"] for c in spec["cells"]]
+    [circadian, top_right, roster, bottom_right, flash] = [c["spec"] for c in spec["cells"]]
+    # The flash: the committed light image, the dark one for the dark
+    # themes, hugging the bottom right.
+    folder = FIXTURES / "apps" / "frms"
+    assert flash == {"type": "image", "src": (folder / "flash-light.txt").read_text().strip(),
+                     "dark": (folder / "flash-dark.txt").read_text().strip(),
+                     "alt": "OpenFit FRMS - Fatigue Risk Management System", "position": "bottom right"}
+    assert flash["src"].startswith("data:image/webp;base64,") and flash["dark"].startswith("data:image/webp;base64,")
     # The fixture's config has no positions, so the circadian panel says
     # why, in its own sub-panel - and the rest are drawn as ever.
     assert circadian == {"type": "error", "message": "home base ZZA needs a lat and lon in config.json's destinations"}
@@ -328,10 +336,11 @@ def test_the_tile_is_four_sub_panels_on_a_six_by_four_grid(conn):
     assert bottom_right["type"] == "row" and [c["type"] for c in bottom_right["children"]] == ["column", "donut"]
     assert roster["type"] == "panel" and roster["children"][0]["type"] == "rails"
     assert _roster_cell(spec) is roster
-    # Every cell of the six by four covered, once.
+    # Every cell of the six by five covered, once - but the bottom row's
+    # left end, bare.
     covered = [(x, y) for c in spec["cells"]
                for x in range(c["x"], c["x"] + c["w"]) for y in range(c["y"], c["y"] + c["h"])]
-    assert sorted(covered) == [(x, y) for x in range(6) for y in range(4)]
+    assert sorted(covered) == [(x, y) for x in range(6) for y in range(5) if (x, y) not in ((0, 4), (1, 4))]
     # Laid out the same before any duty: the roster's sub-panel asks for one.
     conn.execute("DELETE FROM sessions")
     conn.commit()
@@ -340,6 +349,45 @@ def test_the_tile_is_four_sub_panels_on_a_six_by_four_grid(conn):
     assert _roster_cell(empty) == {"type": "panel", "children": [
         {"type": "empty", "message": "Upload your roster .ics"}, PICKER]}
     assert _circadian_cell(empty) == {"type": "empty", "message": "Upload your roster .ics"}
+
+
+@pytest.mark.parametrize("files, want", [
+    # Neither file: no flash, the row bare.
+    ({}, None),
+    # One alone - either - in every theme.
+    ({"flash-light.txt": "LIGHT"}, ("LIGHT", None)),
+    ({"flash-dark.txt": "DARK"}, ("DARK", None)),
+    ({"flash-light.txt": "LIGHT\n", "flash-dark.txt": " DARK"}, ("LIGHT", "DARK")),
+    # An empty file is none.
+    ({"flash-light.txt": "\n", "flash-dark.txt": "DARK"}, ("DARK", None)),
+])
+def test_the_flash_is_its_files_and_the_row_is_bare_without_them(tmp_path, conn, files, want):
+    uri = lambda tag: "data:image/webp;base64," + {"LIGHT": "TElHSFQ=", "DARK": "REFSSw=="}[tag]
+    for name, text in files.items():
+        (tmp_path / name).write_text(text.replace("LIGHT", uri("LIGHT")).replace("DARK", uri("DARK")))
+    app = load_with_config(tmp_path, json.dumps(REAL_CONFIG))
+
+    spec = app.render(host.Ctx(conn, today=TODAY), {})
+
+    assert (spec["cols"], spec["rows"]) == (6, 5)
+    flash = [c for c in spec["cells"] if (c["x"], c["y"]) == (2, 4)]
+    if want is None:
+        assert flash == [] and len(spec["cells"]) == 4
+    else:
+        [cell] = flash
+        assert (cell["w"], cell["h"]) == (4, 1)
+        assert (cell["spec"]["src"], cell["spec"]["dark"]) == (uri(want[0]), want[1] and uri(want[1]))
+
+
+def test_a_flash_the_host_wont_draw_leaves_the_row_bare_and_is_logged(tmp_path, conn, capsys):
+    # A web address: never fetched, so never drawn.
+    (tmp_path / "flash-light.txt").write_text("https://example.com/flash.png")
+    app = load_with_config(tmp_path, json.dumps(REAL_CONFIG))
+
+    spec = app.render(host.Ctx(conn, today=TODAY), {})
+
+    assert [(c["x"], c["y"]) for c in spec["cells"]] == [(0, 0), (3, 0), (0, 2), (2, 2)]
+    assert "[apps] frms: the flash isn't drawn: an image's src must be a data: URI" in capsys.readouterr().out
 
 
 def test_render_draws_the_rostered_and_the_flown_on_a_timeline(conn):

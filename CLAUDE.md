@@ -407,6 +407,14 @@ own calls to its device API. Full direction:
   bar's segments stacked from the foot, `BAR_FIELDS`; `max` > 0 and no bar
   over it; `now` 0..len(bars), the now line before that bar) — the
   dashboard builders, knowing nothing of what they show,
+  `image(src, alt=None, dark=None, position="center")` → `{"type": "image",
+  src, dark, alt, position}` (a picture carried in the spec, never
+  fetched: `src`/`dark` a `data:` URI of a PNG, JPEG or WebP, base64
+  (`IMAGE_TYPES`, `_DATA_URI`; no SVG, never a URL, at most
+  `IMAGE_MAX_CHARS`, else `ValueError`, not text `TypeError`), `dark`
+  the dark themes', `position` one of `IMAGE_POSITIONS`; drawn
+  contained, the dark one switched in as the tokens are, bare alone in
+  a sub-panel — `.spec-cell:has(> .spec-image)`),
   `strips(lanes, now=None, sync=None, hours=None)` → `{"type": "strips", now, lanes:
   [{kind, label, clock, spans: [{start, end, tone, label, place, tz}],
   troughs, bands: [{start, end, label}], wocl: [{start, end}]}]}`, plus
@@ -621,7 +629,8 @@ own calls to its device API. Full direction:
   host loads it, and the round trip by `tests/test_app_actions.py`,
   against the synthetic `tests/fixtures/rosters/sample.ics` — fake
   flights and ports). The whole FRMS suite is this one app: one tile, one
-  `config.json`, drawn as four sub-panels on a 6×4 `ctx.grid()` —
+  `config.json`, drawn as four sub-panels on a 6×5 `ctx.grid()` (and,
+  under them at x 2, y 4, 4×1, the flash — `_flash(ctx)`, below) —
   the circadian panel top-left (x 0, y 0, 3×2, `_circadian(ctx)`, three
   strips — below), the sleep panel top-right (x 3, y 0, 3×2,
   `_sleep(ctx)`: strips three days across - stages, the body's rest
@@ -645,15 +654,16 @@ own calls to its device API. Full direction:
   group, `"frms"`: scrolling any scrolls the others, to one time; the
   rest budget isn't in it — it's always now. Its `app.yaml`: id `frms`
   (so it files under `app:frms`, session ids `app:frms:<kind>:<start>`),
-  name "FRMS", `sizes: [{ w: 6, h: 4 }]` — the one size, so no picker —
+  name "FRMS", `sizes: [{ w: 6, h: 5 }]` — the one size, so no picker —
   and `reads: [duties_rostered, duties_complete, sleep]`; no `metrics:` (its
   duty-hour metrics were dropped: a report reads duty hours from the
   sessions). All its code is in `app.py`, by decision: the host imports
   it by path (nothing on `sys.path`, so a sibling module couldn't be
   imported by name) and reloads it only when `app.yaml` or `app.py`
-  changes. Config-driven: three files, `app.yaml`,
-  `app.py` (the engine) and `config.json` (the reference it reads — the
-  round trip installs all three). The config: `duty_types`, an ordered
+  changes. Config-driven: `app.yaml`, `app.py` (the engine) and
+  `config.json` (the reference it reads), and beside them the flash's two
+  images, `flash-light.txt` and `flash-dark.txt` — the round trip installs
+  all five. The config: `duty_types`, an ordered
   list of rules `{type, prefixes: [...]}` or `{type, regex}`, the first
   match winning; `default_type`; `personal` (`home_base`, `timezone` — an
   IANA zone, the body clock's — and `cbt_min`, `"HH:MM"` home local, the
@@ -2452,7 +2462,7 @@ same PR:
   renamed Roster and Complete (labels only — the kinds unchanged).
   Then the Roster app became FRMS (no migration, no route or host
   change: an app fixture and its tests): id `roster` → `frms`, so it
-  files under `app:frms`, name "FRMS", one size, 6×4 — the whole FRMS
+  files under `app:frms`, name "FRMS", one size, 6×4 (6×5 since the flash) — the whole FRMS
   suite as one app with one `config.json`, to be drawn as four
   sub-panels (the roster's timeline and rails first, filling the tile
   until the layout brick; a circadian panel next), all its code in
@@ -2586,6 +2596,19 @@ same PR:
   is the evening before its first stored duty. Not synced; its clock is
   `_now()`, a test's one seam. Before any duty, "Upload your roster
   .ics". Deploy: Update FRMS with the new `app.py`.
+  Then the flash: the host's `image` spec (above) and FRMS 6×5, its
+  four panels where they were and under them, at x 2, y 4, 4×1, the
+  OpenFit FRMS flash hugging the bottom right, the row's left end
+  bare. The images are text files beside `app.py` — `flash-light.txt`
+  and `flash-dark.txt`, each a `data:image/webp;base64,...` URI (1500×400,
+  from `docs/design/brand/`'s 3000×800 PNGs — the dark one's ground is
+  the dark `--bg`, the light one's white made transparent, so each sits
+  on the page), app files being text —
+  read once at load (`_read_flash()`); `_flash(ctx)` the image, either
+  alone in every theme, or `None` with neither or one the host refuses
+  (logged: `[apps] frms: the flash isn't drawn: ...`), the cell left
+  out. Deploy: rebuild the image, then Update FRMS — `app.yaml`,
+  `app.py`, and the two flash files added (＋ Add file).
   Still to come for it: personalising `cbt_min` from sleep data, Garmin's stage timelines, the cycle
   rule for the rest reports, a sub-panel's error isolated by the host
   itself (an

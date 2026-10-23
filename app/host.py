@@ -185,6 +185,14 @@ the dicts directly):
         tallest bar's total). A bar's label is under it, only where
         given; title is the tag top-left; now, a whole number from 0 to
         the bars' count, draws the now line before that bar
+    {"type": "image", "src", "dark", "alt", "position"}
+        a picture fitting its box whole (contained), anchored at
+        position - center, left, right, top, bottom or a corner, "bottom
+        right" - its src an image carried in the spec itself (a data: URI,
+        PNG, JPEG or WebP; never a web address, so the page never fetches
+        one), dark the one for the dark themes (null: src in every theme),
+        alt its text. Alone in a grid's sub-panel it's drawn bare, on the
+        page, with no card behind it
     {"type": "empty", "message"}
     {"type": "error", "message"}
         the host's, when a render fails; an app's for a part of its tile
@@ -197,6 +205,7 @@ broken app shows as one error tile rather than failing the page.
 
 import json
 import math
+import re
 import traceback
 from datetime import date, datetime, timedelta
 from typing import NamedTuple
@@ -1127,6 +1136,49 @@ def bars(bars, max=None, title=None, now=None):
     return {"type": "bars", "title": _text_or_none(title, "title", f"{what}'s"), "max": max, "now": now, "bars": out}
 
 
+# An image is carried in the spec, never fetched: a data: URI of one of
+# these types, base64, at most IMAGE_MAX_CHARS long. No SVG - it can carry
+# script - and never a URL, so drawing a spec makes no request.
+IMAGE_TYPES = ("png", "jpeg", "webp")
+IMAGE_MAX_CHARS = 1024 * 1024
+IMAGE_POSITIONS = ("center", "top", "bottom", "left", "right",
+                   "top left", "top right", "bottom left", "bottom right")
+_DATA_URI = re.compile(r"data:image/(png|jpeg|webp);base64,[A-Za-z0-9+/]+={0,2}")
+
+
+def _image_src(src, what):
+    if not isinstance(src, str):
+        raise TypeError(f"{what} must be a data: URI, text: {src!r}")
+    src = src.strip()
+    if len(src) > IMAGE_MAX_CHARS:
+        raise ValueError(f"{what} is {len(src)} characters - at most {IMAGE_MAX_CHARS}")
+    if not _DATA_URI.fullmatch(src):
+        raise ValueError(f"{what} must be a data: URI of a {', '.join(IMAGE_TYPES)} image, "
+                         f"base64 (data:image/png;base64,...) - never a web address: {src[:40]!r}")
+    return src
+
+
+def image(src, alt=None, dark=None, position="center"):
+    """A picture: `src` an image carried in the spec - a data: URI,
+    "data:image/png;base64,...", a PNG, JPEG or WebP (IMAGE_TYPES), at
+    most IMAGE_MAX_CHARS - never a web address, so it's never fetched.
+    `dark`, optional, the same for the dark themes (None: `src` in
+    every theme). `alt` its text, or None. `position` where it sits in
+    its box, drawn whole (contained): one of IMAGE_POSITIONS, "center" by
+    default - "bottom right" hugs that corner. Alone in a grid's
+    sub-panel it's drawn bare, on the page. Raises TypeError or
+    ValueError for anything it can't draw."""
+    if position not in IMAGE_POSITIONS:
+        raise ValueError(f"an image's position is one of {', '.join(IMAGE_POSITIONS)}, not {position!r}")
+    return {
+        "type": "image",
+        "src": _image_src(src, "an image's src"),
+        "dark": None if dark is None else _image_src(dark, "an image's dark"),
+        "alt": _text_or_none(alt, "alt", "an image's"),
+        "position": position,
+    }
+
+
 def empty(message=None):
     """Nothing to show, and why."""
     return {"type": "empty", "message": message or "No data yet"}
@@ -1161,6 +1213,7 @@ class Ctx:
     column = staticmethod(column)
     donut = staticmethod(donut)
     bars = staticmethod(bars)
+    image = staticmethod(image)
     empty = staticmethod(empty)
     error = staticmethod(error)
 

@@ -5581,6 +5581,57 @@ def test_the_charts_tones_are_the_status_tokens_in_every_theme(client):
     assert "font-size:calc(min(100cqw, 100cqh) * .18);" in block
 
 
+# ---------- image ----------
+
+IMAGE_PARTS = TIMELINE_PARTS + ["IMAGE_SRC", "IMAGE_POSITIONS", "imageSpec"]
+PNG_URI = "data:image/png;base64,iVBORw0KGgo="
+
+
+def test_an_image_is_drawn_whole_from_its_data_uri_a_dark_one_beside_it(client):
+    page = _page(client)
+    r = _node(MINI_DOM + "\n".join(_js(page, n) for n in IMAGE_PARTS) + TIMELINE_HARNESS + f"""
+        const draw = spec => {{ const b = renderSpec(spec, 'X', 'x');
+          return [b.className, b.children.map(i => [i.tag, i.className, i.attrs.src, i.attrs.alt, i.style.objectPosition])]; }};
+        r.both = draw({{type: 'image', src: '{PNG_URI}', dark: '{PNG_URI.replace("png", "webp", 1)}', alt: 'OpenFit <b>', position: 'bottom right'}});
+        r.one = draw({{type: 'image', src: '{PNG_URI}', dark: null, alt: null, position: 'nowhere'}});
+        // Never a web address, nor a dark one that isn't a data: URI.
+        r.url = renderSpec({{type: 'image', src: 'https://example.com/a.png'}}, 'X', 'x');
+        r.url = [r.url.className, r.url.textContent];
+        r.badDark = draw({{type: 'image', src: '{PNG_URI}', dark: 'https://example.com/a.png', position: 'top'}});
+        r.svg = renderSpec({{type: 'image', src: 'data:image/svg+xml;base64,PHN2Zz4='}}, 'X', 'x').className;
+        const b = renderSpec({{type: 'image', src: '{PNG_URI}'}}, 'X', 'x');
+        r.html = [b, ...b.querySelectorAll('*')].map(n => n._html).join('');
+        console.log(JSON.stringify(r));
+    """)
+    webp = PNG_URI.replace("png", "webp", 1)
+    assert r["both"] == ["spec-image has-dark", [["img", "light", PNG_URI, "OpenFit <b>", "bottom right"],
+                                                 ["img", "dark", webp, "OpenFit <b>", "bottom right"]]]
+    assert r["one"] == ["spec-image", [["img", "light", PNG_URI, "", "center"]]]
+    assert r["url"] == ["spec-msg", "No image"]
+    assert r["badDark"] == ["spec-image", [["img", "light", PNG_URI, "", "top"]]]
+    assert r["svg"] == "spec-msg"
+    assert r["html"] == ""
+
+
+def test_an_images_dark_one_follows_the_theme_and_alone_in_a_sub_panel_its_bare(client):
+    page = _page(client)
+    css = page[: page.index("</style>")]
+    block = css[css.index("/* image: a picture carried in the spec") : css.index("/* row and column:")]
+    # Drawn whole in its box.
+    assert ".spec-image img{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;display:block;}" in block
+    # The dark one hidden, but in the dark themes - as the tokens switch:
+    # the system's dark unless the setting says light, or the setting dark.
+    assert ".spec-image img.dark{display:none;}" in block
+    tokens = css[css.index("@media (prefers-color-scheme:dark){") :]
+    assert tokens.startswith('@media (prefers-color-scheme:dark){\n  :root:not([data-theme="light"]){')
+    assert ('@media (prefers-color-scheme:dark){\n'
+            '  :root:not([data-theme="light"]) .spec-image.has-dark img.light{display:none;}\n'
+            '  :root:not([data-theme="light"]) .spec-image.has-dark img.dark{display:block;}\n}') in block
+    assert ':root[data-theme="dark"] .spec-image.has-dark img.light{display:none;}' in block
+    assert ':root[data-theme="dark"] .spec-image.has-dark img.dark{display:block;}' in block
+    assert ".spec-cell:has(> .spec-image){background:none;border:none;box-shadow:none;padding:0;}" in block
+
+
 # ---------- strips: the circadian panel's lanes, a day across ----------
 #
 # A strips spec is lanes of tinted spans on one horizontal time axis, a

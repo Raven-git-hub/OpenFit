@@ -1302,7 +1302,8 @@ def _roster_cell(spec):
 def install_frms(client):
     """Install the FRMS app through the Library, from its committed files."""
     folder = REAL_APPS / "frms"
-    files = {name: (folder / name).read_text() for name in ("app.yaml", "app.py", "config.json")}
+    files = {name: (folder / name).read_text()
+             for name in ("app.yaml", "app.py", "config.json", "flash-light.txt", "flash-dark.txt")}
     resp = client.post("/api/apps", json={"files": files})
     assert resp.status_code == 201, resp.get_json()
 
@@ -1364,9 +1365,9 @@ def test_the_frms_app_installs_and_is_listed(client, apps_dir):
 
     # It reads the two duty kinds and invents no metric.
     assert client.get("/api/apps").get_json() == [
-        {"id": "frms", "name": "FRMS", "default_size": {"w": 6, "h": 4}, "sizes": [{"w": 6, "h": 4}],
+        {"id": "frms", "name": "FRMS", "default_size": {"w": 6, "h": 5}, "sizes": [{"w": 6, "h": 5}],
          "reads": ["duties_rostered", "duties_complete", "sleep"], "config": [], "metrics": [],
-         "files": ["app.py", "app.yaml", "config.json"]},
+         "files": ["app.py", "app.yaml", "config.json", "flash-dark.txt", "flash-light.txt"]},
     ]
     # Nothing yet: it says so, over its picker.
     assert _roster_cell(client.post("/api/app/frms/render").get_json()) == {
@@ -1382,25 +1383,31 @@ def test_the_frms_tile_is_drawn_as_four_sub_panels(client, apps_dir):
     # One grid spec, from the render route: the circadian panel - before
     # any duty, the ask, as the roster's - the sleep panel, before any
     # sleep with stages its own ask, the roster's panel 2x2 bottom-left,
-    # and the rest budget beside it, before any duty the same ask.
-    assert spec == {"type": "grid", "cols": 6, "rows": 4, "cells": [
+    # and the rest budget beside it, before any duty the same ask; under
+    # them the flash, bottom right, its two images the files installed.
+    folder = REAL_APPS / "frms"
+    assert spec == {"type": "grid", "cols": 6, "rows": 5, "cells": [
         {"x": 0, "y": 0, "w": 3, "h": 2, "spec": {"type": "empty", "message": "Upload your roster .ics"}},
         {"x": 3, "y": 0, "w": 3, "h": 2, "spec": {"type": "empty",
                                                    "message": "No sleep stages yet - sync a sleep source that gives them"}},
         {"x": 0, "y": 2, "w": 2, "h": 2, "spec": {"type": "panel", "children": [
             {"type": "empty", "message": "Upload your roster .ics"}, ROSTER_PICKER]}},
         {"x": 2, "y": 2, "w": 4, "h": 2, "spec": {"type": "empty", "message": "Upload your roster .ics"}},
+        {"x": 2, "y": 4, "w": 4, "h": 1, "spec": {
+            "type": "image", "src": (folder / "flash-light.txt").read_text().strip(),
+            "dark": (folder / "flash-dark.txt").read_text().strip(),
+            "alt": "OpenFit FRMS - Fatigue Risk Management System", "position": "bottom right"}},
     ]}
 
 
-def test_frms_is_one_six_by_four_tile(client, apps_dir):
+def test_frms_is_one_six_by_five_tile(client, apps_dir):
     install_frms(client)
 
     # One size, the whole suite's tile - so no size picker - and its
-    # default.
+    # default: the four panels and the flash's row under them.
     [frms] = client.get("/api/apps").get_json()
-    assert frms["sizes"] == [{"w": 6, "h": 4}]
-    assert frms["default_size"] == {"w": 6, "h": 4}
+    assert frms["sizes"] == [{"w": 6, "h": 5}]
+    assert frms["default_size"] == {"w": 6, "h": 5}
 
 
 def test_an_upload_files_its_sessions_under_app_frms(client, conn, apps_dir, upload_dir):

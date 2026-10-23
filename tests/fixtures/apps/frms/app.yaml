@@ -1,4 +1,4 @@
 id: frms
 name: FRMS
-sizes: [{ w: 6, h: 4 }]
+sizes: [{ w: 6, h: 5 }]
 reads: [duties_rostered, duties_complete, sleep]

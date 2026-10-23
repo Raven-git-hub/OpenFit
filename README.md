@@ -319,7 +319,8 @@ bars, a rest window, ticks, trips away as bars behind them, a curve with
 a window marked red under it, a lane's tag its label over the place or date and
 time under the cursor — that, named into a sync group, scrolls with the group's
 timelines both ways, by time), `row` and `column` (children side by side or
-stacked, each its share), `donut` (a ring of segments in the status colours,
+stacked, each its share), `image` (a picture carried in the spec itself, never
+fetched, with a dark version for the dark themes), `donut` (a ring of segments in the status colours,
 planned ones hatched, a figure in the middle) and `bars` (stacked segments
 side by side on one scale, with a now line), `empty` and `error` (for a part of
 a tile that failed). An app that fails to load is logged and
@@ -456,11 +457,13 @@ Nothing is derived from a session, so no day is re-derived for it. The
 just finished from how many minutes it lasted, is the example.
 
 The **FRMS** app (`tests/fixtures/apps/frms/`) puts the two together. It's
-the whole FRMS suite as one app — one tile, 6 wide by 4 tall (its only size),
+the whole FRMS suite as one app — one tile, 6 wide by 5 tall (its only size),
 and one `config.json` — drawn as four sub-panels, each like a tile of its own:
 its roster panel, the timeline and rails below, 2×2 at the bottom left, its
 circadian panel (below) 3×2 at the top left, its sleep panel (below) 3×2 at
-the top right, and its rest budget (below) 4×2 beside the roster. A panel that fails
+the top right, and its rest budget (below) 4×2 beside the roster — and under them, along the
+bottom right, the OpenFit FRMS flash, in the light or dark version to suit the
+theme. A panel that fails
 shows its error in its own sub-panel; the others are drawn as ever.
 All its code is in its one `app.py`, by design. You upload a duty roster's
 `.ics` export, and the app — not OpenFit — reads it.
@@ -475,8 +478,8 @@ route, and the roster's description verbatim. A duty's route is where it
 started and where it ended — the first leg's departure to the last leg's
 arrival, read from the description's list of sectors (the title if it has
 none) — so a day turn, out and back in one duty, starts and ends at base. The labels aren't written into
-the code: the app is three files, `app.yaml`, `app.py` and a `config.json`
-beside them that holds the duty-code rules (a code's prefix or a pattern for
+the code: the app is five files, `app.yaml`, `app.py`, the flash's two images
+(`flash-light.txt` and `flash-dark.txt`) and a `config.json` beside them that holds the duty-code rules (a code's prefix or a pattern for
 each type, the first match winning, and the type for a code none match), your
 home base and timezone, and a table of destinations, so adding a carrier or a
 duty code is a config edit, made with Update. The committed copy's config is a

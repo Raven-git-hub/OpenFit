@@ -1,8 +1,11 @@
 """FRMS — one app, one tile, one config.
 
-The FRMS suite is this one app: one tile, 6 wide by 4 tall (app.yaml's
+The FRMS suite is this one app: one tile, 6 wide by 5 tall (app.yaml's
 only size), one config.json. render() draws the tile as four sub-panels
-on a 6x4 grid (ctx.grid()), each drawn as a tile of its own: circadian
+on a 6x5 grid (ctx.grid()), each drawn as a tile of its own - and under
+them, along the bottom right (4x1), the OpenFit FRMS flash (ctx.image(),
+flash-light.txt and flash-dark.txt beside this file), the row's left
+end bare: circadian
 top-left (3x2) - three strips, a day across - sleep top-right (3x2), the
 roster bottom-left (2x2) - the timeline and its Plan and Report rails -
 and the rest budget bottom-right (4x2) - donuts and a month's bars. The
@@ -178,13 +181,48 @@ except (OSError, ValueError) as _e:
     CONFIG, CONFIG_ERROR = None, f"config.json won't read: {_e}"
 
 
+# The flash - OpenFit FRMS - under the panels, bottom right: each theme's
+# image a text file beside this one, a data: URI (a WebP), as app files
+# are text. Read once, at load, as config.json is; one missing, None.
+def _read_flash(name):
+    try:
+        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), name), encoding="utf-8") as f:
+            return f.read().strip() or None
+    except (OSError, UnicodeDecodeError):
+        return None
+
+
+FLASH_LIGHT, FLASH_DARK = _read_flash("flash-light.txt"), _read_flash("flash-dark.txt")
+FLASH_ALT = "OpenFit FRMS - Fatigue Risk Management System"
+
+
 def render(ctx, cfg):
-    return ctx.grid(6, 4, [
+    cells = [
         {"x": 0, "y": 0, "w": 3, "h": 2, "spec": _panel(ctx, _circadian)},
         {"x": 3, "y": 0, "w": 3, "h": 2, "spec": _panel(ctx, _sleep)},
         {"x": 0, "y": 2, "w": 2, "h": 2, "spec": _panel(ctx, _roster)},
         {"x": 2, "y": 2, "w": 4, "h": 2, "spec": _panel(ctx, _budget)},
-    ])
+    ]
+    flash = _flash(ctx)
+    if flash is not None:
+        cells.append({"x": 2, "y": 4, "w": 4, "h": 1, "spec": flash})
+    return ctx.grid(6, 5, cells)
+
+
+def _flash(ctx):
+    """The flash's spec - hugging the tile's bottom right, the light
+    image and the dark one for the dark themes (either alone, in every
+    theme) - or None, the row left bare: with neither file, or one the
+    host won't draw (logged), there's nothing to show, and nothing
+    else is the worse for it."""
+    light, dark = FLASH_LIGHT or FLASH_DARK, FLASH_DARK if FLASH_LIGHT else None
+    if light is None:
+        return None
+    try:
+        return ctx.image(light, alt=FLASH_ALT, dark=dark, position="bottom right")
+    except (TypeError, ValueError) as e:
+        print(f"[apps] frms: the flash isn't drawn: {e}")
+        return None
 
 
 def _panel(ctx, build):

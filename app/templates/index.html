@@ -984,6 +984,20 @@ h5 + .dnote{margin-top:0;}
 .spec-input .m{font-size:11px;font-family:var(--font-mono);color:var(--crit);overflow-wrap:anywhere;}
 .spec-input .m:empty{display:none;}
 /* empty and error: muted, centred */
+/* image: a picture carried in the spec, drawn whole in its box at its
+   position; a dark one, when given, in place of it in the dark themes -
+   switched as the tokens are, the theme setting first, then the system's.
+   Alone in a sub-panel it's bare: no card behind it, on the page. */
+.spec-image{position:relative;min-width:0;min-height:0;}
+.spec-image img{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;display:block;}
+.spec-image img.dark{display:none;}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]) .spec-image.has-dark img.light{display:none;}
+  :root:not([data-theme="light"]) .spec-image.has-dark img.dark{display:block;}
+}
+:root[data-theme="dark"] .spec-image.has-dark img.light{display:none;}
+:root[data-theme="dark"] .spec-image.has-dark img.dark{display:block;}
+.spec-cell:has(> .spec-image){background:none;border:none;box-shadow:none;padding:0;}
 /* row and column: children side by side, or stacked, each its share by
    its weight - flex-basis 0, so a share is exact whatever the child holds. */
 .spec-row{display:flex;gap:10px;min-width:0;min-height:0;}
@@ -4020,6 +4034,7 @@ h5 + .dnote{margin-top:0;}
     column: (s, name, appId) => splitSpec(s, name, appId, 'spec-column', 'heights'),
     donut: s => donutSpec(s),
     bars: s => barsSpec(s),
+    image: s => imageSpec(s),
     grid: (s, name, appId) => {
       const box = el('div','spec-grid');
       box.style.gridTemplateColumns = `repeat(${s.cols}, minmax(0, 1fr))`;
@@ -4356,6 +4371,31 @@ h5 + .dnote{margin-top:0;}
       const now = plot.appendChild(el('div','now'));
       now.style.left = (s.now * 100 / n) + '%';
       now.appendChild(el('div','now-tag')).textContent = 'Now';
+    }
+    return box;
+  }
+  /* image: carried in the spec as a data: URI - a PNG, JPEG or WebP,
+     never fetched from anywhere - drawn whole in its box at its
+     position, its alt as given; a dark one, when the spec has one, in
+     the dark themes instead (CSS, as the tokens switch). A src that
+     isn't such a URI draws no image, only that it's missing. */
+  const IMAGE_SRC = /^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+\/]+={0,2}$/;
+  const IMAGE_POSITIONS = ['center', 'top', 'bottom', 'left', 'right', 'top left', 'top right', 'bottom left', 'bottom right'];
+  function imageSpec(s){
+    const ok = v => typeof v==='string' && IMAGE_SRC.test(v);
+    if(!ok(s.src)) return specMsg(null, 'No image');
+    const box = el('div','spec-image');
+    const pos = IMAGE_POSITIONS.includes(s.position) ? s.position : 'center';
+    const add = (src, cls) => {
+      const img = box.appendChild(el('img', cls));
+      img.setAttribute('src', src);
+      img.setAttribute('alt', typeof s.alt==='string' ? s.alt : '');
+      img.style.objectPosition = pos;
+    };
+    add(s.src, 'light');
+    if(ok(s.dark)){
+      box.classList.toggle('has-dark', true);
+      add(s.dark, 'dark');
     }
     return box;
   }
