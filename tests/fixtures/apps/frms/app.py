@@ -3,12 +3,12 @@
 The FRMS suite is this one app: one tile, 6 wide by 4 tall (app.yaml's
 only size), one config.json. render() draws the tile as four sub-panels
 on a 6x4 grid (ctx.grid()), each drawn as a tile of its own: circadian
-top-left (3x2) - three strips, a day across - the roster bottom-left
-(2x2) - the timeline and its Plan and Report rails - and two more to
-come, top-right (3x2) and bottom-right (4x2), placeholders until
-they're built. The circadian strips and the roster's timeline and rails
-are one focus group, "frms": scroll either and the other follows, to the
-same time.
+top-left (3x2) - three strips, a day across - sleep top-right (3x2), the
+roster bottom-left (2x2) - the timeline and its Plan and Report rails -
+and the rest budget bottom-right (4x2) - donuts and a month's bars. The
+circadian and sleep strips and the roster's timeline and rails are one
+focus group, "frms": scroll any and the others follow, to the same time;
+the rest budget is always now.
 
 Each panel is built on its own (_panel()): one that raises - a config
 without the positions the circadian panel needs, say - is an error in
@@ -123,6 +123,18 @@ sessions with a stage timeline, one a night; stage_pieces() - their
 stages to draw, cut at the rest window's edges; disturbed_slots() - each
 duty's slots in the rest window and the sleep in each. Like the body
 clock, the rest window is home's, always.
+
+The rest budget (_budget()) draws how much of the body's rest window the
+roster has cost, and is going to: budget_slots() cuts each night's rest
+window into fixed slots and says what took each - a flight or sim under
+way ("duty"; rest on board saves a past one), the pre-duty time before a
+flight's report ("pre_duty"), or, away, local time outside the rest band
+("body_clock") - rolling_share() a rolling window's share of them, and
+month_share() the month's, flown and rostered. Three donuts (7 days, 30
+days, 6 months), a bar a night of the month, and the month's donut - in
+ctx.row(), ctx.column(), ctx.donut() and ctx.bars(). Its slots are the
+same every night, so a night's share adds up; the sleep panel's
+disturbed cycles follow each duty instead, and the two are kept apart.
 """
 
 import bisect
@@ -171,7 +183,7 @@ def render(ctx, cfg):
         {"x": 0, "y": 0, "w": 3, "h": 2, "spec": _panel(ctx, _circadian)},
         {"x": 3, "y": 0, "w": 3, "h": 2, "spec": _panel(ctx, _sleep)},
         {"x": 0, "y": 2, "w": 2, "h": 2, "spec": _panel(ctx, _roster)},
-        {"x": 2, "y": 2, "w": 4, "h": 2, "spec": ctx.empty("Coming soon")},
+        {"x": 2, "y": 2, "w": 4, "h": 2, "spec": _panel(ctx, _budget)},
     ])
 
 
@@ -284,6 +296,76 @@ def _sleep(ctx):
         {"kind": "ticks", "label": "Disturbed cycles",
          "spans": [{"start": x["start"], "end": x["end"], "tone": "disturbed"} for x in slots if x["disturbed"]]},
     ], now=now, sync="frms", hours=72)
+
+
+def _budget(ctx):
+    """The rest budget panel, its sub-panel's spec: how much of the body's
+    rest window the roster has cost, and is going to. Three donuts, the
+    last 7 days, 30 days and 6 months - the share of slots disturbed,
+    each with how many of its days the roster covers while it's younger
+    than that - over a bar a night for this month, each its slots, red
+    from the foot, the rostered ones still to come hatched, a now line
+    before tonight's; beside them this month's donut - flown slots solid,
+    rostered ones hatched, flown first - its share disturbed, flown and
+    rostered together, in the middle. Not synced: it's always now.
+    Before any roster, the ask."""
+    if CONFIG is None:
+        return ctx.empty(CONFIG_ERROR)
+    now = _now()
+    today = now.astimezone(_home_zone(CONFIG)).date()
+    since = today - timedelta(days=BUDGET_WINDOWS[-1][0] + 2)
+    rostered = ctx.sessions(ROSTERED, since=since.isoformat())
+    flown = ctx.sessions(COMPLETE, since=since.isoformat())
+    starts = [_utc(s.start, "a duty's start") for s in (*rostered, *flown)]
+    if not starts:
+        return ctx.empty("Upload your roster .ics")
+    # The roster's first night: the evening before its first duty, so the
+    # night that duty (or its pre-duty time) falls in counts.
+    begun = min(starts).astimezone(_home_zone(CONFIG)).date() - timedelta(days=1)
+    nights = sleep_nights(ctx.sessions(SLEEP, since=(since - timedelta(days=1)).isoformat()))
+    month_end = (today.replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1)
+    budget = budget_slots(rostered, flown, nights, now, since, month_end)
+
+    def seg(value, tone, planned=False):
+        return {"value": value, "tone": tone, "planned": planned}
+
+    donuts = []
+    for days, caption in BUDGET_WINDOWS:
+        share = rolling_share(budget, now, days, begun)
+        red, total = share["red"], share["total"]
+        donuts.append(ctx.donut([seg(total - red, "good"), seg(red, "crit")],
+                                figure=f"{round(100 * red / total)}%" if total else "-", caption=caption,
+                                note=f"{share['days']} of {days} days" if share["days"] < days else None))
+    month = month_share(budget, today.isoformat()[:7], begun)
+    name = MONTHS[today.month - 1]
+    bars, now_at = [], None
+    for i, night in enumerate(month["nights"]):
+        if now_at is None and (night["planned_red"] or night["planned_rested"]):
+            now_at = i
+        day = int(night["night"][8:])
+        bars.append({"segments": [seg(night["red"], "crit"), seg(night["planned_red"], "crit", True),
+                                  seg(night["rested"], "good"), seg(night["planned_rested"], "good", True)],
+                     "label": str(day) if day % 7 == 1 else None})
+    # The scale's top: a night's slots - seven by default, one more or
+    # less across a clock change.
+    per_night = max(len(n["slots"]) for n in budget)
+    red = month["flown_red"] + month["rostered_red"]
+    total = red + month["flown_rested"] + month["rostered_rested"]
+    big = ctx.donut([seg(month["flown_rested"], "good"), seg(month["flown_red"], "crit"),
+                     seg(month["rostered_red"], "crit", True), seg(month["rostered_rested"], "good", True)],
+                    figure=f"{round(100 * red / total)}%" if total else "-", label=name,
+                    note=f"{month['flown_red']} flown · {month['rostered_red']} rostered of {total}",
+                    key=["Flown", "Rostered"])
+    return ctx.row([
+        ctx.column([ctx.row(donuts), ctx.bars(bars, max=per_night, title=f"Disturbed rest · {name}", now=now_at)],
+                   heights=[3, 2]),
+        big,
+    ], widths=[3, 2])
+
+
+def _now():
+    """The time now, UTC - the rest budget's clock, its one seam for a test."""
+    return datetime.now(timezone.utc)
 
 
 def _roster(ctx):
@@ -1122,6 +1204,154 @@ def disturbed_slots(duties, nights, windows, now, config=None):
     return sorted(found, key=lambda x: x["start"])
 
 
+BUDGET_WINDOWS = ((7, "7 days"), (30, "30 days"), (182, "6 months"))   # the rolling donuts: days back, caption
+MONTHS = ("January", "February", "March", "April", "May", "June", "July", "August", "September",
+          "October", "November", "December")
+
+
+def budget_slots(rostered, flown, nights, now, first, last, config=None):
+    """The rest budget: each night's rest window in fixed slots, and what
+    the roster did to each.
+
+    One night a home-local date from `first` to `last` (dates, or
+    YYYY-MM-DD), its rest window starting that evening (rest_start to
+    rest_end, personal's; 22:00 to 08:00 by default): [{night, slots}],
+    slots [{start, end, cause, planned}] cut every slot_minutes (the sleep
+    block's; 90 by default) from the window's start, the last a part slot
+    counted only if it's at least half a slot - seven a night by default.
+    The slots are the same every night, so a night's share adds up -
+    unlike disturbed_slots()', which follow each duty.
+
+    A slot's `cause`, taken at its midpoint, the first that applies:
+    "duty" - a flight or sim (the sleep block's duty_types) is under way;
+    "pre_duty" - the wake-up and travel before a flight's report (the
+    duty strip's pre-duty time); "body_clock" - away, local time where
+    you are (locations()' port, its tz in destinations) is outside the
+    same rest band, so you're resisting acclimatisation; else None,
+    rested. `planned` is True for a slot not over by `now`. The duties
+    that count are _counted()'s - flown in the past, rostered to come -
+    and a past slot is a duty's or a pre-duty's only with under
+    min_sleep_minutes of sleep in it (`nights`, sleep_nights()'): rest
+    on board saves it. A body-clock slot never asks the sleep - it's the
+    roster's maths, not what you managed. Where the port isn't known, or
+    has no tz, it's home's: no body-clock slot.
+    """
+    config = _config(config)
+    now = _utc(now, "now")
+    first, last = _date(first, "first"), _date(last, "last")
+    tz = _home_zone(config)
+    begin, finish = _rest_times(config)
+    slot, least = _slot_rules(config)
+    kinds = _disturbing_types(config)
+    band = (begin[0] * 60 + begin[1], finish[0] * 60 + finish[1])
+    duties = _counted(rostered, flown, now)
+    busy = [(b, r, e) for d, b, r, e in _with_pre_duty(duties, config) if d.summary.get("type") in kinds]
+    asleep = [(_utc(seg["start"], "a stage's start"), _utc(seg["end"], "a stage's end"))
+              for night in nights for seg in night["stages"] if seg["stage"] in DRAWN_STAGES]
+    places = _destinations(config)
+    home = _personal(config).get("home_base") or None
+    out = []
+    day = first
+    while day <= last:
+        ws = _home_local(day, begin, tz)
+        we = _home_local(day + timedelta(days=1) if finish <= begin else day, finish, tz)
+        where = _locations(rostered, flown, now, ws, we, config)
+        slots, a = [], ws
+        while a < we:
+            e = min(a + slot, we)
+            if e - a >= slot / 2:
+                mid, planned = a + (e - a) / 2, e > now
+                cause = None
+                for bs, report, release in busy:
+                    if bs <= mid < release:
+                        cause = "duty" if mid >= report else "pre_duty"
+                        break
+                if cause and not planned:
+                    seconds = sum(max(0.0, (min(e, y) - max(a, x)).total_seconds()) for x, y in asleep)
+                    if seconds >= least.total_seconds():
+                        cause = None
+                elif cause is None:
+                    port = next((p for s, t, p in where if s <= mid < t), None)
+                    zone = (places.get(port) or {}).get("tz") if port and port != home else None
+                    if isinstance(zone, str) and zone and _outside_band(mid, zone, band):
+                        cause = "body_clock"
+                slots.append({**_text(a, e), "cause": cause, "planned": planned})
+            a = e
+        out.append({"night": day.isoformat(), "slots": slots})
+        day += timedelta(days=1)
+    return out
+
+
+def rolling_share(budget, now, days, since):
+    """A rolling donut's figures: the slots of `budget` (budget_slots()')
+    over by `now` that start in the last `days` days, on nights from
+    `since` (the roster's first night - a date or YYYY-MM-DD - before
+    which nothing's known): {red, total, days}, `days` how many of them
+    the data covers (fewer only while the roster is younger than the
+    window)."""
+    now, since = _utc(now, "now"), _date(since, "since")
+    lo = now - timedelta(days=days)
+    red = total = 0
+    for night in budget:
+        if night["night"] < since.isoformat():
+            continue
+        for x in night["slots"]:
+            if _utc(x["end"], "a slot's end") <= now and _utc(x["start"], "a slot's start") >= lo:
+                total += 1
+                red += x["cause"] is not None
+    covered = (now - datetime.combine(since, time(), tzinfo=timezone.utc)).days
+    return {"red": red, "total": total, "days": max(0, min(days, covered))}
+
+
+def month_share(budget, month, since):
+    """The month's donut and bars: the nights of `budget` in `month`
+    (YYYY-MM) from `since` on - an earlier one has no roster to read, so
+    it's a bar with nothing in it, counted nowhere. {flown_red,
+    flown_rested, rostered_red, rostered_rested, nights: [{night, red,
+    rested, planned_red, planned_rested}]}: flown are the slots over,
+    rostered those to come (planned); a night with none known all
+    zeros."""
+    since = _date(since, "since").isoformat()
+    totals = {"flown_red": 0, "flown_rested": 0, "rostered_red": 0, "rostered_rested": 0}
+    nights = []
+    for night in budget:
+        if not night["night"].startswith(month + "-"):
+            continue
+        row = {"night": night["night"], "red": 0, "rested": 0, "planned_red": 0, "planned_rested": 0}
+        if night["night"] >= since:
+            for x in night["slots"]:
+                key = ("planned_" if x["planned"] else "") + ("red" if x["cause"] else "rested")
+                row[key] += 1
+                totals[("rostered_" if x["planned"] else "flown_") + ("red" if x["cause"] else "rested")] += 1
+        nights.append(row)
+    return {**totals, "nights": nights}
+
+
+def _outside_band(moment, zone, band):
+    """Whether `moment`'s local time in `zone` (an IANA name) is outside
+    the rest band (start, end), minutes of the day, over midnight when it
+    ends no later than it starts."""
+    try:
+        local = moment.astimezone(ZoneInfo(zone))
+    except (ZoneInfoNotFoundError, ValueError, OSError):
+        return False
+    m = local.hour * 60 + local.minute
+    start, end = band
+    inside = (m >= start or m < end) if end <= start else (start <= m < end)
+    return not inside
+
+
+def _date(value, what):
+    if isinstance(value, datetime):
+        raise ValueError(f"{what} must be a date: {value!r}")
+    if isinstance(value, date):
+        return value
+    try:
+        return date.fromisoformat(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"{what} must be a date: {value!r}") from None
+
+
 def _rest_windows(start, end, config):
     tz = _home_zone(config)
     begin, finish = _rest_times(config)
@@ -1334,22 +1564,31 @@ def _locations(rostered, flown, now, start, end, config):
     return spans
 
 
-def _duty_pieces(rostered, flown, now, start, end, config):
-    tz = _home_zone(config)
-    # Home's sky, the WOCL laid over it: the body clock's tones.
-    layers = [*_home_sky(start, end, config), *((s, e, "wocl") for s, e in _wocl(start, end, tz))]
+def _with_pre_duty(duties, config):
+    """Each of `duties` (by start, as _counted() gives them) as (duty,
+    begin, report, release): `begin` its report less the pre-duty time
+    for a flight (PRE_DUTY_TYPES) - the wake-up and travel before it -
+    cut at the end of the duty before, never laid over it; any other
+    duty begins at its report."""
     pre = _pre_duty(config)
-    pieces, last_end = [], None
-    for duty in _counted(rostered, flown, now):
+    last_end = None
+    for duty in duties:
         report, release = _utc(duty.start, "a duty's start"), _utc(duty.end, "a duty's end")
         begin = report
         if duty.summary.get("type") in PRE_DUTY_TYPES:
-            # The wake-up and travel before the report, cut at the end
-            # of the duty before - never laid over it.
             begin = report - pre
             if last_end is not None:
                 begin = max(begin, min(last_end, report))
         last_end = release if last_end is None else max(last_end, release)
+        yield duty, begin, report, release
+
+
+def _duty_pieces(rostered, flown, now, start, end, config):
+    tz = _home_zone(config)
+    # Home's sky, the WOCL laid over it: the body clock's tones.
+    layers = [*_home_sky(start, end, config), *((s, e, "wocl") for s, e in _wocl(start, end, tz))]
+    pieces = []
+    for duty, begin, report, release in _with_pre_duty(_counted(rostered, flown, now), config):
         s = max(begin, start)
         e = min(release, end)
         under = [layer for layer in layers if layer[0] < e and s < layer[1]]

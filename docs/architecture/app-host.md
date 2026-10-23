@@ -1320,8 +1320,8 @@ panel bottom-left (2×2) — the timeline and its rails, below — the sleep
 panel top-right (3×2, `_sleep(ctx)`: three strips three days across — each
 night's stages, the body's rest window, and the disturbed cycles: each
 90-minute slot of a flown flight or sim duty (not a reserve) in the rest window with under 15 minutes of
-sleep in it) and one more to come bottom-right (4×2), a placeholder until
-it's built (`empty("Coming soon")`). `render()` is the layout; the circadian
+sleep in it) and the rest budget bottom-right (4×2, `_budget(ctx)`, below).
+`render()` is the layout; the circadian
 panel is `_circadian(ctx)` and the roster panel `_roster(ctx)`, its spec the one the
 whole tile was before the grid. Each is built through `_panel(ctx, build)`,
 which returns `build(ctx)` — or, if it raises, prints `[apps] frms: the
@@ -1480,6 +1480,49 @@ builder takes only its own. A config without the positions the engine needs
 in its sub-panel — the fixture's synthetic config, for one — and the roster
 panel beside it is drawn as ever.
 
+
+**The rest budget** (`_budget(ctx)`, bottom-right, 4×2) is how much of the
+body's rest window the roster has cost, and is going to — drawn with the
+dashboard builders (above), not synced: it's always now (`_now()`).
+
+- `budget_slots(rostered, flown, nights, now, first, last, config=None)` →
+  `[{night, slots}]`, a night a home-local date (`first` to `last`, dates or
+  YYYY-MM-DD; a datetime or other text `ValueError`), its rest window
+  starting that evening, in fixed slots from the window's start —
+  slot_minutes, the last a part slot only if at least half a slot: seven a
+  night by default, the same every night, so a night's share adds up
+  (`disturbed_slots()`, the sleep panel's, follow each duty instead; the two
+  are kept apart). Each slot `{start, end, cause, planned}`: `cause`, at its
+  midpoint, the first that applies — `"duty"` (a duty of the sleep block's
+  `duty_types` under way), `"pre_duty"` (the duty strip's pre-duty time,
+  `_with_pre_duty()`), `"body_clock"` (away — `locations()`' port, its
+  `destinations` tz — local time outside the same rest band: resisting the
+  local clock), else `None`. A past duty or pre-duty slot with
+  `min_sleep_minutes` of sleep in it (rest on board) is rested; a body-clock
+  slot never asks the sleep — it's the roster's maths. A port not known, or
+  with no tz, is home's. `planned`: not over by `now`. The duties are
+  `_counted()`'s: flown in the past, rostered to come.
+- `rolling_share(budget, now, days, since)` → `{red, total, days}`: the slots
+  over by `now` starting in the last `days` days, on nights from `since`
+  (the roster's first night — the evening before its first stored duty);
+  `days` how many of them the roster covers.
+- `month_share(budget, "YYYY-MM", since)` → `{flown_red, flown_rested,
+  rostered_red, rostered_rested, nights}`, `nights` a row a night of the
+  month, `{night, red, rested, planned_red, planned_rested}` — before
+  `since`, zeros.
+
+Drawn as `row([column([row([three donuts]), bars]), month's donut],
+widths=[3, 2])`, the column `heights=[3, 2]`: the donuts 7 days, 30 days and 6
+months, each `[good, crit]`, its figure the share red (`-` with none), its
+note `N of D days` while the roster is younger than the window; the bars a
+night of this month, `max` a night's slots, segments `[crit, crit planned,
+good, good planned]` from the foot, a label every seventh day from the 1st,
+the now line before the first night with a slot to come, titled `Disturbed
+rest · <Month>`; the month's donut `[flown rested, flown red, rostered red,
+rostered rested]` — flown solid first, then rostered hatched — its figure
+the month's share red, flown and rostered together, its label the month,
+note `F flown · R rostered of T`, key `["Flown", "Rostered"]`. Before any
+duty, `empty("Upload your roster .ics")`.
 ## Installing an app
 
 `POST /api/apps` installs an app from its files, and the Applications panel's

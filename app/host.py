@@ -179,7 +179,7 @@ the dicts directly):
         [solid, hatched] a legend under them. The ring fits its box, and
         the figure scales with it
     {"type": "bars", "title", "max", "now",
-     "bars": [{"label", "segments": [{"value", "tone", "planned"}, ...]}, ...]}
+     "bars": [{"segments": [{"value", "tone", "planned"}, ...], "label"}, ...]}
         bars side by side, each its segments stacked from the bottom in
         order, as a donut's are toned; the scale from 0 to max (null: the
         tallest bar's total). A bar's label is under it, only where

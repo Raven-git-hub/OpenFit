@@ -628,8 +628,10 @@ own calls to its device API. Full direction:
   window, disturbed cycles; its engine rest_windows(), rest_strip(),
   sleep_nights(), stage_pieces(), disturbed_slots(), tested in
   `tests/test_frms_sleep.py`), the roster panel bottom-left (x 0, y 2, 2×2,
-  `_roster(ctx)`) and a placeholder beside it (x 2, y 2, 4×2,
-  `empty("Coming soon")`): `render()` is the layout, `_roster()` the
+  `_roster(ctx)`) and the rest budget beside it (x 2, y 2, 4×2,
+  `_budget(ctx)`: three rolling donuts over a month's bars, the month's
+  donut beside them; its engine budget_slots(), rolling_share(),
+  month_share(), tested in `tests/test_frms_budget.py`): `render()` is the layout, `_roster()` the
   roster panel — the timeline and its rails — its spec the one the whole
   tile was before the grid; the tests read it at x 0, y 2
   (`_roster_cell()`) and the circadian panel at x 0, y 0
@@ -2552,10 +2554,39 @@ same PR:
   stacked, each its share by weight), `donut` (a ring of toned
   segments, a planned one hatched, a figure in it, caption, note and
   key under it) and `bars` (stacked segments side by side on one
-  scale, labels under, a now line). Tones are the status tokens. Nothing
-  draws them yet: FRMS's fourth sub-panel will. Deploy: rebuild the image.
-  Still to come for it: personalising `cbt_min` from sleep data, the
-  last sub-panel (bottom-right), Garmin's stage timelines, the cycle
+  scale, labels under, a now line). Tones are the status tokens.
+  Deploy: rebuild the image.
+  Then the rest budget filled the last sub-panel (app only, the host's
+  dashboard specs its parts): `budget_slots(rostered, flown, nights,
+  now, first, last)` — each night (a home-local date, its rest window
+  starting that evening) in fixed slots from the window's start
+  (slot_minutes, a last part slot only if at least half a slot: seven
+  a night by default, the same every night, unlike disturbed_slots()',
+  which follow each duty), each `{start, end, cause, planned}`, the
+  cause at the slot's midpoint, the first that applies: `"duty"` (a
+  duty of the sleep block's duty_types under way), `"pre_duty"` (the
+  duty strip's pre-duty time, `_with_pre_duty()`, which `_duty_pieces()`
+  now shares), `"body_clock"` (away, the port's local time — its
+  destinations tz — outside the same rest band: resisting the local
+  clock), else `None`; a past duty or pre-duty slot with
+  min_sleep_minutes of sleep is rested, a body-clock one never asks the
+  sleep; a port not known, or with no tz, is home's; `planned` a slot
+  not over by now; the duties `_counted()`'s. `rolling_share(budget,
+  now, days, since)` → `{red, total, days}` (slots over, starting in the
+  last `days` days, on nights from the roster's first; `days` how many
+  it covers), `month_share(budget, "YYYY-MM", since)` → flown and
+  rostered red and rested, and a row a night (before the roster's
+  first night, zeros). `_budget(ctx)`: `ctx.row([ctx.column([row of
+  three donuts — 7 days, 30 days, 6 months, each "N of D days" while the
+  roster is younger — bars a night of this month, seven high, red from
+  the foot, rostered hatched, the now line before the first night not
+  over]), this month's donut — flown solid then rostered hatched, its
+  figure the month's share, flown and rostered together, "F flown · R
+  rostered of T" and a Flown/Rostered key])`. The roster's first night
+  is the evening before its first stored duty. Not synced; its clock is
+  `_now()`, a test's one seam. Before any duty, "Upload your roster
+  .ics". Deploy: Update FRMS with the new `app.py`.
+  Still to come for it: personalising `cbt_min` from sleep data, Garmin's stage timelines, the cycle
   rule for the rest reports, a sub-panel's error isolated by the host
   itself (an
   app's own `try` does it today; a `render()` that raises is still the

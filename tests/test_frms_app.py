@@ -312,7 +312,7 @@ def test_the_tile_is_four_sub_panels_on_a_six_by_four_grid(conn):
     spec = frms.render(host.Ctx(conn, today=TODAY), {})
 
     # The whole tile, its cells: circadian top-left, sleep top-right, the
-    # roster bottom-left at 2x2, a placeholder beside it -
+    # roster bottom-left at 2x2, the rest budget beside it -
     # the roster panel the one _roster() draws, as it was alone.
     assert (spec["type"], spec["cols"], spec["rows"]) == ("grid", 6, 4)
     assert [(c["x"], c["y"], c["w"], c["h"]) for c in spec["cells"]] == [
@@ -324,7 +324,8 @@ def test_the_tile_is_four_sub_panels_on_a_six_by_four_grid(conn):
     assert circadian == {"type": "error", "message": "home base ZZA needs a lat and lon in config.json's destinations"}
     # No sleep with stages yet: the sleep panel asks for some.
     assert top_right == {"type": "empty", "message": "No sleep stages yet - sync a sleep source that gives them"}
-    assert bottom_right == {"type": "empty", "message": "Coming soon"}
+    # The rest budget: a row - the donuts and bars, this month's donut.
+    assert bottom_right["type"] == "row" and [c["type"] for c in bottom_right["children"]] == ["column", "donut"]
     assert roster["type"] == "panel" and roster["children"][0]["type"] == "rails"
     assert _roster_cell(spec) is roster
     # Every cell of the six by four covered, once.
@@ -914,11 +915,10 @@ def test_a_panel_that_fails_is_an_error_in_its_own_sub_panel(tmp_path, conn, mon
 
     monkeypatch.setattr(app, "_roster", silent)
     assert _roster_cell(app.render(host.Ctx(conn), {})) == {"type": "error", "message": "KeyError"}
-    # The sleep panel and the placeholder, either way, as they were.
-    assert [c["spec"] for c in spec["cells"] if (c["x"], c["y"]) in ((3, 0), (2, 2))] == [
-        {"type": "empty", "message": "No sleep stages yet - sync a sleep source that gives them"},
-        {"type": "empty", "message": "Coming soon"},
-    ]
+    # The sleep panel and the rest budget, either way, as they were.
+    [sleep, budget] = [c["spec"] for c in spec["cells"] if (c["x"], c["y"]) in ((3, 0), (2, 2))]
+    assert sleep == {"type": "empty", "message": "No sleep stages yet - sync a sleep source that gives them"}
+    assert budget["type"] == "row"
 
 
 # ---------- trips: the layovers ----------
