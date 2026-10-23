@@ -528,7 +528,9 @@ with a dot where the cursor crosses it and red under it in the WOCL, and its tag
 the port and its local time under the cursor (`LHR 01:00 UTC+1`); home, by day
 and night, tagged HOME over home's date and time under the cursor (`Fri 23 Oct
 20:00`); and the duties, a slim bar green by day, amber by night and red in the
-WOCL, each duty's flight number once above it, with each trip away from base —
+WOCL — a flight's bar starting two hours before its report, the wake-up and
+travel to it (the config's `sleep.pre_duty_minutes` to change it) — each
+duty's flight number once above it, with each trip away from base —
 the roster's trips, out to home — an amber bar behind them, its port in it. A
 faint line marks each midnight (UTC). It scrolls with
 the roster's timeline and rails, and they with it, to the same time.

@@ -363,19 +363,23 @@ def test_the_layover_duties_are_cut_against_the_body_clock():
         for a, b in zip(one, one[1:]):
             assert a["end"] == b["start"]
 
-    # CX101: home darkness, the WOCL (02:00-06:00 HKT), darkness until
-    # Hong Kong's sunrise (06:22 HKT on the 21st), then day.
+    # CX101: from its pre-duty time - two hours before its 21:00 HKT
+    # report, 19:00 HKT, after Hong Kong's sunset - home darkness, the
+    # WOCL (02:00-06:00 HKT), darkness until Hong Kong's sunrise (06:22
+    # HKT on the 21st), then day.
     assert [(p["start"], p["end"]) for p in out[:2]] == [
-        ("2026-10-20T13:00:00Z", "2026-10-20T18:00:00Z"),
+        ("2026-10-20T11:00:00Z", "2026-10-20T18:00:00Z"),
         ("2026-10-20T18:00:00Z", "2026-10-20T22:00:00Z"),
     ]
     assert out[2]["start"] == "2026-10-20T22:00:00Z"
     assert near(at(out[2]["end"]), utc(2026, 10, 20, 22, 22))
     assert out[3]["end"] == "2026-10-20T22:30:00Z"
 
-    # CX100: the WOCL from its start, darkness until Hong Kong's sunrise
-    # (06:23 HKT on the 23rd), day to its end - 14:30 HKT, before sunset.
-    assert (home[0]["start"], home[0]["end"]) == ("2026-10-22T21:00:00Z", "2026-10-22T22:00:00Z")
+    # CX100, home from the layover - its pre-duty time as much as the
+    # outbound's: the WOCL from 03:00 HKT, two hours before its 05:00 HKT
+    # report, darkness until Hong Kong's sunrise (06:23 HKT on the 23rd),
+    # day to its end - 14:30 HKT, before sunset.
+    assert (home[0]["start"], home[0]["end"]) == ("2026-10-22T19:00:00Z", "2026-10-22T22:00:00Z")
     assert home[1]["start"] == "2026-10-22T22:00:00Z"
     assert near(at(home[1]["end"]), utc(2026, 10, 22, 22, 23))
     assert home[2]["end"] == "2026-10-23T06:30:00Z"
@@ -450,7 +454,8 @@ def test_a_rostered_duty_under_way_counts_and_one_over_doesnt():
     ]
     pieces = frms.duty_pieces([over, under_way], [early], NOW, *WINDOW, CONFIG)
     assert {p["code"] for p in pieces} == {"CX101"}
-    assert pieces[0]["start"] == "2026-10-21T20:00:00Z" and pieces[-1]["end"] == "2026-10-22T05:00:00Z"
+    # From its pre-duty time, two hours before its report.
+    assert pieces[0]["start"] == "2026-10-21T18:00:00Z" and pieces[-1]["end"] == "2026-10-22T05:00:00Z"
 
 
 def test_a_duty_before_the_window_says_where_it_starts():
@@ -508,6 +513,86 @@ def test_an_empty_window_has_nothing_in_it():
     assert frms.body_strip(start, end, CONFIG) == []
     assert frms.duty_pieces([HOME], [OUT], NOW, start, end, CONFIG) == []
     assert frms.body_clock(start, end, CONFIG)["wocl"] == []
+
+
+# ---------- the pre-duty time ----------
+
+
+def starts(pieces):
+    """Each code's first start, in order."""
+    found = {}
+    for p in pieces:
+        found.setdefault(p["code"], p["start"])
+    return found
+
+
+@pytest.mark.parametrize("kind, code", [("sim", "A1534"), ("reserve", "R1E"), ("other", "MED")])
+def test_only_a_flight_has_a_pre_duty_time(kind, code):
+    # Each at 12:00 HKT, in the day: only the flight starts two hours early.
+    out = flight("HKG-BKK", "2026-10-20T04:00:00Z", "2026-10-20T07:00:00Z", "CX701")
+    ground = duty(kind, "2026-10-21T04:00:00Z", "2026-10-21T08:00:00Z", code)
+
+    pieces = frms.duty_pieces([], [out, ground], NOW, *WINDOW, CONFIG)
+    assert starts(pieces) == {"CX701": "2026-10-20T02:00:00Z", code: "2026-10-21T04:00:00Z"}
+
+
+def test_a_day_return_is_one_duty_so_one_pre_duty_time():
+    # HKG-NRT-HKG: one duty, 08:00-17:00 HKT - the wake-up before it from
+    # 06:00 HKT, darkness until Hong Kong's sunrise (06:22), then day; no
+    # second pre-duty time before the sector home.
+    turn = flight("HKG-HKG", "2026-10-21T00:00:00Z", "2026-10-21T09:00:00Z", "CX500")
+
+    pieces = frms.duty_pieces([], [turn], NOW, *WINDOW, CONFIG)
+    assert [(p["code"], p["tone"]) for p in pieces] == [("CX500", "night"), ("CX500", "day")]
+    assert pieces[0]["start"] == "2026-10-20T22:00:00Z" and pieces[-1]["end"] == "2026-10-21T09:00:00Z"
+    assert near(at(pieces[0]["end"]), utc(2026, 10, 20, 22, 22))
+
+
+def test_the_pre_duty_time_is_cut_at_the_duty_before():
+    # A sim to 10:00 HKT, a flight reporting at 11:00: its wake-up can't
+    # start before the sim ends.
+    sim = duty("sim", "2026-10-20T22:00:00Z", "2026-10-21T02:00:00Z", "A1534")
+    out = flight("HKG-BKK", "2026-10-21T03:00:00Z", "2026-10-21T06:00:00Z", "CX701")
+
+    pieces = frms.duty_pieces([], [sim, out], NOW, *WINDOW, CONFIG)
+    assert starts(pieces) == {"A1534": "2026-10-20T22:00:00Z", "CX701": "2026-10-21T02:00:00Z"}
+    for a, b in zip(pieces, pieces[1:]):
+        assert a["end"] <= b["start"], (a, b)
+
+
+def test_a_duty_running_past_the_report_leaves_no_pre_duty_time():
+    # Two flights back to back, the first ending after the second reports
+    # (the roster's own overlap): the second starts at its report.
+    first = flight("HKG-BKK", "2026-10-20T04:00:00Z", "2026-10-20T09:00:00Z", "CX701")
+    second = flight("BKK-HKG", "2026-10-20T08:00:00Z", "2026-10-20T12:00:00Z", "CX702")
+
+    pieces = frms.duty_pieces([], [first, second], NOW, *WINDOW, CONFIG)
+    assert starts(pieces) == {"CX701": "2026-10-20T02:00:00Z", "CX702": "2026-10-20T08:00:00Z"}
+
+
+def test_the_pre_duty_time_is_clipped_to_the_window():
+    # Reporting 01:00 UTC on the window's first day: its wake-up started
+    # before the window, so its first piece starts at the window's start.
+    out = flight("HKG-BKK", "2026-10-20T01:00:00Z", "2026-10-20T04:00:00Z", "CX701")
+
+    pieces = frms.duty_pieces([], [out], NOW, *WINDOW, CONFIG)
+    assert pieces[0]["start"] == "2026-10-20T00:00:00Z"
+
+
+@pytest.mark.parametrize("minutes, first", [(0, "2026-10-20T04:00:00Z"), (60, "2026-10-20T03:00:00Z"),
+                                            (120, "2026-10-20T02:00:00Z")])
+def test_the_config_sets_the_pre_duty_time(minutes, first):
+    out = flight("HKG-BKK", "2026-10-20T04:00:00Z", "2026-10-20T07:00:00Z", "CX701")
+    cfg = {**CONFIG, "sleep": {"pre_duty_minutes": minutes}}
+
+    assert frms.duty_pieces([], [out], NOW, *WINDOW, cfg)[0]["start"] == first
+
+
+@pytest.mark.parametrize("value", [-1, 1441, "120", 90.0, True, None])
+def test_a_bad_pre_duty_time_is_refused(value):
+    cfg = {**CONFIG, "sleep": {"pre_duty_minutes": value}}
+    with pytest.raises(ValueError, match="config.json's sleep pre_duty_minutes must be a whole number of minutes, 0 to 1440"):
+        frms.duty_pieces(*layover(), cfg)
 
 
 # ---------- the bundle ----------

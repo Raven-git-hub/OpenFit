@@ -1387,11 +1387,17 @@ panel is; with no config, `empty(CONFIG_ERROR)`.
    span's `place` home base and its `tz` the config's `personal.timezone`:
    `Fri 23 Oct 20:00`).
 3. **The duties** — a 45px row: `duties`, each duty's day, night and WOCL
-   pieces, the duty's code once — on its first piece in the window, not on
-   the pieces that continue it (`prev`'s code and end the same as this
-   piece's), so a duty clipped at the window's start labels its first piece
-   in it. Behind them, **each trip away an amber bar**, its port in it: the
-   lane's `bands`, the roster's own layover logic — `trips()`, unchanged,
+   pieces. A flight's pieces start **two hours before its report** — the
+   wake-up and travel to it, at home or away (the config's
+   `sleep.pre_duty_minutes` to change it) — cut at the end of the duty
+   before, so they never lie over it; a day return is one duty, so it has
+   one; a sim, reserve or other duty starts at its report. The duty's code
+   once — on its first piece in the window (a flight's at the start of its
+   pre-duty time), not on the pieces that continue it (`prev`'s code and
+   end the same as this piece's), so a duty clipped at the window's start
+   labels its first piece in it. Behind them, **each trip away an amber
+   bar**, its port in it: the lane's `bands`, the roster's own layover
+   logic — `trips()`, unchanged,
    over the duties that count (`_counted()`: the flown over by now and the
    rostered ending after it, so a trip under way — flown out, rostered home
    — is one bar), from the flight out of base to the flight home landing,

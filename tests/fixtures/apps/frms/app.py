@@ -196,7 +196,8 @@ def _circadian(ctx):
     pieces against the body clock, its code once at its start, and behind
     them each trip away from base - the roster's trips(), its layover
     bands' logic, over the duties that count - an amber bar, its port in
-    it. In the FRMS focus group, so it scrolls with the roster's timeline
+    it. A flight's pieces start with its pre-duty time, so its code sits
+    there, at the start of the wake-up before its report. In the FRMS focus group, so it scrolls with the roster's timeline
     and rails, and they with it. Before any duty, the ask, as the roster
     panel's."""
     if CONFIG is None:
@@ -832,6 +833,8 @@ REST_WINDOW = ("22:00", "08:00")   # the body's rest window, home local, unless 
 SLOT_MINUTES = 90                  # a disturbed-cycle check's slot, unless the config's sleep block gives slot_minutes
 MIN_SLEEP_MINUTES = 15             # ... a slot with less sleep than this is disturbed, unless it gives min_sleep_minutes
 DISTURBING_TYPES = ("flight", "sim")  # ... and only these duties' slots are checked, unless it gives duty_types
+PRE_DUTY_MINUTES = 120             # the wake-up and travel before a flight's report, unless the sleep block gives pre_duty_minutes
+PRE_DUTY_TYPES = ("flight",)       # ... and only these duties have it
 # A stage drawn, and at what level: a stage-less sleep (asleep, restless:
 # a short nap a device doesn't stage) at light's. Every stage drawn is
 # sleep for a slot; awake, out_of_bed and unknown aren't, and aren't drawn.
@@ -977,8 +980,12 @@ def duty_pieces(rostered, flown, now, start, end, config=None):
     to [start, end) and cut against the body clock - never where it's
     flown: {start, end, code, tone}, tone "wocl" inside home's WOCL
     (02:00-06:00 home local - first), else "night" in home base's
-    darkness, else "day". A duty's pieces are contiguous, the same tone
-    side by side merged; all in order by start. `code` the summary's."""
+    darkness, else "day". A flight runs from the pre-duty time before
+    its report (the sleep block's pre_duty_minutes, 120 unless given) -
+    the wake-up and travel to it, at home or away - but never from
+    before the duty before it ends; a day return is one duty, so one
+    pre-duty time. A duty's pieces are contiguous, the same tone side by
+    side merged; all in order by start. `code` the summary's."""
     config = _config(config)
     start, end, now = _utc(start, "start"), _utc(end, "end"), _utc(now, "now")
     return [_text(s, e, code=code, tone=tone) for s, e, code, tone in _duty_pieces(rostered, flown, now, start, end, config)]
@@ -1152,6 +1159,14 @@ def _slot_rules(config):
     return timedelta(minutes=slot), timedelta(minutes=least)
 
 
+def _pre_duty(config):
+    block = config.get("sleep")
+    value = (block if isinstance(block, dict) else {}).get("pre_duty_minutes", PRE_DUTY_MINUTES)
+    if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= 24 * 60:
+        raise ValueError(f"config.json's sleep pre_duty_minutes must be a whole number of minutes, 0 to 1440: {value!r}")
+    return timedelta(minutes=value)
+
+
 def _disturbing_types(config):
     block = config.get("sleep")
     kinds = (block if isinstance(block, dict) else {}).get("duty_types", list(DISTURBING_TYPES))
@@ -1323,10 +1338,20 @@ def _duty_pieces(rostered, flown, now, start, end, config):
     tz = _home_zone(config)
     # Home's sky, the WOCL laid over it: the body clock's tones.
     layers = [*_home_sky(start, end, config), *((s, e, "wocl") for s, e in _wocl(start, end, tz))]
-    pieces = []
+    pre = _pre_duty(config)
+    pieces, last_end = [], None
     for duty in _counted(rostered, flown, now):
-        s = max(_utc(duty.start, "a duty's start"), start)
-        e = min(_utc(duty.end, "a duty's end"), end)
+        report, release = _utc(duty.start, "a duty's start"), _utc(duty.end, "a duty's end")
+        begin = report
+        if duty.summary.get("type") in PRE_DUTY_TYPES:
+            # The wake-up and travel before the report, cut at the end
+            # of the duty before - never laid over it.
+            begin = report - pre
+            if last_end is not None:
+                begin = max(begin, min(last_end, report))
+        last_end = release if last_end is None else max(last_end, release)
+        s = max(begin, start)
+        e = min(release, end)
         under = [layer for layer in layers if layer[0] < e and s < layer[1]]
         code = duty.summary.get("code", "")
         pieces += [(a, b, code, tone) for a, b, tone in _tones(s, e, "day", under)]

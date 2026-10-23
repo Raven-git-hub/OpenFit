@@ -749,8 +749,10 @@ def test_a_duty_is_labelled_once_on_its_first_piece(tmp_path, conn):
     [_, _, duties] = _circadian_cell(app.render(host.Ctx(conn), {}))["lanes"]
 
     # Every duty in pieces, its code on the first and on no other - one
-    # label a duty, for the page to draw once at its start.
+    # label a duty, for the page to draw once at its start: each a
+    # flight, its start its pre-duty time, two hours before its report.
     for code, start, end in filed:
+        start = iso_utc(datetime.fromisoformat(start) - timedelta(hours=2))
         pieces = [s for s in duties["spans"] if start <= s["start"] < end]
         assert len(pieces) > 1, code
         assert pieces[0]["start"] == start
