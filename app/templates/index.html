@@ -984,6 +984,56 @@ h5 + .dnote{margin-top:0;}
 .spec-input .m{font-size:11px;font-family:var(--font-mono);color:var(--crit);overflow-wrap:anywhere;}
 .spec-input .m:empty{display:none;}
 /* empty and error: muted, centred */
+/* row and column: children side by side, or stacked, each its share by
+   its weight - flex-basis 0, so a share is exact whatever the child holds. */
+.spec-row{display:flex;gap:10px;min-width:0;min-height:0;}
+.spec-column{display:flex;flex-direction:column;gap:10px;min-width:0;min-height:0;}
+.spec-row > *, .spec-column > *{min-width:0;min-height:0;}
+/* charts - a donut's segments and a bar's - in the status colours, so the
+   dark themes' own carry through: each tone sets --ch, solid in it, a
+   planned (rostered, not yet happened) one hatched in it over a tint of
+   it, as the roster's future is hatched. */
+.ch-good{--ch:var(--good);}
+.ch-warn{--ch:var(--warn);}
+.ch-crit{--ch:var(--crit);}
+.ch-neutral{--ch:var(--muted);}
+/* donut: a ring fitting its box - the figure in the middle scaling with
+   it (the ring a size container), the label small under it - a caption
+   in the small uppercase heading under the ring, a note in mono under
+   that (its line kept under a caption, empty or not, so donuts side by
+   side match), and a key of a solid swatch and a hatched one. */
+.spec-donut{display:flex;flex-direction:column;align-items:center;gap:4px;min-width:0;min-height:0;}
+.spec-donut .ring{position:relative;flex:1;min-height:40px;width:100%;container-type:size;}
+.spec-donut svg{position:absolute;inset:0;width:100%;height:100%;}
+.spec-donut .ch-track{fill:none;stroke:var(--border);}
+.spec-donut .ch-seg{fill:var(--ch);}
+.spec-donut .ch-whole{fill:none;stroke:var(--ch);}
+.spec-donut .ch-tint{fill:color-mix(in srgb, var(--ch) 22%, transparent);}
+.spec-donut .ch-stripe{fill:var(--ch);}
+.spec-donut .mid{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;pointer-events:none;}
+.spec-donut .fig{font-family:var(--font-display);font-weight:700;line-height:1;color:var(--ink);font-variant-numeric:tabular-nums;font-size:calc(min(100cqw, 100cqh) * .18);}
+.spec-donut .lab, .spec-donut .cap{font:600 10.5px/16px var(--font-body);text-transform:uppercase;letter-spacing:.8px;color:var(--muted);white-space:nowrap;}
+.spec-donut .note{min-height:14px;font:400 10.5px/14px var(--font-mono);color:var(--ink-2);white-space:nowrap;}
+.spec-donut .key{display:flex;gap:14px;font:500 11px/16px var(--font-body);color:var(--muted);}
+.spec-donut .key span{display:flex;align-items:center;gap:5px;}
+.spec-donut .sw{width:10px;height:10px;border-radius:2px;background:var(--muted);}
+.spec-donut .sw.ch-planned{background:repeating-linear-gradient(135deg, var(--muted) 0 2px, transparent 2px 5px);}
+/* bars: in an inset frame as the strips' - its title the small uppercase
+   heading top-left - bars side by side, each its segments stacked from
+   the foot, 2px apart, solid in its tone or hatched planned; labels under
+   their bars in mono; the now line and its tag as the strips'. */
+.spec-bars{display:flex;flex-direction:column;min-width:0;min-height:0;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--inset);overflow:hidden;}
+.spec-bars .t{padding:6px 8px 0;font:600 10.5px/16px var(--font-body);text-transform:uppercase;letter-spacing:.8px;color:var(--muted);}
+.spec-bars .plot{position:relative;flex:1;min-height:0;margin:6px 10px 0;}
+.spec-bars .bar{position:absolute;top:0;bottom:0;display:flex;flex-direction:column-reverse;padding:0 1.5px;box-sizing:border-box;}
+.spec-bars .seg{flex:none;border-radius:2px;background:var(--ch);}
+.spec-bars .seg + .seg{margin-bottom:2px;}
+.spec-bars .seg.ch-planned{background:repeating-linear-gradient(135deg, var(--ch) 0 2px, color-mix(in srgb, var(--ch) 22%, transparent) 2px 5px);}
+.spec-bars .ticks{position:relative;height:16px;margin:2px 10px 4px;}
+.spec-bars .tick{position:absolute;top:0;transform:translateX(-50%);font:400 10px/16px var(--font-mono);color:var(--muted);white-space:nowrap;}
+.spec-bars .now{position:absolute;top:-6px;bottom:0;width:0;margin-left:-1px;border-left:2px solid var(--accent);z-index:1;pointer-events:none;}
+.spec-bars .now::before{content:"";position:absolute;top:0;left:-4px;width:6px;height:6px;border-radius:50%;background:var(--accent);}
+.spec-bars .now-tag{position:absolute;bottom:2px;left:4px;font:700 9px/14px var(--font-mono);letter-spacing:.6px;text-transform:uppercase;color:var(--accent-ink);background:var(--accent);padding:0 4px;border-radius:3px;}
 .spec-msg{display:grid;place-content:center;gap:4px;text-align:center;color:var(--muted);font-size:13px;padding:4px;}
 .spec-msg b{color:var(--ink-2);font-weight:600;font-size:13.5px;}
 .spec-msg code{font-family:var(--font-mono);font-size:11px;overflow-wrap:anywhere;}
@@ -3966,6 +4016,10 @@ h5 + .dnote{margin-top:0;}
     rail: s => railSpec(s, []),
     rails: (s, name, appId) => railsSpec(s, name, appId),
     strips: s => stripsSpec(s),
+    row: (s, name, appId) => splitSpec(s, name, appId, 'spec-row', 'widths'),
+    column: (s, name, appId) => splitSpec(s, name, appId, 'spec-column', 'heights'),
+    donut: s => donutSpec(s),
+    bars: s => barsSpec(s),
     grid: (s, name, appId) => {
       const box = el('div','spec-grid');
       box.style.gridTemplateColumns = `repeat(${s.cols}, minmax(0, 1fr))`;
@@ -4166,6 +4220,144 @@ h5 + .dnote{margin-top:0;}
       + `trend of ${vals.length} value${vals.length===1 ? '' : 's'}, `
       + `between ${fmtSpecValue(lo)} and ${fmtSpecValue(hi)}`);
     return line;
+  }
+  /* row and column: each child drawn as it would be alone, then given
+     its share - its weight, or 1 each where the spec gives none (or
+     weights not one a child, each a number above 0) - as flex-grow over
+     a basis of 0. */
+  function splitSpec(s, name, appId, cls, field){
+    const box = el('div', cls);
+    const kids = Array.isArray(s.children) ? s.children : [];
+    const given = s[field];
+    const ok = Array.isArray(given) && given.length===kids.length
+      && given.every(w => typeof w==='number' && Number.isFinite(w) && w > 0);
+    kids.forEach((c, i) => {
+      box.appendChild(renderSpec(c, name, appId)).style.flex = `${ok ? given[i] : 1} 1 0px`;
+    });
+    return box;
+  }
+  /* charts: a donut and bars. A segment's tone is one of CH_TONES (any
+     other drawn neutral); one of no value - 0, or not a number - is
+     drawn as nothing. The ring is CH_W wide about radius CH_R, in a 100
+     square, its segments CH_GAP apart, a hatch's stripes CH_HATCH apart.
+     Everything an app sent is set as text. */
+  const CH_TONES = ['good', 'warn', 'crit', 'neutral'];
+  const CH_NS = 'http://www.w3.org/2000/svg';
+  const CH_R = 42, CH_W = 14, CH_GAP = 1, CH_HATCH = 2.4;
+  let chHatches = 0;   // hatch patterns made, for ids unique on the page
+  function chTone(t){
+    return CH_TONES.includes(t) ? t : 'neutral';
+  }
+  function chSegments(raw){
+    return (Array.isArray(raw) ? raw : []).filter(x => x && typeof x.value==='number' && Number.isFinite(x.value) && x.value > 0);
+  }
+  function chSvg(tag, attrs){
+    const n = document.createElementNS(CH_NS, tag);
+    Object.entries(attrs || {}).forEach(([k, v]) => n.setAttribute(k, v));
+    return n;
+  }
+  /* One segment of the ring, from turn a0 to turn a1 (fractions of a
+     turn, clockwise from twelve o'clock), half the gap off each end: the
+     path, or null if the gap leaves nothing. */
+  function chArc(a0, a1){
+    const g = CH_GAP / (2 * Math.PI * CH_R) / 2, s = a0 + g, e = a1 - g;
+    if(e <= s) return null;
+    const ro = CH_R + CH_W / 2, ri = CH_R - CH_W / 2, big = e - s > 0.5 ? 1 : 0;
+    const pt = (t, r) => { const a = 2 * Math.PI * t - Math.PI / 2; return (50 + r * Math.cos(a)).toFixed(2) + ',' + (50 + r * Math.sin(a)).toFixed(2); };
+    return `M${pt(s, ro)} A${ro},${ro} 0 ${big} 1 ${pt(e, ro)} L${pt(e, ri)} A${ri},${ri} 0 ${big} 0 ${pt(s, ri)} Z`;
+  }
+  /* donut: the bare ring, then each segment its share of the total -
+     one that's all of it a whole ring - a planned one filled with its
+     tone's hatch (made once a tone, in the ring's own defs); the figure
+     and label in the middle; caption, note and key under it. */
+  function donutSpec(s){
+    const box = el('div','spec-donut');
+    const ring = box.appendChild(el('div','ring'));
+    const text = v => v!=null && v!=='' ? String(v) : '';
+    const svg = ring.appendChild(chSvg('svg', {viewBox: '0 0 100 100', role: 'img'}));
+    svg.setAttribute('aria-label', [text(s.caption), text(s.label), text(s.figure)].filter(Boolean).join(', ') || 'donut');
+    const defs = svg.appendChild(chSvg('defs'));
+    const hatch = {};
+    const hatchOf = tone => {
+      if(!hatch[tone]){
+        hatch[tone] = 'ch-hatch-' + (++chHatches);
+        const p = defs.appendChild(chSvg('pattern', {id: hatch[tone], patternUnits: 'userSpaceOnUse', width: CH_HATCH, height: CH_HATCH,
+                                                     patternTransform: 'rotate(135)'}));
+        p.appendChild(chSvg('rect', {width: CH_HATCH, height: CH_HATCH, class: 'ch-tint ch-' + tone}));
+        p.appendChild(chSvg('rect', {width: CH_HATCH * 0.4, height: CH_HATCH, class: 'ch-stripe ch-' + tone}));
+      }
+      return `url(#${hatch[tone]})`;
+    };
+    svg.appendChild(chSvg('circle', {cx: 50, cy: 50, r: CH_R, 'stroke-width': CH_W, class: 'ch-track'}));
+    const segs = chSegments(s.segments), total = segs.reduce((a, x) => a + x.value, 0);
+    let at = 0;
+    segs.forEach(x => {
+      const tone = chTone(x.tone), share = x.value / total, planned = x.planned===true;
+      const cls = 'ch-' + tone + (planned ? ' ch-planned' : '');
+      let n;
+      if(share >= 1){
+        n = svg.appendChild(chSvg('circle', {cx: 50, cy: 50, r: CH_R, 'stroke-width': CH_W, class: 'ch-whole ' + cls}));
+        if(planned) n.style.stroke = hatchOf(tone);
+      }else{
+        const d = chArc(at, at + share);
+        if(d){
+          n = svg.appendChild(chSvg('path', {d, class: 'ch-seg ' + cls}));
+          if(planned) n.style.fill = hatchOf(tone);
+        }
+      }
+      at += share;
+    });
+    const mid = ring.appendChild(el('div','mid'));
+    if(text(s.figure)){ const f = mid.appendChild(el('div','fig')); f.textContent = text(s.figure); }
+    if(text(s.label)){ const l = mid.appendChild(el('div','lab')); l.textContent = text(s.label); }
+    if(text(s.caption)){ const c = box.appendChild(el('div','cap')); c.textContent = text(s.caption); }
+    // A caption keeps its note's line, empty or not, so captioned donuts
+    // side by side keep rings of one size.
+    if(text(s.caption) || text(s.note)){ const n = box.appendChild(el('div','note')); n.textContent = text(s.note); }
+    if(Array.isArray(s.key) && s.key.length===2){
+      const key = box.appendChild(el('div','key'));
+      s.key.forEach((k, i) => {
+        const item = key.appendChild(el('span'));
+        item.appendChild(el('span', 'sw' + (i ? ' ch-planned' : '')));
+        item.appendChild(el('span')).textContent = String(k);
+      });
+    }
+    return box;
+  }
+  /* bars: each an even share of the plot's width, its segments stacked
+     from the foot, each its value over the scale's top - the spec's max,
+     or the tallest bar's total - as a share of the plot's height, 2px
+     between (the gap taken from the one above); a label under its bar;
+     the now line before bar `now`. */
+  function barsSpec(s){
+    const box = el('div','spec-bars');
+    if(s.title!=null && s.title!==''){ const t = box.appendChild(el('div','t')); t.textContent = String(s.title); }
+    const plot = box.appendChild(el('div','plot'));
+    const ticks = box.appendChild(el('div','ticks'));
+    const list = Array.isArray(s.bars) ? s.bars : [], n = list.length;
+    const totals = list.map(b => chSegments(b && b.segments).reduce((a, x) => a + x.value, 0));
+    const top = typeof s.max==='number' && Number.isFinite(s.max) && s.max > 0 ? s.max : Math.max(0, ...totals);
+    list.forEach((b, i) => {
+      const bar = plot.appendChild(el('div','bar'));
+      bar.style.left = (i * 100 / n) + '%';
+      bar.style.width = (100 / n) + '%';
+      if(top > 0) chSegments(b && b.segments).forEach((x, j) => {
+        const seg = bar.appendChild(el('div', 'seg ch-' + chTone(x.tone) + (x.planned===true ? ' ch-planned' : '')));
+        const pct = Math.min(100, x.value / top * 100);
+        seg.style.height = j ? `calc(${pct}% - 2px)` : `${pct}%`;
+      });
+      if(b && b.label!=null && b.label!==''){
+        const t = ticks.appendChild(el('div','tick'));
+        t.textContent = String(b.label);
+        t.style.left = ((i + 0.5) * 100 / n) + '%';
+      }
+    });
+    if(n && Number.isInteger(s.now) && s.now >= 0 && s.now <= n){
+      const now = plot.appendChild(el('div','now'));
+      now.style.left = (s.now * 100 / n) + '%';
+      now.appendChild(el('div','now-tag')).textContent = 'Now';
+    }
+    return box;
   }
 
   /* A timeline: one lane or two of time-blocks on one vertical time

@@ -394,6 +394,19 @@ own calls to its device API. Full direction:
   "grid cells overlap"); a cell none covers left empty; a cell of only
   those five keys (`GRID_CELL_FIELDS`, `_fields()`: another, a misspelt
   `wdith`, `ValueError`); each cell carried as those five keys, in order),
+  `row(children, widths=None)` / `column(children, heights=None)` → `{"type":
+  "row"|"column", children, widths|heights}` (children side by side or
+  stacked, each its share by weight — `None` equal; one spec or more,
+  one weight a child, each above 0, else `TypeError`/`ValueError`),
+  `donut(segments, figure, label, caption, note, key)` → every key,
+  `None` where not given (a ring of `{value, tone, planned}` segments,
+  `SEGMENT_FIELDS`, clockwise from twelve; `value` ≥ 0, `tone` in
+  `CHART_TONES` good/warn/crit/neutral, `planned` hatched; `key`
+  `[solid, hatched]`), `bars(bars, max=None, title=None, now=None)` →
+  `{"type": "bars", title, max, now, bars: [{segments, label}]}` (each
+  bar's segments stacked from the foot, `BAR_FIELDS`; `max` > 0 and no bar
+  over it; `now` 0..len(bars), the now line before that bar) — the
+  dashboard builders, knowing nothing of what they show,
   `strips(lanes, now=None, sync=None, hours=None)` → `{"type": "strips", now, lanes:
   [{kind, label, clock, spans: [{start, end, tone, label, place, tz}],
   troughs, bands: [{start, end, label}], wocl: [{start, end}]}]}`, plus
@@ -2534,6 +2547,13 @@ same PR:
   the duty before; sims and reserves start at report as before. The
   sleep panel's disturbed cycles are untouched: they're the duty itself
   against sleep. Deploy: Update FRMS with the new `app.py` only.
+  Then the host gained four dashboard specs, all additive (no spec
+  before them changes): `row` and `column` (children side by side or
+  stacked, each its share by weight), `donut` (a ring of toned
+  segments, a planned one hatched, a figure in it, caption, note and
+  key under it) and `bars` (stacked segments side by side on one
+  scale, labels under, a now line). Tones are the status tokens. Nothing
+  draws them yet: FRMS's fourth sub-panel will. Deploy: rebuild the image.
   Still to come for it: personalising `cbt_min` from sleep data, the
   last sub-panel (bottom-right), Garmin's stage timelines, the cycle
   rule for the rest reports, a sub-panel's error isolated by the host

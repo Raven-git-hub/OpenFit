@@ -164,6 +164,27 @@ the dicts directly):
         (false for none). `now` and `sync` as a timeline's: synced, the
         page keeps a cursor at the frame's middle and scrolls every
         member of the group to one time
+    {"type": "row", "children": [spec, ...], "widths"}
+    {"type": "column", "children": [spec, ...], "heights"}
+        children side by side, left to right (a row), or stacked, top
+        to bottom (a column), each taking its share of the width (or
+        height) by its weight in widths (heights) - null for equal shares -
+        and the whole of the other way
+    {"type": "donut", "segments": [{"value", "tone", "planned"}, ...],
+     "figure", "label", "caption", "note", "key"}
+        a ring of segments, clockwise from twelve o'clock in order, each
+        its share of the total; tone good, warn, crit or neutral (the
+        status colours), a planned one hatched. figure big in the middle,
+        label small under it; caption and note under the ring; key
+        [solid, hatched] a legend under them. The ring fits its box, and
+        the figure scales with it
+    {"type": "bars", "title", "max", "now",
+     "bars": [{"label", "segments": [{"value", "tone", "planned"}, ...]}, ...]}
+        bars side by side, each its segments stacked from the bottom in
+        order, as a donut's are toned; the scale from 0 to max (null: the
+        tallest bar's total). A bar's label is under it, only where
+        given; title is the tag top-left; now, a whole number from 0 to
+        the bars' count, draws the now line before that bar
     {"type": "empty", "message"}
     {"type": "error", "message"}
         the host's, when a render fails; an app's for a part of its tile
@@ -958,6 +979,154 @@ def strips(lanes, now=None, sync=None, hours=None):
     return spec
 
 
+def _children(children, what):
+    """A row's or column's children, as the spec carries them: a list of
+    one spec or more."""
+    if not isinstance(children, (list, tuple)):
+        raise TypeError(f"{what}'s children must be a list of specs: {children!r}")
+    if not children:
+        raise ValueError(f"{what} needs a child")
+    for child in children:
+        if not isinstance(child, dict) or not isinstance(child.get("type"), str):
+            raise TypeError(f"{what}'s children must be specs: {child!r}")
+    return list(children)
+
+
+def _weights(weights, n, what, field):
+    """A row's widths or a column's heights: None for equal shares, else
+    one positive finite number a child."""
+    if weights is None:
+        return None
+    if not isinstance(weights, (list, tuple)):
+        raise TypeError(f"{what}'s {field} must be a list of numbers: {weights!r}")
+    if len(weights) != n:
+        raise ValueError(f"{what}'s {field} must be one a child, {n}, not {len(weights)}")
+    for w in weights:
+        if isinstance(w, bool) or not isinstance(w, (int, float)) or not math.isfinite(w) or w <= 0:
+            raise ValueError(f"{what}'s {field} must each be a number above 0: {w!r}")
+    return list(weights)
+
+
+def row(children, widths=None):
+    """Its children side by side, left to right, each the row's full
+    height: row([a, b]). `widths`, optional, a weight a child - [3, 2] is
+    three fifths and two fifths - or None for equal shares. Raises
+    TypeError or ValueError for anything it can't lay out."""
+    kids = _children(children, "a row")
+    return {"type": "row", "children": kids, "widths": _weights(widths, len(kids), "a row", "widths")}
+
+
+def column(children, heights=None):
+    """Its children stacked, top to bottom, each the column's full width:
+    column([a, b]). `heights`, optional, a weight a child, as a row's
+    widths. panel() stacks too, each child its own height: a column
+    shares its height out. Raises TypeError or ValueError for anything it
+    can't lay out."""
+    kids = _children(children, "a column")
+    return {"type": "column", "children": kids, "heights": _weights(heights, len(kids), "a column", "heights")}
+
+
+# A chart's segment - a donut's, or one of a bar's - and its tones: the
+# status colours, so both themes carry them. A planned one is drawn
+# hatched: rostered, not yet happened.
+CHART_TONES = ("good", "warn", "crit", "neutral")
+SEGMENT_FIELDS = ("value", "tone", "planned")
+BAR_FIELDS = ("segments", "label")
+
+
+def _segment(raw, what):
+    """One segment, as the spec carries it: {value, tone, planned}."""
+    _fields(raw, SEGMENT_FIELDS, what)
+    value = raw.get("value")
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0:
+        raise ValueError(f"{what}'s value must be a number, 0 or more: {value!r}")
+    tone = raw.get("tone")
+    if tone not in CHART_TONES:
+        raise ValueError(f"{what}'s tone is one of {', '.join(CHART_TONES)}, not {tone!r}")
+    planned = raw.get("planned", False)
+    planned = False if planned is None else planned
+    if not isinstance(planned, bool):
+        raise TypeError(f"{what}'s planned must be true or false: {planned!r}")
+    return {"value": value, "tone": tone, "planned": planned}
+
+
+def _segments(raw, what):
+    if not isinstance(raw, (list, tuple)):
+        raise TypeError(f"{what}'s segments must be a list: {raw!r}")
+    return [_segment(x, f"{what}'s segment") for x in raw]
+
+
+def donut(segments, figure=None, label=None, caption=None, note=None, key=None):
+    """A ring of `segments`, clockwise from twelve o'clock in the order
+    given, each its share of their total.
+
+    A segment is {value, tone, planned}: `value` a number, 0 or more (0
+    draws nothing); `tone` "good", "warn", "crit" or "neutral"; `planned`
+    optional, True drawn hatched. With no segments, or a total of 0, the
+    bare ring. `figure` is text big in the middle ("6%"), `label` text
+    small under it; `caption` text under the ring, `note` text under
+    that; `key` optional, [solid, hatched] - two texts, a legend of a
+    solid swatch and a hatched one. Each text None for none. The ring
+    fits its box, the figure scaling with it. Raises TypeError or
+    ValueError for anything it can't draw.
+
+    In the spec every key is there, None where not given; each segment
+    {value, tone, planned}, planned False unless given.
+    """
+    what = "a donut"
+    if key is not None:
+        if (not isinstance(key, (list, tuple)) or len(key) != 2
+                or not all(isinstance(k, str) and k for k in key)):
+            raise ValueError(f"{what}'s key must be two texts, [solid, hatched]: {key!r}")
+        key = list(key)
+    return {
+        "type": "donut",
+        "segments": _segments(segments, what),
+        "figure": _text_or_none(figure, "figure", f"{what}'s"),
+        "label": _text_or_none(label, "label", f"{what}'s"),
+        "caption": _text_or_none(caption, "caption", f"{what}'s"),
+        "note": _text_or_none(note, "note", f"{what}'s"),
+        "key": key,
+    }
+
+
+def bars(bars, max=None, title=None, now=None):
+    """Bars side by side, the first on the left, each its segments
+    stacked from the bottom in the order given.
+
+    `bars` is a list of {segments, label}: `segments` as a donut's -
+    {value, tone, planned}, planned hatched - and `label` text under the
+    bar, or None for none (label every seventh, say, for a month's
+    ticks). `max` is the top of the scale, a number above 0 - None for
+    the tallest bar's total; no bar may total more. `title` is text, the
+    tag top-left, or None. `now`, a whole number from 0 to the number of
+    bars, draws the now line before that bar - the first not over yet -
+    or None for none. Raises TypeError or ValueError for anything it
+    can't draw.
+
+    In the spec every key is there, None where not given; each bar
+    {segments, label}, each segment {value, tone, planned}.
+    """
+    what = "a bars spec"
+    if not isinstance(bars, (list, tuple)):
+        raise TypeError(f"{what}'s bars must be a list: {bars!r}")
+    out = []
+    for raw in bars:
+        _fields(raw, BAR_FIELDS, "a bar")
+        out.append({"segments": _segments(raw.get("segments", []), "a bar"),
+                    "label": _text_or_none(raw.get("label"), "label", "a bar's")})
+    if max is not None:
+        if isinstance(max, bool) or not isinstance(max, (int, float)) or not math.isfinite(max) or max <= 0:
+            raise ValueError(f"{what}'s max must be a number above 0: {max!r}")
+        for i, bar in enumerate(out):
+            total = sum(x["value"] for x in bar["segments"])
+            if total > max:
+                raise ValueError(f"{what}'s bar {i} totals {total}, over its max {max}")
+    if now is not None and (isinstance(now, bool) or not isinstance(now, int) or not 0 <= now <= len(out)):
+        raise ValueError(f"{what}'s now must be a whole number from 0 to {len(out)}: {now!r}")
+    return {"type": "bars", "title": _text_or_none(title, "title", f"{what}'s"), "max": max, "now": now, "bars": out}
+
+
 def empty(message=None):
     """Nothing to show, and why."""
     return {"type": "empty", "message": message or "No data yet"}
@@ -988,6 +1157,10 @@ class Ctx:
     rails = staticmethod(rails)
     grid = staticmethod(grid)
     strips = staticmethod(strips)
+    row = staticmethod(row)
+    column = staticmethod(column)
+    donut = staticmethod(donut)
+    bars = staticmethod(bars)
     empty = staticmethod(empty)
     error = staticmethod(error)
 

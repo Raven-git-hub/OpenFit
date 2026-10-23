@@ -280,6 +280,10 @@ the dicts itself.
 | `ctx.rails(timeline, left=None, right=None)` | `{"type": "rails", "left", "timeline", "right"}` | A timeline drawn exactly as it is alone, a rail either side: four columns, a rail, the two lanes, a rail. In a tile too small for them, the timeline alone. See [the rail builders](#the-rail-builders), below. |
 | `ctx.grid(cols, rows, cells)` | `{"type": "grid", "cols", "rows", "cells": [{"x", "y", "w", "h", "spec"}, ...]}` | A tile split into sub-panels, each drawn as a tile of its own on the Home grid's cells: `cols` by `rows` cells, each sub-panel `w` by `h` from column `x`, row `y` (from 0), its `spec` sized to it as to a tile. Cells lie inside the grid and never overlap. See [the grid builder](#the-grid-builder), below. |
 | `ctx.strips(lanes, now=None, sync=None, hours=None)` | `{"type": "strips", "now", "lanes": [{"kind", "label", "clock", "spans": [{"start", "end", "tone", "label", "place", "tz"}, ...], "troughs", "bands": [{"start", "end", "label"}, ...], "wocl": [{"start", "end"}, ...]}, ...]}`, plus `"sync"` and `"hours"` only when given, and a sleep lane's spans each a `"stage"` too | One lane to three of tinted spans on one horizontal time axis, a day across the frame and the rest a scroll away — the first lane taking the height the others leave, on an hour grid, each after it a 45px row: a `"sky"` lane's day, night or not known (hatched), faded from the top, a `"duty"` lane's day, night and WOCL pieces a slim bar butting square, a span's label once above its start, a duty lane's bands (trips away) amber bars behind its pieces, each port in it past the flight out, a lane's troughs a solid curve over it, a sky lane's WOCL red under the curve, a tag top-left of each lane — its label, over a clock lane's time under the cursor: the place and its local time (`"place"`), or the date and its local time (`"date"`). A `"sky"` lane's span may also be `"rest"` (the body's rest window, a green tint); a `"sleep"` lane's spans are sleep stages, each a bar rising to its stage's level, `"in"` (green) or `"out"` (red) of the rest window; a `"ticks"` lane's are `"disturbed"` stretches, red ticks. `hours` (12 to 168) sets how many hours the frame's width shows. With `sync`, drawn around the group's focus clock as a synced timeline is, on its side, and scrolled with it both ways. See [the strips builder](#the-strips-builder), below. |
+| `ctx.row(children, widths=None)` | `{"type": "row", "children": [...], "widths"}` | Its children side by side, left to right, each the row's full height and its share of the width by its weight in `widths` (`null`: equal shares). See [the dashboard builders](#the-dashboard-builders-row-column-donut-and-bars), below. |
+| `ctx.column(children, heights=None)` | `{"type": "column", "children": [...], "heights"}` | Its children stacked, each the column's full width and its share of the height by its weight in `heights` — unlike `panel`, which gives each child its own height. |
+| `ctx.donut(segments, figure=None, label=None, caption=None, note=None, key=None)` | `{"type": "donut", "segments": [{"value", "tone", "planned"}, ...], "figure", "label", "caption", "note", "key"}` | A ring of segments clockwise from twelve o'clock, each its share of the total, in the status colours (`good`, `warn`, `crit`, `neutral`), a planned one hatched; `figure` big in the middle, `label` small under it; `caption`, `note` and a solid/hatched `key` under the ring. It fits its box, the figure scaling with it. |
+| `ctx.bars(bars, max=None, title=None, now=None)` | `{"type": "bars", "title", "max", "now", "bars": [{"segments": [...], "label"}, ...]}` | Bars side by side in an inset frame, each its segments (a donut's) stacked from the foot on one scale, 0 to `max` (`null`: the tallest bar's total), a bar's `label` under it where given, `title` the tag top-left, the now line before bar `now`. |
 | `ctx.empty(message=None)` | `{"type": "empty", "message"}` | Muted, centred text (default "No data yet"). |
 | `ctx.error(message)` — the host's, or an app's for a part that failed | `{"type": "error", "message"}` | Muted, centred: "Couldn't render <app name>" over the message. The host's when a render fails; an app may return one for a part of its tile — a sub-panel — so the rest is drawn (the FRMS app's `_panel()`). |
 
@@ -898,6 +902,71 @@ A hand-built spec is drawn as far as it can be: three lanes at most, a kind
 that isn't `"duty"` drawn as a sky, a span without both ends in order left
 out, an unknown tone hatched as not known; nothing to draw → "Nothing to
 draw yet".
+
+### The dashboard builders: row, column, donut and bars
+
+Four specs that know nothing of what they show — the parts of a dashboard
+(the FRMS rest budget, and Phase 2's) — all additive: no spec before them
+changes.
+
+```python
+seg = lambda v, tone, planned=False: {"value": v, "tone": tone, "planned": planned}
+ctx.row([
+    ctx.column([
+        ctx.row([ctx.donut([seg(28, "good"), seg(2, "crit")], figure="7%", caption="30 days"), ...]),
+        ctx.bars([{"segments": [seg(2, "crit"), seg(5, "good")], "label": "1"}, ...],
+                 max=7, title="Disturbed rest · October", now=22),
+    ], heights=[3, 2]),
+    ctx.donut([seg(151, "good"), seg(3, "crit"), seg(10, "crit", True), seg(53, "good", True)],
+              figure="6%", label="October", note="3 flown · 10 rostered of 217", key=["Flown", "Rostered"]),
+], widths=[3, 2])
+```
+
+**`row(children, widths=None)`** and **`column(children, heights=None)`**:
+`children` a list or tuple of one spec or more (else `TypeError`, or
+`ValueError` for none), carried verbatim; `widths`/`heights` `None` (equal
+shares) or a list or tuple of one number a child (else `ValueError`), each
+finite and above 0 (a bool too, `ValueError`). The page draws each child as it
+is alone and gives it `flex: <weight> 1 0px` (`splitSpec()`), 10px apart —
+weights not one a child, or not each above 0, equal shares.
+
+**A segment** — a donut's, or one of a bar's — is `{value, tone, planned}`
+(`SEGMENT_FIELDS`; another key `ValueError`): `value` a finite number, 0 or
+more (a bool, text or NaN `ValueError`), 0 drawn as nothing; `tone` one of
+`CHART_TONES`, `"good"`, `"warn"`, `"crit"`, `"neutral"` (else
+`ValueError`); `planned` optional, `True`/`False` (`None` is `False`; else
+`TypeError`), drawn hatched — the roster's not-yet-happened. A tone is a
+status token (`.ch-good{--ch:var(--good);}` … `neutral` `--muted`), so the
+dark themes' own carry through; solid in it, planned stripes of it over a
+22% tint of it.
+
+**`donut(segments, figure=None, label=None, caption=None, note=None,
+key=None)`**: `segments` a list or tuple; the texts text or `None` (else
+`TypeError`); `key` `None` or two non-empty texts, `[solid, hatched]` (else
+`ValueError`). In the spec every key is there, `None` where not given. Drawn
+(`donutSpec()`) in a 100-square SVG fitting its box (`.ring`, a size
+container): the bare ring (`.ch-track`, `--border`), then each segment its
+share of the total, clockwise from twelve o'clock, `CH_GAP` apart — one
+that's all of it a whole ring — a planned one filled with its tone's hatch (a
+pattern made once a tone, its id unique on the page); `figure` in the middle
+in the display face, its size 18% of the ring's, `label` small under it;
+under the ring `caption` (the small uppercase heading), `note` (mono — its
+line kept under a caption even when empty, so captioned donuts side by side
+keep rings of one size) and `key`, a solid swatch and a hatched one. A tone
+it doesn't know is drawn neutral; the SVG's `aria-label` is caption, label
+and figure.
+
+**`bars(bars, max=None, title=None, now=None)`**: `bars` a list or tuple
+(else `TypeError`) of `{segments, label}` (`BAR_FIELDS`; another key
+`ValueError`) — `segments` as a donut's, stacked from the foot in the order
+given, `label` text or `None`; `max` `None` or a finite number above 0, and
+no bar totalling more (`ValueError`, naming the bar); `title` text or
+`None`; `now` `None` or a whole number from 0 to the bars' count (else
+`ValueError`). Drawn (`barsSpec()`) in an inset frame as the strips': the
+title top-left, each bar an even share of the width, each segment its value
+over the scale's top as a share of the height — 2px between, taken from the
+one above — a label under its bar, centred, and the now line (and its Now
+tag, as the strips') before bar `now`.
 
 ## Writing: apps as sources
 
