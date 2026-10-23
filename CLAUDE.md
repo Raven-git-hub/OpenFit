@@ -868,9 +868,14 @@ own calls to its device API. Full direction:
   `duty_pieces(rostered, flown, now, start, end)` → each counted duty,
   clipped, cut at home's WOCL and day/night boundaries — `{start, end,
   code, tone}`, `wocl` (first), else `night` in home darkness, else
-  `day`, against the body clock alone, never the location; a duty's
-  pieces contiguous, the same tone merged; all by start; `code` the
-  summary's. `circadian(rostered, flown, now, start, end)` → `{home,
+  `day`, against the body clock alone, never the location; a flight
+  (`PRE_DUTY_TYPES`) from its pre-duty time, the wake-up and travel
+  before its report — `PRE_DUTY_MINUTES` 120 unless the sleep block's
+  `pre_duty_minutes` (0–1440) says, at home or away, cut at the end of
+  the duty before it and never past its report (a day return is one
+  duty, so one); a duty's pieces contiguous, the same tone merged; all
+  by start; `code` the summary's, so a flight's sits at its pre-duty
+  time's start. `circadian(rostered, flown, now, start, end)` → `{home,
   location, body, duties, wocl, troughs}`, each the function's own.
   No acclimatisation, by design: the body clock is `personal.timezone`,
   always.
@@ -2522,6 +2527,13 @@ same PR:
   image first, then Update FRMS with the new `app.py` and `app.yaml`
   (keep `config.json`; its new keys are optional) — the wrong order
   errors the sleep sub-panel only.
+  Then the circadian panel's flights gained their pre-duty time (app
+  only, no host change): each flight's duty pieces start two hours
+  before its report — outbound, home from a layover, or a day return's
+  one duty — in the duty colours, the body clock's tone over it, cut at
+  the duty before; sims and reserves start at report as before. The
+  sleep panel's disturbed cycles are untouched: they're the duty itself
+  against sleep. Deploy: Update FRMS with the new `app.py` only.
   Still to come for it: personalising `cbt_min` from sleep data, the
   last sub-panel (bottom-right), Garmin's stage timelines, the cycle
   rule for the rest reports, a sub-panel's error isolated by the host
