@@ -536,10 +536,10 @@ The sleep panel, beside it, shows three days across: each night's sleep
 stages, from a sleep source that records them, a bar each its stage's height —
 green inside the body's rest window (22:00–08:00 home time unless the config
 says) and red outside it; the rest window itself, tagged Body clock over
-home's date and time; and the disturbed cycles — each stretch a flown duty
-ran into the rest window, cut into 90-minute slots, a slot with under 15
-minutes of sleep in it marked with red ticks. It scrolls with the other
-panels, by time.
+home's date and time; and the disturbed cycles — each stretch a flown flight
+or sim duty (not a reserve) ran into the rest window, cut into 90-minute
+slots, a slot with under 15 minutes of sleep in it marked with red ticks. It
+scrolls with the other panels, by time.
 
 An app isn't limited to OpenFit's metrics: it can **invent its own**. Declare
 what you invent, write what exists — a built-in metric is just written, while a

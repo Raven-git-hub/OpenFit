@@ -42,8 +42,8 @@ def night(start, end, stages, source="google_health"):
         "asleep_minutes": 0, "stages": [{"start": a, "end": b, "stage": s} for a, b, s in stages]})
 
 
-def duty(start, end, code="CX100"):
-    return host.Session(start, end, "app:frms", {"type": "flight", "code": code})
+def duty(start, end, code="CX100", kind="flight"):
+    return host.Session(start, end, "app:frms", {"type": kind, "code": code})
 
 
 # ---------- the rest window ----------
@@ -216,6 +216,26 @@ def test_only_slots_over_by_now_are_checked_and_a_duty_with_no_end_is_none():
     assert frms.disturbed_slots([duty("2026-10-20T17:00:00Z", None)], BUNK, WINDOWS, LATER, CONFIG) == []
     # A duty outside the rest window: none.
     assert frms.disturbed_slots([duty("2026-10-21T01:00:00Z", "2026-10-21T09:00:00Z")], [], WINDOWS, LATER, CONFIG) == []
+
+
+def test_only_flight_and_sim_duties_are_checked_not_a_reserve():
+    # The same night's hours on each kind of duty: a flight's and a sim's
+    # slots are checked; a reserve's, a standby's or a typeless one's not.
+    def slots(kind):
+        summary = {"code": "X"} if kind is None else {"type": kind, "code": "X"}
+        return frms.disturbed_slots([host.Session(DUTY.start, DUTY.end, "app:frms", summary)], BUNK, WINDOWS, LATER, CONFIG)
+    assert len(slots("flight")) == len(slots("sim")) == 5
+    assert slots("reserve") == slots("other") == slots(None) == []
+    # The config's sleep duty_types, when given, are the ones checked.
+    got = frms.disturbed_slots([duty(DUTY.start, DUTY.end, kind="reserve")], BUNK, WINDOWS, LATER,
+                               config(sleep={"duty_types": ["flight", "sim", "reserve"]}))
+    assert len(got) == 5
+    for kinds in ("flight", [], [""], ["flight", 3]):
+        if kinds == []:
+            assert frms.disturbed_slots([DUTY], BUNK, WINDOWS, LATER, config(sleep={"duty_types": kinds})) == []
+            continue
+        with pytest.raises(ValueError, match="config.json's sleep duty_types must be a list of duty types"):
+            frms.disturbed_slots([DUTY], BUNK, WINDOWS, LATER, config(sleep={"duty_types": kinds}))
 
 
 def test_the_slot_and_the_least_sleep_are_the_configs_when_it_gives_them():

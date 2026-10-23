@@ -1249,7 +1249,7 @@ above): the circadian panel top-left (3×2) — three strips, below — the rost
 panel bottom-left (2×2) — the timeline and its rails, below — the sleep
 panel top-right (3×2, `_sleep(ctx)`: three strips three days across — each
 night's stages, the body's rest window, and the disturbed cycles: each
-90-minute slot of a flown duty in the rest window with under 15 minutes of
+90-minute slot of a flown flight or sim duty (not a reserve) in the rest window with under 15 minutes of
 sleep in it) and one more to come bottom-right (4×2), a placeholder until
 it's built (`empty("Coming soon")`). `render()` is the layout; the circadian
 panel is `_circadian(ctx)` and the roster panel `_roster(ctx)`, its spec the one the

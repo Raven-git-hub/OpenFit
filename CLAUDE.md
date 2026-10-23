@@ -2510,10 +2510,11 @@ same PR:
   rest window and red out of it; the rest window itself (22:00–08:00
   home local unless `personal.rest_start`/`rest_end` say), tagged Body
   clock over home's date and time; and the disturbed cycles — each
-  stretch a flown duty overlapped the rest window, in 90-minute slots
+  stretch a flown flight or sim duty (not a reserve; the sleep block's
+  duty_types) overlapped the rest window, in 90-minute slots
   (a last part slot counted from half a slot), a slot over by now with
   under 15 minutes of sleep red ticks (the config's `sleep:
-  {slot_minutes, min_sleep_minutes}` to change them). For it,
+  {slot_minutes, min_sleep_minutes, duty_types}` to change them). For it,
   `strips()` gained, all additive: kinds `sleep` (tones `in`/`out`,
   each span a `stage`) and `ticks` (`disturbed`), a sky's `rest` tone,
   and `hours` (12–168, the viewport's width; no key unless given), so

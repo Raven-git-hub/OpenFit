@@ -113,8 +113,9 @@ sessions' stage timelines - each stage a bar its height, green inside
 the body's rest window and red outside it; the rest window itself, home
 local (22:00 to 08:00 unless the config's personal rest_start and
 rest_end say otherwise), tagged Body clock over home's date and time
-under the cursor; and the disturbed cycles - each stretch a flown duty
-overlapped the rest window, cut into 90-minute slots, a slot with under
+under the cursor; and the disturbed cycles - each stretch a flown flight
+or sim duty (not a reserve) overlapped the rest window, cut into
+90-minute slots, a slot with under
 15 minutes of sleep in it marked with red ticks. Its engine, pure as
 the circadian one: rest_windows() - the rest window each day;
 rest_strip() - rest and wake over a window; sleep_nights() - the sleep
@@ -251,8 +252,9 @@ def _sleep(ctx):
     window, three days across - each night's sleep stages, a bar each its
     height, green in the body's rest window and red out of it; the rest
     window itself, tagged Body clock over home's date and time under the
-    cursor; and the disturbed cycles, each 90-minute slot of a flown duty
-    in the rest window with under 15 minutes of sleep in it, red ticks.
+    cursor; and the disturbed cycles, each 90-minute slot of a flown
+    flight or sim duty in the rest window with under 15 minutes of sleep
+    in it, red ticks - a reserve's isn't checked.
     In the FRMS focus group, so it scrolls with the other panels by time.
     Before any sleep with stages, the ask."""
     if CONFIG is None:
@@ -829,6 +831,7 @@ SLEEP = "sleep"
 REST_WINDOW = ("22:00", "08:00")   # the body's rest window, home local, unless personal gives rest_start, rest_end
 SLOT_MINUTES = 90                  # a disturbed-cycle check's slot, unless the config's sleep block gives slot_minutes
 MIN_SLEEP_MINUTES = 15             # ... a slot with less sleep than this is disturbed, unless it gives min_sleep_minutes
+DISTURBING_TYPES = ("flight", "sim")  # ... and only these duties' slots are checked, unless it gives duty_types
 # A stage drawn, and at what level: a stage-less sleep (asleep, restless:
 # a short nap a device doesn't stage) at light's. Every stage drawn is
 # sleep for a slot; awake, out_of_bed and unknown aren't, and aren't drawn.
@@ -1082,17 +1085,22 @@ def disturbed_slots(duties, nights, windows, now, config=None):
     whole minutes of sleep in the slot - every stage DRAWN_STAGES draws -
     and `disturbed` is True when that's under min_sleep_minutes (15 by
     default). Only slots over by `now`: a slot still to come has no sleep
-    to count yet. `duties` are sessions (.start, .end) - the flown ones,
-    as the circadian panel takes the past; one with no end is none."""
+    to count yet. `duties` are sessions (.start, .end, .summary) - the
+    flown ones, as the circadian panel takes the past - and only those of
+    a type in the sleep block's duty_types count (flight and sim by
+    default: a reserve's time in the rest window isn't rest lost to
+    flying); one with no end, or no type, is none."""
     config = _config(config)
     now = _utc(now, "now")
     slot, least = _slot_rules(config)
+    kinds = _disturbing_types(config)
     wins = [(_utc(w["start"], "a rest window's start"), _utc(w["end"], "a rest window's end")) for w in windows]
     asleep = [(_utc(seg["start"], "a stage's start"), _utc(seg["end"], "a stage's end"))
               for night in nights for seg in night["stages"] if seg["stage"] in DRAWN_STAGES]
     found = []
     for duty in duties:
-        if duty.end is None:
+        summary = duty.summary if isinstance(duty.summary, dict) else {}
+        if duty.end is None or summary.get("type") not in kinds:
             continue
         ds, de = _utc(duty.start, "a duty's start"), _utc(duty.end, "a duty's end")
         for ws, we in wins:
@@ -1142,6 +1150,14 @@ def _slot_rules(config):
         if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= top:
             raise ValueError(f"config.json's sleep {key} must be a whole number of minutes, 1 to {top}: {value!r}")
     return timedelta(minutes=slot), timedelta(minutes=least)
+
+
+def _disturbing_types(config):
+    block = config.get("sleep")
+    kinds = (block if isinstance(block, dict) else {}).get("duty_types", list(DISTURBING_TYPES))
+    if not isinstance(kinds, list) or not all(isinstance(k, str) and k for k in kinds):
+        raise ValueError(f"config.json's sleep duty_types must be a list of duty types: {kinds!r}")
+    return frozenset(kinds)
 
 
 def _config(config):
