@@ -1775,6 +1775,131 @@ def test_render_app_passes_today_and_a_copy_of_cfg(conn, apps_dir):
     assert cfg == {"days": 7}
 
 
+# ---------- row, column, donut and bars: a dashboard's parts ----------
+#
+# Four specs with no notion of what they show: a row lays its children
+# side by side and a column stacks them, each its share by weight; a
+# donut is a ring of toned segments, a figure in it; bars are stacked
+# segments side by side on one scale. A segment's tone is a status
+# colour, and a planned one is drawn hatched.
+
+
+def _seg(value, tone="good", **more):
+    return {"value": value, "tone": tone, **more}
+
+
+def test_a_row_and_a_column_carry_their_children_and_weights():
+    a, b = host.empty("a"), host.number(3)
+    assert host.row([a, b]) == {"type": "row", "children": [a, b], "widths": None}
+    assert host.row((a, b), widths=(3, 2.5)) == {"type": "row", "children": [a, b], "widths": [3, 2.5]}
+    assert host.column([a, b], heights=[1, 4]) == {"type": "column", "children": [a, b], "heights": [1, 4]}
+    # Nested either way, and bound on the ctx as every builder is.
+    nested = host.row([host.column([a, b]), a])
+    assert nested["children"][0]["type"] == "column"
+    for name in ("row", "column", "donut", "bars"):
+        assert getattr(host.Ctx, name) is getattr(host, name)
+    json.dumps(nested, allow_nan=False)
+
+
+@pytest.mark.parametrize("build", [host.row, host.column])
+@pytest.mark.parametrize("children, weights, error, says", [
+    ("ab", None, TypeError, "children must be a list of specs"),
+    ([], None, ValueError, "needs a child"),
+    ([{"no": "type"}], None, TypeError, "children must be specs"),
+    ([{"type": "empty"}], "1", TypeError, "must be a list of numbers"),
+    ([{"type": "empty"}], [1, 2], ValueError, "must be one a child, 1, not 2"),
+    ([{"type": "empty"}], [0], ValueError, "must each be a number above 0: 0"),
+    ([{"type": "empty"}], [-1], ValueError, "must each be a number above 0: -1"),
+    ([{"type": "empty"}], [True], ValueError, "must each be a number above 0: True"),
+    ([{"type": "empty"}], [math.inf], ValueError, "must each be a number above 0: inf"),
+    ([{"type": "empty"}], ["2"], ValueError, "must each be a number above 0: '2'"),
+])
+def test_a_row_or_column_it_cant_lay_out_is_refused(build, children, weights, error, says):
+    with pytest.raises(error, match=re.escape(says)):
+        build(children, weights)
+
+
+def test_a_donut_carries_every_key_and_its_segments_in_order():
+    spec = host.donut([_seg(151), _seg(3, "crit"), _seg(10, "crit", planned=True), _seg(0, "neutral", planned=None)],
+                      figure="6%", label="October", caption=None, note="3 flown", key=("Flown", "Rostered"))
+    assert spec == {
+        "type": "donut",
+        "segments": [
+            {"value": 151, "tone": "good", "planned": False},
+            {"value": 3, "tone": "crit", "planned": False},
+            {"value": 10, "tone": "crit", "planned": True},
+            {"value": 0, "tone": "neutral", "planned": False},
+        ],
+        "figure": "6%", "label": "October", "caption": None, "note": "3 flown", "key": ["Flown", "Rostered"],
+    }
+    # No segments: the bare ring; every text None.
+    assert host.donut([]) == {"type": "donut", "segments": [], "figure": None, "label": None,
+                              "caption": None, "note": None, "key": None}
+    assert {t: host.donut([_seg(1, t)])["segments"][0]["tone"] for t in host.CHART_TONES} == {
+        "good": "good", "warn": "warn", "crit": "crit", "neutral": "neutral"}
+
+
+@pytest.mark.parametrize("args, error, says", [
+    (([{"value": 1, "tone": "good", "colour": "red"}],), ValueError, "takes value, tone, planned - not 'colour'"),
+    (([_seg(-1)],), ValueError, "value must be a number, 0 or more: -1"),
+    (([_seg(True)],), ValueError, "value must be a number, 0 or more: True"),
+    (([_seg(math.nan)],), ValueError, "value must be a number, 0 or more: nan"),
+    (([_seg("3")],), ValueError, "value must be a number, 0 or more: '3'"),
+    (([_seg(1, "red")],), ValueError, "tone is one of good, warn, crit, neutral, not 'red'"),
+    (([_seg(1, planned="yes")],), TypeError, "planned must be true or false: 'yes'"),
+    (("x",), TypeError, "segments must be a list"),
+    (([_seg(1)], 6), TypeError, "figure must be text: 6"),
+    (([_seg(1)], None, None, None, 4), TypeError, "note must be text: 4"),
+    (([_seg(1)], None, None, None, None, ["Flown"]), ValueError, "key must be two texts"),
+    (([_seg(1)], None, None, None, None, ["Flown", ""]), ValueError, "key must be two texts"),
+    (([_seg(1)], None, None, None, None, "ab"), ValueError, "key must be two texts"),
+])
+def test_a_donut_it_cant_draw_is_refused(args, error, says):
+    with pytest.raises(error, match=re.escape(says)):
+        host.donut(*args)
+
+
+def test_bars_carry_every_key_their_bars_and_segments_bottom_up():
+    month = [{"segments": [_seg(2, "crit"), _seg(5)], "label": "1"}, {"segments": [_seg(7, planned=True)]}, {}]
+    spec = host.bars(month, max=7, title="October", now=1)
+    assert spec == {
+        "type": "bars", "title": "October", "max": 7, "now": 1,
+        "bars": [
+            {"segments": [{"value": 2, "tone": "crit", "planned": False}, {"value": 5, "tone": "good", "planned": False}],
+             "label": "1"},
+            {"segments": [{"value": 7, "tone": "good", "planned": True}], "label": None},
+            {"segments": [], "label": None},
+        ],
+    }
+    # No max - the tallest bar's total - no title, no now line.
+    assert host.bars(month) == {**spec, "title": None, "max": None, "now": None}
+    # The now line after the last bar, and before the first.
+    assert host.bars(month, now=3)["now"] == 3 and host.bars(month, now=0)["now"] == 0
+    assert host.bars([]) == {"type": "bars", "title": None, "max": None, "now": None, "bars": []}
+
+
+@pytest.mark.parametrize("args, kw, error, says", [
+    (("x",), {}, TypeError, "bars must be a list"),
+    (([{"segments": [], "colour": 1}],), {}, ValueError, "a bar takes segments, label - not 'colour'"),
+    (([5],), {}, TypeError, "a bar must be a mapping: 5"),
+    (([{"segments": "x"}],), {}, TypeError, "segments must be a list"),
+    (([{"segments": [_seg(1, "red")]}],), {}, ValueError, "tone is one of good, warn, crit, neutral, not 'red'"),
+    (([{"segments": [], "label": 1}],), {}, TypeError, "a bar's label must be text: 1"),
+    (([],), {"max": 0}, ValueError, "max must be a number above 0: 0"),
+    (([],), {"max": True}, ValueError, "max must be a number above 0: True"),
+    (([],), {"max": math.inf}, ValueError, "max must be a number above 0: inf"),
+    (([{"segments": [_seg(5), _seg(3)]}],), {"max": 7}, ValueError, "bar 0 totals 8, over its max 7"),
+    (([{}],), {"now": 2}, ValueError, "now must be a whole number from 0 to 1: 2"),
+    (([{}],), {"now": -1}, ValueError, "now must be a whole number from 0 to 1: -1"),
+    (([{}],), {"now": 0.5}, ValueError, "now must be a whole number from 0 to 1: 0.5"),
+    (([{}],), {"now": True}, ValueError, "now must be a whole number from 0 to 1: True"),
+    (([{}],), {"title": 3}, TypeError, "title must be text: 3"),
+])
+def test_bars_it_cant_draw_are_refused(args, kw, error, says):
+    with pytest.raises(error, match=re.escape(says)):
+        host.bars(*args, **kw)
+
+
 # ---------- the writing ctx: sessions ----------
 #
 # handle()'s WriteCtx files a session - an interval - as a sync does,

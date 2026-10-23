@@ -5404,6 +5404,183 @@ def test_a_grids_sub_panels_draw_their_specs_as_at_the_top_of_a_tile(client):
     assert r["odd"] == ["Couldn't render XUnknown spec type: nope", "Fine"]
 
 
+# ---------- row, column, donut and bars ----------
+#
+# A row lays its children side by side and a column stacks them, each
+# its share by weight; a donut is a ring of toned segments clockwise from
+# twelve o'clock, a planned one hatched, its figure and label in the
+# middle and its caption, note and key under it; bars are each a stack
+# of toned segments from the foot, on one scale, labelled where given,
+# the now line before a bar. Under node, over the stand-in DOM.
+
+CHART_PARTS = TIMELINE_PARTS + ["splitSpec", "CH_TONES", "CH_NS", "CH_R", "chHatches", "chTone", "chSegments",
+                                "chSvg", "chArc", "donutSpec", "barsSpec"]
+
+CHART_HARNESS = r"""
+    document.createElementNS = (ns, tag) => { const n = mk(tag); n.ns = ns; return n; };
+    const cls = n => n.className || n.attrs.class || '';
+"""
+
+
+def _charts(page, scenario):
+    return _node(MINI_DOM + "\n".join(_js(page, n) for n in CHART_PARTS) + TIMELINE_HARNESS + CHART_HARNESS
+                 + scenario + "\nconsole.log(JSON.stringify(r));")
+
+
+def _seg(value, tone="good", planned=False):
+    return {"value": value, "tone": tone, "planned": planned}
+
+
+def test_a_row_and_a_column_share_out_by_weight(client):
+    page = _page(client)
+    a, b = {"type": "empty", "message": "A"}, {"type": "empty", "message": "B"}
+    r = _charts(page, f"""
+        const draw = spec => {{ const n = renderSpec(spec, 'X', 'x'); return [n.className, n.children.map(c => [c.className, c.style.flex, c.textContent])]; }};
+        r.row = draw({json.dumps({"type": "row", "children": [a, b], "widths": [3, 2]})});
+        r.column = draw({json.dumps({"type": "column", "children": [a, b], "heights": [1, 4]})});
+        r.equal = draw({json.dumps({"type": "row", "children": [a, b], "widths": None})});
+        // Weights not one a child, or not above 0: equal shares, not a guess.
+        r.short = draw({json.dumps({"type": "column", "children": [a, b], "heights": [2]})});
+        r.zero = draw({json.dumps({"type": "row", "children": [a, b], "widths": [0, 2]})});
+        // Nested: a column in a row, drawn as it is alone.
+        const nest = renderSpec({json.dumps({"type": "row", "children": [{"type": "column", "children": [a, b], "heights": None}, a], "widths": [3, 2]})}, 'X', 'x');
+        r.nest = [nest.children[0].className, nest.children[0].children.map(c => c.style.flex), nest.children[0].style.flex];
+        r.odd = renderSpec({{type: 'row', children: [{{type: 'nope'}}]}}, 'X', 'x').textContent;
+    """)
+    assert r["row"] == ["spec-row", [["spec-msg", "3 1 0px", "A"], ["spec-msg", "2 1 0px", "B"]]]
+    assert r["column"] == ["spec-column", [["spec-msg", "1 1 0px", "A"], ["spec-msg", "4 1 0px", "B"]]]
+    for got in (r["equal"], r["short"], r["zero"]):
+        assert [c[1] for c in got[1]] == ["1 1 0px", "1 1 0px"]
+    assert r["zero"][1][1][1] == "1 1 0px"
+    assert r["nest"] == ["spec-column", ["1 1 0px", "1 1 0px"], "3 1 0px"]
+    assert r["odd"] == "Couldn't render XUnknown spec type: nope"
+
+
+def test_a_donut_draws_each_segment_its_share_clockwise_a_planned_one_hatched(client):
+    page = _page(client)
+    spec = {"type": "donut", "segments": [_seg(151), _seg(3, "crit"), _seg(0, "warn"), _seg(10, "crit", True),
+                                          _seg(53, "good", True)],
+            "figure": "6%", "label": "October", "caption": None, "note": "3 flown <b>", "key": ["Flown", "Rostered"]}
+    r = _charts(page, f"""
+        const box = renderSpec({json.dumps(spec)}, 'X', 'x');
+        const svg = box.querySelector('svg');
+        r.box = [box.className, box.children.map(cls)];
+        r.svg = [svg.ns, svg.attrs.viewBox, svg.attrs.role, svg.attrs['aria-label']];
+        r.track = svg.children.filter(c => cls(c)==='ch-track').map(c => [c.tag, c.attrs.r, c.attrs['stroke-width']]);
+        r.segs = svg.querySelectorAll('path').map(p => [cls(p), p.style.fill || null, p.attrs.d.split(' ')[0]]);
+        r.patterns = svg.querySelectorAll('pattern').map(p => [p.id, p.children.map(cls)]);
+        r.mid = box.querySelector('.mid').children.map(c => [cls(c), c.textContent]);
+        r.under = [box.querySelector('.note').textContent, box.querySelector('.key').children.map(k => [k.children.map(cls), k.textContent])];
+        r.html = [box, ...box.querySelectorAll('*')].map(n => n._html).join('');
+        // Another donut: its hatches' ids its own.
+        const again = renderSpec({json.dumps(spec)}, 'X', 'x');
+        r.ids = again.querySelectorAll('pattern').map(p => p.id);
+    """)
+    assert r["box"] == ["spec-donut", ["ring", "note", "key"]]
+    assert r["svg"] == ["http://www.w3.org/2000/svg", "0 0 100 100", "img", "October, 6%"]
+    assert r["track"] == [["circle", "42", "14"]]
+    # Four segments - the one of no value nothing - clockwise from twelve
+    # o'clock: the first starts just past the top of the ring's outer edge
+    # (50, 1), half a gap on - 0.5 of the ring's 2.pi.42 round its edge
+    # of radius 49, 0.58 across.
+    assert [(c, f) for c, f, _ in r["segs"]] == [
+        ("ch-seg ch-good", None), ("ch-seg ch-crit", None),
+        ("ch-seg ch-crit ch-planned", "url(#ch-hatch-1)"), ("ch-seg ch-good ch-planned", "url(#ch-hatch-2)"),
+    ]
+    assert r["segs"][0][2] == "M50.58,1.00"
+    # A hatch a tone, its tint and its stripe in that tone.
+    assert r["patterns"] == [["ch-hatch-1", ["ch-tint ch-crit", "ch-stripe ch-crit"]],
+                             ["ch-hatch-2", ["ch-tint ch-good", "ch-stripe ch-good"]]]
+    assert r["mid"] == [["fig", "6%"], ["lab", "October"]]
+    assert r["under"] == ["3 flown <b>", [[["sw", ""], "Flown"], [["sw ch-planned", ""], "Rostered"]]]
+    assert r["html"] == ""
+    assert r["ids"] == ["ch-hatch-3", "ch-hatch-4"]
+
+
+def test_a_donut_of_one_segment_is_a_whole_ring_and_of_none_the_bare_ring(client):
+    page = _page(client)
+    r = _charts(page, """
+        const parts = spec => { const b = renderSpec(spec, 'X', 'x'), svg = b.querySelector('svg');
+          return [svg.children.filter(c => c.tag!=='defs').map(c => [c.tag, cls(c), c.style.stroke || null]), b.children.map(cls)]; };
+        r.whole = parts({type: 'donut', segments: [{value: 0, tone: 'crit'}, {value: 49, tone: 'good'}],
+                         figure: '0%', caption: '7 days'});
+        r.planned = parts({type: 'donut', segments: [{value: 5, tone: 'warn', planned: true}]});
+        r.none = parts({type: 'donut', segments: [{value: 0, tone: 'good'}]});
+        r.odd = parts({type: 'donut', segments: 'x'});
+        r.tone = parts({type: 'donut', segments: [{value: 1, tone: 'red'}, {value: 1, tone: 'good'}]});
+        // A caption keeps an empty note line, so donuts side by side match.
+        const cap = renderSpec({type: 'donut', segments: [], caption: '7 days'}, 'X', 'x');
+        r.cap = [cap.querySelector('.cap').textContent, cap.querySelector('.note').textContent];
+    """)
+    assert r["whole"] == [[["circle", "ch-track", None], ["circle", "ch-whole ch-good", None]], ["ring", "cap", "note"]]
+    assert r["planned"] == [[["circle", "ch-track", None], ["circle", "ch-whole ch-warn ch-planned", "url(#ch-hatch-1)"]],
+                            ["ring"]]
+    assert r["none"] == r["odd"] == [[["circle", "ch-track", None]], ["ring"]]
+    # A tone it doesn't know drawn neutral.
+    assert [c[1] for c in r["tone"][0][1:]] == ["ch-seg ch-neutral", "ch-seg ch-good"]
+    assert r["cap"] == ["7 days", ""]
+
+
+def test_bars_stack_each_bars_segments_from_the_foot_on_one_scale(client):
+    page = _page(client)
+    spec = {"type": "bars", "title": "October <i>", "max": 8, "now": 2, "bars": [
+        {"segments": [_seg(2, "crit"), _seg(6)], "label": "1"},
+        {"segments": [_seg(0, "crit"), _seg(8)], "label": None},
+        {"segments": [_seg(4, "crit", True), _seg(4, "good", True)], "label": "3"},
+        {"segments": [], "label": ""},
+    ]}
+    r = _charts(page, f"""
+        const box = renderSpec({json.dumps(spec)}, 'X', 'x');
+        r.box = [box.className, box.children.map(cls), box.querySelector('.t').textContent];
+        r.bars = box.querySelectorAll('.bar').map(b => [b.style.left, b.style.width, b.children.map(s => [cls(s), s.style.height])]);
+        r.ticks = box.querySelectorAll('.tick').map(t => [t.textContent, t.style.left]);
+        const now = box.querySelector('.now');
+        r.now = [now.style.left, now.textContent, now.parent.className];
+        r.html = [box, ...box.querySelectorAll('*')].map(n => n._html).join('');
+        // No max: the tallest bar's total. No now: no line. A now past the bars: none.
+        const tall = renderSpec({{...{json.dumps(spec)}, max: null, now: null}}, 'X', 'x');
+        r.tall = [tall.querySelectorAll('.bar')[2].children.map(s => s.style.height), tall.querySelectorAll('.now').length];
+        r.past = renderSpec({{...{json.dumps(spec)}, now: 9}}, 'X', 'x').querySelectorAll('.now').length;
+        r.empty = renderSpec({{type: 'bars', bars: []}}, 'X', 'x').children.map(cls);
+    """)
+    assert r["box"] == ["spec-bars", ["t", "plot", "ticks"], "October <i>"]
+    # Each a quarter of the width; a segment its value over the max of 8,
+    # the one above the first 2px less for the gap; one of no value none.
+    assert r["bars"] == [
+        ["0%", "25%", [["seg ch-crit", "25%"], ["seg ch-good", "calc(75% - 2px)"]]],
+        ["25%", "25%", [["seg ch-good", "100%"]]],
+        ["50%", "25%", [["seg ch-crit ch-planned", "50%"], ["seg ch-good ch-planned", "calc(50% - 2px)"]]],
+        ["75%", "25%", []],
+    ]
+    # Labels under their bars, mid-bar, only where given.
+    assert r["ticks"] == [["1", "12.5%"], ["3", "62.5%"]]
+    assert r["now"] == ["50%", "Now", "plot"]
+    assert r["html"] == ""
+    assert r["tall"] == [["50%", "calc(50% - 2px)"], 0]
+    assert r["past"] == 0
+    assert r["empty"] == ["plot", "ticks"]
+
+
+def test_the_charts_tones_are_the_status_tokens_in_every_theme(client):
+    page = _page(client)
+    css = page[: page.index("</style>")]
+    block = css[css.index("/* charts - a donut's segments") : css.index(".spec-msg{display:grid;")]
+    # Each tone its status token - the dark themes redefine the tokens, so
+    # the charts follow - and nothing in the charts' rules a colour of its own.
+    for tone, token in (("good", "--good"), ("warn", "--warn"), ("crit", "--crit"), ("neutral", "--muted")):
+        assert f".ch-{tone}{{--ch:var({token});}}" in block
+    assert not re.search(r"#[0-9a-fA-F]{3,8}\b", block)
+    # Solid in the tone; planned hatched in it over a tint of it, bar and ring alike.
+    assert ".spec-donut .ch-seg{fill:var(--ch);}" in block
+    assert ".spec-donut .ch-tint{fill:color-mix(in srgb, var(--ch) 22%, transparent);}" in block
+    assert ".spec-bars .seg{flex:none;border-radius:2px;background:var(--ch);}" in block
+    assert ("background:repeating-linear-gradient(135deg, var(--ch) 0 2px, "
+            "color-mix(in srgb, var(--ch) 22%, transparent) 2px 5px);") in block
+    # The figure scales with its ring, a size container.
+    assert "container-type:size;" in block[block.index(".spec-donut .ring{"):]
+    assert "font-size:calc(min(100cqw, 100cqh) * .18);" in block
+
+
 # ---------- strips: the circadian panel's lanes, a day across ----------
 #
 # A strips spec is lanes of tinted spans on one horizontal time axis, a

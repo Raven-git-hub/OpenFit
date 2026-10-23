@@ -318,7 +318,10 @@ or as many hours as it says — day and night, a duty's pieces, sleep stages as
 bars, a rest window, ticks, trips away as bars behind them, a curve with
 a window marked red under it, a lane's tag its label over the place or date and
 time under the cursor — that, named into a sync group, scrolls with the group's
-timelines both ways, by time), `empty` and `error` (for a part of
+timelines both ways, by time), `row` and `column` (children side by side or
+stacked, each its share), `donut` (a ring of segments in the status colours,
+planned ones hatched, a figure in the middle) and `bars` (stacked segments
+side by side on one scale, with a now line), `empty` and `error` (for a part of
 a tile that failed). An app that fails to load is logged and
 left out, and one whose `render()` fails shows as an error tile, never a
 broken page.
