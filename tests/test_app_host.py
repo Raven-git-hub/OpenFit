@@ -1900,6 +1900,46 @@ def test_bars_it_cant_draw_are_refused(args, kw, error, says):
         host.bars(*args, **kw)
 
 
+# ---------- image: a picture carried in the spec ----------
+#
+# Never fetched: the spec carries it, a data: URI of a PNG, JPEG or WebP,
+# so drawing a spec makes no request - no web address, no SVG (which can
+# carry script). A dark one for the dark themes; drawn whole at its
+# position; alone in a sub-panel, bare.
+
+PNG = "data:image/png;base64,iVBORw0KGgo="
+
+
+def test_an_image_carries_its_src_dark_alt_and_position():
+    assert host.image(PNG) == {"type": "image", "src": PNG, "dark": None, "alt": None, "position": "center"}
+    webp = "data:image/webp;base64,UklGRg=="
+    assert host.image(" " + PNG + "\n", alt="OpenFit", dark=webp, position="bottom right") == {
+        "type": "image", "src": PNG, "dark": webp, "alt": "OpenFit", "position": "bottom right"}
+    assert host.image("data:image/jpeg;base64,/9j/4A==")["src"].startswith("data:image/jpeg")
+    for position in host.IMAGE_POSITIONS:
+        assert host.image(PNG, position=position)["position"] == position
+    assert host.Ctx.image is host.image
+
+
+@pytest.mark.parametrize("args, kw, error, says", [
+    (("https://example.com/a.png",), {}, ValueError, "src must be a data: URI of a png, jpeg, webp image, base64"),
+    (("data:image/svg+xml;base64,PHN2Zz4=",), {}, ValueError, "src must be a data: URI"),
+    (("data:image/png,rawbytes",), {}, ValueError, "src must be a data: URI"),
+    (("data:image/png;base64,iVBOR w0K",), {}, ValueError, "src must be a data: URI"),
+    (("data:image/png;base64,",), {}, ValueError, "src must be a data: URI"),
+    (("javascript:alert(1)",), {}, ValueError, "never a web address"),
+    ((None,), {}, TypeError, "src must be a data: URI, text: None"),
+    ((PNG,), {"dark": "http://x/y.png"}, ValueError, "an image's dark must be a data: URI"),
+    ((PNG,), {"dark": 3}, TypeError, "an image's dark must be a data: URI, text: 3"),
+    ((PNG,), {"alt": 4}, TypeError, "an image's alt must be text: 4"),
+    ((PNG,), {"position": "middle"}, ValueError, "position is one of center, top, bottom, left, right"),
+    (("data:image/png;base64," + "A" * host.IMAGE_MAX_CHARS,), {}, ValueError, f"at most {host.IMAGE_MAX_CHARS}"),
+])
+def test_an_image_it_wont_draw_is_refused(args, kw, error, says):
+    with pytest.raises(error, match=re.escape(says)):
+        host.image(*args, **kw)
+
+
 # ---------- the writing ctx: sessions ----------
 #
 # handle()'s WriteCtx files a session - an interval - as a sync does,

@@ -284,6 +284,7 @@ the dicts itself.
 | `ctx.column(children, heights=None)` | `{"type": "column", "children": [...], "heights"}` | Its children stacked, each the column's full width and its share of the height by its weight in `heights` — unlike `panel`, which gives each child its own height. |
 | `ctx.donut(segments, figure=None, label=None, caption=None, note=None, key=None)` | `{"type": "donut", "segments": [{"value", "tone", "planned"}, ...], "figure", "label", "caption", "note", "key"}` | A ring of segments clockwise from twelve o'clock, each its share of the total, in the status colours (`good`, `warn`, `crit`, `neutral`), a planned one hatched; `figure` big in the middle, `label` small under it; `caption`, `note` and a solid/hatched `key` under the ring. It fits its box, the figure scaling with it. |
 | `ctx.bars(bars, max=None, title=None, now=None)` | `{"type": "bars", "title", "max", "now", "bars": [{"segments": [...], "label"}, ...]}` | Bars side by side in an inset frame, each its segments (a donut's) stacked from the foot on one scale, 0 to `max` (`null`: the tallest bar's total), a bar's `label` under it where given, `title` the tag top-left, the now line before bar `now`. |
+| `ctx.image(src, alt=None, dark=None, position="center")` | `{"type": "image", "src", "dark", "alt", "position"}` | A picture carried in the spec itself — a `data:` URI of a PNG, JPEG or WebP, never a web address, so the page fetches nothing — drawn whole (contained) at `position`, `dark` in its place in the dark themes. Alone in a grid's sub-panel it's drawn bare, on the page. See [the image builder](#the-image-builder), below. |
 | `ctx.empty(message=None)` | `{"type": "empty", "message"}` | Muted, centred text (default "No data yet"). |
 | `ctx.error(message)` — the host's, or an app's for a part that failed | `{"type": "error", "message"}` | Muted, centred: "Couldn't render <app name>" over the message. The host's when a render fails; an app may return one for a part of its tile — a sub-panel — so the rest is drawn (the FRMS app's `_panel()`). |
 
@@ -903,6 +904,36 @@ that isn't `"duty"` drawn as a sky, a span without both ends in order left
 out, an unknown tone hatched as not known; nothing to draw → "Nothing to
 draw yet".
 
+### The image builder
+
+```python
+ctx.image("data:image/webp;base64,UklGR...", alt="OpenFit FRMS",
+          dark="data:image/webp;base64,UklGR...", position="bottom right")
+# -> {"type": "image", "src": "data:image/webp;base64,...", "dark": "data:image/webp;base64,...",
+#     "alt": "OpenFit FRMS", "position": "bottom right"}
+```
+
+**Carried, never fetched.** `src` (and `dark`) must be a `data:` URI of a PNG,
+JPEG or WebP, base64 (`IMAGE_TYPES`; `_DATA_URI`, the whole string, trimmed):
+never a web address — so drawing a spec makes no request, keeping the
+no-external-calls rule whole — and never an SVG, which can carry script. At most
+`IMAGE_MAX_CHARS` (1 MiB) each; anything else `ValueError`, a src that isn't
+text `TypeError`. `alt` text or `None`; `position` one of `IMAGE_POSITIONS` —
+`center` (the default), `top`, `bottom`, `left`, `right` or a corner (`"bottom
+right"`) — else `ValueError`. Every key is in the spec, `dark` and `alt`
+`None` where not given. App files are text, so an app keeps its image as a text
+file of the URI beside `app.py` and reads it as it reads `config.json`.
+
+The page (`imageSpec()`) checks the URI again (`IMAGE_SRC`) — one that isn't
+draws "No image", never an `<img>` — and draws an `<img class="light">` of
+`src`, contained in its box (`object-fit: contain`) at `position`
+(`object-position`, `center` for one it doesn't know), its `alt` as given; with
+a valid `dark`, the box gains `has-dark` and an `<img class="dark">` too, and
+the CSS swaps them as the tokens switch — the theme setting `dark`, or the
+system's dark unless the setting says `light`. **Alone in a sub-panel it's
+bare**: `.spec-cell:has(> .spec-image)` drops the card's background, border,
+shadow and padding, so the picture sits on the page.
+
 ### The dashboard builders: row, column, donut and bars
 
 Four specs that know nothing of what they show — the parts of a dashboard
@@ -1314,7 +1345,7 @@ run by `test_frms_app.py` (its parsing on its own, the module loaded by
 path as the host loads it) and `test_app_actions.py` (the round trip), against
 a synthetic roster, `tests/fixtures/rosters/sample.ics`. It was the Roster
 app until it became FRMS: the whole FRMS suite as one app, with one tile and
-one `config.json`, drawn as four sub-panels on a 6×4 grid (`ctx.grid()`,
+one `config.json`, drawn as four sub-panels on a 6×5 grid (`ctx.grid()`,
 above): the circadian panel top-left (3×2) — three strips, below — the roster
 panel bottom-left (2×2) — the timeline and its rails, below — the sleep
 panel top-right (3×2, `_sleep(ctx)`: three strips three days across — each
@@ -1339,11 +1370,11 @@ only carries the file.
 ```yaml
 id: frms
 name: FRMS
-sizes: [{ w: 6, h: 4 }]
+sizes: [{ w: 6, h: 5 }]
 reads: [duties_rostered, duties_complete, sleep]
 ```
 
-One size, 6×4, so no size picker. No `metrics:`: the app files sessions and
+One size, 6×5, so no size picker. No `metrics:`: the app files sessions and
 nothing else. Duty hours, when a report needs them, are read from the
 sessions.
 
@@ -1523,6 +1554,16 @@ rostered rested]` — flown solid first, then rostered hatched — its figure
 the month's share red, flown and rostered together, its label the month,
 note `F flown · R rostered of T`, key `["Flown", "Rostered"]`. Before any
 duty, `empty("Upload your roster .ics")`.
+
+**The flash.** Under the panels, at x 2, y 4, 4×1 — the tile 6×5 for it —
+the OpenFit FRMS flash hugs the bottom right (`ctx.image(..., position="bottom
+right")`, bare), the row's left end empty. Its images are `flash-light.txt` and
+`flash-dark.txt` beside `app.py`, each a WebP `data:` URI (1500×400, from the
+3000×800 PNGs in `docs/design/brand/` — the dark one's ground is the dark
+`--bg`, `#0e1316`, and the light one's white is made transparent, so each sits
+on the page), read once at load (`_read_flash()`):
+either alone serves every theme; with neither, or one the host refuses
+(logged), the cell is left out and the panels are drawn as ever.
 ## Installing an app
 
 `POST /api/apps` installs an app from its files, and the Applications panel's
