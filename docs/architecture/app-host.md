@@ -925,10 +925,11 @@ ctx.row([
 **`row(children, widths=None)`** and **`column(children, heights=None)`**:
 `children` a list or tuple of one spec or more (else `TypeError`, or
 `ValueError` for none), carried verbatim; `widths`/`heights` `None` (equal
-shares) or a list or tuple of one number a child (else `ValueError`), each
-finite and above 0 (a bool too, `ValueError`). The page draws each child as it
-is alone and gives it `flex: <weight> 1 0px` (`splitSpec()`), 10px apart —
-weights not one a child, or not each above 0, equal shares.
+shares) or a list or tuple (else `TypeError`) of one number a child (else
+`ValueError`), each finite and above 0 (a bool too, `ValueError`). The page
+draws each child as it is alone and gives it `flex: <weight> 1 0px`
+(`splitSpec()`), 10px apart — weights not one a child, or not each above 0,
+equal shares.
 
 **A segment** — a donut's, or one of a bar's — is `{value, tone, planned}`
 (`SEGMENT_FIELDS`; another key `ValueError`): `value` a finite number, 0 or
