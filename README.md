@@ -460,7 +460,7 @@ the whole FRMS suite as one app — one tile, 6 wide by 4 tall (its only size),
 and one `config.json` — drawn as four sub-panels, each like a tile of its own:
 its roster panel, the timeline and rails below, 2×2 at the bottom left, its
 circadian panel (below) 3×2 at the top left, its sleep panel (below) 3×2 at
-the top right, and a placeholder, one more panel to come. A panel that fails
+the top right, and its rest budget (below) 4×2 beside the roster. A panel that fails
 shows its error in its own sub-panel; the others are drawn as ever.
 All its code is in its one `app.py`, by design. You upload a duty roster's
 `.ics` export, and the app — not OpenFit — reads it.
@@ -545,6 +545,16 @@ home's date and time; and the disturbed cycles — each stretch a flown flight
 or sim duty (not a reserve) ran into the rest window, cut into 90-minute
 slots, a slot with under 15 minutes of sleep in it marked with red ticks. It
 scrolls with the other panels, by time.
+The rest budget, beside the roster, shows how much of the rest window the roster
+has cost and is going to: each night's rest window in seven fixed 90-minute
+slots, a slot lost when a flight or sim is under way (rest on board, 15 minutes
+or more, saves a past one), in the two hours before a flight's report, or —
+away — when local time there is outside 22:00–08:00, so you're resisting the
+local clock. Three donuts give the share lost over the last 7 days, 30 days
+and 6 months (with how many of those days your roster covers, while it's
+younger), over a bar a night for this month; beside them this month's donut,
+flown slots solid and rostered ones still to come hatched. It's always now —
+it doesn't scroll.
 
 An app isn't limited to OpenFit's metrics: it can **invent its own**. Declare
 what you invent, write what exists — a built-in metric is just written, while a
