@@ -155,7 +155,7 @@ layover as an amber bar on the duty strip (the roster's trips), and the WOCL in
 red under the body clock's curve. Next: the rest of the
 Library (the writes ticker, now apps write back; alerts;
 Browse / Build / Create are still placeholders — Browse will read the library,
-step 3 of Phase 5), and the grid pass (free cell placement, a second layout
+step 5 of Phase 5), and the grid pass (free cell placement, a second layout
 mode on the same sizes).
 
 ## Phase 5 — OpenFit Admin & distribution  ← in progress, alongside Phase 2
@@ -163,20 +163,28 @@ mode on the same sizes).
 An Admin container per server creates the users (a container each), checks for
 updates and applies them, and serves the app library, which users install apps
 from through Browse; each user system stays offline. The Admin lives in this
-repo (`admin/`, to come, beside `app/` and `library/`). The design, decided
-2026-10-27, is `docs/architecture/distribution.md`. Built in five steps, step
-1 started (L1: the `library/` folder; L2: library app ids and read-only
-library apps):
+repo (`admin/`, beside `app/` and `library/`). The design, decided 2026-10-27,
+is `docs/architecture/distribution.md`. The library groundwork came first (L1:
+the `library/` folder; L2: library app ids and read-only library apps); then
+the order was changed so the Admin comes first, in A-slices:
 
-1. Library groundwork: the `library/` folder (L1), source-prefixed names and
-   read-only library apps (L2), `replaces` (L3), host-version labels.
-2. The user system: a login page, and the backup file (export, passphrase,
-   restore).
-3. Browse, reading a local library folder.
-4. The Admin: adding a user (blank, or from a backup file), the library
-   service, labelled containers, update checks and updates, plus the separate
-   proxy and announcer containers.
-5. The Admin's self-update helper, and organisation repos.
+1. **A1, built:** updates for the existing OpenFit
+   (`docs/architecture/admin.md`). The old SSH update (`git pull && docker
+   compose up -d --build`) behind buttons on port 8090, for the one OpenFit
+   already running, adopted in place. A check, weekly and on a button, shows
+   what's new by group, with the merged PRs linked. Update OpenFit refuses a
+   dirty tree, backs up the data, health-checks the new version and rolls back
+   by itself if it doesn't come up, and Undo does the same by hand. Its own
+   login, and only ever OpenFit's own containers.
+2. A2: adding users, one compose project per user.
+3. The user login (the user system's login page), before any second real
+   person gets a container.
+4. A4: the Admin's self-update.
+5. Library serving and Browse, with `replaces` (L3) and host-version labels
+   (L4), which wait for Browse.
+6. Organisation repos.
+
+The `.local` names and the proxy are deferred: users are on `IP:port` for now.
 
 ## Community-readiness (ongoing)
 

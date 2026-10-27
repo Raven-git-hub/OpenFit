@@ -1733,6 +1733,28 @@ own calls to its device API. Full direction:
   installing through `install_app()` from its files as text, as Browse
   will. Not `apps/`, so it can't be confused with `app/`. The distribution
   design it starts is `docs/architecture/distribution.md`.
+- `admin/` — the OpenFit Admin (A1, `docs/architecture/admin.md`): its own
+  image (`python:3.12-slim`, git, the docker CLI and compose plugin copied
+  from pinned images) and compose file (`docker compose -f
+  admin/docker-compose.yml -p openfit-admin up -d --build`), port 8090, the
+  docker socket, its volume `openfit-admin_admin-data` at `/data`, and the
+  repo mounted at its own host path (`OPENFIT_REPO`, from `admin/.env`). It
+  manages the one existing user system (`/data/admin.json`: project
+  `openfit`, service `tracker`, port 8080, branch `main`): a check (`git
+  fetch`, the changes grouped by top folder — `app/`, `admin/`, `library/`,
+  other — weekly and on a button), Update OpenFit (clean tree, `:prev` tag,
+  `merge --ff-only`, build, stop, a `tar` backup by a helper, up, a 60s
+  health check, the undo sequence if unhealthy) and Undo. Modules prefixed
+  `admin_` so they never clash with `app/`'s on the test path:
+  `admin_ops.py` (every command through one `Runner`, argument lists, never a
+  shell; git as the repo's owner; only the compose-labelled container and
+  `--rm` helpers labelled `openfit.admin.helper=true`), `admin_auth.py`
+  (setup code, a ≥12-character password, sessions, 5 bad logins per IP per
+  5 minutes → 429), `admin_server.py` (Flask; every `/api` route but
+  setup/login needs a session, every non-GET JSON with `X-OpenFit-Admin: 1`)
+  and `templates/index.html`. Nothing in `app/` knows it exists. Tests:
+  `tests/test_admin_*.py` — real git in temp repos, docker through
+  conftest's `FakeRunner`.
 - `tests/` — pytest, temp DB, no network.
 - `docs/architecture/` — design direction (read first). `docs/design/` — frontend references.
 
@@ -2258,6 +2280,8 @@ own calls to its device API. Full direction:
 - No multi-tenancy in core. No `user_id`, no auth on core (the webhook's URL
   token is the one exception). Multi-user is a future per-container Host layer.
 - Privacy-first: no telemetry, no external calls except a plugin's own device API.
+  (The Admin, `admin/`, is outside the user system: its `git fetch` from
+  GitHub is the one other call, and the user system never makes it.)
   Credentials encrypted at rest; their secrets (passwords, tokens) never
   returned over the API — `/api/connectors/<id>/detail`'s non-password
   `login` is the one field read back.
@@ -2726,7 +2750,7 @@ same PR:
   `?by_source` option for raw per-source reads, a derived pick for sessions
   (one per night across devices), and the series stitch.
 - **Distribution** (`docs/architecture/distribution.md`, decided 2026-10-27):
-  three layers — the repo (`app/`, `library/`, later `admin/`), an Admin
+  three layers — the repo (`app/`, `library/`, `admin/`), an Admin
   container per server (users, updates, the library; the only part that
   talks to the internet) and the user system, one offline container per
   user. Step 1 started: `library/` landed (L1), the real apps moved there
@@ -2736,16 +2760,22 @@ same PR:
   own `app.yaml` keeps its bare id, its files byte-identical to the
   library's), `install_library_app()` the one way one is made (Browse
   will call it), library apps read-only (`update_app()` 403s one, its
-  row has no Update), and Duplicate dropping the source (`frms-2`). Still
-  to come, in order: `replaces` (L3 — declared in the library copy's
+  row has no Update), and Duplicate dropping the source (`frms-2`). Then
+  the Admin came first, in A-slices: A1 landed (`admin/`, above; no change
+  to `app/`) — the old SSH update behind buttons for the one existing
+  OpenFit, with a backup before each update, a health check, automatic
+  rollback and Undo. Still to come, in order: A2 adding users (one compose
+  project each), the user login before any second real person, A4 the
+  Admin's self-update, then library serving and Browse with L3 and L4
+  (they wait for Browse), then organisation repos; the `.local` names and
+  the proxy deferred (users on `IP:port`). L3 as agreed: `replaces` (declared in the library copy's
   `app.yaml`, run only at the new app's install, one transaction moving
   the old id's sources, session ids, custom metric keys, source roles
   and Home layout items, then removing the old folder; adopting an
   uninstalled old app's data, refusing rather than merging when the new
-  id has data, the user confirming first), host-version labels; a login page (one account per container, still no
-  `user_id`) and the backup file; Browse reading the library; the Admin, its
-  proxy and mDNS announcer; the Admin's self-update and organisation repos.
-  Until the login lands, the hard constraints above stand as written.
+  id has data, the user confirming first); L4 host-version labels; the
+  backup file not yet placed. Until the login lands, the hard constraints
+  above stand as written.
 Keep `GET /api/activity` returning its current flat shape (`{date, steps,
 resting_hr, source}`, plus `synced_at` with `?by_source=1` — its `sleep_hours`
 field went with `sleep_minutes` in v2) as a compatibility shim during the

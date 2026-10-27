@@ -81,6 +81,9 @@ continuous it is, and which source wins each metric — not the product.
   and **Uninstall** (browsing and building apps from it are still to come).
 - A first **app host**: the Home tab shows the apps you install (none ship with
   OpenFit) as live tiles — see [Apps on the Home tab](#apps-on-the-home-tab).
+- The **OpenFit Admin**, optional and in its own container: it checks for and
+  applies OpenFit's updates from a web page, with a backup of your data before
+  each one and an undo — see [Admin](#admin).
 
 ## Webhook input (push)
 
@@ -673,9 +676,50 @@ removing the source, no re-entering the secret, and no revoking access at
 myaccount.google.com first: OpenFit asks Google with `prompt=consent`, so every
 authorization returns a fresh refresh token.
 
+## Admin
+
+The **OpenFit Admin** is a small web admin, in its own container on port 8090,
+that updates OpenFit for you. It replaces SSHing in to run `git pull && docker
+compose up -d --build`, and adds the safety nets the command line never had:
+
+- **Check now**, and a check by itself every week. It shows what's new on
+  GitHub, grouped as user system, Admin, app library and other, with the merged
+  PRs linked.
+- **Update OpenFit** refuses a server copy with local changes. It keeps the
+  current image, pulls and builds while OpenFit keeps running, then stops it,
+  **backs up its data**, starts the new version and checks it answers. If it
+  doesn't come up, the Admin puts the data, image and code back by itself.
+- **Undo last update** does the same rollback by hand.
+- **Backups**: the newest three, taken before each update.
+
+It manages the OpenFit you already run, in place: the same compose project,
+the same `/data` volume and the same port 8080. Install it once from the
+command line, on the docker host:
+
+```bash
+cd ~/containers/openfit && git pull
+cp admin/.env.example admin/.env      # edit if the repo lives elsewhere
+docker compose -f admin/docker-compose.yml -p openfit-admin up -d --build
+docker logs openfit-admin-admin-1     # the one-time setup code
+```
+
+Then open `http://<server IP>:8090`, enter the setup code, and choose a
+password of at least 12 characters. The Admin's own update is a command it
+shows you when there's one (it doesn't update itself yet):
+`docker compose -f admin/docker-compose.yml -p openfit-admin up -d --build`,
+from the repo.
+
+It holds the Docker socket, so it has full control of the host. It only ever
+acts on OpenFit's own compose project and on helper containers it labels as
+its own, never on anything else the server runs, and it never runs a command
+through a shell. It's plain HTTP for your LAN: don't expose port 8090 to the
+internet. The design and every step, in order:
+[docs/architecture/admin.md](docs/architecture/admin.md).
+
 ## Architecture
 
 ```
+admin/                        The OpenFit Admin: updates OpenFit for you (port 8090)
 app/
   main.py                     Flask API + scheduler, loads plugins from plugins/
   apps.py                     Finds, loads and installs the apps (/data/apps)
@@ -805,6 +849,9 @@ plugin.
   then a cached session token.
 - No login on the web UI. Fine on a trusted home network; don't expose it to the
   public internet without auth in front (reverse proxy or VPN).
+- The Admin, if you install it, is the one part that talks to the internet:
+  it fetches the OpenFit repo from GitHub to check for and pull updates. The
+  user system itself never does. The Admin has its own login.
 
 **Multi-user:** not row-level multi-tenancy. If this ever runs for more than one
 person, the plan is one isolated container per user behind a shared "Host" layer
