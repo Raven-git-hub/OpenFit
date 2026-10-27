@@ -2627,6 +2627,41 @@ def test_a_library_apps_row_has_no_update_but_says_where_it_comes_from(client, l
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
+def test_a_library_apps_panel_id_never_meets_a_custom_apps(client, dupe_apps):
+    # openfit.frms from the library, and a custom app whose id differs only
+    # by the dot: openfit-frms.
+    frms = os.path.join(os.path.dirname(__file__), "..", "library", "frms")
+    files = {}
+    for name in sorted(os.listdir(frms)):
+        if os.path.isfile(os.path.join(frms, name)):
+            with open(os.path.join(frms, name), encoding="utf-8") as f:
+                files[name] = f.read()
+    apps.install_library_app(dupe_apps, "openfit", files)
+    custom = {**files, "app.yaml": files["app.yaml"].replace("id: frms\n", "id: openfit-frms\n")}
+    assert client.post("/api/apps", json={"files": custom}).status_code == 201
+    listed = client.get("/api/apps").get_json()
+    assert {"openfit.frms", "openfit-frms"} <= {a["id"] for a in listed}
+
+    # Each open row's panel id, as appPanel sets it - and, beside them, the
+    # ids a hand-placed app's '_' could make meet. No file is read, so none
+    # is served (FRMS's alone would overflow node -e's argument).
+    ids = ["a.b", "a-b", "a_b", "a_2eb", "A_b", "a_B", "My_App"]
+    script = _dupe_script(_page(client), listed, {}, f"""
+        r.rows = ['openfit.frms', 'openfit-frms'].map(id => appPanel(APPS_.find(a => a.id===id)).id);
+        r.ids = {json.dumps(ids)}.map(id => appPanelId({{id}}));
+    """)
+    r = _node(script)
+
+    # The dot is written as _2e: two apps, two panels.
+    assert r["rows"] == ["app-panel-openfit_2efrms", "app-panel-openfit-frms"]
+    assert r["ids"] == [
+        "app-panel-a_2eb", "app-panel-a-b", "app-panel-a_5fb", "app-panel-a_5f2eb",
+        "app-panel-A_5fb", "app-panel-a_5fB", "app-panel-My_5fApp",
+    ]
+    assert len(set(r["ids"])) == len(ids)
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
 def test_a_library_apps_duplicate_is_a_custom_app_of_ones_own(client, library_apps):
     r = _run_dupe(client, "r.out = await duplicate('openfit.steps');")
     out = r["out"]

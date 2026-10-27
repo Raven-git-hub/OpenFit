@@ -2680,8 +2680,12 @@ h5 + .dnote{margin-top:0;}
 
   /* An installed app: its name, opening onto its detail. /api/apps lists
      only the apps that load, with no status of their own, so there's
-     none to show yet. */
-  const appPanelId = a => 'app-panel-' + String(a.id).replace(/[^a-z0-9_-]/gi, '-');
+     none to show yet. Its panel's id is the app's, every character
+     outside [a-z0-9-] (either case kept) written as '_' and its hex code:
+     an app id holds only letters, digits, '-', '_' and '.', so each is
+     '_5f' or '_2e' and '_' is never itself - two ids, two panel ids, as
+     openfit.frms (app-panel-openfit_2efrms) and openfit-frms are. */
+  const appPanelId = a => 'app-panel-' + String(a.id).replace(/[^a-z0-9-]/gi, c => '_' + c.charCodeAt(0).toString(16));
   function appRow(a){
     const item = el('div','ditem aitem');
     item.dataset.app = a.id;
