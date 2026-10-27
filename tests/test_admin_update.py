@@ -26,7 +26,9 @@ PS = [
 
 
 def compose(env, *args):
-    return ["docker", "compose", "-p", "openfit", "-f", os.path.join(env.repos.repo, "docker-compose.yml"), *args]
+    """The primary's compose command: the repo's file, then the Admin's override."""
+    return ["docker", "compose", "-p", "openfit", "-f", os.path.join(env.repos.repo, "docker-compose.yml"),
+            "-f", str(env.data / "primary.override.yml"), *args]
 
 
 def git(env, *args):
@@ -35,6 +37,10 @@ def git(env, *args):
 
 def docker(*args):
     return Call(["docker", *args], None, False)
+
+
+# Before anything that recreates a user: the app shelf's volume is there.
+SHELF = docker("volume", "inspect", "--format", "{{.Name}}", "openfit-library")
 
 
 def backup_cmd(name):
@@ -99,9 +105,10 @@ def test_an_update_runs_in_the_exact_order(admin_env):
     op = run_update(env)
 
     assert env.fake.calls == [
-        # 1. clean?  (and on the branch it updates)
+        # 1. clean?  (and on the branch it updates, with the shelf's volume there)
         git(env, "status", "--porcelain"),
         git(env, "rev-parse", "--abbrev-ref", "HEAD"),
+        SHELF,
         # 2. remember the version, keep the image as :prev
         git(env, *HEAD_LOG[1:]),
         docker(*PS[1:]),
@@ -322,8 +329,9 @@ def test_undo_is_offered_only_after_a_successful_update(logged_in, admin_env):
     env.admin.wait(10)
     undo = env.admin.current_op()
 
-    assert env.fake.calls[:10] == [
+    assert env.fake.calls[:11] == [
         git(env, *HEAD_LOG[1:]),
+        SHELF,
         Call(compose(env, "stop", "tracker"), env.repos.repo, False),
         docker(*PS[1:]),
         docker("inspect", "--type", "container", container),

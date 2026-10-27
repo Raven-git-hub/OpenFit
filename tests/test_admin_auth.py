@@ -16,6 +16,7 @@ POST_ROUTES = [
     "/api/check", "/api/update", "/api/undo", "/api/logout",
     "/api/users", "/api/users/sam/start", "/api/users/sam/stop", "/api/users/sam/remove",
     "/api/users/andy/start", "/api/users/andy/stop", "/api/removed/kim/delete-data",
+    "/api/users/sam/restart", "/api/users/andy/restart", "/api/library/update", "/api/library/publish",
 ]
 # A body every route would act on: a new user, the right confirm.
 BODY = {"name": "lee", "port": 8110, "confirm": "kim"}
@@ -170,6 +171,7 @@ def test_every_api_route_needs_a_session(admin_client, admin_env, path):
     assert admin_env.fake.calls == []
     assert admin_env.admin.history() == []
     assert (admin_env.data / "users.json").read_text() == admin_env.users_before
+    assert os.listdir(admin_env.library) == []  # nothing published
 
 
 def test_an_unknown_api_route_needs_a_session_too(admin_client):
@@ -190,6 +192,7 @@ def test_a_post_without_the_header_is_403(admin_client, admin_env, path):
     assert admin_env.fake.calls == []
     assert admin_env.admin.history() == []
     assert (admin_env.data / "users.json").read_text() == admin_env.users_before
+    assert os.listdir(admin_env.library) == []  # nothing published
     assert admin_client.get("/api/status").status_code == 200  # still logged in
 
 

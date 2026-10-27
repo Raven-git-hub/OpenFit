@@ -1733,11 +1733,12 @@ own calls to its device API. Full direction:
   installing through `install_app()` from its files as text, as Browse
   will. Not `apps/`, so it can't be confused with `app/`. The distribution
   design it starts is `docs/architecture/distribution.md`.
-- `admin/` — the OpenFit Admin (A1, A2, A4, `docs/architecture/admin.md`): its own
+- `admin/` — the OpenFit Admin (A1, A2, A4, A5, `docs/architecture/admin.md`): its own
   image (`python:3.12-slim`, git, the docker CLI and compose plugin copied
   from pinned images) and compose file (`docker compose -f
   admin/docker-compose.yml -p openfit-admin up -d --build`), port 8090, the
-  docker socket, its volume `openfit-admin_admin-data` at `/data`, and the
+  docker socket, its volume `openfit-admin_admin-data` at `/data`, the app
+  shelf's volume `openfit-library` at `/library` (A5, below), and the
   repo mounted at its own host path (`OPENFIT_REPO`, from `admin/.env`). It
   manages users (a `User` record each, `Admin.users()` primary first): the
   **primary**, the existing user system adopted in place (`/data/admin.json`:
@@ -1748,7 +1749,8 @@ own calls to its device API. Full direction:
   checked on every read — a bad entry stops the Admin starting), each
   project `openfit-<name>` from `/data/users/<name>/docker-compose.yml`,
   written from `USER_COMPOSE` (image `openfit-tracker:latest`, `pull_policy:
-  never`, a port, volume `tracker-data` — no `env_file`/`environment`, so
+  never`, a port, volume `tracker-data`, the shelf `openfit-library:/library:ro`
+  (`external`) — no `env_file`/`environment`, so
   the repo's `.env` never reaches them). Add user (`POST /api/users`, an
   `add_user` op: image built and the name's volume not already there, else
   409; write, `up -d --no-build`, health check, then `users.json`; a failure
@@ -1781,11 +1783,41 @@ own calls to its device API. Full direction:
   `_mark_interrupted()`; `_settle()` once the helper has gone), holding
   the lock meanwhile; it's never marked interrupted. The `openfit-admin`
   project only through `admin_compose()`: `build admin` or `up -d
-  --no-build --force-recreate admin`, nothing else. Modules prefixed
+  --no-build --force-recreate admin`, nothing else. And the app shelf
+  (A5): the volume `openfit-library`, made by the Admin's compose file,
+  written through the Admin's `/library` and mounted read-only at
+  `/library` by every user — the primary through
+  `/data/primary.override.yml` (`compose()` passes `-f <repo
+  compose> -f <override>`, exactly those two, in that order; the root
+  `docker-compose.yml` unchanged), an added user through the template;
+  both written at startup if they differ (`write_mounts()`, in the
+  constructor), nobody restarted. `publish_set()` copies the repo's
+  `library/` at `HEAD` (each `[a-z0-9][a-z0-9-]*` folder with an
+  `app.yaml`, ≤64 files and ≤16 MB, ≤200 apps; regular files only, never
+  through a link, dotfiles/`__pycache__`/`.pyc` left out) into
+  `.sets/openfit-<commit12>`, swaps the relative link `openfit` onto it
+  in one step, writes `index.json` (`{published_at, sources: {openfit:
+  {commit, apps: {app: {sha256: fingerprint()}}}}}`) last, keeps the
+  set before; a failure leaves the shelf as it was; file work only, no
+  docker, every path checked inside `/library`. It runs at startup
+  (`publish_at_startup()`, from `serve()`, when the index is missing or
+  behind `HEAD`), at the end of Update OpenFit (a failure there doesn't
+  undo it: Publish again, `POST /api/library/publish`), after an undo or
+  rollback, and in Update apps (`POST /api/library/update`, an
+  `update_apps` op, offered in place of Update OpenFit when only
+  `library/` (and docs) changed: `merge --ff-only`, `git diff
+  --name-only <old> HEAD` — `app/` or `admin/` there resets and fails —
+  publish, a failure resetting; no docker at all). Restart (`POST
+  /api/users/<name>/restart`: `up -d --no-build --force-recreate`, then
+  the health check) gives a user the mount; `status()` marks each user
+  `library` from `docker inspect`; every recreate (Restart, Start, Add
+  user, Update OpenFit, Undo) first `docker volume inspect
+  openfit-library`, 409 "The Admin needs updating first: …" without it;
+  the shelf volume is never removed. Modules prefixed
   `admin_` so they never clash with `app/`'s on the test path:
   `admin_ops.py` (every command through one `Runner`, argument lists, never a
   shell; git as the repo's owner; compose only `-p openfit` with the repo's
-  file or `-p openfit-<name>` with the user's own — or the Admin's own
+  file and the override, or `-p openfit-<name>` with the user's own — or the Admin's own
   project through `admin_compose()`; only those projects'
   compose-labelled containers and `--rm` helpers labelled
   `openfit.admin.helper=true`), `admin_swap.py` (the update helper),
@@ -2811,9 +2843,16 @@ same PR:
   Update and Undo moving every user together. Then A4 landed (`admin/`
   only), ahead of the user login: Update the Admin, a helper container on
   the old image swapping the Admin over and rolling back image and
-  settings if it doesn't answer. Still to come, in order:
-  the user login before any second real person, then library serving and Browse with L3 and L4
-  (they wait for Browse), then organisation repos; the `.local` names and
+  settings if it doesn't answer. Then A5 landed (`admin/` only), the
+  library's serving: the app shelf, a read-only volume every user mounts
+  at `/library` (no allowlist, no network between containers), the
+  official apps published to it atomically, Update apps for app-only
+  changes (no rebuild, no restarts) and Restart per user; nothing reads
+  it until Browse. Still to come, in order:
+  the user login before any second real person, then Browse (B1) and
+  self-updating installed apps (B3) with L3 and L4
+  (they wait for Browse), then organisation repos (A6); scheduled updates
+  parked; the `.local` names and
   the proxy deferred (users on `IP:port`). L3 as agreed: `replaces` (declared in the library copy's
   `app.yaml`, run only at the new app's install, one transaction moving
   the old id's sources, session ids, custom metric keys, source roles

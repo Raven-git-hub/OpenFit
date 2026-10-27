@@ -4,8 +4,9 @@ The OpenFit Admin's web server: one page and its JSON API, on port 8090.
 Every /api route but setup and login needs a logged-in session (401),
 and every request that isn't a GET must be JSON and carry the header
 X-OpenFit-Admin: 1 (403) - a cross-site page can't send either. Nothing
-runs on import: serve() reads the environment, prints the setup code if
-there's no password yet, starts the weekly check and the server.
+runs on import: serve() reads the environment, publishes the app shelf if
+it's behind the code, prints the setup code if there's no password yet,
+starts the weekly check and the server.
 """
 
 import os
@@ -120,6 +121,13 @@ def create_app(admin, auth, secret_key):
         except Refused as e:
             return _fail(e.message, e.status)
 
+    @app.post("/api/library/update")
+    def api_update_apps():
+        try:
+            return jsonify(ok=True, op=admin.start_update_apps()), 202
+        except Refused as e:
+            return _fail(e.message, e.status)
+
     @app.post("/api/admin/update")
     def api_admin_update():
         try:
@@ -154,6 +162,10 @@ def create_app(admin, auth, secret_key):
     def api_stop_user(name):
         return done(lambda: admin.stop_user(name))
 
+    @app.post("/api/users/<name>/restart")
+    def api_restart_user(name):
+        return done(lambda: admin.restart_user(name))
+
     @app.post("/api/users/<name>/remove")
     def api_remove_user(name):
         return done(lambda: admin.remove_user(name))
@@ -161,6 +173,10 @@ def create_app(admin, auth, secret_key):
     @app.post("/api/removed/<name>/delete-data")
     def api_delete_data(name):
         return done(lambda: admin.delete_data(name, body().get("confirm")))
+
+    @app.post("/api/library/publish")
+    def api_publish_again():
+        return done(admin.publish_again)
 
     return app
 
@@ -172,6 +188,7 @@ def serve():
     data_dir = os.environ.get("ADMIN_DATA", "/data")
     os.makedirs(data_dir, exist_ok=True)
     admin = Admin(repo, data_dir)
+    admin.publish_at_startup()  # before the checks and the server start: nothing else runs meanwhile
     auth = Auth(data_dir)
     if auth.setup_code:
         print(f"[admin] No password yet. Open http://<server IP>:{PORT} and use this setup code: {auth.setup_code}", flush=True)

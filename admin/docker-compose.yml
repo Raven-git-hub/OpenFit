@@ -9,6 +9,8 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - admin-data:/data
+      # The app shelf, which the Admin fills and every user mounts read-only.
+      - library:/library
       # The repo at the same absolute path as on the host, so compose
       # resolves the user system's paths the same inside and out.
       - ${OPENFIT_REPO:?set OPENFIT_REPO in admin/.env}:${OPENFIT_REPO}
@@ -20,3 +22,7 @@ volumes:
   admin-data:
     # Fixed, because the Admin's backup helpers mount it by this name.
     name: openfit-admin_admin-data
+  library:
+    # Fixed, because every user's compose files name it (as external): the
+    # Admin's compose project makes it, and nothing ever removes it.
+    name: openfit-library

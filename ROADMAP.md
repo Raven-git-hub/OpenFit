@@ -195,8 +195,15 @@ the order was changed so the Admin comes first, in A-slices:
    it, and puts the old image and settings back if it doesn't answer. A4
    itself installs with the manual command one last time.
 5. Library serving and Browse, with `replaces` (L3) and host-version labels
-   (L4), which wait for Browse.
-6. Organisation repos.
+   (L4), which wait for Browse. **A5, built:** the serving — the app shelf
+   (`docs/architecture/admin.md`), a volume the Admin fills with the official
+   apps and every user mounts read-only at `/library`, published atomically
+   at startup, by Update OpenFit and by **Update apps** (app-only changes: no
+   rebuild, no restarts), with a Restart per user. Browse (B1) is next on the
+   user system's side.
+6. Organisation repos (A6).
+
+Parked: scheduled updates (an update at a time the admin picks).
 
 The `.local` names and the proxy are deferred: users are on `IP:port` for now.
 

@@ -28,6 +28,15 @@ its new image, then hands the swap to a helper container (admin_swap.py),
 which recreates the Admin on it and puts the old one back if it doesn't
 answer.
 
+The app shelf (A5) is the volume openfit-library, which the Admin writes
+through its own mount at /library and every user's OpenFit mounts
+read-only at /library: the official apps, the repo's library/, published
+as an immutable set behind a symlink swapped in one step. Publishing is
+plain file work under /library - no docker command, no helper - and the
+shelf volume is never removed. The primary gets the mount from an
+override file the Admin writes, /data/primary.override.yml, passed after
+the repo's compose file; an added user from the template below.
+
 Git runs as the repo's owner (the uid and gid that own OPENFIT_REPO), so
 the files it writes stay the owner's and git never refuses the repo as
 someone else's. Docker runs as root, for the socket.
@@ -37,6 +46,8 @@ import hashlib
 import json
 import os
 import re
+import secrets
+import stat
 import subprocess
 import shutil
 import threading
@@ -119,7 +130,9 @@ USER_SERVICE = "tracker"
 # An added user's compose file, exactly: only the image and the port are
 # filled in. No env_file and no environment - the repo's .env, which the
 # root compose file loads, can hold the primary's logins and secret key -
-# and no bind mount: the user's /data is a volume of its own.
+# and no bind mount: the user's /data is a volume of its own. The app
+# shelf is mounted read-only, from the Admin's volume (external: compose
+# never makes or removes it).
 USER_COMPOSE = """services:
   tracker:
     image: {image}:latest
@@ -128,11 +141,41 @@ USER_COMPOSE = """services:
       - "{port}:80"
     volumes:
       - tracker-data:/data
+      - openfit-library:/library:ro
     restart: unless-stopped
 volumes:
   tracker-data: {{}}
+  openfit-library:
+    external: true
 """
 PORT_CLASH = ("port is already allocated", "address already in use")
+
+# The app shelf. The volume is the Admin's own (its compose file makes it);
+# the Admin writes it at LIBRARY_DIR, every user reads it at /library.
+LIBRARY_VOLUME = "openfit-library"
+LIBRARY_DIR = "/library"
+LIBRARY_MOUNT = "/library"
+# The primary's mount of it: written by the Admin into its own /data and
+# passed after the repo's compose file, which never changes for it.
+PRIMARY_OVERRIDE = "primary.override.yml"
+PRIMARY_OVERRIDE_TEXT = """services:
+  {service}:
+    volumes:
+      - openfit-library:/library:ro
+volumes:
+  openfit-library:
+    external: true
+"""
+VOLUME_MISSING = "The Admin needs updating first: its app library storage isn't there yet."
+# /library/index.json, /library/<source> -> .sets/<source>-<commit12>.
+OFFICIAL_SOURCE = "openfit"
+SHELF_INDEX = "index.json"
+SHELF_SETS = ".sets"
+_SHELF_SOURCE = re.compile(r"[a-z][a-z0-9]*\Z")  # as the user system's LIBRARY_SOURCE
+_SHELF_APP = re.compile(r"[a-z0-9][a-z0-9-]*\Z")  # a library app's folder
+MAX_APP_FILES = 64
+MAX_APP_BYTES = 16 * 1024 * 1024
+MAX_APPS = 200
 
 CHECK_EVERY = 7 * 24 * 3600  # an automatic check, a week after the last
 TICK_EVERY = 3600  # how often the background thread looks
@@ -398,12 +441,28 @@ def group_of(path):
     return "other"
 
 
-def update_offered(check):
-    """Whether the last check shows something for Update OpenFit to pull."""
+def _changed(check, key):
+    """Whether the check's group `key` lists any commit or file."""
+    group = next((g for g in check.get("groups", []) if g["key"] == key), None)
+    return bool(group and (group["commits"] or group["files"]))
+
+
+def update_apps_offered(check):
+    """Whether the last check shows only an app library change for Update
+    apps (docs and the rest can ride along): nothing new in the user
+    system or the Admin, so nothing to rebuild or restart."""
     if not check or "behind" not in check:
         return False
-    app = next((g for g in check.get("groups", []) if g["key"] == "app"), None)
-    return check["behind"] > 0 or bool(app and (app["commits"] or app["files"]))
+    return (check["behind"] > 0 and not _changed(check, "app") and not _changed(check, "admin")
+            and _changed(check, "library"))
+
+
+def update_offered(check):
+    """Whether the last check shows something for Update OpenFit to pull -
+    never while Update apps is the one on offer."""
+    if not check or "behind" not in check:
+        return False
+    return (check["behind"] > 0 or _changed(check, "app")) and not update_apps_offered(check)
 
 
 def fingerprint(folder):
@@ -428,6 +487,262 @@ def fingerprint(folder):
 
 def iso(ts):
     return datetime.fromtimestamp(ts, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+# --- the app shelf -------------------------------------------------------------
+
+
+class _Skip(Exception):
+    """An app left off the shelf, and why."""
+
+
+def _inside(root, path):
+    """`path`'s own place - its folder resolved, its name as it is - if
+    that's inside `root` (resolved already), else an OpError. Checked
+    before anything is written, renamed or removed: the shelf is the only
+    place publishing touches."""
+    where = os.path.normpath(os.path.join(os.path.realpath(os.path.dirname(path)), os.path.basename(path)))
+    if where == root or os.path.commonpath([root, where]) != root:
+        raise OpError("Publishing stopped: a path led outside the app library.", path)
+    return where
+
+
+def _no_follow(path, flags):
+    """open()'s opener: never through a link, never blocking on a pipe."""
+    return os.open(path, flags | os.O_NOFOLLOW | os.O_NONBLOCK, 0o644)
+
+
+def _copy_file(src, dst):
+    """One regular file's bytes into a new file of its own, never through a
+    link at either end. The bytes copied."""
+    with open(src, "rb", opener=_no_follow) as f:
+        if not stat.S_ISREG(os.fstat(f.fileno()).st_mode):
+            raise OSError(f"{src} isn't a regular file")
+        with open(dst, "xb", opener=_no_follow) as out:
+            shutil.copyfileobj(f, out)
+            return out.tell()
+
+
+def _app_files(folder, app, log):
+    """One app folder's files to publish, as tuples of path parts: its
+    regular files, never a link (or anything through one); dotfiles,
+    __pycache__ and .pyc left out. _Skip over MAX_APP_FILES or
+    MAX_APP_BYTES, or with no app.yaml of its own."""
+    found, total, todo = [], 0, [()]
+    while todo:
+        rel = todo.pop()
+        with os.scandir(os.path.join(folder, *rel)) as it:
+            entries = sorted(it, key=lambda e: e.name)
+        for entry in entries:
+            parts = rel + (entry.name,)
+            if entry.name.startswith("."):
+                continue
+            if entry.is_symlink():
+                log(f"Leaving out library/{app}/{'/'.join(parts)}: it's a link.")
+            elif entry.is_dir(follow_symlinks=False):
+                if entry.name != "__pycache__":
+                    todo.append(parts)
+            elif not entry.is_file(follow_symlinks=False):
+                log(f"Leaving out library/{app}/{'/'.join(parts)}: it isn't a regular file.")
+            elif not entry.name.endswith(".pyc"):
+                found.append(parts)
+                total += entry.stat(follow_symlinks=False).st_size
+                if len(found) > MAX_APP_FILES:
+                    raise _Skip(f"it has more than {MAX_APP_FILES} files")
+                if total > MAX_APP_BYTES:
+                    raise _Skip(f"it's more than {MAX_APP_BYTES >> 20} MB")
+    if ("app.yaml",) not in found:
+        raise _Skip("it has no app.yaml")
+    return sorted(found)
+
+
+def _collect_apps(src, log):
+    """[(app, files)] for each app folder in `src`, by name: a top-level
+    folder named as a library app is, at most MAX_APPS of them. Anything
+    else is left out, and logged. No library/ at all is no apps."""
+    if os.path.islink(src):
+        raise OSError(f"{src} is a link")
+    if not os.path.isdir(src):
+        log("The repo has no library/ folder, so the app library is published empty.")
+        return []
+    apps = []
+    with os.scandir(src) as it:
+        entries = sorted(it, key=lambda e: e.name)
+    for entry in entries:
+        if not _SHELF_APP.match(entry.name) or not entry.is_dir(follow_symlinks=False):
+            log(f"Leaving out library/{entry.name}: it isn't an app folder.")
+        elif len(apps) >= MAX_APPS:
+            log(f"Leaving out library/{entry.name}: the app library holds at most {MAX_APPS} apps.")
+        else:
+            try:
+                apps.append((entry.name, _app_files(entry.path, entry.name, log)))
+            except _Skip as e:
+                log(f"Leaving out library/{entry.name}: {e}.")
+    return apps
+
+
+def read_shelf(library_dir):
+    """/library/index.json as published - {published_at, sources: {source:
+    {commit, apps: {app: {sha256}}}}} - or None if there's none, or it
+    doesn't read."""
+    raw = _read_json(os.path.join(library_dir, SHELF_INDEX), None)
+    if not isinstance(raw, dict) or not isinstance(raw.get("sources"), dict):
+        return None
+    return raw
+
+
+def shelf_source(index, source):
+    """`source`'s entry in an index read_shelf() gave, if it's well formed,
+    else None."""
+    entry = (index or {}).get("sources", {}).get(source)
+    if (isinstance(entry, dict) and isinstance(entry.get("commit"), str) and _COMMIT.match(entry["commit"])
+            and isinstance(entry.get("apps"), dict)):
+        return entry
+    return None
+
+
+def _remove_tree(root, path, log):
+    """A folder of the shelf's, gone (rmtree never follows a link); a
+    failure logged, never raised."""
+    try:
+        _inside(root, path)
+        shutil.rmtree(path)
+    except (OSError, OpError) as e:
+        log(f"Couldn't delete {os.path.relpath(path, root)} from the app library: {e}")
+
+
+def _point(root, source, target):
+    """The source's link onto `target`, in one step - a new link made beside
+    it, renamed over it - or, `target` None, removed."""
+    link = os.path.join(root, source)
+    _inside(root, link)
+    if target is None:
+        if os.path.islink(link):
+            os.remove(link)
+        return
+    new = os.path.join(root, f"{source}.new")
+    _inside(root, new)
+    if os.path.islink(new) or os.path.isfile(new):
+        os.remove(new)
+    os.symlink(target, new)
+    try:
+        os.replace(new, link)
+    except OSError:
+        os.remove(new)
+        raise
+
+
+def _write_index(root, index, source, commit, apps, now):
+    """index.json with `source`'s entry, any other source's kept: a temp
+    file, then renamed over it."""
+    sources = dict(index["sources"]) if index else {}
+    sources[source] = {"commit": commit, "apps": apps}
+    path = os.path.join(root, SHELF_INDEX)
+    tmp = f"{path}.tmp"
+    _inside(root, path)
+    _inside(root, tmp)
+    if os.path.lexists(tmp):
+        os.remove(tmp)
+    with open(tmp, "x", encoding="utf-8", opener=_no_follow) as f:
+        json.dump({"published_at": now, "sources": sources}, f, indent=2)
+    os.replace(tmp, path)
+
+
+def publish_set(src, library_dir, source, commit, now, log=print):
+    """Publish the app folders in `src` (the repo's library/) to the shelf
+    at `library_dir`, as `source` at `commit`. -> {commit, apps: {app:
+    {sha256}}, changed}.
+
+    The apps are copied into a new set, .sets/<source>-<commit12>, made
+    whole under a hidden name first; then the link <source> is swapped
+    onto it in one step, so a reader sees the old set or the new, never
+    half of either; then index.json is written, last; then every older set
+    of the source is deleted but the one the link was on before. A set
+    already the link's is never rewritten (a set never changes): only the
+    index, if it doesn't already say so.
+
+    Anything that goes wrong is an OpError with the shelf exactly as it
+    was: the new set deleted, the link and the index untouched, or put
+    back. Every path is checked to sit inside the shelf before it's
+    written."""
+    if not _SHELF_SOURCE.match(source) or not _COMMIT.match(commit):
+        raise ValueError(f"not a source and commit to publish: {source!r} {commit!r}")
+    root = os.path.realpath(library_dir)
+    if not os.path.isdir(root):
+        raise OpError("The app library's storage isn't there, so nothing was published.", library_dir)
+    name = f"{source}-{commit[:12]}"
+    link, sets = os.path.join(root, source), os.path.join(root, SHELF_SETS)
+    final = os.path.join(sets, name)
+    before = os.readlink(link) if os.path.islink(link) else None
+    index = read_shelf(root)
+    try:
+        if before == f"{SHELF_SETS}/{name}" and os.path.isdir(final) and not os.path.islink(final):
+            apps = {app: {"sha256": fingerprint(os.path.join(final, app))}
+                    for app in sorted(os.listdir(final)) if _SHELF_APP.match(app)}
+            if shelf_source(index, source) == {"commit": commit, "apps": apps}:
+                return {"commit": commit, "apps": apps, "changed": False}
+            _write_index(root, index, source, commit, apps, now)
+            return {"commit": commit, "apps": apps, "changed": True}
+        apps = _collect_apps(src, log)
+        _inside(root, sets)
+        if os.path.islink(sets) or (os.path.lexists(sets) and not os.path.isdir(sets)):
+            raise OSError(f"{SHELF_SETS} isn't a folder")
+        made_sets = not os.path.lexists(sets)
+        if made_sets:
+            os.mkdir(sets, 0o755)
+    except OSError as e:
+        raise OpError("The app library couldn't be updated. It's as it was.", str(e))
+    leftover = re.compile(rf"\.(tmp|old)-{source}-[0-9a-f]{{12}}-[0-9a-f]{{8}}\Z")
+    for entry in os.listdir(sets):  # from a publish that stopped part-way
+        if leftover.match(entry):
+            _remove_tree(root, os.path.join(sets, entry), log)
+
+    tmp = os.path.join(sets, f".tmp-{name}-{secrets.token_hex(4)}")
+    aside = None  # a set of this name already there (not the link's), moved aside
+    placed = swapped = False
+    try:
+        os.mkdir(_inside(root, tmp), 0o755)
+        for app, files in apps:
+            copied = 0
+            for parts in files:
+                dst = os.path.join(tmp, app, *parts)
+                os.makedirs(_inside(root, os.path.dirname(dst)), mode=0o755, exist_ok=True)
+                copied += _copy_file(os.path.join(src, app, *parts), _inside(root, dst))
+                if copied > MAX_APP_BYTES:
+                    raise OSError(f"library/{app} grew past {MAX_APP_BYTES >> 20} MB while it was copied")
+        published = {app: {"sha256": fingerprint(os.path.join(tmp, app))} for app, _files in apps}
+        if os.path.lexists(final):
+            aside = os.path.join(sets, f".old-{name}-{secrets.token_hex(4)}")
+            os.rename(_inside(root, final), _inside(root, aside))
+        os.rename(tmp, _inside(root, final))
+        placed = True
+        _point(root, source, f"{SHELF_SETS}/{name}")
+        swapped = True
+        _write_index(root, index, source, commit, published, now)
+    except (OSError, OpError) as e:
+        # Back as it was: the link on the set it was on, the new set gone, a
+        # set moved aside back in its place.
+        try:
+            if swapped:
+                _point(root, source, before)
+            _remove_tree(root, final if placed else tmp, log)
+            if aside:
+                os.rename(aside, final)
+            if made_sets:
+                os.rmdir(sets)
+        except (OSError, OpError) as undo:
+            log(f"Couldn't put the app library back as it was: {undo}")
+        detail = e.detail if isinstance(e, OpError) else str(e)
+        raise OpError("The app library couldn't be updated. It's as it was.", detail)
+
+    if aside:
+        _remove_tree(root, aside, log)
+    keep = {name, before.removeprefix(f"{SHELF_SETS}/") if before else None}
+    old_set = re.compile(rf"{source}-[0-9a-f]{{12}}\Z")
+    for entry in sorted(os.listdir(sets)):
+        if old_set.match(entry) and entry not in keep:
+            _remove_tree(root, os.path.join(sets, entry), log)
+    return {"commit": commit, "apps": published, "changed": True}
 
 
 def labelled(runner, project, service, what):
@@ -539,12 +854,17 @@ class Admin:
     """The OpenFit users the Admin manages, and the operations on them.
 
     One operation at a time (`lock`): a check, an update, an undo, adding,
-    starting, stopping or removing a user, deleting a removed user's data,
-    or updating the Admin itself. An update, an undo, adding a user and an
-    Admin update run in a background thread, their progress in `op`; the
-    rest run in the caller's thread. An Admin update keeps the lock after
-    its thread has handed over to the helper, until the helper has gone
-    (`_settle`).
+    starting, stopping, restarting or removing a user, deleting a removed
+    user's data, updating the apps, publishing them again, or updating the
+    Admin itself. An update, an undo, adding a user, updating the apps and
+    an Admin update run in a background thread, their progress in `op`;
+    the rest run in the caller's thread. An Admin update keeps the lock
+    after its thread has handed over to the helper, until the helper has
+    gone (`_settle`).
+
+    Constructing one writes the users' mounts of the app shelf
+    (write_mounts()) and nothing else; publish_at_startup() is serve()'s
+    to call.
     """
 
     def __init__(
@@ -557,6 +877,7 @@ class Admin:
         self_dir=None,
         admin_volume=ADMIN_VOLUME,
         admin_image=ADMIN_IMAGE,
+        library_dir=LIBRARY_DIR,
     ):
         self.repo = repo
         self.data_dir = data_dir
@@ -576,6 +897,9 @@ class Admin:
         self.check_path = os.path.join(data_dir, "last_check.json")
         self.history_path = os.path.join(data_dir, "history.json")
         self.swap_result = os.path.join(data_dir, SWAP_RESULT)
+        self.override_path = os.path.join(data_dir, PRIMARY_OVERRIDE)
+        self.library_dir = library_dir
+        self.library_error = None  # the last publish's failure, until one succeeds
         self.lock = threading.Lock()
         self._op_lock = threading.Lock()
         self._settle_lock = threading.Lock()
@@ -585,6 +909,7 @@ class Admin:
         os.makedirs(self.backups_dir, exist_ok=True)
         self.registry()  # a bad users.json stops the Admin starting
         self._mark_interrupted(keep=self._pick_up_swap())
+        self.write_mounts()
 
     # --- the users --------------------------------------------------------
 
@@ -617,24 +942,60 @@ class Admin:
         taken = {u.port for u in users or self.users()} | {ADMIN_PORT}
         return next((p for p in range(FIRST_USER_PORT, 65536) if p not in taken), None)
 
+    def _compose_text(self, user):
+        """An added user's compose file, as the Admin writes it."""
+        return USER_COMPOSE.format(image=self.image, port=user.port)
+
+    def write_mounts(self):
+        """At startup: the primary's override (its mount of the app shelf),
+        and every added user's compose file from the template, each written
+        only if it's missing or differs. Nobody is restarted: each picks the
+        mount up the next time they're recreated - an update, or Restart. A
+        file that can't be written is logged."""
+        wanted = [(self.override_path, PRIMARY_OVERRIDE_TEXT.format(service=self.settings["service"]))]
+        wanted += [(u.compose_file, self._compose_text(u)) for u in self.users()[1:]]
+        for path, text in wanted:
+            try:
+                with open(path, encoding="utf-8") as f:
+                    if f.read() == text:
+                        continue
+            except OSError:
+                pass
+            try:
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                tmp = f"{path}.tmp"
+                with open(tmp, "w", encoding="utf-8") as f:
+                    f.write(text)
+                os.replace(tmp, path)
+                print(f"[admin] wrote {path}, with the app library mounted", flush=True)
+            except OSError as e:
+                print(f"[admin] couldn't write {path}: {e}", flush=True)
+
     # --- commands -------------------------------------------------------
 
     def git(self, *args, timeout=None):
         return self.runner.run(["git", *args], cwd=self.repo, as_owner=True, timeout=timeout)
 
-    def compose(self, user, *args):
-        """docker compose, scoped to one user's project and its own file:
-        -p <project> with the repo's compose file for the primary, -p
-        openfit-<name> with the file the Admin wrote for an added user."""
+    def compose_files(self, user):
+        """The compose files of one user's project, in order: the repo's,
+        then the Admin's override, for the primary; the file the Admin
+        wrote, for an added user. Nothing else is ever passed."""
         if user.primary:
-            lane = (user.project, user.compose_file) == (self.settings["project"], self.compose_file)
-        else:
-            lane = (bool(USER_NAME.match(user.name)) and user.project == user_project(user.name)
-                    and user.compose_file == self._compose_file_of(user.name))
-        if not lane:
-            raise ValueError(f"a compose command outside the Admin's lane: {user!r}")
+            if (user.project, user.compose_file) == (self.settings["project"], self.compose_file):
+                return [self.compose_file, self.override_path]
+        elif (USER_NAME.match(user.name) and user.project == user_project(user.name)
+              and user.compose_file == self._compose_file_of(user.name)):
+            return [user.compose_file]
+        raise ValueError(f"a compose command outside the Admin's lane: {user!r}")
+
+    def compose(self, user, *args):
+        """docker compose, scoped to one user's project and its own files:
+        -p <project> with the repo's compose file and the override for the
+        primary, -p openfit-<name> with the file the Admin wrote for an
+        added user."""
+        files = self.compose_files(user)
         return self.runner.run(
-            ["docker", "compose", "-p", user.project, "-f", user.compose_file, *args],
+            ["docker", "compose", "-p", user.project, *[a for f in files for a in ("-f", f)], *args],
             cwd=os.path.dirname(user.compose_file),
         )
 
@@ -691,6 +1052,13 @@ class Admin:
                 raise OpError("An OpenFit's /data isn't a Docker volume, so the Admin can't back it up.")
         raise OpError("An OpenFit container has no /data storage to back up.")
 
+    @staticmethod
+    def has_library(info):
+        """Whether the container `info` describes has the app shelf's volume
+        mounted at /library."""
+        return any(m.get("Type") == "volume" and m.get("Name") == LIBRARY_VOLUME
+                   and m.get("Destination") == LIBRARY_MOUNT for m in info.get("Mounts") or [])
+
     def _container_or_fail(self, user):
         c = self.find_container(user)
         if c is None:
@@ -699,14 +1067,20 @@ class Admin:
             raise OpError(f"{user.name}'s OpenFit container wasn't found.")
         return c
 
-    def raw_state(self, user):
-        """Docker's state of `user`'s container; missing for none, unknown if
-        Docker didn't say."""
+    def container_view(self, user):
+        """(Docker's state of `user`'s container, whether it has the app shelf
+        mounted, read from inspect): missing for none, unknown if Docker
+        didn't say - and no shelf, for either."""
         try:
             c = self.find_container(user)
         except OpError:
-            return "unknown"
-        return c["state"] if c else "missing"
+            return "unknown", False
+        if c is None:
+            return "missing", False
+        try:
+            return c["state"], self.has_library(self.inspect(c["id"]))
+        except OpError:
+            return c["state"], False
 
     @staticmethod
     def plain_state(raw):
@@ -1059,6 +1433,160 @@ class Admin:
         except OSError as e:
             print(f"[admin] couldn't remove {self.swap_result}: {e}", flush=True)
 
+    # --- the app shelf ------------------------------------------------------
+
+    def publish_official(self, commit=None, log=None):
+        """The repo's library/ published to the shelf as the openfit source,
+        at `commit` - HEAD's, read if not given: the working tree, which the
+        Admin keeps clean. publish_set()'s result; an OpError with the shelf
+        as it was, noted for the page until a publish succeeds."""
+        log = log or (lambda text: print(f"[admin] app library: {text}", flush=True))
+        try:
+            if commit is None:
+                commit = self.head()["commit"]
+            result = publish_set(os.path.join(self.repo, "library"), self.library_dir, OFFICIAL_SOURCE,
+                                 commit, self._iso(), log)
+        except OpError as e:
+            self.library_error = {"at": self._iso(), "text": e.message, "detail": e.detail}
+            raise
+        self.library_error = None
+        return result
+
+    def shelf_commit(self):
+        """The commit the shelf's openfit apps were published from, or None."""
+        entry = shelf_source(read_shelf(self.library_dir), OFFICIAL_SOURCE)
+        return entry["commit"] if entry else None
+
+    def publish_at_startup(self):
+        """serve()'s, before the server starts: publish if the shelf's index is
+        missing, or its openfit commit isn't HEAD's - so the shelf appears by
+        itself on first rollout, and catches up after anything that moved the
+        code without publishing. Whether it published; never raises."""
+        try:
+            head = self.head()
+        except OpError as e:
+            print(f"[admin] app library: {e.message} {e.detail}", flush=True)
+            return False
+        if self.shelf_commit() == head["commit"]:
+            return False
+        print(f"[admin] app library: publishing {head['short']}…", flush=True)
+        try:
+            result = self.publish_official(head["commit"])
+        except OpError as e:
+            print(f"[admin] app library: {e.message} {e.detail}", flush=True)
+            return False
+        print(f"[admin] app library: on {head['short']}, {len(result['apps'])} app(s)", flush=True)
+        return True
+
+    def publish_again(self):
+        """Publish again, after a publish that failed: from HEAD, under the
+        lock, in the caller's thread. An OpError says why it failed again."""
+        self._take_lock()
+        try:
+            result = self.publish_official()
+            print(f"[admin] app library: published again, {len(result['apps'])} app(s)", flush=True)
+        finally:
+            self.lock.release()
+
+    def _publish_step(self, op, commit, putting_back=False):
+        """An op's publish: its lines in the op's log. True if it worked."""
+        short = commit[:7]
+        self.say(op, f"Putting the app library back on {short}…" if putting_back
+                 else "Publishing the new apps to the app library…")
+        try:
+            result = self.publish_official(commit, log=lambda text: self.say(op, text))
+        except OpError as e:
+            self.say(op, e.message, e.detail)
+            return False
+        n = len(result["apps"])
+        self.say(op, f"The app library is on {short}: {n} app{'' if n == 1 else 's'}.")
+        return True
+
+    def _republish(self, op):
+        """After an undo or rollback reset the code: the shelf published from
+        HEAD, so it matches the code again."""
+        try:
+            commit = self.head()["commit"]
+        except OpError as e:
+            self.say(op, f"The app library wasn't put back: {e.message}", e.detail)
+            return
+        self._publish_step(op, commit, putting_back=True)
+
+    def library_status(self, head):
+        """The page's App library card: when the shelf was published and from
+        which commit, its apps by folder name, whether it matches the code
+        (None when the code's version can't be read) and the last publish's
+        failure."""
+        index = read_shelf(self.library_dir)
+        entry = shelf_source(index, OFFICIAL_SOURCE)
+        commit = entry["commit"] if entry else None
+        return {
+            "published_at": index.get("published_at") if entry else None,
+            "commit": commit,
+            "short": commit[:7] if commit else None,
+            "apps": sorted(a for a in entry["apps"] if isinstance(a, str)) if entry else [],
+            "current": (commit == head["commit"]) if head else None,
+            "error": self.library_error,
+        }
+
+    def start_update_apps(self):
+        """Update apps: the refusals here, so one is a 409 with nothing done;
+        the rest (an op with a log) in the background."""
+        self._take_lock()
+        try:
+            check = self.last_check()
+            if not update_apps_offered(check):
+                raise Refused("OpenFit itself changed too, so use Update OpenFit: it updates the apps as well."
+                              if update_offered(check) else "There's no app update to apply. Check for updates first.")
+            self._refuse_unless_ready()
+            op = self._begin("update_apps")
+        except OpError as e:
+            self.lock.release()
+            raise Refused(e.message, 500)
+        except BaseException:
+            self.lock.release()
+            raise
+        self._spawn(op, self._update_apps)
+        return self.current_op()
+
+    def _update_apps(self, op):
+        """Pull, check that only apps (and docs and the rest) arrived, publish.
+        No container is stopped, recreated or restarted; a step that fails
+        puts the code back, with the shelf as it was."""
+        try:
+            self.say(op, "Noting the version you're on now…")
+            old = self.head()
+            op["old"] = old
+        except OpError as e:
+            self.say(op, e.message, e.detail)
+            return self._finish(op, "failed", "Nothing was changed.")
+
+        self.say(op, "Pulling the new apps…")
+        rc, out, err = self.git("merge", "--ff-only", f"origin/{self.settings['branch']}")
+        if rc != 0:
+            self.say(op, "The new code can't be added on top of the server's copy (not a fast-forward).", _tail(out, err))
+            return self._finish(op, "failed", "Nothing was changed.")
+        try:
+            op["new"] = self.head()
+            arrived = self._git_out("diff", "--name-only", old["commit"], "HEAD", what="list what arrived").splitlines()
+        except OpError as e:
+            self.say(op, e.message, e.detail)
+            self._reset(op, old)
+            return self._finish(op, "failed", "Nothing was changed.")
+        core = [p for p in arrived if group_of(p) in ("app", "admin")]
+        if core:
+            self.say(op, "OpenFit itself changed on GitHub since the last check: " + ", ".join(core[:10])
+                     + (" and more" if len(core) > 10 else "") + ".")
+            self._reset(op, old)
+            return self._finish(op, "failed", "OpenFit itself changed since the last check. Check again, then use Update OpenFit.")
+
+        if not self._publish_step(op, op["new"]["commit"]):
+            self._reset(op, old)
+            return self._finish(op, "failed", "The app library couldn't be updated, so the code was put back. "
+                                              "The app library is as it was.")
+        self.refresh_check()
+        return self._finish(op, "ok", f"Updated the app library to {op['new']['short']}.")
+
     # --- operations and their record ---------------------------------------
 
     def _iso(self):
@@ -1201,20 +1729,16 @@ class Admin:
         """Step 1 here, so a refusal is a 409; the rest in the background."""
         self._take_lock()
         try:
-            if not update_offered(self.last_check()):
-                raise Refused("There's no update to apply. Check for updates first.")
-            dirty = self.dirty_files()
-            if dirty:
-                raise Refused(f"The server's copy of OpenFit has local changes: {', '.join(dirty)}. Nothing was changed.")
-            branch = self._git_out("rev-parse", "--abbrev-ref", "HEAD", what="read the branch").strip()
-            if branch != self.settings["branch"]:
-                raise Refused(
-                    f"The server's copy of OpenFit is on '{branch}', not '{self.settings['branch']}'. Nothing was changed."
-                )
+            check = self.last_check()
+            if not update_offered(check):
+                raise Refused("Only the app library changed, so there's nothing in OpenFit to update: use Update apps."
+                              if update_apps_offered(check) else "There's no update to apply. Check for updates first.")
+            self._refuse_unless_ready()
             try:
                 users = self.users()  # the update's users, read before anything changes
             except ValueError as e:
                 raise Refused(f"{e}. Nothing was changed.", 500)
+            self._shelf_ready()
             op = self._begin("update")
         except OpError as e:
             self.lock.release()
@@ -1224,6 +1748,18 @@ class Admin:
             raise
         self._spawn(op, self._update, users)
         return self.current_op()
+
+    def _refuse_unless_ready(self):
+        """Refused unless the server's copy of OpenFit is clean and on the
+        branch it updates: the code is only ever moved by a fast-forward."""
+        dirty = self.dirty_files()
+        if dirty:
+            raise Refused(f"The server's copy of OpenFit has local changes: {', '.join(dirty)}. Nothing was changed.")
+        branch = self._git_out("rev-parse", "--abbrev-ref", "HEAD", what="read the branch").strip()
+        if branch != self.settings["branch"]:
+            raise Refused(
+                f"The server's copy of OpenFit is on '{branch}', not '{self.settings['branch']}'. Nothing was changed."
+            )
 
     def _update(self, op, users):
         primary = users[0]
@@ -1333,12 +1869,19 @@ class Admin:
                     problem = True
                     break
         if not problem:
+            # The apps the new code brings. A failure here doesn't undo the
+            # update: the shelf stays as it was, and Publish again retries.
+            if not self._publish_step(op, op["new"]["commit"]):
+                self.say(op, "The update itself is done. Use Publish again, on the App library card, to try the "
+                         "app library again.")
             self.prune_backups()
             self.refresh_check()
             return self._finish(op, "ok", f"Updated OpenFit to {op['new']['short']}: {op['new']['subject']}")
 
         self.say(op, "The new version didn't come up. Rolling everyone back…")
-        if self._undo_steps(op, old, [(user, rec) for user, _c, rec in targets]):
+        rolled_back = self._undo_steps(op, old, [(user, rec) for user, _c, rec in targets])
+        self._republish(op)
+        if rolled_back:
             self.refresh_check()
             return self._finish(op, "rolled_back", "Updated, didn't come up, rolled back.")
         return self._finish(op, "failed", "Updated, didn't come up, and the rollback didn't come up either. See the log above.")
@@ -1438,6 +1981,7 @@ class Admin:
             last = self.undo_candidate(head)
             if last is None:
                 raise Refused("There's no update to undo.")
+            self._shelf_ready()
             op = self._begin("undo")
             with self._op_lock:
                 op.update(old=last["old"], new=last["new"], users=self._op_users(last), undoes=last["id"])
@@ -1452,7 +1996,10 @@ class Admin:
         targets = self._targets(op["users"])
         if targets is None:
             self.say(op, "The users have changed since the update, so nothing was put back.")
-        elif self._undo_steps(op, op["old"], targets):
+            return self._finish(op, "failed", "The undo didn't finish. See the log above.")
+        undone = self._undo_steps(op, op["old"], targets)
+        self._republish(op)
+        if undone:
             self.refresh_check()
             return self._finish(op, "ok", f"Back on {op['old']['short']}, with everyone's data as it was before the update.")
         return self._finish(op, "failed", "The undo didn't finish. See the log above.")
@@ -1556,13 +2103,25 @@ class Admin:
             raise Refused("OpenFit hasn't been built on this server yet.", 409)
         raise OpError("Couldn't ask Docker about OpenFit's image.", _tail(out, err))
 
-    def _volume_exists(self, volume):
+    def _volume_exists(self, volume, what="the user's storage"):
         rc, out, err = self.docker("volume", "inspect", "--format", "{{.Name}}", volume)
         if rc == 0:
             return True
         if "no such volume" in f"{out}\n{err}".lower():
             return False
-        raise OpError("Couldn't ask Docker about the user's storage.", _tail(out, err))
+        raise OpError(f"Couldn't ask Docker about {what}.", _tail(out, err))
+
+    def _shelf_ready(self):
+        """Before anything that recreates a user: the app shelf's volume is
+        there, else Refused. Every user's compose files name it as external,
+        so a user recreated without it wouldn't start - and it's missing
+        only if the Admin wasn't recreated from its new compose file."""
+        try:
+            there = self._volume_exists(LIBRARY_VOLUME, "the app library's storage")
+        except OpError as e:
+            raise Refused(f"{e.message} Nothing was changed.", 500)
+        if not there:
+            raise Refused(VOLUME_MISSING, 409)
 
     def start_add_user(self, name, port, host=None):
         """Checks and the lock here, so a refusal is a 400 or 409 with
@@ -1573,6 +2132,7 @@ class Admin:
             self._check_new_user(name, port)  # again: another may have finished meanwhile
             kept = any(r["name"] == name for r in self.registry()["removed"])
             self._image_built()
+            self._shelf_ready()
             # A volume the Admin has no record of - left from before a lost
             # users.json, say - is never adopted (it's someone's data) and
             # never at risk from the failure path's `down -v` below.
@@ -1598,7 +2158,7 @@ class Admin:
         try:
             os.makedirs(folder, exist_ok=True)
             with open(user.compose_file, "w", encoding="utf-8") as f:
-                f.write(USER_COMPOSE.format(image=self.image, port=user.port))
+                f.write(self._compose_text(user))
         except OSError as e:
             self.say(op, "Couldn't write their compose file.", str(e))
             shutil.rmtree(folder, ignore_errors=True)
@@ -1656,21 +2216,33 @@ class Admin:
 
     def start_user(self, name):
         """compose up -d --no-build: recreated on the image :latest names now,
-        if it has moved on since they were last started."""
-        self._user_command(name, ("up", "-d", "--no-build"), "didn't start")
+        if it has moved on since they were last started, or from compose
+        files that have changed."""
+        self._user_command(name, ("up", "-d", "--no-build"), "didn't start", recreates=True)
 
     def stop_user(self, name):
         self._user_command(name, ("stop",), "didn't stop")
 
-    def _user_command(self, name, args, failed):
+    def restart_user(self, name):
+        """compose up -d --no-build --force-recreate, then the health check:
+        a container made anew from the user's compose files, on the image
+        :latest names - how a user picks up the app shelf's mount."""
+        self._user_command(name, ("up", "-d", "--no-build", "--force-recreate"), "didn't restart",
+                           recreates=True, check_health=True)
+
+    def _user_command(self, name, args, failed, recreates=False, check_health=False):
         self._known(name)
         self._take_lock()
         try:
             user = self._known(name)
+            if recreates:
+                self._shelf_ready()
             rc, out, err = self.compose(user, *args, user.service)
             if rc != 0:
                 raise OpError(port_clash(user.port, out, err) or f"{user.name}'s OpenFit {failed}.", _tail(out, err))
-            print(f"[admin] {args[0]} {user.name}: done", flush=True)
+            if check_health and not self.healthy(user):
+                raise OpError(f"{user.name}'s OpenFit restarted, but didn't answer.")
+            print(f"[admin] {' '.join(args)} {user.name}: done", flush=True)
         finally:
             self.lock.release()
 
@@ -1737,8 +2309,8 @@ class Admin:
             head = None
         reg = self.registry()
         users = self.users(reg)
-        raws = {u.name: self.raw_state(u) for u in users}
-        raw = raws[users[0].name]
+        views = {u.name: self.container_view(u) for u in users}
+        raw = views[users[0].name][0]
         check = self.last_check()
         undo = self.undo_candidate(head) if head else None
         recent = [{k: o.get(k) for k in ("id", "kind", "outcome", "summary", "started_at", "finished_at")}
@@ -1751,12 +2323,15 @@ class Admin:
                 "running": raw == "running",
                 "version": {"sha": head["short"], "subject": head["subject"]} if head else None,
             },
-            "users": [{"name": u.name, "port": u.port, "primary": u.primary, "state": self.plain_state(raws[u.name])}
+            "users": [{"name": u.name, "port": u.port, "primary": u.primary,
+                       "state": self.plain_state(views[u.name][0]), "library": views[u.name][1]}
                       for u in users],
             "removed": [{"name": r["name"], "removed_at": r["removed_at"]} for r in reg["removed"]],
             "next_port": self.next_port(users),
             "check": check,
             "update_available": update_offered(check),
+            "update_apps_available": update_apps_offered(check),
+            "library": self.library_status(head),
             "undo": {"id": undo["id"], "old": undo["old"], "new": undo["new"]} if undo else None,
             "admin_update": self.admin_update(check),
             "op": self.current_op(),
