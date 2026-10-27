@@ -54,6 +54,20 @@ The id is part of the app's URL, so it's letters, digits, `-` and `_`,
 starting with a letter or digit. Every field but the size is optional, and
 one that's present must have the right type.
 
+**A library app's id** has a second shape: `<source>.<name>`, such as
+`openfit.frms` (`LIBRARY_APP_ID`: the source a lowercase letter then
+lowercase letters and digits, one dot, then a name in an install's id form,
+`INSTALL_ID`). The library assigns the source, never the app: a library app's
+own `app.yaml` keeps its bare id (`id: frms`), and the source is added at
+install ([Installing from a library](#installing-from-a-library-install_library_app),
+below), carried by the folder's name alone (`/data/apps/openfit.frms/`). So
+the installed files are the library's own, byte for byte, and a dot in an id
+always means installed from a library: nothing else can make one. Such an app
+is read-only here (no Update; Duplicate makes a copy of one's own). Anything
+that checks an app's id takes either shape (`is_app_id()`); `APP_ID` itself
+is unchanged, since it's also the rule for the keys of the metrics an app
+invents, which never gain a dot.
+
 **`sizes`** is required: the tile sizes the app can be drawn at, as cell
 rectangles on Home's grid, which is six cells across. It's a non-empty list
 of `{w, h}`, each a whole number from 1 to 6 (`MAX_CELLS`), none listed twice.
@@ -180,6 +194,13 @@ reuse it.
   loads, with nothing to draw (above).
 - Two folders with the same id: the first by folder name wins, and the other
   is logged and skipped.
+- A folder named as a library app's id (`openfit.frms`) is that app: its id is
+  the folder's name, and its own `app.yaml` must say the bare name (`id:
+  frms`) or no id at all. Any other (`id: other`, or the full `openfit.frms`)
+  and it's skipped: `a library app's own id is its bare name: expected
+  'frms', got 'other'`. Any other folder's id is as above, the manifest's or
+  the folder's, held to `APP_ID`. Staging folders start with a dot, so never
+  match.
 - `app.py` is imported once, from its absolute path, with `importlib`, and
   both `render` and the optional `handle` taken from it (`InstalledApp.render`,
   `.handle`; `None` for an app without one). Nothing is added to `sys.path` or
@@ -1698,6 +1719,37 @@ stays in the popup, the app untouched.
 Not in this slice: a zip or folder upload (it would need its own path
 checks), and deeper correctness checks.
 
+### Installing from a library: `install_library_app()`
+
+`install_library_app(apps_dir, source, files)`, in `app/apps.py` beside
+`install_app()`, installs an app from a library, its files as the library has
+them. No route calls it yet: Browse will
+([distribution.md](distribution.md)).
+
+1. **The source** (`openfit`) must be lowercase letters and digits, starting
+   with a letter (`LIBRARY_SOURCE`), or it's a 400: `a library source is
+   lowercase letters and digits, starting with a letter: '<source>'`.
+2. **The `app.yaml`** must parse, as an install's does, and its id must be
+   one `install_app()` takes (`INSTALL_ID`), so bare: a manifest that already
+   carries a source (`id: openfit.frms`) is refused. The app's id is
+   `<source>.<id>`.
+3. **Then exactly `install_app()`'s path, under the full id**: every file
+   name and content checked, the id free (a 409 otherwise), `check_app()`,
+   and the files written whole or not at all into `<apps dir>/<source>.<id>/`.
+   Both go through one private helper, so `install_app()`'s behaviour and
+   messages are as they were.
+4. **It returns** `{"id": "<source>.<id>", "has_app_py"}` and logs
+   `[apps] installed openfit.frms from the openfit library: <files>`.
+
+The files are written as given, so the installed folder is byte-identical to
+the library's copy: "is this install current?" is a plain file comparison.
+A custom `frms` and the library's `openfit.frms` are two apps, installed side
+by side, each under its own id and writing under its own source
+(`app:frms`, `app:openfit.frms`; its metrics `app:openfit.frms:<key>`, its
+sessions' ids `app:openfit.frms:<kind>:<start>`). A paste or a duplicate goes
+through `install_app()`, whose `INSTALL_ID` has no dot, so it can never take
+a library app's id.
+
 ## An app's row: reads, files, Refresh, Uninstall
 
 Each row of the Applications list expands, the same way a Your data row does
@@ -1728,12 +1780,19 @@ An open row stays open when the list is re-read. The detail is three columns
   through `PUT /api/apps/<id>` ([below](#updating-an-app-put-apiappsid)). The
   folder becomes exactly what's sent, so a file is only lost if its slot is
   removed. An app with a file that isn't text (a 415 on the read back) can't
-  be updated from here, since the update would delete that file.
+  be updated from here, since the update would delete that file. A library
+  app has no Update (`GET /api/apps` lists its `library`): it's read-only
+  here, updated in its library, and the server refuses its update with a 403
+  ([below](#updating-an-app-put-apiappsid)). In Update's place its row says
+  "From the openfit library · updated by your admin"; Refresh, Duplicate and
+  Uninstall stay.
 - **Duplicate** forks the app, from the page alone: it reads every file back
   (`GET /api/app/<id>/file`), gives the `app.yaml` the next free id and name
   (the lowest n from 2 with neither `<id>-n` nor "<name> n" installed, so
   `steps`/"Steps" → `steps-2`/"Steps 2", and a copy of a copy counts on from
-  the same base), and opens the Add Application popup on the copy
+  the same base; a library app's source is dropped first, so a copy of
+  `openfit.frms`/"FRMS" is `frms-2`/"FRMS 2", a custom app of one's own),
+  and opens the Add Application popup on the copy
   ([below](#the-add-application-popup)) to review and install like any app.
   The `app.yaml` is rewritten line by line (its top-level `id:` and `name:`
   lines; a name line added under the id if there's none), not parsed: the
@@ -1777,11 +1836,13 @@ endings and all. A refusal is `{"ok": false, "error": "<message>"}`.
 The first destructive action on an app. As with installing, the request names
 the app, never a path. It's `uninstall_app()` in `app/apps.py`.
 
-1. **The id** must match the scanner's id rule, `APP_ID`
-   (`^[A-Za-z0-9][A-Za-z0-9_-]*$`, with `\Z`), or it's a 400. Every id the
-   list shows meets it, so a hand-placed app with capitals or `_` in its id
-   can be uninstalled too, and it can never be `..`, hold a `/`, or name a
-   dot-folder. (Flask's routing never hands the route a `/` at all.)
+1. **The id** must be one an app could have (`is_app_id()`): the scanner's
+   id rule, `APP_ID` (`^[A-Za-z0-9][A-Za-z0-9_-]*$`, with `\Z`), or a
+   library app's, `LIBRARY_APP_ID` (`openfit.frms`), or it's a 400. Every id
+   the list shows meets it, so a hand-placed app with capitals or `_` in its
+   id can be uninstalled too, and so can a library app, and it can never be
+   `..`, hold a `/`, or name a dot-folder. (Flask's routing never hands the
+   route a `/` at all.)
 2. **An app must load under it**, or it's a 404. The folder removed is the one
    the scanner loaded that app from: found by scanning, never built from the
    id, always a direct child of the apps folder. A hand-placed app whose
@@ -1813,8 +1874,11 @@ swapped in for the old folder, which is kept aside until the new one is in
 its place. It's `update_app()` in `app/apps.py`, and the steps run in order;
 everything up to the swap leaves the app exactly as it was.
 
-1. **The id**, from the URL, must match the scanner's `APP_ID`, as
-   uninstall's does, or it's a 400 ("not an app id: ...").
+1. **The id**, from the URL, must be one an app could have (`is_app_id()`),
+   as uninstall's must, or it's a 400 ("not an app id: ..."). A library app's
+   (`openfit.frms`) is a 403, nothing touched: `'openfit.frms' is from the
+   openfit library, so it's updated there, not here — Duplicate makes a copy
+   of your own to change`.
 2. **The files** are checked as an install's are: an `app.yaml` among them
    that parses to a mapping; every file name plain and every content text
    (`filename_problem()`), or a 400.
@@ -1872,10 +1936,11 @@ again, or uninstall the app, to see or remove it.
 
 ## Routes
 
-- `GET /api/apps` → `[{id, name, default_size: {w, h}, sizes: [{w, h}],
-  reads: [key], config: [{key, label, type, default}], metrics: [{key, label,
-  unit, category, grain, range}], files: [name]}]`, the apps that load, in
-  folder order. `sizes` are the tile sizes the manifest declares, in its
+- `GET /api/apps` → `[{id, name, library, default_size: {w, h}, sizes: [{w,
+  h}], reads: [key], config: [{key, label, type, default}], metrics: [{key,
+  label, unit, category, grain, range}], files: [name]}]`, the apps that load,
+  in folder order. `library` is the library a library app came from
+  (`"openfit"` for `openfit.frms`), `null` for a custom app. `sizes` are the tile sizes the manifest declares, in its
   order, and `default_size` the first of them (for a manifest with the older
   `default_size` alone, `sizes` is that one). `reads` is the manifest's (`[]`
   if none); `config` its config fields, in order and as written (`[]` if
@@ -1889,8 +1954,9 @@ again, or uninstall the app, to see or remove it.
 - `PUT /api/apps/<id>` → updates the app from `{"files": {name: text}}`, the
   new set replacing its files, its id and data kept; `200 {"ok": true, "id",
   "has_app_py"}`, or a 400 (an id no app could have, a bad request, a file
-  name, an `app.yaml` whose id isn't the app's, files that don't load), 404
-  (no app loads under it) or 500 that leaves the app as it was. See
+  name, an `app.yaml` whose id isn't the app's, files that don't load), 403
+  (a library app's, read-only here), 404 (no app loads under it) or 500 that
+  leaves the app as it was. See
   [Updating an app](#updating-an-app-put-apiappsid).
 - `DELETE /api/apps/<id>` → uninstalls the app, its folder and all; `200
   {"ok": true, "id"}`, or a 400 (an id no app could have) or 404 (no app
@@ -2182,7 +2248,10 @@ saved positions and gives `paintTiles` start cells. The sizes, the CSS grid,
   Add Application installs one ([above](#installing-an-app)), and each row
   expands to what the app reads, its files, Refresh, Update, Duplicate and
   Uninstall ([above](#an-apps-row-reads-files-refresh-uninstall)). Browse,
-  Build and Create are still placeholders. Still to come: the writes ticker
+  Build and Create are still placeholders; Browse will install from a library
+  through `install_library_app()` ([above](#installing-from-a-library-install_library_app)),
+  and `replaces`, a library app taking over an older app's id and data, is
+  the next slice ([distribution.md](distribution.md)). Still to come: the writes ticker
   (an app can write back now) and alerts (an app that doesn't load, or whose
   render fails, flagged in its row; Update can't reach one, since it isn't
   listed). Disabling an app is out, and so are partial updates (one file,

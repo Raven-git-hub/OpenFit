@@ -165,10 +165,11 @@ updates and applies them, and serves the app library, which users install apps
 from through Browse; each user system stays offline. The Admin lives in this
 repo (`admin/`, to come, beside `app/` and `library/`). The design, decided
 2026-10-27, is `docs/architecture/distribution.md`. Built in five steps, step
-1 started (L1: the `library/` folder):
+1 started (L1: the `library/` folder; L2: library app ids and read-only
+library apps):
 
-1. Library groundwork: the `library/` folder (L1), source-prefixed names with
-   `replaces`, host-version labels, read-only library apps.
+1. Library groundwork: the `library/` folder (L1), source-prefixed names and
+   read-only library apps (L2), `replaces` (L3), host-version labels.
 2. The user system: a login page, and the backup file (export, passphrase,
    restore).
 3. Browse, reading a local library folder.
