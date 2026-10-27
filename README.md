@@ -453,10 +453,10 @@ source like its readings, writing the same kind and start again replaces it,
 and it's read back alongside every device's: by any app with
 `ctx.sessions(kind)`, or through `GET /api/sessions/<kind>`.
 Nothing is derived from a session, so no day is re-derived for it. The
-**Workout log** app (`tests/fixtures/apps/workout-log/`), which files a workout
+**Workout log** app (`library/workout-log/`), which files a workout
 just finished from how many minutes it lasted, is the example.
 
-The **FRMS** app (`tests/fixtures/apps/frms/`) puts the two together. It's
+The **FRMS** app (`library/frms/`) puts the two together. It's
 the whole FRMS suite as one app — one tile, 6 wide by 5 tall (its only size),
 and one `config.json` — drawn as four sub-panels, each like a tile of its own:
 its roster panel, the timeline and rails below, 2×2 at the bottom left, its
@@ -578,7 +578,7 @@ your data like any other: listed in the catalog (marked with the app that define
 them), shown in Your data under their category, and served by
 `GET /api/metric/app:<id>:<key>`. Uninstall the app and they drop out, though
 what it wrote stays until you remove it (below). The **Caffeine** app
-(`tests/fixtures/apps/caffeine/`) is the example.
+(`library/caffeine/`) is the example.
 
 Removing that data is its own, explicit step, once the app is gone. An
 uninstalled app's source shows in **Connected sources** with a red **Remove
@@ -602,7 +602,7 @@ data** takes only that metric's readings from that app, re-derives their days
 primary if it named the app — the app's other data stays. That's `DELETE
 /api/app-sources/<id>/<metric>`, with the same guards.
 
-The **Weight** app above (in full in `tests/fixtures/apps/weight/`) is the one
+The **Weight** app above (in full in `library/weight/`) is the one
 way to log a weigh-in by hand: install it from its two files and its tile goes
 on Home. It replaced the old `/api/weights` routes. Weigh-ins logged before it
 keep their source, `manual`: history, still shown and picked, never added to.
@@ -686,6 +686,7 @@ app/
   derived.py                  Picks the one derived value per metric per day
   crypto.py                   Encrypt/decrypt for stored device credentials
   migrations/                 Versioned .sql schema migrations + runner
+library/                      The official apps OpenFit publishes (outside the image)
 tests/                        pytest suite (temp DB, no network)
 docs/architecture/            Design direction (read these first)
 ```

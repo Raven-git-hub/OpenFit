@@ -545,13 +545,13 @@ own calls to its device API. Full direction:
   25 MB)."}`. Full contract:
   `docs/architecture/app-host.md`.
   The two real apps, `steps` and `steps-metres`, are committed in
-  `tests/fixtures/apps/` (as deployed in `/data/apps`) and run against the
+  `library/` (as deployed in `/data/apps`) and run against the
   host by `tests/test_app_host.py`: they're correct per the contract, so a
   failure there is fixed in the host, never by editing them. Their `app.py`
   is verbatim; their `app.yaml` declares `sizes: [{ w: 1, h: 1 }]`, the
   canonical form, where the deployed copies still say `default_size: { w:
   2, h: 2 }` — which keeps loading (tested from the fixtures, swapped back).
-  Beside them, the first writer: `weight` (`tests/fixtures/apps/weight/`,
+  Beside them, the first writer: `weight` (`library/weight/`,
   deployed by installing it — the platform ships no apps), the end-to-end
   test of the write path (`tests/test_app_actions.py`). Its `app.yaml`:
   id `weight`, fixed (its source is `app:weight`), name "Weight", `sizes:
@@ -565,7 +565,7 @@ own calls to its device API. Full direction:
   `nan` → `ValueError("Enter your weight in kg, as a positive number")`),
   then `ctx.write_metric("weight_kg", kg)` for today — one a day, a
   second the same day replacing it. And the first to invent a metric:
-  `caffeine` (`tests/fixtures/apps/caffeine/`, run by
+  `caffeine` (`library/caffeine/`, run by
   `tests/test_app_custom_metrics.py`, the end-to-end test of app metrics).
   Its `app.yaml`: id `caffeine`, name "Caffeine", `sizes: [{ w: 1, h: 1 },
   { w: 2, h: 1 }]`, `reads: [caffeine_mg]`, `metrics:` one — `caffeine_mg`,
@@ -578,7 +578,7 @@ own calls to its device API. Full direction:
   junk, a negative → `ValueError("Enter today's caffeine in mg, as a
   number")`), then `ctx.write_metric("caffeine_mg", mg)` for today, the
   declared range the host's to hold it to — one a day, replacing. And
-  the first with a dropdown: `mood` (`tests/fixtures/apps/mood/`, run by
+  the first with a dropdown: `mood` (`library/mood/`, run by
   `tests/test_app_actions.py`, the end-to-end test of an input of kind
   `"select"`). Its `app.yaml`: id `mood`, name "Mood", `sizes: [{ w: 1,
   h: 1 }, { w: 2, h: 1 }]`, `reads: [mood]` — no `metrics:` (`mood` is
@@ -590,7 +590,7 @@ own calls to its device API. Full direction:
   `ValueError("Choose a mood from 1 to 5")` (the app holds the choice to
   its options, not the host), then `ctx.write_metric("mood", int(raw))`
   for today — one a day, replacing. And the first with a file picker:
-  `import` (`tests/fixtures/apps/import/`, run by
+  `import` (`library/import/`, run by
   `tests/test_app_actions.py`, the end-to-end test of an input of kind
   `"file"` and the multipart route — the proof the app parses, not
   OpenFit). Its `app.yaml`: id `import`, name "Import weigh-ins", `sizes:
@@ -611,7 +611,7 @@ own calls to its device API. Full direction:
   "line N: <why>" and the earlier lines rolled back by the route: all or
   nothing; a day replaced, a day twice the file's last line. And the
   first to write a session: `workout-log`
-  (`tests/fixtures/apps/workout-log/`, run by `tests/test_app_actions.py`,
+  (`library/workout-log/`, run by `tests/test_app_actions.py`,
   the end-to-end test of `ctx.write_session()`). Its `app.yaml`: id
   `workout-log`, name "Workout log", `sizes: [{ w: 1, h: 1 }, { w: 2, h:
   1 }]`, `reads: []` — no `metrics:` (`workout` is an existing kind).
@@ -624,7 +624,7 @@ own calls to its device API. Full direction:
   "manual", "duration_minutes": minutes})`, `end` now
   (`datetime.now(timezone.utc)`) and `start` that many minutes before —
   each log its own session. And the first to file duties: `frms`
-  (`tests/fixtures/apps/frms/`, the Roster app until it became FRMS; its
+  (`library/frms/`, the Roster app until it became FRMS; its
   pure functions run by `tests/test_frms_app.py`, loaded by path as the
   host loads it, and the round trip by `tests/test_app_actions.py`,
   against the synthetic `tests/fixtures/rosters/sample.ics` — fake
@@ -1691,6 +1691,17 @@ own calls to its device API. Full direction:
   for its app — `renderSpec(spec, name, appId)`, the id threaded from the
   tile (`paintTiles()`, `repaintTile()`) through a panel to its input. No apps → a note pointing to ＋ Add Application (or the apps
   folder); `/api/apps` failing → a Retry.
+- `library/` — the official app library: the apps OpenFit publishes, which
+  the host's tests also run against as real apps; outside the image build
+  context (`docker-compose.yml` builds `./app`), never copied into the user
+  system. One folder an app, named for its id — the eight above:
+  `caffeine`, `frms`, `import`, `mood`, `steps`, `steps-metres`, `weight`,
+  `workout-log` (an app reaches `/data/apps` only by being installed).
+  `tests/test_library.py` holds it to that: the folder outside the build
+  context, every folder its app's id (`load_app(folder).id`), and every app
+  installing through `install_app()` from its files as text, as Browse
+  will. Not `apps/`, so it can't be confused with `app/`. The distribution
+  design it starts is `docs/architecture/distribution.md`.
 - `tests/` — pytest, temp DB, no network.
 - `docs/architecture/` — design direction (read first). `docs/design/` — frontend references.
 
@@ -2683,6 +2694,17 @@ same PR:
   migration); the console itself is `index.html` (frontend only). Still to come: a
   `?by_source` option for raw per-source reads, a derived pick for sessions
   (one per night across devices), and the series stitch.
+- **Distribution** (`docs/architecture/distribution.md`, decided 2026-10-27):
+  three layers — the repo (`app/`, `library/`, later `admin/`), an Admin
+  container per server (users, updates, the library; the only part that
+  talks to the internet) and the user system, one offline container per
+  user. Step 1 started: `library/` landed (L1), the real apps moved there
+  from the test fixtures unchanged. Still to come, in order: source-prefixed
+  library names (`openfit.frms`) with `replaces`, host-version labels and
+  read-only library apps; a login page (one account per container, still no
+  `user_id`) and the backup file; Browse reading the library; the Admin, its
+  proxy and mDNS announcer; the Admin's self-update and organisation repos.
+  Until the login lands, the hard constraints above stand as written.
 Keep `GET /api/activity` returning its current flat shape (`{date, steps,
 resting_hr, source}`, plus `synced_at` with `?by_source=1` — its `sleep_hours`
 field went with `sleep_minutes` in v2) as a compatibility shim during the
