@@ -2050,11 +2050,12 @@ def dupe_apps(tmp_path, monkeypatch):
 def test_an_open_app_row_has_duplicate_beside_uninstall(client):
     page = _page(client)
     panel = _js_function(page, "appPanel")
-    # A plain button, before Uninstall at the row's far end - after Update -
-    # opening a popup.
+    # A plain button, before Uninstall at the row's far end - after Update,
+    # or a library app's note in its place - opening a popup.
     assert re.search(
         r'<span class="a-acts-end">\s*'
-        r'<button class="btn sm" data-act="update" type="button" aria-haspopup="dialog">Update</button>\s*'
+        r"\$\{a\.library\s*\? `[^`]*`\s*"
+        r": '<button class=\"btn sm\" data-act=\"update\" type=\"button\" aria-haspopup=\"dialog\">Update</button>'\}\s*"
         r'<button class="btn sm" data-act="duplicate" type="button" aria-haspopup="dialog">Duplicate</button>\s*'
         r'<button class="btn sm danger" data-act="uninstall" type="button">Uninstall</button>\s*'
         r"</span>",
@@ -2384,15 +2385,16 @@ TWO_TABS = "home.layout = {tabs:[{id:'home', name:'Home'}, {id:'two', name:'Two'
 def test_an_open_app_row_has_update_before_duplicate(client):
     page = _page(client)
     panel = _js_function(page, "appPanel")
-    # A plain button, Duplicate's style, to its left - opening a popup.
+    # A plain button, Duplicate's style, to its left - opening a popup -
+    # for a custom app; a library app has none (its note instead).
     assert re.search(
-        r'<button class="btn sm" data-act="update" type="button" aria-haspopup="dialog">Update</button>\s*'
+        r": '<button class=\"btn sm\" data-act=\"update\" type=\"button\" aria-haspopup=\"dialog\">Update</button>'\}\s*"
         r'<button class="btn sm" data-act="duplicate" type="button" aria-haspopup="dialog">Duplicate</button>',
         panel,
     )
     # It reads every file back, as Duplicate does, and opens the Add popup
     # on them, for this app - it writes nothing itself.
-    handler = panel[panel.index("upd.onclick = async () => {") : panel.index("const dupe = act('duplicate');")]
+    handler = panel[panel.index("if(upd) upd.onclick = async () => {") : panel.index("const dupe = act('duplicate');")]
     assert "const current = await readBack(upd, 'update');" in handler
     assert "if(current) openAddApp(current, null, a);" in handler
     for write in ("installApp", "updateApp", "uninstallApp", "loadApps", "loadHome", "bumpManifest"):
@@ -2574,6 +2576,138 @@ def test_the_update_id_check_mirrors_the_servers(client):
     for (text, keep), read in zip(UPDATE_IDS, result):
         assert read.get("id") == _server_update_id(text, keep), repr(text)
         assert bool(read.get("problem")) == (_server_update_id(text, keep) is None), repr(text)
+
+
+# ---------- library apps: read-only, and Duplicate makes one's own ----------
+#
+# An app installed from a library (install_library_app(): openfit.steps)
+# is read-only here - the server refuses its update, 403 - so its open
+# row has no Update: a note in its place says where it comes from. Its
+# Duplicate is a custom app's: the source dropped from the copy's id, so
+# a copy of openfit.steps is steps-2, installed through POST /api/apps.
+
+
+@pytest.fixture
+def library_apps(dupe_apps):
+    """dupe_apps' custom apps, and steps again from the openfit library."""
+    apps.install_library_app(
+        dupe_apps, "openfit",
+        {name: (dupe_apps / "steps" / name).read_text() for name in ("app.yaml", "app.py")},
+    )
+    return dupe_apps
+
+
+ROW_ACTS = r"""
+    // An open row's actions at the far end, in order: each [tag, class,
+    // its act, its text].
+    const ends = id => appPanel(APPS_.find(a => a.id===id)).querySelector('.a-acts-end').children
+      .map(c => [c.tag, c.className, c.dataset.act || null, c.textContent]);
+"""
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
+def test_a_library_apps_row_has_no_update_but_says_where_it_comes_from(client, library_apps):
+    listed = {a["id"]: a for a in client.get("/api/apps").get_json()}
+    assert (listed["openfit.steps"]["library"], listed["steps"]["library"]) == ("openfit", None)
+
+    r = _run_dupe(client, ROW_ACTS + "r.library = ends('openfit.steps'); r.custom = ends('steps');")
+
+    # Update's place: the note, as text - Duplicate and Uninstall stay.
+    assert r["library"] == [
+        ["span", "dnote a-lib", None, "From the openfit library · updated by your admin"],
+        ["button", "btn sm", "duplicate", "Duplicate"],
+        ["button", "btn sm danger", "uninstall", "Uninstall"],
+    ]
+    # A custom app's row is as it was.
+    assert r["custom"] == [
+        ["button", "btn sm", "update", "Update"],
+        ["button", "btn sm", "duplicate", "Duplicate"],
+        ["button", "btn sm danger", "uninstall", "Uninstall"],
+    ]
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
+def test_a_library_apps_panel_id_never_meets_a_custom_apps(client, dupe_apps):
+    # openfit.frms from the library, and a custom app whose id differs only
+    # by the dot: openfit-frms.
+    frms = os.path.join(os.path.dirname(__file__), "..", "library", "frms")
+    files = {}
+    for name in sorted(os.listdir(frms)):
+        if os.path.isfile(os.path.join(frms, name)):
+            with open(os.path.join(frms, name), encoding="utf-8") as f:
+                files[name] = f.read()
+    apps.install_library_app(dupe_apps, "openfit", files)
+    custom = {**files, "app.yaml": files["app.yaml"].replace("id: frms\n", "id: openfit-frms\n")}
+    assert client.post("/api/apps", json={"files": custom}).status_code == 201
+    listed = client.get("/api/apps").get_json()
+    assert {"openfit.frms", "openfit-frms"} <= {a["id"] for a in listed}
+
+    # Each open row's panel id, as appPanel sets it - and, beside them, the
+    # ids a hand-placed app's '_' could make meet. No file is read, so none
+    # is served (FRMS's alone would overflow node -e's argument).
+    ids = ["a.b", "a-b", "a_b", "a_2eb", "A_b", "a_B", "My_App"]
+    script = _dupe_script(_page(client), listed, {}, f"""
+        r.rows = ['openfit.frms', 'openfit-frms'].map(id => appPanel(APPS_.find(a => a.id===id)).id);
+        r.ids = {json.dumps(ids)}.map(id => appPanelId({{id}}));
+    """)
+    r = _node(script)
+
+    # The dot is written as _2e: two apps, two panels.
+    assert r["rows"] == ["app-panel-openfit_2efrms", "app-panel-openfit-frms"]
+    assert r["ids"] == [
+        "app-panel-a_2eb", "app-panel-a-b", "app-panel-a_5fb", "app-panel-a_5f2eb",
+        "app-panel-A_5fb", "app-panel-a_5fB", "app-panel-My_5fApp",
+    ]
+    assert len(set(r["ids"])) == len(ids)
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
+def test_a_library_apps_duplicate_is_a_custom_app_of_ones_own(client, library_apps):
+    r = _run_dupe(client, "r.out = await duplicate('openfit.steps');")
+    out = r["out"]
+
+    # Its files read back, the copy's id the bare name's next - no source.
+    assert out["reads"] == [["openfit.steps", "app.py"], ["openfit.steps", "app.yaml"]]
+    assert out["popup"]["slots"][0][2].startswith('id: steps-2\nname: "Steps 2"\n')
+    assert out["review"]["id"] == "Install application: steps-2"
+    [body] = out["installs"]
+
+    # ... which installs through POST /api/apps as a custom app, beside both.
+    resp = client.post("/api/apps", json={"files": body})
+    assert resp.status_code == 201, resp.get_json()
+    listed = client.get("/api/apps").get_json()
+    assert [(a["id"], a["library"]) for a in listed if "steps" in a["id"]] == [
+        ("openfit.steps", "openfit"), ("steps", None), ("steps-2", None), ("steps-metres", None),
+    ]
+
+
+# (a library app, the apps installed) -> its duplicate's id and name.
+LIBRARY_DUPE_TARGETS = [
+    ({"id": "openfit.frms", "name": "FRMS"}, [("openfit.frms", "FRMS")], ("frms-2", "FRMS 2")),
+    # Numbered as a custom app's copies are, with the custom app beside it.
+    ({"id": "openfit.frms", "name": "FRMS"}, [("openfit.frms", "FRMS"), ("frms", "FRMS"), ("frms-2", "FRMS 2")],
+     ("frms-3", "FRMS 3")),
+    ({"id": "openfit.steps-metres", "name": "Distance"}, [("openfit.steps-metres", "Distance")],
+     ("steps-metres-2", "Distance 2")),
+    ({"id": "acme2.workout-log", "name": "Workout log"}, [("acme2.workout-log", "Workout log")],
+     ("workout-log-2", "Workout log 2")),
+]
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
+def test_a_library_apps_duplicate_drops_its_source(client):
+    page = _page(client)
+    cases = [[app, [{"id": i, "name": n} for i, n in listed]] for app, listed, _ in LIBRARY_DUPE_TARGETS]
+    script = _js(page, "dupeTarget") + f"""
+        console.log(JSON.stringify({json.dumps(cases)}.map(([app, listed]) => dupeTarget(app, listed))));
+    """
+    result = _node(script)
+
+    assert result[0] == {"id": "frms-2", "name": "FRMS 2"}
+    assert [(t["id"], t["name"]) for t in result] == [want for _, _, want in LIBRARY_DUPE_TARGETS]
+    # Every id one a paste install takes: a custom app's, never dotted.
+    for target in result:
+        assert apps.INSTALL_ID.match(target["id"]), target
 
 
 # ---------- multi-tab Home, slice 5: deploy-to-tab ----------

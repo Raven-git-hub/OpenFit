@@ -149,7 +149,8 @@ built-in/default metrics themselves are never purgeable.
     - **The route:** `DELETE /api/app-sources/<id>/<metric>` — `<metric>` the key
       as stored (a canonical key, or the full `app:<id>:<key>`; colons are fine
       in the path, encoded or not). Guards as the whole-app route's, in the same
-      order: 404 for an id failing `APP_ID`, 400 while `app_present()`, 404
+      order: 404 for an id failing `is_app_id()` (`APP_ID`, or a library
+      app's `LIBRARY_APP_ID`), 400 while `app_present()`, 404
       `"no <metric> data from app:<id> to remove"` when that `(source, metric)`
       has no reading or sample (`_has_metric_data()`; sessions are kind-keyed,
       so a kind is never found here). 200 `{ok, removed: {metrics, sessions,

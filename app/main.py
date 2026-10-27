@@ -23,11 +23,11 @@ from migrations import connect, run_migrations
 from plugins import PLUGINS
 from plugins.base import OAUTH_REDIRECT_URI, write_metric
 from apps import (
-    APP_ID,
     LibraryError,
     app_present,
     find_app,
     install_app,
+    is_app_id,
     read_app_file,
     scan_apps,
     uninstall_app,
@@ -671,10 +671,10 @@ def get_samples(metric):
 
 @app.route("/api/apps", methods=["GET"])
 def list_apps():
-    """The installed apps, in folder order: [{id, name, default_size:
-    {w, h}, sizes: [{w, h}], reads: [key], config: [{key, label, type,
-    default}], metrics: [{key, label, unit, category, grain, range}],
-    files: [name]}].
+    """The installed apps, in folder order: [{id, name, library,
+    default_size: {w, h}, sizes: [{w, h}], reads: [key], config: [{key,
+    label, type, default}], metrics: [{key, label, unit, category, grain,
+    range}], files: [name]}].
 
     Only apps that load: a malformed one - one with no size among them -
     is logged and left out. sizes are the tile sizes the app declares,
@@ -686,7 +686,9 @@ def list_apps():
     are the ones it invents, in order, by their short key (stored and
     served as app:<id>:<key>), range [low, high] or null; files names the
     plain files in the app's folder, each one GET /api/app/<id>/file
-    serves.
+    serves. library is the library a library app was installed from -
+    openfit for openfit.frms: read-only, so its row offers no Update -
+    and null for a custom app.
     """
     return jsonify([a.summary() for a in scan_apps(app.config["APPS_DIR"])])
 
@@ -724,7 +726,9 @@ def update_installed_app(app_id):
     new files staged and loaded first - so a refusal leaves it running
     on its old files: 400 for an id no app could have, or a request,
     app.yaml, id (it must be this app's own), file name or app that
-    won't do; 404 for an app that isn't installed; 500 if the files
+    won't do; 403 for a library app's (openfit.frms: read-only here,
+    updated in its library - Duplicate makes a copy of one's own); 404
+    for an app that isn't installed; 500 if the files
     can't be written or swapped in. 200 {"ok": true, "id",
     "has_app_py"} once the new folder is in place - all of it: a file
     left out is gone. Nothing in the database changes: what the app
@@ -1091,7 +1095,7 @@ def list_app_sources():
         out.append({
             "id": app_id,
             "source": source,
-            "orphaned": bool(APP_ID.match(app_id)) and not app_present(apps_dir, app_id),
+            "orphaned": is_app_id(app_id) and not app_present(apps_dir, app_id),
             "metrics": sorted(got["metrics"], key=lambda m: (order.get(m, len(order)), m)),
             "readings": got["readings"],
             "sessions": got["sessions"],
@@ -1115,12 +1119,13 @@ def remove_app_source(app_id):
     Only ever an app's source: the id is always read as app:<id>, so
     this can't reach a device's data (DELETE /api/connectors/<id>?wipe=1
     is that), a webhook source's, or manual's. 404 for an id no app
-    could have (the scanner's APP_ID); 400 while the app is still on the
+    could have (is_app_id(): a custom app's or a library app's, such as
+    openfit.weight); 400 while the app is still on the
     volume (app_present()) - its folder there, even if what's in it
     fails to load: a live or broken app's data is never removed - and
     404 when app:<id> has no rows. None of those changes anything.
     """
-    if not APP_ID.match(app_id):
+    if not is_app_id(app_id):
         return jsonify({"ok": False, "error": f"'{app_id}' isn't an app id: no app source to remove"}), 404
     if app_present(app.config["APPS_DIR"], app_id):
         return jsonify({
@@ -1158,11 +1163,11 @@ def remove_app_source_metric(app_id, metric):
     always 0.
 
     The guards are the whole-app route's: 404 for an id no app could
-    have (APP_ID); 400 while the app is still on the volume
+    have (is_app_id()); 400 while the app is still on the volume
     (app_present()), loading or not; 404 when app:<id> has no reading or
     sample of `metric`. None of those changes anything.
     """
-    if not APP_ID.match(app_id):
+    if not is_app_id(app_id):
         return jsonify({"ok": False, "error": f"'{app_id}' isn't an app id: no app source to remove"}), 404
     if app_present(app.config["APPS_DIR"], app_id):
         return jsonify({

@@ -114,7 +114,14 @@ own calls to its device API. Full direction:
   (the Library reuses it): `scan_apps(apps_dir)` → the `InstalledApp`s that
   load, in folder-name order. An app is a folder in `APPS_DIR` (`$APPS_DIR`,
   default `/data/apps`, on the data volume; `app.config["APPS_DIR"]` in tests)
-  with an `app.yaml` (`id` (default: the folder's name, `[A-Za-z0-9][A-Za-z0-9_-]*`),
+  with an `app.yaml` (`id` (default: the folder's name, `[A-Za-z0-9][A-Za-z0-9_-]*`,
+  `APP_ID`; but a folder named as a library app's id, `<source>.<name>` —
+  `LIBRARY_APP_ID`, `[a-z][a-z0-9]*\.[a-z0-9][a-z0-9-]*`, `openfit.frms` —
+  is that app, its id the folder's name, its own `id` the bare name
+  (`frms`) or absent, else skipped: "a library app's own id is its bare
+  name: expected 'frms', got 'xyz'"; `is_app_id()` takes either shape and
+  every app-id check uses it, `APP_ID` kept for metric keys, which never
+  gain a dot; `library_of(id)` the source or None),
   `name` (default: the id), `reads` (a list of keys — recorded, not
   enforced), `config` (an ordered list of field mappings `{key, label,
   type, default}` — order drives a tile's settings form; `key` a
@@ -163,10 +170,11 @@ own calls to its device API. Full direction:
   says whether an app is still on the volume, loading or not — its
   folder `<apps dir>/<id>` there as anything (a broken link included) or
   another folder's app loading under the id: `_taken()`, install's rule;
-  an id failing `APP_ID` → False — which decides whether its data is
+  an id failing `is_app_id()` → False — which decides whether its data is
   orphaned (`/api/app-sources`). `InstalledApp.summary()` is
-  what `GET /api/apps` lists: `{id, name, default_size, sizes, reads,
-  config, metrics, files}` — `default_size` the first of `sizes`; `config` the
+  what `GET /api/apps` lists: `{id, name, library, default_size, sizes, reads,
+  config, metrics, files}` — `library` `library_of(id)` (`"openfit"`
+  for `openfit.frms`, None for a custom app); `default_size` the first of `sizes`; `config` the
   manifest's fields as written (the schema of a tile's settings form);
   `metrics` `InstalledApp.metrics`, the declared metrics by short key
   (`range` a list or null, `[]` for none);
@@ -199,12 +207,29 @@ own calls to its device API. Full direction:
   write removes it (500). Every refusal raises `InstallError(message,
   status)` having written nothing; containment checks run before anything
   touches the disk and never move into `check_app()`.
+  `install_library_app(apps_dir, source, files)` is the one way an app is
+  added from a library (no route calls it yet: Browse will) — and so the
+  one way a dotted id is made: `source` matching `LIBRARY_SOURCE`
+  (`[a-z][a-z0-9]*`) else 400 "a library source is lowercase letters and
+  digits, starting with a letter: ..."; the manifest's id through
+  `_install_id()` (so bare — `id: openfit.frms` refused), the full id
+  `<source>.<id>`; then install's path under it — `_install()`, the
+  private body both share (`_check_files()`, under `_write_lock` the
+  `_taken()` 409, `check_app()`, `_write_app()`), so install's behaviour
+  and messages are unchanged. The files written as given, byte for byte
+  the library's (the source only in the folder's name: "is this install
+  current?" a file comparison); a custom `frms` and `openfit.frms` are
+  two apps, side by side. → `{"id": <full id>, "has_app_py"}`, logged
+  `installed openfit.frms from the openfit library: …`.
   `update_app(apps_dir, app_id, files)` is the one way an installed app's
   files are replaced (`PUT /api/apps/<id>`, the Library's Update): the safe,
   one-step form of uninstall-then-add, its id and data kept. In order,
-  before the app is touched: `app_id` (the URL's) matching the scanner's
-  `APP_ID` else 400 "not an app id: ..." (uninstall's rule, so a
-  hand-placed `My_App` can be updated); `files` a non-empty mapping, its
+  before the app is touched: `app_id` (the URL's) passing `is_app_id()`
+  else 400 "not an app id: ..." (uninstall's rule, so a
+  hand-placed `My_App` can be updated); not a library app's — read-only
+  here — else 403 `"'<id>' is from the <source> library, so it's updated
+  there, not here — Duplicate makes a copy of your own to change"`,
+  nothing touched; `files` a non-empty mapping, its
   `app.yaml` parsing (`_manifest_to_install()`); the manifest's `id` the
   app's own (`_update_id()`: absent, not text, or another →
   400 `"this updates '<id>', but the files are for '<other>' — an update
@@ -231,8 +256,9 @@ own calls to its device API. Full direction:
   the app is installed). → `{"id", "has_app_py"}`; every refusal an
   `InstallError` with the app as it was.
   `uninstall_app(apps_dir, app_id)` is the one way an app is removed
-  (`DELETE /api/apps/<id>`): the id, from the URL, must match the scanner's
-  `APP_ID` (every listed id does, so a hand-placed `My_App` can go too;
+  (`DELETE /api/apps/<id>`): the id, from the URL, must pass `is_app_id()`
+  (every listed id does, so a hand-placed `My_App` can go too, and a
+  library app — its data kept, as any app's;
   `..`, a `/`, a dot-folder never) else 400; the folder removed is the one
   `find_app()` loaded the app from — found by scanning, never built from
   the id, always a direct child of `APPS_DIR` — else 404 (an app that
@@ -946,8 +972,8 @@ own calls to its device API. Full direction:
   config included (an update, `update_app()`, never leaves the layout). `parse_layout(body)` checks a save's shape
   only: `tabs` a non-empty list, each `{id` (`TAB_ID`, unique), `name`
   (text, not blank, ≤ 40), `mode` `"flow"`, `subtitle` (text ≤
-  `MAX_SUBTITLE` 120), `items` (a list)`}`; each item `{app_id` (the
-  scanner's `APP_ID`), `size` (`tile_size()`), `config` (a dict; absent →
+  `MAX_SUBTITLE` 120), `items` (a list)`}`; each item `{app_id`
+  (`is_app_id()`: a custom app's or a library app's), `size` (`tile_size()`), `config` (a dict; absent →
   `{}`), `instance_id` (`INSTANCE_ID`, unique across the whole layout;
   absent → minted, in a second pass so a fresh one can't take an id given
   further on)`}` — the same app any number of times; `default_tab`
@@ -1122,7 +1148,10 @@ own calls to its device API. Full direction:
   and `repaintTile()` redraws that
   app's Home tile in place from the fresh spec; a render that failed says
   so), then at the far end **Update**, **Duplicate** (both `btn sm`,
-  `aria-haspopup="dialog"`) and **Uninstall** (`btn sm danger`). Update
+  `aria-haspopup="dialog"`) and **Uninstall** (`btn sm danger`) — for a
+  library app (`a.library` set) no Update: in its place a `.dnote.a-lib`
+  "From the <library> library · updated by your admin" (the server 403s
+  its update anyway), Refresh, Duplicate and Uninstall as any. Update
   and Duplicate both start with `readBack(btn, verb)`: every file in
   `a.files` read back (`api.appFile()`, the button off meanwhile, one
   `Promise.all`; an empty file is read empty) — any read that fails
@@ -1133,7 +1162,9 @@ own calls to its device API. Full direction:
   a)` (below). Duplicate forks the app, client-only:
   `dupeTarget(a, appsList.apps)` → `{id, name}`, the
   lowest n ≥ 2 with neither `<baseId>-n` nor `"<baseName> n"` installed
-  (`baseId` the id less a trailing `-<digits>`, lowercased with `_` → `-`
+  (`baseId` the id less a leading library source (`^[a-z][a-z0-9]*\.`:
+  a copy of `openfit.frms`/"FRMS" is `frms-2`/"FRMS 2", a custom app)
+  and a trailing `-<digits>`, lowercased with `_` → `-`
   so a hand-placed `My_App` gives a valid install id; `baseName` the name
   less a trailing ` <digits>`; so `steps`/"Steps" → `steps-2`/"Steps 2",
   and a copy's copy counts on from the same base), `bumpManifest(yaml,
@@ -1882,13 +1913,13 @@ own calls to its device API. Full direction:
   `orphaned` once its app is gone from the volume (`app_present()` false:
   no `<apps dir>/<id>`, as anything, and no other folder's app loading
   under the id) — an app whose folder is there but fails to load is
-  broken, not gone, so isn't, nor is an id failing the scanner's `APP_ID`
+  broken, not gone, so isn't, nor is an id failing `is_app_id()`
   (no folder to look for) — `metrics` the keys it has readings of
   (vocabulary order), the rest row counts; the prefix matched as a range
   (`>= 'app:' AND < 'app;'`, case-sensitive, unlike `LIKE`), so
   `apple_health` or `APP:x` isn't one. `DELETE /api/app-sources/<id>` →
   `purge_source(conn, "app:" + id)`, then `{ok: true, removed: {metrics,
-  sessions, samples}}` (rows deleted); 404 for an id failing `APP_ID`
+  sessions, samples}}` (rows deleted); 404 for an id failing `is_app_id()`
   (checked first); 400 while `app_present()` — "'<id>' is present — fix
   or uninstall it first; …": a live or broken app's data is never
   removed; 404 when `app:<id>` has no rows (checked before anything is
@@ -2699,9 +2730,19 @@ same PR:
   container per server (users, updates, the library; the only part that
   talks to the internet) and the user system, one offline container per
   user. Step 1 started: `library/` landed (L1), the real apps moved there
-  from the test fixtures unchanged. Still to come, in order: source-prefixed
-  library names (`openfit.frms`) with `replaces`, host-version labels and
-  read-only library apps; a login page (one account per container, still no
+  from the test fixtures unchanged. Then library app ids landed (L2; no
+  migration, no new route): `<source>.<name>` ids, the source the repo's
+  to assign and carried by the installed folder's name alone (the app's
+  own `app.yaml` keeps its bare id, its files byte-identical to the
+  library's), `install_library_app()` the one way one is made (Browse
+  will call it), library apps read-only (`update_app()` 403s one, its
+  row has no Update), and Duplicate dropping the source (`frms-2`). Still
+  to come, in order: `replaces` (L3 — declared in the library copy's
+  `app.yaml`, run only at the new app's install, one transaction moving
+  the old id's sources, session ids, custom metric keys, source roles
+  and Home layout items, then removing the old folder; adopting an
+  uninstalled old app's data, refusing rather than merging when the new
+  id has data, the user confirming first), host-version labels; a login page (one account per container, still no
   `user_id`) and the backup file; Browse reading the library; the Admin, its
   proxy and mDNS announcer; the Admin's self-update and organisation repos.
   Until the login lands, the hard constraints above stand as written.

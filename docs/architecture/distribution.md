@@ -1,7 +1,8 @@
 # OpenFit distribution: the library, the Admin and the user system
 
-_Design record · decided 2026-10-27. Only the library folder is built (L1);
-everything else here is designed, not yet in the code._
+_Design record · decided 2026-10-27. Built so far: the library folder (L1)
+and library app ids, with read-only library apps (L2); everything else here is
+designed, not yet in the code._
 
 OpenFit is splitting into three layers: the repo, an **Admin** container that
 manages user containers on a server, and the **user system** (today's `app/`).
@@ -47,17 +48,21 @@ describes it: no auth on core but the webhook's token, and no Admin.
 - **The library** holds the official apps plus each organisation repo's. Any
   user can install any library app; there is no allowlist.
 - **Names.** A library app is named `<source>.<name>`: `openfit.` for an
-  official app, `openfitavi.` for the example aviation repo's. A `replaces`
-  field lets a renamed or moved app carry its data across. That's a later
-  slice, and two questions are open for it: who assigns a prefix, and how
-  `replaces` moves the data. Until then an id is bare (`frms`) and can't hold
-  a dot.
+  official app, `openfitavi.` for the example aviation repo's. **The repo
+  assigns the source, never the app** (decided, and built in L2, below): a
+  library app's own `app.yaml` keeps its bare id (`id: frms`), and the source
+  is added at install. So nobody can publish an app claiming to be
+  `openfit.`, and moving an app between repos never touches its files. A
+  `replaces` field lets a renamed or moved app carry its data across: the next
+  slice (L3, below). The one question still open for it is how `replaces`
+  moves the data, and L3's rules for that are agreed.
 - **Host version.** A library app carries a host-version requirement, and
   the host refuses an install it isn't compatible with.
 - **Library apps are the Admin's to update.** The Admin pushes a library
   app's updates. A user can't edit a library app (Duplicate gives them a
   custom copy to change), and sees an "updated, what changed" note when one
-  is updated.
+  is updated. The read-only half is built (L2, below); the push and the note
+  are the Admin's, to come.
 - **A user's custom apps are theirs.** They never leave the user's
   container, and the Admin never sees them.
 
@@ -71,6 +76,66 @@ context, every folder is named for its app's id, and every app installs through
 the host's own `install_app()` from its files as text, which is what Browse
 will do. It's named `library/`, not `apps/`, so it can't be confused with
 `app/`, and so it matches the Library tab whose Browse will read it.
+
+### Library app ids (L2, built)
+
+The host side of the names, the read-only rule and a function that installs
+from a library. Nothing calls it from a route yet: Browse will.
+
+- **Two id shapes.** A custom app's id is the scanner's `APP_ID`, as before.
+  A library app's is `LIBRARY_APP_ID`: a source (a lowercase letter, then
+  lowercase letters and digits), one dot, then a name in `INSTALL_ID`'s form,
+  such as `openfit.frms`. `is_app_id()` takes either, and every check of an
+  app's id uses it: uninstall, update, an app's presence (whether its data is
+  orphaned), the app-sources routes and a Home layout item. `APP_ID` itself
+  is unchanged, because it's also the rule for the keys of the metrics an app
+  invents, and those never gain a dot.
+- **The folder carries the source.** `install_library_app(apps_dir, source,
+  files)` writes the library's files, as given, into `<source>.<id>/`
+  (`openfit.frms/`); every other step is `install_app()`'s (the files
+  checked, the id free or 409, `check_app()`, written whole or not at all).
+  The scanner reads a folder named in `LIBRARY_APP_ID`'s shape as that app:
+  its id is the folder's name, and its own `app.yaml` must say the bare name
+  (`frms`), or nothing. Any other id there and it's skipped. The installed
+  files stay byte-identical to the library's copies, so "is this install
+  current?" is a plain file comparison for the Admin.
+- **Only a library install makes a dot.** `INSTALL_ID` has none, so a pasted
+  or duplicated app can never take a dotted id, and a library manifest that
+  already carries one (`id: openfit.frms`) is refused. A dot in an id
+  therefore always means installed from a library. A custom `frms` and the
+  library's `openfit.frms` are two apps, side by side.
+- **Read-only.** `update_app()` refuses a library app's id with a 403
+  ("'openfit.frms' is from the openfit library, so it's updated there, not
+  here — Duplicate makes a copy of your own to change"), nothing touched. Its
+  row has no Update: `GET /api/apps` lists each app's `library` (`"openfit"`,
+  or `null` for a custom app), and the page shows "From the openfit library ·
+  updated by your admin" in Update's place. Uninstall stays, and its data
+  stays, as any app's does.
+- **Duplicate gives a copy of one's own.** The copy's id drops the source
+  before it's numbered, so a copy of `openfit.frms` / "FRMS" is `frms-2` /
+  "FRMS 2", installed through `install_app()` as a custom app.
+- **A source is a source.** A library app writes under `app:openfit.frms`,
+  its own metrics are `app:openfit.frms:<key>`, its sessions' ids
+  `app:openfit.frms:<kind>:<start>`: the dotted id is just its id.
+
+The owner's installed `frms` keeps running as it is: nothing moves its data
+yet. That's `replaces`.
+
+### `replaces` (L3, agreed, not built)
+
+How a library app takes over an older app's id and data, such as the owner's
+custom `frms` becoming `openfit.frms`:
+
+- **Declared in the library copy's `app.yaml`**, naming the old id.
+- **It runs only at install of the new app**, never on a scan or an update.
+- **One transaction**, undone whole on any failure. It moves the old id's
+  metric, session and sample sources; the session ids (`source:kind:start`);
+  the keys of its custom metrics (`app:<old>:<key>`); the source roles that
+  name it; and its Home layout items, config and all. Then it removes the old
+  app's folder.
+- **It adopts leftover data** from an old app that's already uninstalled.
+- **It refuses rather than merges** when the new id already has data.
+- **The user confirms first.**
 
 ## Users and access
 
@@ -112,7 +177,8 @@ will do. It's named `library/`, not `apps/`, so it can't be confused with
 ## Build order
 
 1. **Library groundwork:** this folder (L1, built), source-prefixed names
-   with `replaces`, host-version labels, read-only library apps.
+   and read-only library apps (L2, built), `replaces` (L3), host-version
+   labels.
 2. **The user system:** the login page, and the backup file (export,
    passphrase, restore).
 3. **Browse**, reading a local library folder.

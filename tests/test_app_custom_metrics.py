@@ -615,7 +615,7 @@ def test_the_caffeine_app_declares_its_metric(client, apps_dir):
     install_caffeine(client)
 
     assert client.get("/api/apps").get_json() == [
-        {"id": "caffeine", "name": "Caffeine", "default_size": {"w": 1, "h": 1},
+        {"id": "caffeine", "name": "Caffeine", "library": None, "default_size": {"w": 1, "h": 1},
          "sizes": [{"w": 1, "h": 1}, {"w": 2, "h": 1}], "reads": ["caffeine_mg"], "config": [],
          "metrics": [{"key": "caffeine_mg", "label": "Caffeine", "unit": "mg",
                       "category": "Nutrition & hydration", "grain": "daily", "range": [0, 2000]}],

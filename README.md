@@ -371,7 +371,12 @@ Duplicate copies the
 app's files into the Add Application popup with the next free id and name
 (`steps` → `steps-2`, "Steps" → "Steps 2", then `-3`, …) for you to review
 and install as a separate app, with its own tile and settings. It's a fork:
-editing one app's files later doesn't change the other.
+editing one app's files later doesn't change the other. An app installed from
+a library has an id of the form `<source>.<name>`, such as `openfit.frms`
+(the library names the source; the app's own `app.yaml` just says `frms`).
+It's read-only here: its row has no Update, only a note that it's updated by
+your admin, and Duplicate gives you a copy of your own to change (`frms-2`).
+Installing from the library is Browse's, still to come.
 
 To install one, copy its folder onto the volume, or use **＋ Add
 Application** on the Data tab: paste or upload its `app.yaml`, its `app.py`

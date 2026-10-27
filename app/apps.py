@@ -32,13 +32,24 @@ changes, so a scan is cheap enough to run on every request, a newly
 installed or edited app is picked up without a restart, and a broken one
 is logged once per change rather than on every page load.
 
+An app's id has one of two shapes. A custom app's - one pasted in,
+duplicated or placed by hand - is APP_ID's, its folder's name by default.
+A library app's is <source>.<name> (LIBRARY_APP_ID: openfit.frms), its
+folder's name: the library assigns the source, so the app's own app.yaml
+says only the bare name (id: frms) and its files stay the library's own,
+byte for byte. A dot in an id always means installed from a library -
+install_library_app() is the one way to make one - and such an app is
+read-only here: update_app() refuses it (403); Duplicate makes a copy of
+one's own, under a bare id.
+
 This is the one way the host finds an app: the Home tab's routes use it
 now, and the Library reuses it. install_app() is the one way one is
-added from the browser (POST /api/apps), update_app() the one way one's
-files are replaced (PUT /api/apps/<id>), uninstall_app() the one way one
-is removed (DELETE /api/apps/<id>), and read_app_file() the one way a
-file in one is read back (GET /api/app/<id>/file): see their sections,
-below.
+added from the browser (POST /api/apps), install_library_app() the one
+way one is added from a library (Browse, to come), update_app() the one
+way one's files are replaced (PUT /api/apps/<id>), uninstall_app() the
+one way one is removed (DELETE /api/apps/<id>), and read_app_file() the
+one way a file in one is read back (GET /api/app/<id>/file): see their
+sections, below.
 """
 
 import importlib.util
@@ -72,8 +83,35 @@ MODULE = "app.py"
 # cells across, and a tile is held to the same height.
 MAX_CELLS = 6
 
-# An app id is part of its URL (/api/app/<id>/render).
+# An app id is part of its URL (/api/app/<id>/render). Also the rule a
+# metric an app invents is keyed by (_metrics()), so it never gains a dot.
 APP_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*\Z")
+
+# A library app's id: <source>.<name>, such as openfit.frms - the source
+# a lowercase letter then lowercase letters and digits, one dot, then a
+# name in INSTALL_ID's form. The library assigns the source, never the
+# app: its own app.yaml says the bare name (id: frms), and the source is
+# added at install (install_library_app()), carried by the folder's name
+# alone (_manifest()). So a dot in an id always means installed from a
+# library: nothing else can make one (INSTALL_ID has none).
+LIBRARY_APP_ID = re.compile(r"[a-z][a-z0-9]*\.[a-z0-9][a-z0-9-]*\Z")
+
+# A library's source: the part of a library app's id before the dot.
+LIBRARY_SOURCE = re.compile(r"[a-z][a-z0-9]*\Z")
+
+
+def is_app_id(value):
+    """Whether `value` is an id an app could have: a custom app's (APP_ID)
+    or a library app's (LIBRARY_APP_ID)."""
+    return isinstance(value, str) and bool(APP_ID.match(value) or LIBRARY_APP_ID.match(value))
+
+
+def library_of(app_id):
+    """The library an app with this id was installed from - 'openfit' for
+    openfit.frms - or None for a custom app's id."""
+    if isinstance(app_id, str) and LIBRARY_APP_ID.match(app_id):
+        return app_id.split(".", 1)[0]
+    return None
 
 
 class AppError(Exception):
@@ -100,10 +138,13 @@ class InstalledApp:
         """What GET /api/apps lists for it: the manifest's id, name, sizes
         (default_size their first), reads, config fields - the schema a
         tile's settings form is built from - and the metrics it invents,
-        and the names of the files in its folder."""
+        and the names of the files in its folder. library is the library
+        it was installed from ('openfit' for openfit.frms: read-only, so
+        the page offers no Update), None for a custom app."""
         return {
             "id": self.id,
             "name": self.name,
+            "library": library_of(self.id),
             "default_size": dict(self.default_size),
             "sizes": [dict(size) for size in self.sizes],
             "reads": list(self.reads),
@@ -339,12 +380,24 @@ def _manifest(folder):
     if not isinstance(raw, dict):
         raise AppError(f"{MANIFEST} must be a mapping")
 
-    # The id defaults to the folder's name, the name to the id.
-    app_id = raw.get("id", os.path.basename(folder))
-    if not isinstance(app_id, str) or not APP_ID.match(app_id):
-        raise AppError(
-            f"id must be letters, digits, '-' and '_', starting with a letter or digit: {app_id!r}"
-        )
+    # The id defaults to the folder's name, the name to the id - but a
+    # folder named as a library app's id (openfit.frms) is one: that's
+    # its id, and its own app.yaml says the bare name (frms), or nothing.
+    # The source lives in the folder's name alone, so the files are the
+    # library's own, byte for byte.
+    basename = os.path.basename(folder)
+    if LIBRARY_APP_ID.match(basename):
+        bare = basename.split(".", 1)[1]
+        own = raw.get("id", bare)
+        if own != bare:
+            raise AppError(f"a library app's own id is its bare name: expected {bare!r}, got {own!r}")
+        app_id = basename
+    else:
+        app_id = raw.get("id", basename)
+        if not isinstance(app_id, str) or not APP_ID.match(app_id):
+            raise AppError(
+                f"id must be letters, digits, '-' and '_', starting with a letter or digit: {app_id!r}"
+            )
     name = raw.get("name", app_id)
     if not isinstance(name, str) or not name.strip():
         raise AppError("name must be a non-empty string")
@@ -479,12 +532,12 @@ def app_present(apps_dir, app_id):
     folder loads under the id (a hand-placed one named apart from its
     id): the rule an install's id must be free of (_taken()). Unlike
     find_app(), an app that fails to load is still present: it's broken,
-    not gone. An id no app could have (APP_ID) has no folder: False.
+    not gone. An id no app could have (is_app_id()) has no folder: False.
 
     What decides whether an app's data is orphaned - removable through
     DELETE /api/app-sources/<id> - or still its app's.
     """
-    if not isinstance(app_id, str) or not APP_ID.match(app_id):
+    if not is_app_id(app_id):
         return False
     return _taken(apps_dir, app_id)
 
@@ -664,6 +717,56 @@ def install_app(apps_dir, files):
 
     manifest = _manifest_to_install(files)
     app_id = _install_id(manifest)
+    _install(apps_dir, app_id, manifest, files)
+
+    _log(f"installed {app_id}: {', '.join(sorted(files))}")
+    return {"id": app_id, "has_app_py": MODULE in files}
+
+
+def install_library_app(apps_dir, source, files):
+    """Install an app from the `source` library ('openfit'), its files
+    {name: text} as the library has them, as <apps_dir>/<source>.<id>/.
+
+    The library assigns the source, never the app: its app.yaml says
+    its bare id (id: frms), which must be one install_app() takes - no
+    dot - and the app's id is <source>.<id> (openfit.frms), carried by
+    its folder's name alone. The files are written as given, byte for
+    byte the library's own. Past the source and the id, exactly
+    install_app()'s path, under the full id: every file name and content
+    checked, the id free (409 if not - a custom app's bare id is another
+    app's, so frms and openfit.frms install side by side), check_app(),
+    then written whole or not at all. Nothing is imported or run.
+
+    No route calls it yet: Browse will.
+
+    Returns {"id", "has_app_py"}, the id the full one. Raises
+    InstallError, having written nothing: 400 for a source that isn't
+    lowercase letters and digits starting with a letter, or for anything
+    install_app() refuses with a 400; 409 for a taken id; 500 if the
+    files can't be written.
+    """
+    if not isinstance(source, str) or not LIBRARY_SOURCE.match(source):
+        raise InstallError(
+            f"a library source is lowercase letters and digits, starting with a letter: {source!r}"
+        )
+    if not isinstance(files, dict) or not files:
+        raise InstallError('expected {"files": {name: content}}, with at least an app.yaml')
+
+    manifest = _manifest_to_install(files)
+    app_id = f"{source}.{_install_id(manifest)}"
+    _install(apps_dir, app_id, manifest, files)
+
+    _log(f"installed {app_id} from the {source} library: {', '.join(sorted(files))}")
+    return {"id": app_id, "has_app_py": MODULE in files}
+
+
+def _install(apps_dir, app_id, manifest, files):
+    """An install, once its id is known - install_app()'s and
+    install_library_app()'s, which differ only in how they get it: every
+    file checked, then, one at a time with other installs, updates and
+    uninstalls, the id free (409), check_app(), and the files written
+    into a new <apps_dir>/<app_id>/. InstallError, having written
+    nothing, if any of that fails."""
     _check_files(files)
 
     apps_dir = os.path.abspath(apps_dir)
@@ -675,9 +778,6 @@ def install_app(apps_dir, files):
             _write_app(apps_dir, app_id, files)
         except OSError as e:
             raise InstallError(f"couldn't write the app's files: {e.strerror or e}", 500) from None
-
-    _log(f"installed {app_id}: {', '.join(sorted(files))}")
-    return {"id": app_id, "has_app_py": MODULE in files}
 
 
 def _check_files(files):
@@ -811,11 +911,13 @@ class UninstallError(LibraryError):
 def uninstall_app(apps_dir, app_id):
     """Remove the installed app with this id: its whole folder.
 
-    The id must match APP_ID - the scanner's rule, which every listed
-    app's id meets, so it can never be '..', hold a '/', or name a
-    dot-folder - and an app must load under it. The folder is renamed to
-    a hidden .uninstall-<hex> one beside it (one atomic step; the scanner
-    skips dot-folders, so the app is gone whole), and only then deleted.
+    The id must be one an app could have (is_app_id(): the scanner's
+    APP_ID, or a library app's LIBRARY_APP_ID - which every listed app's
+    id meets, so it can never be '..', hold a '/', or name a dot-folder)
+    and an app must load under it: a library app uninstalls as any does.
+    The folder is renamed to a hidden .uninstall-<hex> one beside it (one
+    atomic step; the scanner skips dot-folders, so the app is gone
+    whole), and only then deleted.
     A delete that fails part way leaves only that hidden folder, logged,
     never a half-app the scanner would try to load. A folder that's a
     link is unlinked: what it points to is never touched.
@@ -828,7 +930,7 @@ def uninstall_app(apps_dir, app_id):
     an id no app could have, 404 for one no app loads under, 500 if the
     folder can't be moved.
     """
-    if not isinstance(app_id, str) or not APP_ID.match(app_id):
+    if not is_app_id(app_id):
         raise UninstallError(
             f"not an app id: letters, digits, '-' and '_', starting with a letter or digit: {app_id!r}"
         )
@@ -925,7 +1027,9 @@ def update_app(apps_dir, app_id, files):
     same app, its id kept, under its own folder.
 
     In order, before the app is touched: the URL's id must be one an app
-    could have (APP_ID, as uninstall's); app.yaml must be among the files
+    could have (is_app_id(), as uninstall's), and not a library app's -
+    read-only here: it's updated in its library, and Duplicate makes a
+    copy of one's own to change; app.yaml must be among the files
     and parse, with an id - this app's own, not another's; every file
     name and content must pass install's containment checks. Then, one
     at a time with installs and uninstalls (_write_lock): the app must be
@@ -948,12 +1052,20 @@ def update_app(apps_dir, app_id, files):
 
     Returns {"id", "has_app_py"}. Raises InstallError, having changed
     nothing - the app runs on its old files - 400 for a bad request,
-    manifest, id, file name or app that doesn't load, 404 for an app
-    that isn't installed, 500 if the files can't be written or swapped.
+    manifest, id, file name or app that doesn't load, 403 for a library
+    app, 404 for an app that isn't installed, 500 if the files can't be
+    written or swapped.
     """
-    if not isinstance(app_id, str) or not APP_ID.match(app_id):
+    if not is_app_id(app_id):
         raise InstallError(
             f"not an app id: letters, digits, '-' and '_', starting with a letter or digit: {app_id!r}"
+        )
+    source = library_of(app_id)
+    if source:
+        raise InstallError(
+            f"'{app_id}' is from the {source} library, so it's updated there, not here — "
+            "Duplicate makes a copy of your own to change",
+            403,
         )
     if not isinstance(files, dict) or not files:
         raise InstallError('expected {"files": {name: content}}, with at least an app.yaml')

@@ -288,7 +288,7 @@ def test_an_app_with_no_app_py_loads_with_nothing_to_draw(client, apps_dir, caps
     assert (app.id, app.name) == ("notes", "Notes")
     assert "[apps]" not in capsys.readouterr().out
     assert client.get("/api/apps").get_json() == [
-        {"id": "notes", "name": "Notes", "default_size": {"w": 1, "h": 1},
+        {"id": "notes", "name": "Notes", "library": None, "default_size": {"w": 1, "h": 1},
          "sizes": [{"w": 1, "h": 1}], "reads": [], "config": [], "metrics": [], "files": ["app.yaml"]}
     ]
     assert client.post("/api/app/notes/render").get_json() == {
@@ -372,10 +372,10 @@ def test_api_apps_lists_the_installed_apps(client, apps_dir):
     # Each app's sizes, the default first, and default_size that first one
     # - one size for a manifest with the older default_size alone.
     assert resp.get_json() == [
-        {"id": "steps", "name": "Steps", "default_size": {"w": 1, "h": 1},
+        {"id": "steps", "name": "Steps", "library": None, "default_size": {"w": 1, "h": 1},
          "sizes": [{"w": 1, "h": 1}, {"w": 2, "h": 2}],
          "reads": [], "config": [], "metrics": [], "files": ["app.py", "app.yaml"]},
-        {"id": "steps-metres", "name": "Distance", "default_size": {"w": 2, "h": 1},
+        {"id": "steps-metres", "name": "Distance", "library": None, "default_size": {"w": 2, "h": 1},
          "sizes": [{"w": 2, "h": 1}], "reads": [], "config": [], "metrics": [], "files": ["app.py", "app.yaml"]},
     ]
 
@@ -398,11 +398,11 @@ def test_the_real_apps_are_listed_and_both_render_specs(client, conn, apps_dir):
     today = today_minus(0)
 
     assert client.get("/api/apps").get_json() == [
-        {"id": "steps", "name": "Steps", "default_size": {"w": 1, "h": 1},
+        {"id": "steps", "name": "Steps", "library": None, "default_size": {"w": 1, "h": 1},
          "sizes": [{"w": 1, "h": 1}], "reads": ["steps"], "config": [], "metrics": [], "files": ["app.py", "app.yaml"]},
         # steps-metres' config schema, as the manifest gives it: the
         # tile's settings form is built from it.
-        {"id": "steps-metres", "name": "Distance (from steps)", "default_size": {"w": 1, "h": 1},
+        {"id": "steps-metres", "name": "Distance (from steps)", "library": None, "default_size": {"w": 1, "h": 1},
          "sizes": [{"w": 1, "h": 1}], "reads": ["steps"],
          "config": [{"key": "stride_m", "label": "Stride length (m)", "type": "number", "default": 0.75}],
          "metrics": [], "files": ["app.py", "app.yaml"]},
