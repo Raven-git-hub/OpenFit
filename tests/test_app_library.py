@@ -20,7 +20,7 @@ import pytest
 
 import apps
 
-REAL_APPS = Path(__file__).parent / "fixtures" / "apps"
+REAL_APPS = Path(__file__).parent.parent / "library"
 SECRET = "TOP SECRET - never served"
 # Every app declares a size; these give their apps this one.
 SIZE = "sizes: [{w: 1, h: 1}]\n"

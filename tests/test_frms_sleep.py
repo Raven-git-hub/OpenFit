@@ -5,7 +5,7 @@ timeline (one a night), their stages cut at the rest window's edges, and
 each flown duty's slots in the rest window and the sleep in each - then
 the panel it draws in render()'s top-right sub-panel.
 
-The app (tests/fixtures/apps/frms/app.py) is loaded by path, as the host
+The app (library/frms/app.py) is loaded by path, as the host
 loads it, and called with a config of the real shape: home HKG on Hong
 Kong time (UTC+8, no daylight saving), so 22:00 home local is 14:00Z and
 08:00 is 00:00Z. Every time here is exact.

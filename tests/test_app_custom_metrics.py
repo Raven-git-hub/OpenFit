@@ -11,7 +11,7 @@ the catalog, /api/coverage and /api/metric/<key> - is the canonical
 metrics plus every installed app's own; an uninstalled app's drops out,
 its readings kept until they're removed (DELETE /api/app-sources/<id>).
 
-The caffeine app, committed in tests/fixtures/apps/caffeine/, is the
+The caffeine app, committed in library/caffeine/, is the
 end-to-end test: declare -> listed in the catalog -> write -> stored
 under app:caffeine:caffeine_mg -> read back.
 
@@ -30,7 +30,7 @@ import host
 from derived import recompute_derived
 from metrics import CATEGORIES, METRICS, STEPS, WEIGHT_KG
 
-REAL_APPS = Path(__file__).parent / "fixtures" / "apps"
+REAL_APPS = Path(__file__).parent.parent / "library"
 
 SIZE = "sizes: [{w: 1, h: 1}]\n"
 

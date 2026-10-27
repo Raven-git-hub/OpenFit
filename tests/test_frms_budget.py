@@ -4,7 +4,7 @@ night's rest window in fixed slots and what the roster did to each, a
 rolling window's share of them, a month's - then the panel it draws in
 render()'s bottom-right sub-panel.
 
-The app (tests/fixtures/apps/frms/app.py) is loaded by path, as the host
+The app (library/frms/app.py) is loaded by path, as the host
 loads it, and called with a config of the real shape: home HKG on Hong
 Kong time (UTC+8, no daylight saving), so a night's rest window, 22:00
 to 08:00 home local, is 14:00Z to 00:00Z and its seven slots start at
