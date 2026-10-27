@@ -59,6 +59,23 @@
   .log div { padding: 1px 0; white-space: pre-wrap; word-break: break-word; }
   .log .t { color: var(--muted); font-family: var(--mono); font-size: 12px; margin-right: 8px; }
   .narrow { max-width: 380px; margin: 60px auto; }
+  td { overflow-wrap: anywhere; }
+  .users td { vertical-align: middle; }
+  td.actions { text-align: right; white-space: nowrap; }
+  @media (max-width: 560px) {
+    /* A user a block: name and state, the address, then the buttons. */
+    .users tr { display: grid; grid-template-columns: 1fr auto; gap: 4px 8px; padding: 8px 0; border-bottom: 1px solid var(--border); }
+    .users td { border: 0; padding: 0 6px; }
+    .users td:nth-child(2) { grid-column: 1 / -1; grid-row: 2; }
+    .users td:nth-child(3) { grid-column: 2; grid-row: 1; text-align: right; }
+    .users td.actions { grid-column: 1 / -1; grid-row: 3; text-align: left; }
+  }
+  td.actions button + button { margin-left: 6px; }
+  form.add { align-items: flex-end; }
+  form.add .name { flex: 2 1 160px; }
+  form.add .port { flex: 1 1 100px; }
+  form.add label { margin-top: 0; }
+  .msg.pre { white-space: pre-wrap; }
   [hidden] { display: none !important; }
 </style>
 </head>
@@ -94,11 +111,36 @@
       <button id="logoutBtn" type="button">Log out</button>
     </header>
 
-    <section class="card" id="openfitCard">
-      <h2>OpenFit</h2>
-      <div class="row"><span class="grow" id="ofUser"></span><span id="ofState"></span></div>
-      <div class="row"><a id="ofLink" target="_blank" rel="noopener noreferrer"></a></div>
+    <section class="card" id="usersCard">
+      <h2>Users</h2>
       <div class="muted" id="ofVersion"></div>
+      <table class="users"><tbody id="userRows"></tbody></table>
+      <div class="confirm" id="removeSure" hidden>
+        <p><strong id="removeWho"></strong> Their OpenFit is removed. Their data is kept until you delete it.</p>
+        <div class="row"><button type="button" data-cancel-user>Cancel</button><button class="danger" type="button" id="removeGo">Remove</button></div>
+      </div>
+      <div class="msg pre" id="usersMsg"></div>
+
+      <h3>Add user</h3>
+      <form id="addForm" class="row add">
+        <div class="name"><label for="addName">Name</label><input id="addName" autocomplete="off" maxlength="20" required></div>
+        <div class="port"><label for="addPort">Port</label><input id="addPort" type="number" min="1024" max="65535" required></div>
+        <button class="primary" type="submit" id="addBtn">Add</button>
+      </form>
+      <p class="muted">1 to 20 lowercase letters and digits. They get an OpenFit of their own on that port, with its own
+        storage, on the version everyone is on.</p>
+
+      <div id="keptBox" hidden>
+        <h3>Kept data</h3>
+        <p class="muted">Removed users' data, kept until you delete it.</p>
+        <table><tbody id="keptRows"></tbody></table>
+        <div class="confirm" id="deleteSure" hidden>
+          <p id="deleteText"></p>
+          <label for="deleteName">Type their name to delete it</label>
+          <input id="deleteName" autocomplete="off">
+          <div class="row" style="margin-top:10px"><button type="button" data-cancel-user>Cancel</button><button class="danger" type="button" id="deleteGo" disabled>Delete data</button></div>
+        </div>
+      </div>
     </section>
 
     <section class="card" id="updatesCard">
@@ -115,7 +157,7 @@
         <button class="danger" id="undoBtn" type="button" hidden>Undo last update</button>
       </div>
       <div class="confirm" id="updateSure" hidden>
-        <p>This stops OpenFit for about a minute and backs up your data first.</p>
+        <p>This stops every user's OpenFit for about a minute and backs up everyone's data first.</p>
         <div class="row"><button type="button" data-cancel>Cancel</button><button class="primary" type="button" id="updateGo">Update OpenFit</button></div>
       </div>
       <div class="confirm" id="undoSure" hidden>
@@ -143,9 +185,9 @@
 
     <section class="card">
       <h2>Backups</h2>
-      <p class="muted">Taken before each update; the newest three are kept.</p>
+      <p class="muted">Taken before each update, one for each user; the newest three updates' are kept.</p>
       <table>
-        <thead><tr><th>Name</th><th>Size</th><th>Taken</th></tr></thead>
+        <thead><tr><th>User</th><th>Name</th><th>Size</th><th>Taken</th></tr></thead>
         <tbody id="backupRows"></tbody>
       </table>
     </section>
@@ -159,12 +201,19 @@ const OUTCOMES = {
   rolled_back: ["Rolled back", "warn"], interrupted: ["Interrupted", "crit"],
 };
 const GROUP_NOTES = {
-  app: "OpenFit itself: rebuilt and restarted by Update OpenFit.",
+  app: "OpenFit itself: rebuilt by Update OpenFit, and every user moved onto it.",
   admin: "This Admin: rebuilt from the command line (below).",
   library: "The app library: no rebuild needed.",
   other: "Docs, tests and the rest.",
 };
+const KINDS = { update: "Update", undo: "Undo", add_user: "Add user" };
+const STATES = {
+  running: ["Running", "good"], stopped: ["Stopped", "muted"], missing: ["Not found", "crit"], unknown: ["Unknown", "warn"],
+};
 let polling = null;
+let removing = null;  // the user Remove asks about
+let deleting = null;  // the removed user Delete data asks about
+let portTouched = false;  // Add user's port typed in: the suggestion stops replacing it
 
 // Every request carries the header the server checks, and a body as JSON.
 async function api(path, data) {
@@ -272,7 +321,8 @@ function paintOp(op) {
     head.append(el("span", "Nothing has run yet.", "muted"));
     return;
   }
-  const what = op.kind === "undo" ? "Undo last update" : "Update OpenFit";
+  const what = op.kind === "undo" ? "Undo last update"
+    : op.kind === "add_user" ? `Add user ${op.user ? op.user.name : ""}` : "Update OpenFit";
   head.append(el("strong", what, "grow"), pill(op.outcome));
   for (const line of op.log || []) {
     const div = el("div");
@@ -282,17 +332,66 @@ function paintOp(op) {
   log.scrollTop = log.scrollHeight;
 }
 
-function paint(s) {
+function button(text, cls, onClick, disabled) {
+  const b = el("button", text, cls);
+  b.type = "button";
+  b.disabled = disabled;
+  b.addEventListener("click", () => onClick(b));
+  return b;
+}
+
+function paintUsers(s, busy) {
   const of = s.openfit;
-  $("ofUser").textContent = "User: " + of.user;
-  $("ofState").replaceChildren(
-    of.running ? el("span", "Running", "pill good")
-      : of.state === "missing" ? el("span", "Not found", "pill crit")
-      : el("span", of.state === "unknown" ? "Unknown" : "Stopped", "pill crit"));
-  const url = `${location.protocol}//${location.hostname}:${of.port}`;
-  $("ofLink").textContent = url;
-  $("ofLink").href = url;
-  $("ofVersion").textContent = of.version ? `Version ${of.version.sha}: ${of.version.subject}` : "Version unknown";
+  $("ofVersion").textContent = of.version
+    ? `Everyone is on version ${of.version.sha}: ${of.version.subject}` : "Version unknown";
+  const rows = $("userRows");
+  rows.replaceChildren();
+  for (const u of s.users) {
+    const who = el("td");
+    who.append(el("strong", u.name));
+    if (u.primary) who.append(" ", el("span", "you", "pill muted"));
+    const url = `${location.protocol}//${location.hostname}:${u.port}`;
+    const a = el("a", url);
+    a.href = url;
+    a.target = "_blank";
+    a.rel = "noopener noreferrer";
+    const link = el("td");
+    link.append(a);
+    const [text, tone] = STATES[u.state] || [u.state, "muted"];
+    const state = el("td");
+    state.append(el("span", text, "pill " + tone));
+    const acts = el("td", null, "actions");
+    const running = u.state === "running";
+    const verb = running ? "stop" : "start";
+    acts.append(button(running ? "Stop" : "Start", "", (b) => userAction(
+      `/api/users/${encodeURIComponent(u.name)}/${verb}`, b, {}, running ? "Stopping…" : "Starting…"), busy));
+    if (!u.primary) acts.append(button("Remove", "danger", () => askRemove(u.name), busy));
+    const tr = el("tr");
+    tr.append(who, link, state, acts);
+    rows.append(tr);
+  }
+  if (removing && !s.users.some((u) => u.name === removing)) closeConfirms();
+  if (!portTouched) $("addPort").value = s.next_port === null ? "" : s.next_port;
+  $("addBtn").disabled = busy;
+
+  const kept = $("keptRows");
+  kept.replaceChildren();
+  $("keptBox").hidden = !s.removed.length;
+  for (const r of s.removed) {
+    const acts = el("td", null, "actions");
+    acts.append(button("Delete data", "danger", () => askDelete(r.name), busy));
+    const tr = el("tr");
+    tr.append(el("td", r.name), el("td", "Removed " + when(r.removed_at), "muted"), acts);
+    kept.append(tr);
+  }
+  if (deleting && !s.removed.some((r) => r.name === deleting)) closeConfirms();
+  $("removeGo").disabled = busy;
+  $("deleteGo").disabled = busy || $("deleteName").value !== deleting;
+}
+
+function paint(s) {
+  const running = s.op && s.op.outcome === "running";
+  paintUsers(s, running);
 
   const check = s.check;
   $("checkedAt").textContent = check && check.checked_at ? "Last checked " + when(check.checked_at) : "Not checked yet";
@@ -307,15 +406,15 @@ function paint(s) {
   }
   paintGroups(check);
 
-  const running = s.op && s.op.outcome === "running";
   $("updateBtn").hidden = !s.update_available;
   $("updateBtn").disabled = running;
   $("undoBtn").hidden = !s.undo;
   $("undoBtn").disabled = running;
   $("checkBtn").disabled = running;
   if (s.undo) {
-    $("undoText").textContent = `This puts back version ${s.undo.old.short} and your data as it was before the update, `
-      + "and stops OpenFit for about a minute. Anything recorded since the update is lost.";
+    $("undoText").textContent = `This puts back version ${s.undo.old.short} and everyone's data as it was before `
+      + "the update, and stops every user's OpenFit for about a minute. Anything recorded since the update is lost, "
+      + "for every user.";
   }
   if (!s.update_available) $("updateSure").hidden = true;
   if (!s.undo) $("undoSure").hidden = true;
@@ -337,18 +436,18 @@ function paint(s) {
     const tr = el("tr");
     const td = el("td");
     td.append(pill(o.outcome));
-    tr.append(el("td", when(o.started_at)), el("td", o.kind === "undo" ? "Undo" : "Update"), td, el("td", o.summary));
+    tr.append(el("td", when(o.started_at)), el("td", KINDS[o.kind] || o.kind), td, el("td", o.summary));
     rows.append(tr);
   }
-  if (!s.history.length) rows.append(emptyRow("No updates yet.", 4));
+  if (!s.history.length) rows.append(emptyRow("Nothing yet.", 4));
   const backups = $("backupRows");
   backups.replaceChildren();
   for (const b of s.backups) {
     const tr = el("tr");
-    tr.append(el("td", b.name, "mono"), el("td", size(b.size)), el("td", when(b.created)));
+    tr.append(el("td", b.user), el("td", b.name, "mono"), el("td", size(b.size)), el("td", when(b.created)));
     backups.append(tr);
   }
-  if (!s.backups.length) backups.append(emptyRow("No backups yet.", 3));
+  if (!s.backups.length) backups.append(emptyRow("No backups yet.", 4));
 
   if (running) startPolling(); else stopPolling();
 }
@@ -423,6 +522,98 @@ $("checkBtn").addEventListener("click", async () => {
   const msg = $("updatesMsg");
   msg.className = r.status === 200 ? "msg" : "msg err";
   msg.textContent = r.status === 200 ? "" : (r.data.error || "The check didn't run.");
+  loadStatus();
+});
+
+// A user action that runs in the request: the button held, then the
+// status read again. A failure shows the error, and the output behind it.
+async function userAction(path, btn, body, busyText) {
+  const msg = $("usersMsg");
+  msg.className = "msg pre";
+  msg.textContent = "";
+  const text = btn.textContent;
+  btn.disabled = true;
+  if (busyText) btn.textContent = busyText;
+  const r = await api(path, body);
+  btn.disabled = false;
+  btn.textContent = text;
+  if (r.status !== 200) {
+    msg.className = "msg pre err";
+    msg.textContent = (r.data.error || "That didn't work.") + (r.data.detail ? "\n" + r.data.detail : "");
+  }
+  await loadStatus();
+  return r.status === 200;
+}
+
+function closeConfirms() {
+  removing = null;
+  deleting = null;
+  $("removeSure").hidden = true;
+  $("deleteSure").hidden = true;
+  $("deleteName").value = "";
+}
+
+function askRemove(name) {
+  closeConfirms();
+  removing = name;
+  $("removeWho").textContent = `Remove ${name}?`;
+  $("removeSure").hidden = false;
+}
+
+function askDelete(name) {
+  closeConfirms();
+  deleting = name;
+  $("deleteText").textContent = `This deletes everything ${name}'s OpenFit stored, for good. `
+    + "Their backups stay until they're pruned.";
+  $("deleteGo").disabled = true;
+  $("deleteSure").hidden = false;
+  $("deleteName").focus();
+}
+
+for (const b of document.querySelectorAll("[data-cancel-user]")) b.addEventListener("click", closeConfirms);
+
+$("removeGo").addEventListener("click", async () => {
+  const name = removing;
+  if (name && await userAction(`/api/users/${encodeURIComponent(name)}/remove`, $("removeGo"), {}, "Removing…")) {
+    closeConfirms();
+    $("usersMsg").textContent = `Removed ${name}. Their data is kept, below.`;
+  }
+});
+
+// Delete data only works once their name is typed exactly; the server
+// checks it again.
+$("deleteName").addEventListener("input", () => {
+  $("deleteGo").disabled = !deleting || $("deleteName").value !== deleting;
+});
+
+$("deleteGo").addEventListener("click", async () => {
+  const name = deleting, typed = $("deleteName").value;
+  if (!name || typed !== name) return;
+  if (await userAction(`/api/removed/${encodeURIComponent(name)}/delete-data`, $("deleteGo"), { confirm: typed }, "Deleting…")) {
+    closeConfirms();
+    $("usersMsg").textContent = `Deleted ${name}'s data.`;
+  }
+});
+
+$("addPort").addEventListener("input", () => { portTouched = true; });
+
+$("addForm").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  const msg = $("usersMsg");
+  msg.className = "msg pre";
+  msg.textContent = "";
+  const raw = $("addPort").value, port = Number(raw);
+  $("addBtn").disabled = true;
+  const r = await api("/api/users", { name: $("addName").value, port: raw !== "" && Number.isInteger(port) ? port : raw });
+  $("addBtn").disabled = false;
+  if (r.status === 202) {
+    $("addName").value = "";
+    portTouched = false;
+    msg.textContent = "Adding… its progress is under Activity.";
+  } else {
+    msg.className = "msg pre err";
+    msg.textContent = r.data.error || "That didn't start.";
+  }
   loadStatus();
 });
 

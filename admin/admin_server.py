@@ -120,6 +120,41 @@ def create_app(admin, auth, secret_key):
         except Refused as e:
             return _fail(e.message, e.status)
 
+    @app.post("/api/users")
+    def api_add_user():
+        data = body()
+        try:
+            return jsonify(ok=True, op=admin.start_add_user(data.get("name"), data.get("port"), request.host)), 202
+        except Refused as e:
+            return _fail(e.message, e.status)
+
+    def done(action):
+        """A user action that runs in the request: 200, its refusal, or 502
+        with the output behind a failed step."""
+        try:
+            action()
+        except Refused as e:
+            return _fail(e.message, e.status)
+        except OpError as e:
+            return _fail(e.message, 502, detail=e.detail)
+        return jsonify(ok=True)
+
+    @app.post("/api/users/<name>/start")
+    def api_start_user(name):
+        return done(lambda: admin.start_user(name))
+
+    @app.post("/api/users/<name>/stop")
+    def api_stop_user(name):
+        return done(lambda: admin.stop_user(name))
+
+    @app.post("/api/users/<name>/remove")
+    def api_remove_user(name):
+        return done(lambda: admin.remove_user(name))
+
+    @app.post("/api/removed/<name>/delete-data")
+    def api_delete_data(name):
+        return done(lambda: admin.delete_data(name, body().get("confirm")))
+
     return app
 
 
