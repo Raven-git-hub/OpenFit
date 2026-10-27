@@ -1,9 +1,10 @@
 # OpenFit distribution: the library, the Admin and the user system
 
 _Design record · decided 2026-10-27. Built so far: the library folder (L1),
-library app ids with read-only library apps (L2), and the Admin's first slice,
-updates for the existing OpenFit (A1, [admin.md](admin.md)); everything else
-here is designed, not yet in the code._
+library app ids with read-only library apps (L2), and the Admin's first two
+slices, updates for the existing OpenFit (A1) and adding users, with updates
+moving everyone together (A2, both [admin.md](admin.md)); everything else here
+is designed, not yet in the code._
 
 OpenFit is splitting into three layers: the repo, an **Admin** container that
 manages user containers on a server, and the **user system** (today's `app/`).
@@ -12,12 +13,12 @@ Apps such as FRMS are no longer part of the user system. They live in a
 records how the three fit together, so each slice is built against one design
 rather than its own guess. Until a slice lands, the code is as `CLAUDE.md`
 describes it: no auth on core but the webhook's token, and an Admin that
-updates the one existing OpenFit (A1) and nothing more.
+adds users and updates them all together (A1, A2) and nothing more.
 
 ## Layers
 
 - **The repo.** One repo holds `app/` (the user system), `library/` (the
-  official apps) and `admin/` (the Admin, its first slice built). The official repo is public. An
+  official apps) and `admin/` (the Admin, its first two slices built). The official repo is public. An
   organisation's app repo is separate and private, and the Admin reads it with
   a read-only key.
 - **The Admin.** One container per server. It creates users, checks for
@@ -60,8 +61,26 @@ back the data, image and code itself if it doesn't come up; Undo does the same
 by hand. The Admin's own update is still a command you run until A4. The full
 record, with its safety rules (one compose project, the labelled container
 and its own helpers only, no shell, git as the repo's owner), is
-[admin.md](admin.md). Until the user containers are labelled by the Admin
-itself (A2), "OpenFit's" means the compose labels of that one project.
+[admin.md](admin.md).
+
+### Adding users (A2, built)
+
+The second slice lets the Admin add users, each with their own OpenFit: a
+compose project `openfit-<name>`, a volume of their own and a port of their
+own (the lowest free from 8101 suggested). The existing OpenFit is the
+**primary** user, adopted as in A1; an added user's compose file is written by
+the Admin into its own storage from a fixed template (the image, a port and a
+volume, with no `env_file` and no `environment`, so the repo's `.env`, which
+can hold the primary's logins and secret key, never reaches them). Users are
+started, stopped and removed from the page; a removed user's data is kept
+until it's deleted by typing their name. **Update and Undo move every user
+together**, one version on the server at a time: one build, everyone who was
+running stopped, everyone backed up (one backup set), everyone recreated on
+the new image as they were (a stopped user stays stopped), the running ones
+health-checked, and everyone rolled back if anyone doesn't come up. Undo is
+offered only while the set of users is the one the update recorded. "OpenFit's"
+now means the compose labels of the Admin's own users' projects; the rules are
+[admin.md](admin.md)'s.
 
 ## Apps
 
@@ -205,7 +224,8 @@ a second real person gets a container. Re-ordered 2026-10-27, after A1:
 
 1. **A1: updates for the existing OpenFit** (built): check, update, undo, a
    backup before every update, behind a login of the Admin's own.
-2. **A2: adding users**, one compose project per user, each on its own port.
+2. **A2: adding users** (built), one compose project per user, each on its
+   own port, and updates and undo moving every user together.
 3. **The user login**: the user system's login page, before any second real
    person gets a container (one account per container, still no `user_id`).
 4. **A4: the Admin's self-update**, through a short-lived helper container.
@@ -216,5 +236,5 @@ a second real person gets a container. Re-ordered 2026-10-27, after A1:
 
 The proxy and the mDNS announcer are deferred: users are on `IP:port` until
 then. The backup file (export, passphrase, restore) is designed above and not
-yet placed in this order; A1's update backups are plain `tar.gz` archives of
-the `/data` volume, not that format.
+yet placed in this order; the Admin's update backups are plain `tar.gz`
+archives of each user's `/data` volume, not that format.

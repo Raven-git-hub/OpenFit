@@ -5,13 +5,28 @@ import json
 import os
 
 import pytest
+from conftest import seed_users
 
 import admin_auth
 
 H = {"X-OpenFit-Admin": "1"}
 PASSWORD = "a long password!"
 GET_ROUTES = ["/api/status", "/api/op", "/api/backups"]
-POST_ROUTES = ["/api/check", "/api/update", "/api/undo", "/api/logout"]
+POST_ROUTES = [
+    "/api/check", "/api/update", "/api/undo", "/api/logout",
+    "/api/users", "/api/users/sam/start", "/api/users/sam/stop", "/api/users/sam/remove",
+    "/api/users/andy/start", "/api/users/andy/stop", "/api/removed/kim/delete-data",
+]
+# A body every route would act on: a new user, the right confirm.
+BODY = {"name": "lee", "port": 8110, "confirm": "kim"}
+
+
+def with_users(env):
+    """sam an added user, kim removed with kept data; the calls cleared."""
+    seed_users(env, ("sam", 8101, "running"), ("kim", 8102, "running"))
+    env.admin.remove_user("kim")
+    env.fake.clear()
+    env.users_before = (env.data / "users.json").read_text()
 
 
 def set_up(client, env):
@@ -143,17 +158,18 @@ def test_every_api_route_needs_a_session(admin_client, admin_env, path):
     admin_client.post("/api/logout", json={}, headers=H)
     admin_env.repos.push({"app/main.py": "print(2)\n"}, "New")
     admin_env.admin.check()  # so an update would otherwise start
-    admin_env.fake.clear()
+    with_users(admin_env)  # and the user routes would otherwise act
 
     if path in GET_ROUTES:
         r = admin_client.get(path, headers=H)
     else:
-        r = admin_client.post(path, json={}, headers=H)
+        r = admin_client.post(path, json=BODY, headers=H)
 
     assert r.status_code == 401
     assert r.get_json() == {"ok": False, "error": "Log in first."}
     assert admin_env.fake.calls == []
     assert admin_env.admin.history() == []
+    assert (admin_env.data / "users.json").read_text() == admin_env.users_before
 
 
 def test_an_unknown_api_route_needs_a_session_too(admin_client):
@@ -165,13 +181,15 @@ def test_a_post_without_the_header_is_403(admin_client, admin_env, path):
     set_up(admin_client, admin_env)
     admin_env.repos.push({"app/main.py": "print(2)\n"}, "New")
     admin_env.admin.check()
-    admin_env.fake.clear()
+    with_users(admin_env)
 
     for headers in ({}, {"X-OpenFit-Admin": "0"}):
-        assert admin_client.post(path, json={}, headers=headers).status_code == 403
+        assert admin_client.post(path, json=BODY, headers=headers).status_code == 403
     # The header, but not JSON.
     assert admin_client.post(path, data={"password": PASSWORD}, headers=H).status_code == 403
     assert admin_env.fake.calls == []
+    assert admin_env.admin.history() == []
+    assert (admin_env.data / "users.json").read_text() == admin_env.users_before
     assert admin_client.get("/api/status").status_code == 200  # still logged in
 
 
@@ -190,7 +208,7 @@ def test_a_check_and_an_update_through_the_routes(admin_client, admin_env):
     op = admin_client.get("/api/op").get_json()["op"]
     assert op["outcome"] == "ok"
     backups = admin_client.get("/api/backups").get_json()["backups"]
-    assert [b["name"] for b in backups] == [op["backup"]]
+    assert [b["name"] for b in backups] == [op["users"][0]["backup"]]
     status = admin_client.get("/api/status").get_json()
     assert status["history"][0]["id"] == op["id"]
     assert status["undo"]["id"] == op["id"]

@@ -16,6 +16,7 @@ clone standing in for the server's copy), and every docker command goes
 to FakeRunner, which records it and answers from a script.
 """
 
+import hashlib
 import json
 import os
 import shutil
@@ -133,11 +134,18 @@ def client(db_path):
 
 Call = namedtuple("Call", "args cwd as_owner")
 
-# The containers the fake hands out: the user system's before an update,
-# then a new one each time compose brings it up.
-CONTAINERS = ["a1" * 32, "b2" * 32, "c3" * 32, "d4" * 32]
+# The containers the fake hands out to the primary (project openfit): the
+# one running before an update, then a new one each time compose brings it
+# up. Another project's are made up from its name and a count.
+CONTAINERS = ["a1" * 32, "b2" * 32, "c3" * 32, "d4" * 32, "e6" * 32, "f7" * 32]
 IMAGE_ID = "sha256:" + "e5" * 32
 VOLUME = "openfit_tracker-data"
+
+
+def container_id(project, n):
+    if project == "openfit" and n < len(CONTAINERS):
+        return CONTAINERS[n]
+    return hashlib.sha256(f"{project}:{n}".encode()).hexdigest()
 
 
 class FakeClock:
@@ -158,8 +166,14 @@ class FakeRunner:
     """Records every command. git runs for real, against the temp repos;
     docker is answered from a script: `rules` first (a predicate on the
     argument list and a result or a function of it), then the defaults
-    below, which play a compose project that builds, stops, backs up (the
-    backup file appears in the Admin's backups) and comes up healthy."""
+    below, which play compose projects that build, stop, back up (the
+    backup file appears in the Admin's backups) and come up healthy.
+
+    `projects` is what Docker holds: project -> {"n": how many containers
+    it's had, "state": running/exited/created, or None for no container}.
+    The primary's, openfit, starts with C0 running. `volumes` the volumes
+    there are: a project's appears when it's brought up, goes with down -v
+    or volume rm."""
 
     def __init__(self, repo, backups_dir):
         import admin_ops
@@ -169,9 +183,10 @@ class FakeRunner:
         self.calls = []
         self.results = []
         self.rules = []
-        self.container = 0
+        self.projects = {"openfit": {"n": 0, "state": "running"}}
+        self.volumes = {VOLUME}
+        self.images = {"openfit-tracker:latest"}
         self.unhealthy = set()
-        self.on_backup = None
 
     def run(self, args, cwd=None, as_owner=False, timeout=None):
         assert isinstance(args, list), f"a command must be a list, not {args!r}"
@@ -189,17 +204,42 @@ class FakeRunner:
             return self.real.run(args, cwd=cwd, as_owner=as_owner, timeout=timeout)
         return self.docker(args)
 
+    # A1's view: the primary's container, and how many it has had.
+    @property
+    def container(self):
+        return self.projects["openfit"]["n"]
+
     @property
     def cid(self):
-        return CONTAINERS[self.container]
+        return self.cid_of("openfit")
+
+    def cid_of(self, project):
+        p = self.projects.get(project)
+        return container_id(project, p["n"]) if p and p["state"] else None
+
+    def add_project(self, project, state="running"):
+        """A project already up when the test starts: its container, its volume."""
+        self.projects[project] = {"n": 0, "state": state}
+        self.volumes.add(f"{project}_tracker-data")
+
+    def _project_of(self, cid):
+        return next((name for name in self.projects if self.cid_of(name) == cid), None)
 
     def docker(self, args):
         sub = args[1]
         if sub == "ps":
-            return 0, f"{self.cid}\trunning\n", ""
+            label = next(a for a in args if a.startswith("label=com.docker.compose.project="))
+            project = label.split("=", 2)[2]
+            cid = self.cid_of(project)
+            if not cid:
+                return 0, "", ""
+            if "{{.ID}}" == args[-1]:
+                return 0, f"{cid}\n", ""
+            return 0, f"{cid}\t{self.projects[project]['state']}\n", ""
         if sub == "inspect":
+            project = self._project_of(args[-1])
             info = {"Id": args[-1], "Image": IMAGE_ID,
-                    "Mounts": [{"Type": "volume", "Name": VOLUME, "Destination": "/data"}]}
+                    "Mounts": [{"Type": "volume", "Name": f"{project}_tracker-data", "Destination": "/data"}]}
             return 0, json.dumps([info]), ""
         if sub == "exec":
             return (1 if args[2] in self.unhealthy else 0), "", ""
@@ -208,8 +248,31 @@ class FakeRunner:
             with open(os.path.join(self.backups_dir, name), "wb") as f:
                 f.write(b"backup")
             return 0, "", ""
-        if sub == "compose" and "up" in args:
-            self.container += 1
+        if sub == "image" and args[2] == "inspect":
+            if args[-1] in self.images:
+                return 0, IMAGE_ID + "\n", ""
+            return 1, "", f"Error response from daemon: No such image: {args[-1]}"
+        if sub == "volume" and args[2] == "inspect":
+            if args[-1] in self.volumes:
+                return 0, args[-1] + "\n", ""
+            return 1, "", f"Error response from daemon: get {args[-1]}: no such volume"
+        if sub == "volume" and args[2] == "rm":
+            self.volumes.discard(args[3])
+            return 0, args[3] + "\n", ""
+        if sub == "compose":
+            project = args[3]
+            p = self.projects.setdefault(project, {"n": -1, "state": None})
+            if "up" in args:
+                if not p["state"] or "--force-recreate" in args or p["state"] != "running":
+                    p["n"] += 1
+                p["state"] = "created" if "--no-start" in args else "running"
+                self.volumes.add(f"{project}_tracker-data")
+            elif "stop" in args and p["state"]:
+                p["state"] = "exited"
+            elif "down" in args:
+                p["state"] = None
+                if "-v" in args:
+                    self.volumes.discard(f"{project}_tracker-data")
         return 0, "", ""
 
     def clear(self):
@@ -221,6 +284,23 @@ class FakeRunner:
 
     def commands(self):
         return [c.args for c in self.calls]
+
+
+def seed_users(env, *users):
+    """Users the Admin added before the test: (name, port, state) each -
+    users.json, their compose files, and their projects up in the fake
+    (state None: no container). The fake's calls cleared."""
+    import admin_ops
+
+    reg = {"users": [], "removed": []}
+    for i, (name, port, state) in enumerate(users):
+        reg["users"].append({"name": name, "port": port, "created_at": f"2026-10-2{i}T09:00:00Z"})
+        folder = env.data / "users" / name
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / "docker-compose.yml").write_text(admin_ops.USER_COMPOSE.format(image="openfit-tracker", port=port))
+        env.fake.add_project(f"openfit-{name}", state)
+    (env.data / "users.json").write_text(json.dumps(reg))
+    env.fake.clear()
 
 
 def _git(cwd, *args):

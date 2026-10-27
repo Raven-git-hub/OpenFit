@@ -94,7 +94,7 @@ def test_an_update_runs_in_the_exact_order(admin_env):
     old = env.repos.head()
     old_short = short(env)
     pending(env)
-    name = f"20261027T120000Z-{old_short}.tar.gz"
+    name = f"20261027T120000Z-{old_short}-andy.tar.gz"
 
     op = run_update(env)
 
@@ -112,13 +112,14 @@ def test_an_update_runs_in_the_exact_order(admin_env):
         git(env, *HEAD_LOG[1:]),
         # 4. build, still running the old version
         Call(compose(env, "build", "tracker"), env.repos.repo, False),
-        # 5. stop
+        # 5. who's running, then stop them
+        docker(*PS[1:]),
         Call(compose(env, "stop", "tracker"), env.repos.repo, False),
         # 6. back up, the volume read from the stopped container
         docker("inspect", "--type", "container", C0),
         backup_cmd(name),
-        # 7. start
-        Call(compose(env, "up", "-d", "--no-build", "tracker"), env.repos.repo, False),
+        # 7. recreated on the new image, and started: it was running
+        Call(compose(env, "up", "-d", "--no-build", "--force-recreate", "tracker"), env.repos.repo, False),
         # 8. health, on the container compose made
         docker(*PS[1:]),
         docker("exec", C1, "python", "-c", admin_ops.HEALTH_CODE),
@@ -131,10 +132,10 @@ def test_an_update_runs_in_the_exact_order(admin_env):
     assert op["summary"] == f"Updated OpenFit to {short(env)}: New OpenFit"
     assert op["old"]["commit"] == old
     assert op["new"]["commit"] == env.repos.head() != old
-    assert op["backup"] == name
+    assert op["users"] == [{"name": "andy", "created_at": None, "was_running": True, "backup": name}]
     assert (env.backups / name).exists()
     texts = [line["text"] for line in op["log"]]
-    assert "Backing up your data…" in texts
+    assert "Backing up andy's data…" in texts
     assert all(set(line) == {"t", "text"} for line in op["log"])
     assert env.admin.last_check()["behind"] == 0
     assert env.admin.history()[-1]["id"] == op["id"]
@@ -186,7 +187,7 @@ def test_a_failed_health_check_rolls_back(admin_env):
     env = admin_env
     old = env.repos.head()
     pending(env)
-    name = f"20261027T120000Z-{short(env)}.tar.gz"
+    name = f"20261027T120000Z-{short(env)}-andy.tar.gz"
     env.fake.unhealthy = {C1}  # the new version never answers
 
     op = run_update(env)
@@ -239,7 +240,7 @@ def test_a_failed_backup_calls_the_update_off(admin_env):
     assert calls[backup + 1:] == [
         git(env, "reset", "--hard", old),
         docker("tag", "openfit-tracker:prev", "openfit-tracker:latest"),
-        Call(compose(env, "up", "-d", "--no-build", "tracker"), env.repos.repo, False),
+        Call(compose(env, "up", "-d", "--no-build", "--force-recreate", "tracker"), env.repos.repo, False),
     ]
     assert op["outcome"] == "failed"
     assert "couldn't be backed up" in op["summary"]
@@ -326,7 +327,7 @@ def test_undo_is_offered_only_after_a_successful_update(logged_in, admin_env):
         Call(compose(env, "stop", "tracker"), env.repos.repo, False),
         docker(*PS[1:]),
         docker("inspect", "--type", "container", container),
-        restore_cmd(op["backup"]),
+        restore_cmd(op["users"][0]["backup"]),
         docker("tag", "openfit-tracker:prev", "openfit-tracker:latest"),
         git(env, "reset", "--hard", old),
         Call(compose(env, "up", "-d", "--no-build", "--force-recreate", "tracker"), env.repos.repo, False),
@@ -374,11 +375,13 @@ def test_backups_are_pruned_to_the_newest_three(admin_env):
 
     assert op["outcome"] == "ok"
     names = [b["name"] for b in env.admin.list_backups()]
-    assert names == [op["backup"], olds[3], olds[2]]
+    assert names == [op["users"][0]["backup"], olds[3], olds[2]]
     assert sorted(os.listdir(env.backups)) == sorted(names + ["notes.txt"])
     b = env.admin.list_backups()[0]
     assert b["size"] == len(b"backup")
     assert b["created"] == "2026-10-27T12:00:00Z"
+    assert b["user"] == "andy"
+    assert env.admin.list_backups()[1]["user"] == "andy"  # an A1 backup, no user in its name
 
 
 # --- one at a time ---------------------------------------------------------------

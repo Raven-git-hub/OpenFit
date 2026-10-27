@@ -1,6 +1,8 @@
-"""The Admin stays in its lane: one compose project, one labelled
-container, its own --rm helpers; argument lists, never a shell; git as
-the repo's owner, docker as root."""
+"""The Admin stays in its lane: its users' compose projects, each with its
+own compose file; their labelled containers; its own --rm helpers; the
+user system's image; a removed user's kept volume, only on a confirmed
+delete. Argument lists, never a shell; git as the repo's owner, docker as
+root."""
 
 import glob
 import json
@@ -8,14 +10,12 @@ import os
 import subprocess
 
 import pytest
-from conftest import CONTAINERS
+from conftest import CONTAINERS, container_id, seed_users
 
 import admin_ops
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 C0, C1, C2 = CONTAINERS[:3]
-PROJECT = "label=com.docker.compose.project=openfit"
-SERVICE = "label=com.docker.compose.service=tracker"
 
 
 def pending(env, message="New OpenFit"):
@@ -33,6 +33,21 @@ def undo(env):
     env.admin.start_undo()
     env.admin.wait(10)
     return env.admin.current_op()
+
+
+def add(env, name, port):
+    env.admin.start_add_user(name, port, "192.168.1.10:8090")
+    env.admin.wait(10)
+    return env.admin.current_op()
+
+
+def three_users(env):
+    seed_users(env, ("sam", 8101, "running"), ("kim", 8102, "exited"))
+
+
+# Each scenario returns what it may do beyond the lane every scenario keeps
+# to: "down_v", a failed add's `down -v`; "volume_rm", the one removed
+# user whose kept volume it may delete.
 
 
 def scenario_success(env):
@@ -75,6 +90,78 @@ def scenario_status(env):
     env.admin.status()
 
 
+def scenario_add_user(env):
+    assert add(env, "sam", 8101)["outcome"] == "ok"
+    env.admin.status()
+
+
+def scenario_add_user_fails(env):
+    seed_users(env, ("kim", 8101, "running"))
+    env.fake.unhealthy = {container_id("openfit-sam", 0)}
+    assert add(env, "sam", 8102)["outcome"] == "failed"
+    return {"down_v": True}
+
+
+def scenario_add_user_port_clash(env):
+    env.fake.fail(lambda a: "up" in a, err="Bind for 0.0.0.0:8101 failed: port is already allocated")
+    assert add(env, "sam", 8101)["outcome"] == "failed"
+    return {"down_v": True}
+
+
+def scenario_add_removed_user_fails(env):
+    seed_users(env, ("sam", 8101, "running"))
+    env.admin.remove_user("sam")
+    env.fake.unhealthy = {container_id("openfit-sam", 1)}
+    assert add(env, "sam", 8101)["outcome"] == "failed"
+
+
+def scenario_start_stop(env):
+    seed_users(env, ("sam", 8101, "running"))
+    for name in ("sam", "andy"):
+        env.admin.stop_user(name)
+        env.admin.start_user(name)
+
+
+def scenario_remove_user(env):
+    seed_users(env, ("sam", 8101, "running"), ("kim", 8102, "running"))
+    env.admin.remove_user("sam")
+    env.admin.status()
+
+
+def scenario_delete_data(env):
+    seed_users(env, ("sam", 8101, "running"), ("kim", 8102, "running"))
+    env.admin.remove_user("sam")
+    env.admin.delete_data("sam", "sam")
+    return {"volume_rm": "sam"}
+
+
+def scenario_update_everyone(env):
+    three_users(env)
+    pending(env)
+    assert update(env)["outcome"] == "ok"
+
+
+def scenario_rollback_everyone(env):
+    three_users(env)
+    pending(env)
+    env.fake.unhealthy = {container_id("openfit-sam", 1)}
+    assert update(env)["outcome"] == "rolled_back"
+
+
+def scenario_undo_everyone(env):
+    three_users(env)
+    pending(env)
+    assert update(env)["outcome"] == "ok"
+    assert undo(env)["outcome"] == "ok"
+
+
+def scenario_backup_fails_everyone(env):
+    three_users(env)
+    pending(env)
+    env.fake.fail(lambda a: "czf" in a and "openfit-kim_tracker-data:/v:ro" in a)
+    assert update(env)["outcome"] == "failed"
+
+
 SCENARIOS = [
     scenario_success,
     scenario_rollback,
@@ -83,12 +170,36 @@ SCENARIOS = [
     scenario_stop_fails,
     scenario_backup_fails,
     scenario_status,
+    scenario_add_user,
+    scenario_add_user_fails,
+    scenario_add_user_port_clash,
+    scenario_add_removed_user_fails,
+    scenario_start_stop,
+    scenario_remove_user,
+    scenario_delete_data,
+    scenario_update_everyone,
+    scenario_rollback_everyone,
+    scenario_undo_everyone,
+    scenario_backup_fails_everyone,
 ]
 
 
-def assert_in_lane(env):
-    compose_file = os.path.join(env.repos.repo, "docker-compose.yml")
-    labelled = set()  # the container ids the labelled lookup gave back
+def known_names(env):
+    """Every name the Admin has had in users.json in the scenario: its users
+    and removed users now, and any it tried to add."""
+    path = env.data / "users.json"
+    reg = json.loads(path.read_text()) if path.exists() else {"users": [], "removed": []}
+    names = {e["name"] for e in reg["users"] + reg["removed"]}
+    names.update(o["user"]["name"] for o in env.admin.history() if o.get("kind") == "add_user")
+    return names
+
+
+def assert_in_lane(env, allow):
+    root_file = os.path.join(env.repos.repo, "docker-compose.yml")
+    names = known_names(env) | ({allow["volume_rm"]} if allow.get("volume_rm") else set())
+    assert "admin" not in names
+    projects = {"openfit"} | {f"openfit-{n}" for n in names}
+    labelled = set()  # the container ids the labelled lookups gave back
     images = set()  # those containers' images
     docker_calls = 0
     for call, (rc, out, _err) in zip(env.fake.calls, env.fake.results):
@@ -99,12 +210,25 @@ def assert_in_lane(env):
         docker_calls += 1
         sub = a[1]
         if sub == "compose":
-            assert a[2:6] == ["-p", "openfit", "-f", compose_file], a
-            assert a[-1] == "tracker", a
-            assert call.cwd == env.repos.repo
+            assert a[2] == "-p" and a[4] == "-f", a
+            project, compose_file = a[3], a[5]
+            assert project in projects, a
+            if project == "openfit":
+                assert compose_file == root_file and call.cwd == env.repos.repo, a
+            else:
+                name = project.removeprefix("openfit-")
+                assert compose_file == str(env.data / "users" / name / "docker-compose.yml"), a
+                assert call.cwd == str(env.data / "users" / name), a
+            assert compose_file != root_file or project == "openfit", a  # the repo's file is the primary's alone
+            if "-v" in a:
+                assert a[6:] == ["down", "-v"] and project != "openfit" and allow.get("down_v"), a
+            else:
+                assert a[-1] == "tracker" or a[6:] in (["down"], ["up", "-d", "--no-build"]), a
         elif sub == "ps":
-            assert PROJECT in a and SERVICE in a, a
-            assert a[a.index(PROJECT) - 1] == "--filter" and a[a.index(SERVICE) - 1] == "--filter"
+            label = [x for x in a if x.startswith("label=com.docker.compose.project=")]
+            assert len(label) == 1 and label[0].split("=", 2)[2] in projects, a
+            assert a[a.index(label[0]) - 1] == "--filter", a
+            assert a[2:4] == ["-a", "--no-trunc"], a
             labelled.update(line.split("\t")[0] for line in out.splitlines() if line)
         elif sub == "inspect":
             assert a[2:4] == ["--type", "container"] and a[4] in labelled, a
@@ -117,17 +241,31 @@ def assert_in_lane(env):
         elif sub == "run":
             assert a[2:5] == ["--rm", "--label", "openfit.admin.helper=true"], a
             assert "openfit-admin:local" in a, a
+        elif sub == "image":
+            assert a == ["docker", "image", "inspect", "--format", "{{.Id}}", "openfit-tracker:latest"], a
+        elif sub == "volume" and a[2] == "inspect":
+            assert a[3:5] == ["--format", "{{.Name}}"] and a[5] in {f"openfit-{n}_tracker-data" for n in names}, a
+            assert len(a) == 6, a
+        elif sub == "volume" and a[2] == "rm":
+            assert allow.get("volume_rm") and a == ["docker", "volume", "rm", f"openfit-{allow['volume_rm']}_tracker-data"], a
         else:
             pytest.fail(f"a docker command outside the Admin's lane: {a}")
-        assert not (sub == "ps" and "-a" in a and PROJECT not in a), a
+        assert not (sub == "ps" and not any(x.startswith("label=com.docker.compose.project=") for x in a)), a
         assert "openfit-admin" not in a[2:4], a
+        assert not any(x == "openfit-admin" or x.startswith("openfit-admin_") and x != "openfit-admin_admin-data:/b"
+                       and x != "openfit-admin_admin-data:/b:ro" for x in a), a
     assert docker_calls
 
 
 @pytest.mark.parametrize("scenario", SCENARIOS, ids=lambda f: f.__name__.removeprefix("scenario_"))
 def test_the_admin_stays_in_its_lane(admin_env, scenario):
-    scenario(admin_env)
-    assert_in_lane(admin_env)
+    allow = scenario(admin_env) or {}
+    assert_in_lane(admin_env, allow)
+    # The two commands that delete data, where they're allowed, are really
+    # there: the checks above aren't vacuous.
+    commands = admin_env.fake.commands()
+    assert any(a[-2:] == ["down", "-v"] for a in commands) == bool(allow.get("down_v"))
+    assert any(a[1:3] == ["volume", "rm"] for a in commands) == bool(allow.get("volume_rm"))
 
 
 @pytest.mark.parametrize("scenario", SCENARIOS, ids=lambda f: f.__name__.removeprefix("scenario_"))
@@ -214,6 +352,10 @@ def test_as_owner_really_runs_as_the_owner(tmp_path):
 @pytest.mark.parametrize(
     "key, value",
     [
+        ("user", "Andy"),
+        ("user", "andy smith"),
+        ("user", "admin"),
+        ("user", "a" * 21),
         ("project", "openfit; rm -rf /"),
         ("project", "-p"),
         ("project", "openfit-admin"),
@@ -239,7 +381,10 @@ def test_settings_are_written_with_the_defaults_on_first_start(tmp_path):
 
 
 def test_undo_restores_only_a_backup_from_its_own_listing(admin_env):
-    op = admin_env.admin._begin("undo")
-    for name in ("../../etc/passwd", "x.tar.gz; reboot", "20261027T120000Z-abcdef0.tar.gz"):
-        assert admin_env.admin._undo_steps(op, {"commit": "0" * 40}, name) is False
+    admin = admin_env.admin
+    op = admin._begin("undo")
+    for name in ("../../etc/passwd", "x.tar.gz; reboot", "20261027T120000Z-abcdef0.tar.gz",
+                 "20261027T120000Z-abcdef0-andy.tar.gz"):
+        record = {"name": "andy", "created_at": None, "was_running": True, "backup": name}
+        assert admin._undo_steps(op, {"commit": "0" * 40}, [(admin.primary(), record)]) is False
     assert admin_env.fake.calls == []
