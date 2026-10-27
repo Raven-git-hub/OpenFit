@@ -187,7 +187,13 @@ the order was changed so the Admin comes first, in A-slices:
    everyone rolled back if anyone doesn't come up.
 3. The user login (the user system's login page), before any second real
    person gets a container.
-4. A4: the Admin's self-update.
+4. **A4, built:** the Admin's self-update (`docs/architecture/admin.md`).
+   Update the Admin, in place of a command to run on the server: offered once
+   Update OpenFit has pulled the Admin's new files, it builds the new Admin
+   while the old one runs, then hands the swap to a short-lived helper
+   container running the old image, which recreates the Admin, health-checks
+   it, and puts the old image and settings back if it doesn't answer. A4
+   itself installs with the manual command one last time.
 5. Library serving and Browse, with `replaces` (L3) and host-version labels
    (L4), which wait for Browse.
 6. Organisation repos.

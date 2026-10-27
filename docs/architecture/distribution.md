@@ -1,10 +1,11 @@
 # OpenFit distribution: the library, the Admin and the user system
 
 _Design record · decided 2026-10-27. Built so far: the library folder (L1),
-library app ids with read-only library apps (L2), and the Admin's first two
-slices, updates for the existing OpenFit (A1) and adding users, with updates
-moving everyone together (A2, both [admin.md](admin.md)); everything else here
-is designed, not yet in the code._
+library app ids with read-only library apps (L2), and three Admin slices:
+updates for the existing OpenFit (A1), adding users, with updates moving
+everyone together (A2), and the Admin's self-update (A4, all three
+[admin.md](admin.md)); everything else here is designed, not yet in the
+code._
 
 OpenFit is splitting into three layers: the repo, an **Admin** container that
 manages user containers on a server, and the **user system** (today's `app/`).
@@ -13,12 +14,13 @@ Apps such as FRMS are no longer part of the user system. They live in a
 records how the three fit together, so each slice is built against one design
 rather than its own guess. Until a slice lands, the code is as `CLAUDE.md`
 describes it: no auth on core but the webhook's token, and an Admin that
-adds users and updates them all together (A1, A2) and nothing more.
+adds users, updates them all together (A1, A2) and updates itself (A4), and
+nothing more.
 
 ## Layers
 
 - **The repo.** One repo holds `app/` (the user system), `library/` (the
-  official apps) and `admin/` (the Admin, its first two slices built). The official repo is public. An
+  official apps) and `admin/` (the Admin, three of its slices built). The official repo is public. An
   organisation's app repo is separate and private, and the Admin reads it with
   a read-only key.
 - **The Admin.** One container per server. It creates users, checks for
@@ -42,7 +44,7 @@ adds users and updates them all together (A1, A2) and nothing more.
   rollback.
 - **The Admin updates itself** through a short-lived helper container: stop
   the old Admin, start the new one, health-check it, roll back if it's
-  unhealthy, exit.
+  unhealthy, exit (A4, built: below).
 - **The Admin only ever acts on containers it has labelled as OpenFit's.** A
   server is shared with unrelated services, and those are never touched.
 
@@ -58,7 +60,7 @@ refuses a dirty tree, keeps the old image as `:prev`, pulls (fast-forward
 only), builds while the old version runs, stops it, backs up `/data` with a
 labelled `--rm` helper, starts the new version and health-checks it, rolling
 back the data, image and code itself if it doesn't come up; Undo does the same
-by hand. The Admin's own update is still a command you run until A4. The full
+by hand. The Admin's own update was a command you ran, until A4 (below). The full
 record, with its safety rules (one compose project, the labelled container
 and its own helpers only, no shell, git as the repo's owner), is
 [admin.md](admin.md).
@@ -81,6 +83,24 @@ health-checked, and everyone rolled back if anyone doesn't come up. Undo is
 offered only while the set of users is the one the update recorded. "OpenFit's"
 now means the compose labels of the Admin's own users' projects; the rules are
 [admin.md](admin.md)'s.
+
+### The Admin's self-update (A4, built)
+
+**Update the Admin** replaces the command the Admin's note used to show. It's
+offered once Update OpenFit has pulled the Admin's new files (one repo, one
+pull), and refused while anything else runs. The running Admin keeps its
+image as `openfit-admin:prev`, snapshots its settings files into its own
+volume, builds the new image while it keeps running, and hands the swap to a
+short-lived helper container (`admin_swap.py`) that runs `:prev`, the
+version known to work: a broken new version can only fail the health check,
+never run the swap or the rollback. The helper recreates the Admin on the
+new image and health-checks it; if it doesn't answer, it retags `:prev` as
+`:local`, puts the settings snapshot back and recreates the old one. Its log
+goes to a result file as it runs, which the Admin running afterwards turns
+into the operation's outcome. Every compose command on the Admin's own
+project goes through one function and is one of two (`build admin`, `up -d
+--no-build --force-recreate admin`); no user's project is touched. A4
+itself is installed with the manual command one last time.
 
 ## Apps
 
@@ -228,7 +248,8 @@ a second real person gets a container. Re-ordered 2026-10-27, after A1:
    own port, and updates and undo moving every user together.
 3. **The user login**: the user system's login page, before any second real
    person gets a container (one account per container, still no `user_id`).
-4. **A4: the Admin's self-update**, through a short-lived helper container.
+4. **A4: the Admin's self-update** (built), through a short-lived helper
+   container running the old Admin's image. Built ahead of the user login.
 5. **Library serving and Browse**, with `replaces` (L3) and host-version
    labels (L4). L3 and L4 wait for Browse: nothing installs from the library
    until it exists. The library groundwork already built, L1 and L2, stands.
