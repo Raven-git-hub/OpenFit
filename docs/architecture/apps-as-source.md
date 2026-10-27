@@ -92,7 +92,7 @@ invents in its `app.yaml`'s `metrics:` block, an ordered list mirroring
   `ValueError("unknown metric: … - declare it in app.yaml's metrics to write
   it")`, nothing written. So an app writes only its own customs and canonical
   keys.
-- **Reference app:** `tests/fixtures/apps/caffeine/` declares `caffeine_mg`
+- **Reference app:** `library/caffeine/` declares `caffeine_mg`
   (mg, Nutrition & hydration, daily, 0–2000) and logs it from the existing
   number input; `tests/test_app_custom_metrics.py` runs the loop.
 - **The console** names a custom row by its label, marks it `app`, and lists its
@@ -201,7 +201,7 @@ built-in/default metrics themselves are never purgeable.
   `workout-log` app is the reference).
 - **Roster path:** done — two session kinds in core, `duties_rostered` and
   `duties_complete`, in a new `Roster` category (operational context, kept
-  per decision 1), and the `roster` app (now `frms`, `tests/fixtures/apps/frms/`),
+  per decision 1), and the `roster` app (now `frms`, `library/frms/`),
   which parses a roster's `.ics` itself (stdlib) and files it. Decided:
   - **Duty-ness is structural**, never a code allow-list: a timed `VEVENT` is a
     duty and is filed; an all-day one (`O`, `G`, `U`, `L`, any future code) is

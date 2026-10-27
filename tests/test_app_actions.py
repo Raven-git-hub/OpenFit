@@ -8,7 +8,7 @@ only ever write its own rows. A handle() that raises is rolled back and
 answered {ok: false, error}; one that succeeds is committed, its days
 re-derived, and the app rendered afresh for its tile.
 
-The weight app, committed in tests/fixtures/apps/weight/ as deployed in
+The weight app, committed in library/weight/ as deployed in
 /data/apps, is the first writer and the end-to-end test. It replaced
 /api/weights, whose 'manual' weigh-ins are kept as history: still read,
 never written to again.
@@ -44,7 +44,7 @@ from derived import backfill_derived, recompute_derived, set_source_role
 from metrics import METRICS, PLAUSIBLE_RANGES, STEPS, WEIGHT_KG
 from migrations import run_migrations
 
-REAL_APPS = Path(__file__).parent / "fixtures" / "apps"
+REAL_APPS = Path(__file__).parent.parent / "library"
 
 SIZE = "sizes: [{w: 1, h: 1}]\n"
 
@@ -670,7 +670,7 @@ def test_the_weight_app_has_one_action(client, conn, apps_dir):
 # ---------- the mood app: a select ----------
 #
 # The weight app's shape with a dropdown in place of a number field:
-# committed in tests/fixtures/apps/mood/, it offers the canonical mood
+# committed in library/mood/, it offers the canonical mood
 # scale as the options "1"-"5", and its handle() - not the host - checks
 # the choice sent is one of them before filing it as a number.
 
@@ -993,7 +993,7 @@ def test_the_cap_holds_for_a_json_body_too(client, conn, apps_dir, monkeypatch):
 
 # ---------- the import app: a file, parsed by the app ----------
 #
-# Committed in tests/fixtures/apps/import/: a file picker for a
+# Committed in library/import/: a file picker for a
 # plain-text file of past weigh-ins, a 'YYYY-MM-DD <kg>' a line. The
 # host delivers the file; the app decodes and parses it, and files each
 # weigh-in on its own day - not just today - under app:import.
@@ -1141,7 +1141,7 @@ def test_the_import_app_has_one_action(client, conn, apps_dir, upload_dir):
 #
 # handle()'s ctx.write_session() files an interval under the app's own
 # source, in the action's one transaction - rolled back with the rest
-# when handle() raises. Committed in tests/fixtures/apps/workout-log/: a
+# when handle() raises. Committed in library/workout-log/: a
 # field for how many minutes a workout just finished lasted, filed as a
 # workout session that ended now. Nothing is derived from a session, and
 # the app doesn't read its workouts back (an app can't read sessions).
@@ -1272,7 +1272,7 @@ def test_the_workout_log_app_has_one_action(client, conn, apps_dir):
 
 # ---------- the FRMS app: a roster's .ics, filed as duty sessions ----------
 #
-# Committed in tests/fixtures/apps/frms/: one 6x4 tile whose roster
+# Committed in library/frms/: one 6x4 tile whose roster
 # panel has a file picker for a duty roster's .ics, which the app parses
 # itself. Every timed event is a duty, filed as a session under app:frms
 # - duties_complete if it had ended when the roster was uploaded, else

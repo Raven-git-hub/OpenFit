@@ -30,7 +30,7 @@ import pytest
 from derived import SOURCE_ROLES_KEY, clear_source_roles, load_source_roles, recompute_derived
 from metrics import METRICS, SERIES_METRICS
 
-REAL_APPS = Path(__file__).parent / "fixtures" / "apps"
+REAL_APPS = Path(__file__).parent.parent / "library"
 
 TODAY = date.today().isoformat()
 

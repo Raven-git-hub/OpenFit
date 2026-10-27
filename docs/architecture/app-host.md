@@ -139,8 +139,17 @@ it reads a setting defensively, such as `cfg.get("stride_m", 0.75)` (the real
 `steps-metres` app does just that), and copes with a value of a type it didn't
 expect.
 
+**The library.** `library/`, at the repo's top level, is the official app
+library: the apps OpenFit publishes, which the host's tests also run against as
+real apps; outside the image build context, never copied into the user system.
+The compose file builds `./app`, so an app reaches `/data/apps` only by being
+installed. It's a folder an app, each named for its id and each installing
+through `install_app()` from its files as they stand (`tests/test_library.py`),
+which is what Browse will do. How it's served and updated is
+[distribution.md](distribution.md)'s.
+
 **The reference apps.** The first two real apps, `steps` and `steps-metres`,
-are committed in `tests/fixtures/apps/` as they're deployed in `/data/apps`.
+are committed in `library/` as they're deployed in `/data/apps`.
 The test suite runs them against the host on every change
 (`test_app_host.py`). They're correct by definition: when one fails, the host
 is fixed to match it, never the app. Their `app.py` is verbatim. Their
@@ -1195,7 +1204,7 @@ on under the same source. A Duplicate is a different app, `app:<new-id>`.
 
 ### The weight app
 
-The first writer, committed in `tests/fixtures/apps/weight/` (deployed by
+The first writer, committed in `library/weight/` (deployed by
 installing it: the platform ships no apps) and run by `test_app_actions.py`.
 
 ```yaml
@@ -1226,7 +1235,7 @@ new ones from `app:weight`.
 
 ### The caffeine app
 
-The first app to invent a metric, committed in `tests/fixtures/apps/caffeine/`
+The first app to invent a metric, committed in `library/caffeine/`
 and run by `test_app_custom_metrics.py`.
 
 ```yaml
@@ -1258,7 +1267,7 @@ Nutrition & hydration, marked `app`.
 ### The mood app
 
 The first app with a dropdown (an input of kind `"select"`), committed in
-`tests/fixtures/apps/mood/` and run by `test_app_actions.py`.
+`library/mood/` and run by `test_app_actions.py`.
 
 ```yaml
 id: mood
@@ -1280,7 +1289,7 @@ under `app:mood`. One mood a day: logging again replaces it.
 ### The import app
 
 The first app with a file picker (an input of kind `"file"`), committed in
-`tests/fixtures/apps/import/` and run by `test_app_actions.py`: it loads past
+`library/import/` and run by `test_app_actions.py`: it loads past
 weigh-ins from a plain-text file, and is the proof that the app parses, not
 OpenFit.
 
@@ -1313,7 +1322,7 @@ pick like the weight app: a day Garmin weighed is still Garmin's.
 ### The workout-log app
 
 The first app to write a session, committed in
-`tests/fixtures/apps/workout-log/` and run by `test_app_actions.py`: it logs a
+`library/workout-log/` and run by `test_app_actions.py`: it logs a
 workout just finished, and is the proof that `ctx.write_session()` lands an
 interval under the app's own source.
 
@@ -1340,7 +1349,7 @@ watch's, and nothing is derived from it.
 
 ### The FRMS app
 
-The first app to file duties, committed in `tests/fixtures/apps/frms/` and
+The first app to file duties, committed in `library/frms/` and
 run by `test_frms_app.py` (its parsing on its own, the module loaded by
 path as the host loads it) and `test_app_actions.py` (the round trip), against
 a synthetic roster, `tests/fixtures/rosters/sample.ics`. It was the Roster

@@ -2,7 +2,7 @@
 The FRMS app's roster engine, on its own: reading an .ics, picking out
 the duties, labelling them and routing them by the clock.
 
-The app (tests/fixtures/apps/frms/app.py) is loaded by path, as the
+The app (library/frms/app.py) is loaded by path, as the
 host loads it - nothing added to sys.path - reading its rules from the
 config.json beside it (the fixture's, synthetic), and its module functions
 called directly, with a fixed `now`; its render() too, over a ctx of
@@ -28,10 +28,11 @@ from plugins.base import iso_utc, write_session
 
 FIXTURES = Path(__file__).parent / "fixtures"
 SAMPLE = FIXTURES / "rosters" / "sample.ics"
+LIBRARY = Path(__file__).parent.parent / "library"
 
 
 def load_frms_app():
-    spec = importlib.util.spec_from_file_location("frms_app", FIXTURES / "apps" / "frms" / "app.py")
+    spec = importlib.util.spec_from_file_location("frms_app", LIBRARY / "frms" / "app.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -322,7 +323,7 @@ def test_the_tile_is_four_sub_panels_and_the_flash_on_a_six_by_five_grid(conn):
     [circadian, top_right, roster, bottom_right, flash] = [c["spec"] for c in spec["cells"]]
     # The flash: the committed light image, the dark one for the dark
     # themes, hugging the bottom right.
-    folder = FIXTURES / "apps" / "frms"
+    folder = LIBRARY / "frms"
     assert flash == {"type": "image", "src": (folder / "flash-light.txt").read_text().strip(),
                      "dark": (folder / "flash-dark.txt").read_text().strip(),
                      "alt": "OpenFit FRMS - Fatigue Risk Management System", "position": "bottom right"}
@@ -616,7 +617,7 @@ def load_with_config(tmp_path, config_text):
     config.json - or no config.json at all when config_text is None - so the
     module-level load runs against it. Each load gets its own module name so
     nothing is cached between cases."""
-    (tmp_path / "app.py").write_text((FIXTURES / "apps" / "frms" / "app.py").read_text())
+    (tmp_path / "app.py").write_text((LIBRARY / "frms" / "app.py").read_text())
     if config_text is not None:
         (tmp_path / "config.json").write_text(config_text)
     spec = importlib.util.spec_from_file_location(f"frms_cfg_{tmp_path.name}", tmp_path / "app.py")

@@ -20,7 +20,7 @@ import pytest
 
 import apps
 
-REAL_APPS = Path(__file__).parent / "fixtures" / "apps"
+REAL_APPS = Path(__file__).parent.parent / "library"
 
 # Every app declares a size - one without won't install - so the tests
 # that aren't about size give their apps this one.

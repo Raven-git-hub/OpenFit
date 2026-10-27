@@ -26,10 +26,11 @@ open, self-hosted equivalent of Apple HealthKit / Google Health Connect.
 ## The one decision that shapes everything — resolved
 
 One container per user, managed by a shared host (like Umbrel/YunoHost manage
-self-hosted app fleets). The app needs zero changes — each person's container has
-its own SQLite file, so isolation is physical, not row-level. No `user_id`, no
-auth on core. The provisioning complexity moves to a separate Host service (last
-phase).
+self-hosted app fleets). Each person's container has its own SQLite file, so
+isolation is physical, not row-level. No `user_id`. One account per container,
+with a login page — still not row-level multi-tenancy: one person, one
+container, one database. The provisioning moves to the OpenFit Admin (Phase 5);
+the design is `docs/architecture/distribution.md`.
 
 ## Phase 1 — Data layer hardening — DONE
 
@@ -153,14 +154,28 @@ panel's glance additions: home's date and time under the cursor, each trip's
 layover as an amber bar on the duty strip (the roster's trips), and the WOCL in
 red under the body clock's curve. Next: the rest of the
 Library (the writes ticker, now apps write back; alerts;
-Browse / Build / Create are still placeholders), and the grid pass (free cell
-placement, a second layout mode on the same sizes).
+Browse / Build / Create are still placeholders — Browse will read the library,
+step 3 of Phase 5), and the grid pass (free cell placement, a second layout
+mode on the same sizes).
 
-## Phase 5 — OpenFit Host (per-user provisioning)
+## Phase 5 — OpenFit Admin & distribution  ← in progress, alongside Phase 2
 
-A separate project: reverse proxy with dynamic routing, a control-plane service
-that spins up a container per user via the Docker API, per-container backups, a
-minimal admin view. Sequenced after the platform itself is solid.
+An Admin container per server creates the users (a container each), checks for
+updates and applies them, and serves the app library, which users install apps
+from through Browse; each user system stays offline. The Admin lives in this
+repo (`admin/`, to come, beside `app/` and `library/`). The design, decided
+2026-10-27, is `docs/architecture/distribution.md`. Built in five steps, step
+1 started (L1: the `library/` folder):
+
+1. Library groundwork: the `library/` folder (L1), source-prefixed names with
+   `replaces`, host-version labels, read-only library apps.
+2. The user system: a login page, and the backup file (export, passphrase,
+   restore).
+3. Browse, reading a local library folder.
+4. The Admin: adding a user (blank, or from a backup file), the library
+   service, labelled containers, update checks and updates, plus the separate
+   proxy and announcer containers.
+5. The Admin's self-update helper, and organisation repos.
 
 ## Community-readiness (ongoing)
 
