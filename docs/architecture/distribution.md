@@ -1,8 +1,9 @@
 # OpenFit distribution: the library, the Admin and the user system
 
-_Design record · decided 2026-10-27. Built so far: the library folder (L1)
-and library app ids, with read-only library apps (L2); everything else here is
-designed, not yet in the code._
+_Design record · decided 2026-10-27. Built so far: the library folder (L1),
+library app ids with read-only library apps (L2), and the Admin's first slice,
+updates for the existing OpenFit (A1, [admin.md](admin.md)); everything else
+here is designed, not yet in the code._
 
 OpenFit is splitting into three layers: the repo, an **Admin** container that
 manages user containers on a server, and the **user system** (today's `app/`).
@@ -10,12 +11,13 @@ Apps such as FRMS are no longer part of the user system. They live in a
 **library** the Admin serves, and a user installs them from Browse. This
 records how the three fit together, so each slice is built against one design
 rather than its own guess. Until a slice lands, the code is as `CLAUDE.md`
-describes it: no auth on core but the webhook's token, and no Admin.
+describes it: no auth on core but the webhook's token, and an Admin that
+updates the one existing OpenFit (A1) and nothing more.
 
 ## Layers
 
 - **The repo.** One repo holds `app/` (the user system), `library/` (the
-  official apps) and, later, `admin/`. The official repo is public. An
+  official apps) and `admin/` (the Admin, its first slice built). The official repo is public. An
   organisation's app repo is separate and private, and the Admin reads it with
   a read-only key.
 - **The Admin.** One container per server. It creates users, checks for
@@ -42,6 +44,24 @@ describes it: no auth on core but the webhook's token, and no Admin.
   unhealthy, exit.
 - **The Admin only ever acts on containers it has labelled as OpenFit's.** A
   server is shared with unrelated services, and those are never touched.
+
+### Updates for the existing OpenFit (A1, built)
+
+The first Admin slice, in `admin/` (its own image and compose file, on port
+8090), puts the old SSH update (`git pull && docker compose up -d --build`)
+behind buttons for the one OpenFit already running. It adopts that compose
+project in place, with the same volume, port 8080 and project name. A check
+fetches and reports what's new by group (user system, Admin, app library,
+other), with the merged PRs linked; it runs on a button and weekly. An update
+refuses a dirty tree, keeps the old image as `:prev`, pulls (fast-forward
+only), builds while the old version runs, stops it, backs up `/data` with a
+labelled `--rm` helper, starts the new version and health-checks it, rolling
+back the data, image and code itself if it doesn't come up; Undo does the same
+by hand. The Admin's own update is still a command you run until A4. The full
+record, with its safety rules (one compose project, the labelled container
+and its own helpers only, no shell, git as the repo's owner), is
+[admin.md](admin.md). Until the user containers are labelled by the Admin
+itself (A2), "OpenFit's" means the compose labels of that one project.
 
 ## Apps
 
@@ -162,6 +182,10 @@ custom `frms` becoming `openfit.frms`:
 
 ### Reaching a container
 
+_Deferred: the `.local` names, the proxy and the announcer below come after
+the A-slices. For now each user system is reached at `<server IP>:<port>`,
+as OpenFit is today on 8080, and the Admin at 8090._
+
 - **On the home network**, a reverse proxy on port 80 routes `.local` names
   (`openfit-<user>.local`) to the user containers. An announcer on the host
   network, run by the Admin, publishes those names over mDNS; this was tested
@@ -176,13 +200,21 @@ custom `frms` becoming `openfit.frms`:
 
 ## Build order
 
-1. **Library groundwork:** this folder (L1, built), source-prefixed names
-   and read-only library apps (L2, built), `replaces` (L3), host-version
-   labels.
-2. **The user system:** the login page, and the backup file (export,
-   passphrase, restore).
-3. **Browse**, reading a local library folder.
-4. **The Admin:** adding a user (blank, or from a backup file), the library
-   service, labelled containers, update checks and updates, and the separate
-   proxy and announcer containers.
-5. **The Admin's self-update helper**, and organisation repos.
+The Admin comes first now, in A-slices; the user system's login lands before
+a second real person gets a container. Re-ordered 2026-10-27, after A1:
+
+1. **A1: updates for the existing OpenFit** (built): check, update, undo, a
+   backup before every update, behind a login of the Admin's own.
+2. **A2: adding users**, one compose project per user, each on its own port.
+3. **The user login**: the user system's login page, before any second real
+   person gets a container (one account per container, still no `user_id`).
+4. **A4: the Admin's self-update**, through a short-lived helper container.
+5. **Library serving and Browse**, with `replaces` (L3) and host-version
+   labels (L4). L3 and L4 wait for Browse: nothing installs from the library
+   until it exists. The library groundwork already built, L1 and L2, stands.
+6. **Organisation repos.**
+
+The proxy and the mDNS announcer are deferred: users are on `IP:port` until
+then. The backup file (export, passphrase, restore) is designed above and not
+yet placed in this order; A1's update backups are plain `tar.gz` archives of
+the `/data` volume, not that format.

@@ -1,0 +1,22 @@
+# The OpenFit Admin. Started on its own, never with the user system:
+#   docker compose -f admin/docker-compose.yml -p openfit-admin up -d --build
+services:
+  admin:
+    image: openfit-admin:local
+    build: .
+    ports:
+      - "8090:8090"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - admin-data:/data
+      # The repo at the same absolute path as on the host, so compose
+      # resolves the user system's paths the same inside and out.
+      - ${OPENFIT_REPO:?set OPENFIT_REPO in admin/.env}:${OPENFIT_REPO}
+    environment:
+      - OPENFIT_REPO=${OPENFIT_REPO}
+    restart: unless-stopped
+
+volumes:
+  admin-data:
+    # Fixed, because the Admin's backup helpers mount it by this name.
+    name: openfit-admin_admin-data

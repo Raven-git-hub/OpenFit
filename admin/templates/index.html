@@ -1,0 +1,440 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OpenFit Admin</title>
+<style>
+  :root {
+    --bg: #f5f6f8; --surface: #ffffff; --ink: #1d2330; --muted: #667085;
+    --border: #dde1e8; --accent: #3b5bdb; --accent-ink: #ffffff;
+    --good: #2f9e61; --warn: #c27c0e; --crit: #d0453f; --inset: #eef0f4;
+    --font: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    color-scheme: light dark;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #12151c; --surface: #1b1f29; --ink: #e6e9ef; --muted: #9aa3b5;
+      --border: #2c3240; --accent: #7c95ff; --accent-ink: #10131a;
+      --good: #5cc98d; --warn: #e8b04f; --crit: #f07a74; --inset: #232836;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.5 var(--font); }
+  main { max-width: 860px; margin: 0 auto; padding: 24px 16px 48px; }
+  header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 18px; }
+  h1 { font-size: 20px; margin: 0; }
+  h2 { font-size: 16px; margin: 0 0 10px; }
+  h3 { font-size: 14px; margin: 14px 0 6px; }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 16px 18px; margin-bottom: 16px; }
+  .muted { color: var(--muted); }
+  .mono, code, pre { font-family: var(--mono); font-size: 13px; }
+  pre { background: var(--inset); border-radius: 6px; padding: 10px 12px; white-space: pre-wrap; word-break: break-word; margin: 8px 0; }
+  .row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+  .grow { flex: 1 1 auto; }
+  button { font: inherit; border: 1px solid var(--border); background: var(--surface); color: var(--ink); border-radius: 7px; padding: 6px 14px; cursor: pointer; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+  button.danger { border-color: var(--crit); color: var(--crit); }
+  button:disabled { opacity: .55; cursor: default; }
+  input { font: inherit; padding: 7px 10px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface); color: var(--ink); width: 100%; }
+  label { display: block; font-size: 13px; color: var(--muted); margin: 10px 0 4px; }
+  .pill { display: inline-block; font-size: 12px; padding: 1px 9px; border-radius: 999px; border: 1px solid currentColor; }
+  .pill.good { color: var(--good); } .pill.warn { color: var(--warn); } .pill.crit { color: var(--crit); } .pill.muted { color: var(--muted); }
+  .msg { min-height: 1.5em; font-size: 14px; margin-top: 8px; }
+  .msg.err { color: var(--crit); }
+  .msg:empty { min-height: 0; margin: 0; }
+  .confirm { border: 1px solid var(--warn); border-radius: 8px; padding: 10px 12px; margin-top: 10px; }
+  .group { border-top: 1px solid var(--border); padding-top: 8px; margin-top: 8px; }
+  .group:first-of-type { border-top: 0; }
+  ul.commits { list-style: none; padding: 0; margin: 4px 0; }
+  ul.commits li { padding: 2px 0; }
+  ul.commits .mono { color: var(--muted); margin-right: 8px; }
+  .prs a { margin-right: 8px; }
+  a { color: var(--accent); }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  td, th { text-align: left; padding: 4px 6px; border-bottom: 1px solid var(--border); }
+  th { color: var(--muted); font-weight: 500; }
+  .log { max-height: 320px; overflow-y: auto; }
+  .log div { padding: 1px 0; white-space: pre-wrap; word-break: break-word; }
+  .log .t { color: var(--muted); font-family: var(--mono); font-size: 12px; margin-right: 8px; }
+  .narrow { max-width: 380px; margin: 60px auto; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body data-state="{{ state }}">
+<main>
+  <section id="setupView" class="card narrow" hidden>
+    <h2>Set up the OpenFit Admin</h2>
+    <p class="muted">The setup code is in the Admin's log on the server:
+      <code>docker logs openfit-admin-admin-1</code></p>
+    <form id="setupForm">
+      <label for="setupCode">Setup code</label>
+      <input id="setupCode" autocomplete="off" required>
+      <label for="setupPassword">Choose a password (at least 12 characters)</label>
+      <input id="setupPassword" type="password" autocomplete="new-password" minlength="12" required>
+      <div class="row" style="margin-top:14px"><button class="primary" type="submit">Set password</button></div>
+      <div class="msg err" id="setupMsg"></div>
+    </form>
+  </section>
+
+  <section id="loginView" class="card narrow" hidden>
+    <h2>OpenFit Admin</h2>
+    <form id="loginForm">
+      <label for="loginPassword">Password</label>
+      <input id="loginPassword" type="password" autocomplete="current-password" required>
+      <div class="row" style="margin-top:14px"><button class="primary" type="submit">Log in</button></div>
+      <div class="msg err" id="loginMsg"></div>
+    </form>
+  </section>
+
+  <div id="appView" hidden>
+    <header>
+      <h1>OpenFit Admin</h1>
+      <button id="logoutBtn" type="button">Log out</button>
+    </header>
+
+    <section class="card" id="openfitCard">
+      <h2>OpenFit</h2>
+      <div class="row"><span class="grow" id="ofUser"></span><span id="ofState"></span></div>
+      <div class="row"><a id="ofLink" target="_blank" rel="noopener noreferrer"></a></div>
+      <div class="muted" id="ofVersion"></div>
+    </section>
+
+    <section class="card" id="updatesCard">
+      <h2>Updates</h2>
+      <div class="row">
+        <span class="grow muted" id="checkedAt"></span>
+        <button id="checkBtn" type="button">Check now</button>
+      </div>
+      <div class="msg err" id="checkErr"></div>
+      <div id="summary"></div>
+      <div id="groups"></div>
+      <div class="row" style="margin-top:12px">
+        <button class="primary" id="updateBtn" type="button" hidden>Update OpenFit</button>
+        <button class="danger" id="undoBtn" type="button" hidden>Undo last update</button>
+      </div>
+      <div class="confirm" id="updateSure" hidden>
+        <p>This stops OpenFit for about a minute and backs up your data first.</p>
+        <div class="row"><button type="button" data-cancel>Cancel</button><button class="primary" type="button" id="updateGo">Update OpenFit</button></div>
+      </div>
+      <div class="confirm" id="undoSure" hidden>
+        <p id="undoText"></p>
+        <div class="row"><button type="button" data-cancel>Cancel</button><button class="danger" type="button" id="undoGo">Undo last update</button></div>
+      </div>
+      <div class="msg" id="updatesMsg"></div>
+    </section>
+
+    <section class="card" id="adminNote" hidden>
+      <h2>An Admin update is available</h2>
+      <p id="adminWhat"></p>
+      <ul class="commits" id="adminCommits"></ul>
+      <pre id="adminCmd"></pre>
+      <p class="muted">The Admin doesn't update itself yet: run that on the server. OpenFit keeps running meanwhile.</p>
+    </section>
+
+    <section class="card">
+      <h2>Activity</h2>
+      <div id="opHead" class="row"></div>
+      <div class="log" id="opLog"></div>
+      <h3>Recent</h3>
+      <table><tbody id="historyRows"></tbody></table>
+    </section>
+
+    <section class="card">
+      <h2>Backups</h2>
+      <p class="muted">Taken before each update; the newest three are kept.</p>
+      <table>
+        <thead><tr><th>Name</th><th>Size</th><th>Taken</th></tr></thead>
+        <tbody id="backupRows"></tbody>
+      </table>
+    </section>
+  </div>
+</main>
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const OUTCOMES = {
+  running: ["Running", "warn"], ok: ["Done", "good"], failed: ["Failed", "crit"],
+  rolled_back: ["Rolled back", "warn"], interrupted: ["Interrupted", "crit"],
+};
+const GROUP_NOTES = {
+  app: "OpenFit itself: rebuilt and restarted by Update OpenFit.",
+  admin: "This Admin: rebuilt from the command line (below).",
+  library: "The app library: no rebuild needed.",
+  other: "Docs, tests and the rest.",
+};
+let polling = null;
+
+// Every request carries the header the server checks, and a body as JSON.
+async function api(path, data) {
+  const opts = { credentials: "same-origin", headers: { "X-OpenFit-Admin": "1" } };
+  if (data !== undefined) {
+    opts.method = "POST";
+    opts.headers["Content-Type"] = "application/json";
+    opts.body = JSON.stringify(data);
+  }
+  let res, body = {};
+  try {
+    res = await fetch(path, opts);
+  } catch (e) {
+    return { status: 0, data: { ok: false, error: "The Admin isn't answering." } };
+  }
+  try { body = await res.json(); } catch (e) { body = {}; }
+  if (res.status === 401 && path !== "/api/login") show("login");
+  return { status: res.status, data: body };
+}
+
+function show(view) {
+  $("setupView").hidden = view !== "setup";
+  $("loginView").hidden = view !== "login";
+  $("appView").hidden = view !== "app";
+  if (view === "app") loadStatus();
+  if (view !== "app") stopPolling();
+}
+
+function when(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  return isNaN(d) ? iso : d.toLocaleString();
+}
+
+function size(n) {
+  if (n >= 1 << 20) return (n / (1 << 20)).toFixed(1) + " MB";
+  if (n >= 1 << 10) return Math.round(n / (1 << 10)) + " KB";
+  return n + " B";
+}
+
+function el(tag, text, cls) {
+  const e = document.createElement(tag);
+  if (text !== undefined && text !== null) e.textContent = text;
+  if (cls) e.className = cls;
+  return e;
+}
+
+function emptyRow(text, span) {
+  const tr = el("tr"), td = el("td", text, "muted");
+  td.colSpan = span;
+  tr.append(td);
+  return tr;
+}
+
+function pill(outcome) {
+  const [text, tone] = OUTCOMES[outcome] || [outcome || "", "muted"];
+  return el("span", text, "pill " + tone);
+}
+
+function commitList(ul, commits) {
+  ul.replaceChildren();
+  for (const c of commits) {
+    const li = el("li");
+    li.append(el("span", c.sha, "mono"), el("span", c.subject));
+    ul.append(li);
+  }
+}
+
+function paintGroups(check) {
+  const box = $("groups");
+  box.replaceChildren();
+  if (!check || !check.groups) return;
+  for (const g of check.groups) {
+    const div = el("div", null, "group");
+    const head = el("div", null, "row");
+    head.append(el("strong", g.title, "grow"));
+    const n = g.commits.length;
+    head.append(el("span", n ? `${n} change${n === 1 ? "" : "s"}` : (g.files.length ? `${g.files.length} file${g.files.length === 1 ? "" : "s"}` : "No changes"), "muted"));
+    div.append(head, el("div", GROUP_NOTES[g.key] || "", "muted"));
+    if (n) {
+      const ul = el("ul", null, "commits");
+      commitList(ul, g.commits);
+      div.append(ul);
+    }
+    if (g.prs.length) {
+      const prs = el("div", null, "prs");
+      for (const pr of g.prs) {
+        const a = el("a", "#" + pr.number);
+        a.href = pr.url;
+        a.target = "_blank";
+        a.rel = "noopener noreferrer";
+        prs.append(a);
+      }
+      div.append(prs);
+    }
+    box.append(div);
+  }
+}
+
+function paintOp(op) {
+  const head = $("opHead"), log = $("opLog");
+  head.replaceChildren();
+  log.replaceChildren();
+  if (!op) {
+    head.append(el("span", "Nothing has run yet.", "muted"));
+    return;
+  }
+  const what = op.kind === "undo" ? "Undo last update" : "Update OpenFit";
+  head.append(el("strong", what, "grow"), pill(op.outcome));
+  for (const line of op.log || []) {
+    const div = el("div");
+    div.append(el("span", new Date(line.t).toLocaleTimeString(), "t"), el("span", line.text));
+    log.append(div);
+  }
+  log.scrollTop = log.scrollHeight;
+}
+
+function paint(s) {
+  const of = s.openfit;
+  $("ofUser").textContent = "User: " + of.user;
+  $("ofState").replaceChildren(
+    of.running ? el("span", "Running", "pill good")
+      : of.state === "missing" ? el("span", "Not found", "pill crit")
+      : el("span", of.state === "unknown" ? "Unknown" : "Stopped", "pill crit"));
+  const url = `${location.protocol}//${location.hostname}:${of.port}`;
+  $("ofLink").textContent = url;
+  $("ofLink").href = url;
+  $("ofVersion").textContent = of.version ? `Version ${of.version.sha}: ${of.version.subject}` : "Version unknown";
+
+  const check = s.check;
+  $("checkedAt").textContent = check && check.checked_at ? "Last checked " + when(check.checked_at) : "Not checked yet";
+  $("checkErr").textContent = check && check.error
+    ? `The check at ${when(check.error.at)} failed: ${check.error.text}` : "";
+  const summary = $("summary");
+  summary.replaceChildren();
+  if (check && check.behind !== undefined) {
+    summary.append(el("p", check.behind
+      ? `${check.behind} new commit${check.behind === 1 ? "" : "s"} on GitHub.`
+      : "OpenFit is up to date."));
+  }
+  paintGroups(check);
+
+  const running = s.op && s.op.outcome === "running";
+  $("updateBtn").hidden = !s.update_available;
+  $("updateBtn").disabled = running;
+  $("undoBtn").hidden = !s.undo;
+  $("undoBtn").disabled = running;
+  $("checkBtn").disabled = running;
+  if (s.undo) {
+    $("undoText").textContent = `This puts back version ${s.undo.old.short} and your data as it was before the update, `
+      + "and stops OpenFit for about a minute. Anything recorded since the update is lost.";
+  }
+  if (!s.update_available) $("updateSure").hidden = true;
+  if (!s.undo) $("undoSure").hidden = true;
+
+  const au = s.admin_update;
+  $("adminNote").hidden = !au.available;
+  if (au.available) {
+    $("adminWhat").textContent = au.pulled
+      ? "Its new files are already on the server. Run this on the server to rebuild it:"
+      : "Update OpenFit first: that pulls the Admin's new files too. Then run this on the server:";
+    commitList($("adminCommits"), au.commits);
+    $("adminCmd").textContent = au.command;
+  }
+
+  paintOp(s.op);
+  const rows = $("historyRows");
+  rows.replaceChildren();
+  for (const o of s.history) {
+    const tr = el("tr");
+    const td = el("td");
+    td.append(pill(o.outcome));
+    tr.append(el("td", when(o.started_at)), el("td", o.kind === "undo" ? "Undo" : "Update"), td, el("td", o.summary));
+    rows.append(tr);
+  }
+  if (!s.history.length) rows.append(emptyRow("No updates yet.", 4));
+  const backups = $("backupRows");
+  backups.replaceChildren();
+  for (const b of s.backups) {
+    const tr = el("tr");
+    tr.append(el("td", b.name, "mono"), el("td", size(b.size)), el("td", when(b.created)));
+    backups.append(tr);
+  }
+  if (!s.backups.length) backups.append(emptyRow("No backups yet.", 3));
+
+  if (running) startPolling(); else stopPolling();
+}
+
+async function loadStatus() {
+  const r = await api("/api/status");
+  if (r.status === 200) paint(r.data);
+  else if (r.status !== 401) $("updatesMsg").textContent = r.data.error || "Couldn't read the Admin's status.";
+}
+
+function startPolling() {
+  if (polling) return;
+  polling = setInterval(async () => {
+    const r = await api("/api/op");
+    if (r.status !== 200) return;
+    paintOp(r.data.op);
+    if (!r.data.op || r.data.op.outcome !== "running") {
+      stopPolling();
+      loadStatus();
+    }
+  }, 1000);
+}
+
+function stopPolling() {
+  if (polling) clearInterval(polling);
+  polling = null;
+}
+
+async function start(path, btn) {
+  const msg = $("updatesMsg");
+  msg.className = "msg";
+  msg.textContent = "";
+  btn.disabled = true;
+  const r = await api(path, {});
+  btn.disabled = false;
+  $("updateSure").hidden = true;
+  $("undoSure").hidden = true;
+  if (r.status !== 202) {
+    msg.className = "msg err";
+    msg.textContent = r.data.error || "That didn't start.";
+  }
+  loadStatus();
+}
+
+$("setupForm").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  const r = await api("/api/setup", { code: $("setupCode").value, password: $("setupPassword").value });
+  if (r.status === 200) show("app");
+  else if (r.status === 410) show("login");
+  else $("setupMsg").textContent = r.data.error || "That didn't work.";
+});
+
+$("loginForm").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  const r = await api("/api/login", { password: $("loginPassword").value });
+  if (r.status === 200) { $("loginPassword").value = ""; $("loginMsg").textContent = ""; show("app"); }
+  else $("loginMsg").textContent = r.data.error || "That didn't work.";
+});
+
+$("logoutBtn").addEventListener("click", async () => {
+  await api("/api/logout", {});
+  show("login");
+});
+
+$("checkBtn").addEventListener("click", async () => {
+  const btn = $("checkBtn");
+  btn.disabled = true;
+  btn.textContent = "Checking…";
+  const r = await api("/api/check", {});
+  btn.disabled = false;
+  btn.textContent = "Check now";
+  const msg = $("updatesMsg");
+  msg.className = r.status === 200 ? "msg" : "msg err";
+  msg.textContent = r.status === 200 ? "" : (r.data.error || "The check didn't run.");
+  loadStatus();
+});
+
+$("updateBtn").addEventListener("click", () => { $("undoSure").hidden = true; $("updateSure").hidden = false; });
+$("undoBtn").addEventListener("click", () => { $("updateSure").hidden = true; $("undoSure").hidden = false; });
+for (const b of document.querySelectorAll("[data-cancel]")) {
+  b.addEventListener("click", () => { $("updateSure").hidden = true; $("undoSure").hidden = true; });
+}
+$("updateGo").addEventListener("click", () => start("/api/update", $("updateGo")));
+$("undoGo").addEventListener("click", () => start("/api/undo", $("undoGo")));
+
+show(document.body.dataset.state || "login");
+</script>
+</body>
+</html>

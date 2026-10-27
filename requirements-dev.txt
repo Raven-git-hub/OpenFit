@@ -4,5 +4,7 @@
 # plugin registry (they never make a network call - Garmin and Google are
 # not contacted by the suite).
 -r app/requirements.txt
+# The Admin's (tests/test_admin_*.py): no docker and no network needed.
+-r admin/requirements.txt
 
 pytest==9.1.1
