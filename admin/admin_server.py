@@ -120,6 +120,13 @@ def create_app(admin, auth, secret_key):
         except Refused as e:
             return _fail(e.message, e.status)
 
+    @app.post("/api/admin/update")
+    def api_admin_update():
+        try:
+            return jsonify(ok=True, op=admin.start_admin_update()), 202
+        except Refused as e:
+            return _fail(e.message, e.status)
+
     @app.post("/api/users")
     def api_add_user():
         data = body()
