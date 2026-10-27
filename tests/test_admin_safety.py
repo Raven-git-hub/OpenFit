@@ -1,8 +1,8 @@
 """The Admin stays in its lane: its users' compose projects, each with its
 own compose file; their labelled containers; its own --rm helpers; the
 user system's image; a removed user's kept volume, only on a confirmed
-delete. Argument lists, never a shell; git as the repo's owner, docker as
-root."""
+delete; and its own project, only to update itself. Argument lists, never
+a shell; git as the repo's owner, docker as root."""
 
 import glob
 import json
@@ -13,6 +13,7 @@ import pytest
 from conftest import CONTAINERS, container_id, seed_users
 
 import admin_ops
+import admin_swap
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 C0, C1, C2 = CONTAINERS[:3]
@@ -43,6 +44,19 @@ def add(env, name, port):
 
 def three_users(env):
     seed_users(env, ("sam", 8101, "running"), ("kim", 8102, "exited"))
+
+
+def update_the_admin(env, unhealthy=()):
+    """An Admin change pulled by Update OpenFit, then Update the Admin: the
+    Admin's own steps, then its helper's swap. The helper's outcome."""
+    env.repos.push({"admin/admin_server.py": "print('admin 2')\n"}, "Admin fix")
+    env.admin.check()
+    assert update(env)["outcome"] == "ok"
+    env.admin.start_admin_update()
+    env.admin.wait(10)
+    run = env.fake.commands()[-1]
+    env.fake.unhealthy = {container_id("openfit-admin", n) for n in unhealthy}
+    return admin_swap.swap(env.fake, env.repos.repo, str(env.data), run[-2], run[-1], env.clock, env.clock.sleep)
 
 
 # Each scenario returns what it may do beyond the lane every scenario keeps
@@ -162,6 +176,38 @@ def scenario_backup_fails_everyone(env):
     assert update(env)["outcome"] == "failed"
 
 
+def scenario_admin_update(env):
+    three_users(env)
+    pending(env)
+    assert update_the_admin(env) == "ok"
+    return {"admin": True}
+
+
+def scenario_admin_rollback(env):
+    three_users(env)
+    pending(env)
+    assert update_the_admin(env, unhealthy=[1]) == "rolled_back"
+    return {"admin": True}
+
+
+def scenario_admin_rollback_fails(env):
+    pending(env)
+    assert update_the_admin(env, unhealthy=[1, 2]) == "failed"
+    return {"admin": True}
+
+
+def scenario_admin_build_fails(env):
+    pending(env)
+    env.fake.fail(lambda a: a[:4] == ["docker", "compose", "-p", "openfit-admin"] and "build" in a)
+    env.repos.push({"admin/admin_server.py": "print('admin 2')\n"}, "Admin fix")
+    env.admin.check()
+    assert update(env)["outcome"] == "ok"
+    env.admin.start_admin_update()
+    env.admin.wait(10)
+    assert env.admin.current_op()["outcome"] == "failed"
+    return {"admin": True}
+
+
 SCENARIOS = [
     scenario_success,
     scenario_rollback,
@@ -181,6 +227,10 @@ SCENARIOS = [
     scenario_rollback_everyone,
     scenario_undo_everyone,
     scenario_backup_fails_everyone,
+    scenario_admin_update,
+    scenario_admin_rollback,
+    scenario_admin_rollback_fails,
+    scenario_admin_build_fails,
 ]
 
 
@@ -194,13 +244,58 @@ def known_names(env):
     return names
 
 
+def admin_lane(env, call, out, labelled, images):
+    """One of the Admin's own commands, in an Admin update (`admin` allowed):
+    True once it's held to its exact shape, False if it isn't one. Its own
+    project only through admin_compose()'s two commands; its own container
+    found by its labels; the helper looked for by its name and started
+    exactly so; its image kept as :prev, and :prev put back as :local."""
+    a, repo = call.args, env.repos.repo
+    folder = os.path.join(repo, "admin")
+    if a[1:4] == ["compose", "-p", "openfit-admin"]:
+        assert a[4:6] == ["-f", os.path.join(folder, "docker-compose.yml")] and call.cwd == folder, a
+        assert a[6:] in (["build", "admin"], ["up", "-d", "--no-build", "--force-recreate", "admin"]), a
+        return True
+    if a[1] == "ps" and "label=com.docker.compose.project=openfit-admin" in a:
+        assert a[2:] == ["-a", "--no-trunc", "--filter", "label=com.docker.compose.project=openfit-admin",
+                         "--filter", "label=com.docker.compose.service=admin",
+                         "--filter", "label=com.docker.compose.oneoff=False", "--format", "{{.ID}}\t{{.State}}"], a
+        labelled.update((line.split("\t")[0], "openfit-admin") for line in out.splitlines() if line)
+        return True
+    if a[1] == "ps" and any(x.startswith("name=") for x in a):
+        assert a[2:] == ["-a", "--no-trunc", "--filter", "name=^openfit-admin-swap$", "--format", "{{.ID}}"], a
+        return True
+    if a[1] == "tag" and a[3:] == ["openfit-admin:prev"]:
+        assert (a[2], "openfit-admin") in images, a
+        return True
+    if a[1] == "tag" and a[2:] == ["openfit-admin:prev", "openfit-admin:local"]:
+        return True
+    if a[1:3] == ["run", "-d"]:
+        assert a[2:-2] == [
+            "-d", "--rm", "--name", "openfit-admin-swap", "--label", "openfit.admin.helper=true",
+            "-v", "/var/run/docker.sock:/var/run/docker.sock", "-v", f"{repo}:{repo}",
+            "-v", "openfit-admin_admin-data:/data", "-e", f"OPENFIT_REPO={repo}",
+            "openfit-admin:prev", "python", "/app/admin_swap.py",
+        ], a
+        assert admin_ops._FILE_STAMP.match(a[-2]) and admin_ops.SWAP_OP_ID.match(a[-1]), a
+        return True
+    if a[1] == "exec" and (a[2], "openfit-admin") in labelled:
+        assert a[3:] == ["python", "-c", admin_ops.ADMIN_HEALTH_CODE], a
+        return True
+    if a[1] == "inspect" and len(a) == 5 and (a[4], "openfit-admin") in labelled:
+        assert a[2:4] == ["--type", "container"], a
+        images.update((i["Image"], "openfit-admin") for i in json.loads(out))
+        return True
+    return False
+
+
 def assert_in_lane(env, allow):
     root_file = os.path.join(env.repos.repo, "docker-compose.yml")
     names = known_names(env) | ({allow["volume_rm"]} if allow.get("volume_rm") else set())
     assert "admin" not in names
     projects = {"openfit"} | {f"openfit-{n}" for n in names}
-    labelled = set()  # the container ids the labelled lookups gave back
-    images = set()  # those containers' images
+    labelled = set()  # (id, project) for each container the labelled lookups gave back
+    images = set()  # (image, project) for those containers
     docker_calls = 0
     for call, (rc, out, _err) in zip(env.fake.calls, env.fake.results):
         a = call.args
@@ -208,6 +303,9 @@ def assert_in_lane(env, allow):
             continue
         assert a[0] == "docker", a
         docker_calls += 1
+        if allow.get("admin") and admin_lane(env, call, out, labelled, images):
+            continue
+        ids = {cid for cid, project in labelled if project != "openfit-admin"}
         sub = a[1]
         if sub == "compose":
             assert a[2] == "-p" and a[4] == "-f", a
@@ -229,14 +327,15 @@ def assert_in_lane(env, allow):
             assert len(label) == 1 and label[0].split("=", 2)[2] in projects, a
             assert a[a.index(label[0]) - 1] == "--filter", a
             assert a[2:4] == ["-a", "--no-trunc"], a
-            labelled.update(line.split("\t")[0] for line in out.splitlines() if line)
+            project = label[0].split("=", 2)[2]
+            labelled.update((line.split("\t")[0], project) for line in out.splitlines() if line)
         elif sub == "inspect":
-            assert a[2:4] == ["--type", "container"] and a[4] in labelled, a
-            images.update(i["Image"] for i in json.loads(out))
+            assert a[2:4] == ["--type", "container"] and a[4] in ids, a
+            images.update((i["Image"], "users") for i in json.loads(out))
         elif sub == "exec":
-            assert a[2] in labelled, a
+            assert a[2] in ids, a
         elif sub == "tag":
-            assert a[2] in images or a[2] == "openfit-tracker:prev", a
+            assert (a[2], "users") in images or a[2] == "openfit-tracker:prev", a
             assert a[3] in ("openfit-tracker:prev", "openfit-tracker:latest"), a
         elif sub == "run":
             assert a[2:5] == ["--rm", "--label", "openfit.admin.helper=true"], a
@@ -261,6 +360,9 @@ def assert_in_lane(env, allow):
 def test_the_admin_stays_in_its_lane(admin_env, scenario):
     allow = scenario(admin_env) or {}
     assert_in_lane(admin_env, allow)
+    # Its own project is named only in an Admin update, and there really.
+    named = any(a[1:4] == ["compose", "-p", "openfit-admin"] for a in admin_env.fake.commands())
+    assert named == bool(allow.get("admin"))
     # The two commands that delete data, where they're allowed, are really
     # there: the checks above aren't vacuous.
     commands = admin_env.fake.commands()

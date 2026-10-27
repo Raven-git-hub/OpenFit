@@ -1,6 +1,6 @@
-# The OpenFit Admin (A1, A2): updates behind buttons, and users
+# The OpenFit Admin (A1, A2, A4): updates behind buttons, users, and its own update
 
-_Built: A1 and A2, the first two slices of the Admin in
+_Built: A1, A2 and A4, slices of the Admin in
 [distribution.md](distribution.md). The code is `admin/`; the tests are
 `tests/test_admin_*.py`._
 
@@ -19,6 +19,10 @@ A2 lets the Admin add more **users**, each with their own OpenFit: their own
 container, their own storage and their own port. Update and Undo move every
 user together, so there's one version of OpenFit on the server at a time.
 
+A4 lets the Admin **update itself**: Update the Admin, in place of a command
+to run on the server, through a short-lived helper container that swaps the
+Admin over and puts the old one back if the new one doesn't answer.
+
 ## What the Admin doesn't do yet
 
 - A login in the user system: an added user's OpenFit is open to anyone who
@@ -26,7 +30,8 @@ user together, so there's one version of OpenFit on the server at a time.
   person gets a container (the next step in the build order).
 - Rename a user, or change a user's port after it's added. Users on
   different versions.
-- Update itself. Its own update is a command you run (below) until A4.
+- Update OpenFit and update itself in one go: Update OpenFit pulls the
+  Admin's new code, and Update the Admin is a second button.
 - Serve the library, Browse, organisation repos, `replaces` (L3) or
   host-version labels (L4).
 - Fetch anything from GitHub but the repo itself: pull request numbers are
@@ -378,6 +383,8 @@ pruned.
   and Add; the progress shows under Activity. **Kept data**: each removed
   user with Delete data, which asks for their name.
 - **Updates**: the check, Update OpenFit and Undo last update, as above.
+- **An Admin update is available**: only when there is one, with Update the
+  Admin when it can run (below).
 - **Activity**: the running or last operation's log, and the last few.
 - **Backups**: each with its user, name, size and when.
 
@@ -387,20 +394,181 @@ pruned.
 state-changing call goes through the page's `fetch` wrapper (the CSRF header)
 and needs a session.
 
-## The Admin's own update (until A4)
+## Updating the Admin itself (A4)
 
-When the check's Admin group is non-empty, the page shows "An Admin update is
-available", its commits, and the command to run on the server:
+An Admin can't replace itself: stopping its own container kills the process
+doing the stopping. So it builds its new image while it keeps running, then
+hands the swap to a short-lived **helper** container, which stops the old
+Admin, starts the new one, checks it answers, and puts the old one back, code
+and settings, if it doesn't. Then the helper exits.
 
-```
-cd ~/containers/openfit && docker compose -f admin/docker-compose.yml -p openfit-admin up -d --build
-```
+**The helper runs the old Admin's image**, the version that's running now and
+known to work: the running container's image, tagged `openfit-admin:prev`
+just before the build. A broken new version can only fail the health check;
+it never gets to run the swap or the rollback.
 
-The Admin never rebuilds or restarts itself. Updating OpenFit pulls the
-Admin's new files too, so after an update the note stays up, saying the files
-are already on the server, until the Admin has been rebuilt. It tells by
+### When it's offered
+
+There's one repo, so there's one pull: Update OpenFit pulls the Admin's new
+files along with everything else. The Admin tells its files have moved on by
 comparing the files it's running (its image holds all of `admin/`) with the
-repo's `admin/`, dotfiles and caches left out.
+repo's `admin/`, dotfiles and caches left out. `GET /api/status`'s
+`admin_update` is `{available, pulled, commits, command, can_self_update}`:
+
+- **Pulled**, and nothing more for the Admin waiting on GitHub
+  (`can_self_update`): the note "An Admin update is available" says its new
+  files are already on the server and shows **Update the Admin**. The command
+  to run by hand stays under it, smaller, as a fallback:
+
+  ```
+  cd ~/containers/openfit && docker compose -f admin/docker-compose.yml -p openfit-admin up -d --build
+  ```
+
+- **Admin commits on GitHub not pulled yet**: the note lists them and says
+  "Update OpenFit first: it brings the Admin's new code with it." No button.
+  This holds even when some Admin changes are already pulled: Update OpenFit,
+  then one Admin update.
+
+`POST /api/admin/update` starts it, a background operation (`kind:
+"admin_update"`) behind the same lock as every other: 409 while anything else
+runs, and 409 when there's nothing to apply ("Update OpenFit first: …", or
+"The Admin is up to date.").
+
+### What the running Admin does
+
+1. **Find itself**: its container by the labels
+   `com.docker.compose.project=openfit-admin` and
+   `com.docker.compose.service=admin`. It must be exactly one, else the
+   operation fails with nothing changed. Its image id is read
+   (`docker inspect`) and checked.
+2. **No helper already there**: a container named `openfit-admin-swap`
+   means "An Admin update is already under way. Nothing was changed."
+3. **Keep the current image**: `docker tag <image id> openfit-admin:prev`.
+4. **Snapshot its settings**: `admin.json`, `users.json`, `auth.json`,
+   `secret_key`, `history.json` and `last_check.json`, each if present, copied
+   into `/data/self-update/<stamp>/` (0700; the 0600 files stay 0600). The
+   newest 3 snapshots are kept. They're small, and backups aren't copied.
+   This is what lets a rollback undo anything a new version might change in
+   the Admin's own files.
+5. **Build the new Admin**: `docker compose -p openfit-admin -f
+   <OPENFIT_REPO>/admin/docker-compose.yml build admin`. The old Admin keeps
+   running. If the build fails: reported, and nothing changed (the `:prev`
+   tag is harmless).
+6. **Start the helper**, detached, with exactly:
+
+   ```
+   docker run -d --rm --name openfit-admin-swap --label openfit.admin.helper=true
+     -v /var/run/docker.sock:/var/run/docker.sock
+     -v <OPENFIT_REPO>:<OPENFIT_REPO>
+     -v openfit-admin_admin-data:/data
+     -e OPENFIT_REPO=<OPENFIT_REPO>
+     openfit-admin:prev
+     python /app/admin_swap.py <stamp> <op id>
+   ```
+
+   The log says "Handing over to the helper. The Admin restarts in a moment,
+   and this page reconnects by itself." The operation's log so far is saved,
+   and copied into the snapshot's `history.json` too, so a rollback puts it
+   back with the rest. The operation stays `running`, and the lock stays
+   held: the helper finishes it (below).
+
+Every compose command on the Admin's own project goes through one function,
+`admin_compose()` (`admin_ops.py`), which runs only `build admin` and `up -d
+--no-build --force-recreate admin` and refuses anything else, and it's called
+from exactly two places: step 5, and the helper.
+
+### What the helper does
+
+`admin/admin_swap.py`, a small module on `admin_ops`' `Runner`, patterns and
+health code. Its logic is `swap(runner, repo, data_dir, stamp, op_id, clock,
+sleep)`, which the tests call directly. In order:
+
+1. **Wait 3 seconds**, so the Admin's reply to the button reaches the browser.
+2. **Swap in the new Admin**: `docker compose -p openfit-admin -f
+   <repo>/admin/docker-compose.yml up -d --no-build --force-recreate admin`.
+   That stops and replaces the Admin. The helper isn't part of that project,
+   so it carries on.
+3. **Health check**: the Admin's container found by its labels, then `docker
+   exec <id> python -c "<urlopen http://127.0.0.1:8090/, exit 0 on a 200>"`,
+   the user system's check on port 8090, every 2 s for up to 60 s.
+4. **Healthy**: the result is written as `ok`, and the helper exits.
+5. **Not healthy** (or the new Admin didn't start), it rolls back:
+   `docker tag openfit-admin:prev openfit-admin:local`; the snapshot restored,
+   each file in `/data/self-update/<stamp>/` copied back over `/data/`, and any
+   of the six names the snapshot doesn't have removed; `up -d --no-build
+   --force-recreate admin` again, and the health check. The result is
+   `rolled_back` if the old Admin answers, else `failed`, with the log saying
+   exactly where things stand (which image `:local` is, whether the settings
+   are back) and the commands to run by hand.
+
+Its log goes to `/data/self_update_result.json` as it runs, `{op_id, stamp,
+outcome, lines: [{t, text}]}`, rewritten after each step (`outcome`
+`running` until the end). So even a helper that dies part-way leaves a trail.
+It never touches the `openfit` project or any `openfit-<name>` project, and
+never uses `down`, `-v`, `rm` or a volume. It refuses to run (a `failed`
+result, nothing changed) if it isn't given a snapshot it can find.
+
+### Finishing the operation
+
+When an Admin starts, before it marks interrupted operations, it looks for
+`/data/self_update_result.json`:
+
+- **A finished result** (`ok`, `rolled_back` or `failed`): the operation with
+  that `op_id` gets the helper's lines appended to its log and its outcome,
+  with a summary, and the file is deleted. It's never marked interrupted.
+  `ok` reads "The Admin updated itself to `<short sha>`.", the repo's `HEAD`;
+  `rolled_back` "The new Admin didn't come up, so the old one was put back,
+  with its settings as they were."; `failed` "The Admin update didn't finish.
+  The log says where things stand, and what to run on the server."
+- **Still `running`**: the helper is at work, health-checking this very Admin.
+  The operation stays running, the lock stays held (so nothing starts that a
+  rollback would cut off), and it's finished as above once the helper has
+  gone: the next time the operation is read or the lock asked for, the Admin
+  looks for the helper's container by name (`docker ps -a --filter
+  name=^openfit-admin-swap$`), and once it's gone reads the result. The page
+  polls the operation while it runs, so that's within a second or two.
+- **No result file**, and an Admin update still `running` (the helper never
+  ran): it's marked interrupted, as any operation is.
+
+The old Admin does the same after handing over: if the helper goes without
+swapping it out (it died before step 2), the old Admin, still running,
+finishes the operation as failed, "The helper stopped part-way.", and frees
+the lock.
+
+### The page
+
+Update the Admin asks first: "The Admin restarts on its new version. This
+page will be unavailable for up to a minute and reconnects by itself. If the
+new version doesn't start, the old one is put back." Then the page shows the
+operation's log. When its requests start failing, it shows "The Admin is
+restarting…" and polls `GET /` every 2 seconds; once that answers, it
+reloads, and the finished operation appears in Activity. The login session
+survives, because `secret_key` is unchanged; if a rollback put back an older
+`auth.json`, the page simply shows the login.
+
+### Installing A4: the manual command one last time
+
+The Admin running before A4 has no `admin_swap.py` in its image, and the
+helper always runs the current image. So A4 itself is installed the old way,
+once: **Update OpenFit**, then run the command the note shows on the server.
+From then on, Admin updates are the button.
+
+### If the helper dies part-way
+
+Activity shows the operation's log as far as the helper got, ending "The
+helper stopped part-way." The Admin may then be on either version: whichever
+is answering finished the operation. To get back to a known state, on the
+server:
+
+- the version in the repo: `cd ~/containers/openfit && docker compose -f
+  admin/docker-compose.yml -p openfit-admin up -d --build`;
+- or the old one: `cd ~/containers/openfit && docker tag openfit-admin:prev
+  openfit-admin:local && docker compose -f admin/docker-compose.yml -p
+  openfit-admin up -d --no-build --force-recreate admin`.
+
+The settings the update started with are in the Admin's volume, under
+`self-update/<stamp>/`, if they need putting back by hand. If no Admin
+answers at all, `docker logs openfit-admin-admin-1` says why.
 
 ## The safety rules
 
@@ -413,13 +581,25 @@ Tailscale sidecars and more), and the Admin must never touch any of them.
   run in `OPENFIT_REPO`, for the primary; or `docker compose -p
   openfit-<name> -f /data/users/<name>/docker-compose.yml …`, for a name in
   `users.json`. The repo's compose file is only ever used with `-p openfit`,
-  and `compose()` refuses any other pairing. Nothing touches the
-  `openfit-admin` project.
+  and `compose()` refuses any other pairing (a test builds a `User` breaking
+  each rule and checks nothing runs).
+- **Its own project only to update itself.** The `openfit-admin` project is
+  only ever `docker compose -p openfit-admin -f
+  <OPENFIT_REPO>/admin/docker-compose.yml`, run in `<OPENFIT_REPO>/admin`,
+  and only `build admin` (the running Admin) or `up -d --no-build
+  --force-recreate admin` (the helper), through `admin_compose()`, which
+  refuses anything else. Its own container is found by its labels, health-
+  checked and inspected for its image; the helper is looked for by its name,
+  `openfit-admin-swap`, and started exactly as above. The tags it sets are
+  `openfit-admin:prev` (the running image) and, in a rollback,
+  `openfit-admin:local` (put back from `:prev`). Never `down`, `-v`, `rm` or a
+  volume on it.
 - **Its own containers only.** Every docker command targets one of: a
   container compose labels as one of those projects' `tracker` service (not a
   one-off `compose run`), found by `docker ps -a` with those label filters; a
   helper container the Admin starts itself, labelled
-  `openfit.admin.helper=true`, always `--rm`, from its own image;
+  `openfit.admin.helper=true`, always `--rm`, from its own image (the
+  backup helpers, and the update helper above);
   `docker image inspect openfit-tracker:latest`; `docker volume inspect` of
   the volume a user being added would get; and `docker volume rm
   openfit-<name>_tracker-data`, for a name in `removed`, under Delete data's
@@ -457,6 +637,8 @@ compose file, because the backup helpers mount it by name), at `/data`:
 | `last_check.json` | The last check, and the last failed one's error. |
 | `history.json` | The last 20 operations, with their logs. |
 | `backups/` | `<UTC stamp>-<old sha>-<user>.tar.gz`, the newest 3 sets kept. Read-only on the page. |
+| `self-update/<stamp>/` | An Admin update's settings snapshot: the six files above it, each if present, for a rollback to put back. The newest 3 kept. |
+| `self_update_result.json` | The update helper's log while it runs, `{op_id, stamp, outcome, lines}`; deleted once an Admin has finished the operation from it. |
 
 Each user's own data is their volume: `openfit_tracker-data` for the primary,
 `openfit-<name>_tracker-data` for an added user.
@@ -466,3 +648,8 @@ Each user's own data is their volume: `openfit_tracker-data` for the primary,
 On the server, once the Admin is rebuilt with A2: open the Admin, add a test
 user (say `test`, on the suggested port), open their address and see a fresh
 OpenFit, then Remove them, and Delete data under Kept data by typing `test`.
+
+For A4: install it the old way once (Update OpenFit, then the command the
+note shows). The next time an Update OpenFit brings Admin changes, the note
+shows **Update the Admin**: the page goes away for under a minute, comes
+back by itself, and Activity reads "The Admin updated itself to `<sha>`."

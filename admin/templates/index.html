@@ -76,6 +76,8 @@
   form.add .port { flex: 1 1 100px; }
   form.add label { margin-top: 0; }
   .msg.pre { white-space: pre-wrap; }
+  .small, pre.small { font-size: 12px; }
+  .banner { border-color: var(--warn); }
   [hidden] { display: none !important; }
 </style>
 </head>
@@ -110,6 +112,11 @@
       <h1>OpenFit Admin</h1>
       <button id="logoutBtn" type="button">Log out</button>
     </header>
+
+    <section class="card banner" id="restartBanner" hidden>
+      <strong>The Admin is restarting…</strong>
+      <span class="muted">This page reconnects by itself.</span>
+    </section>
 
     <section class="card" id="usersCard">
       <h2>Users</h2>
@@ -171,8 +178,19 @@
       <h2>An Admin update is available</h2>
       <p id="adminWhat"></p>
       <ul class="commits" id="adminCommits"></ul>
-      <pre id="adminCmd"></pre>
-      <p class="muted">The Admin doesn't update itself yet: run that on the server. OpenFit keeps running meanwhile.</p>
+      <div class="row" id="adminActs" hidden>
+        <button class="primary" id="adminBtn" type="button">Update the Admin</button>
+      </div>
+      <div class="confirm" id="adminSure" hidden>
+        <p>The Admin restarts on its new version. This page will be unavailable for up to a minute and reconnects by
+          itself. If the new version doesn't start, the old one is put back.</p>
+        <div class="row"><button type="button" id="adminCancel">Cancel</button><button class="primary" type="button" id="adminGo">Update the Admin</button></div>
+      </div>
+      <div class="msg" id="adminMsg"></div>
+      <div id="adminManual" hidden>
+        <p class="muted small">If the button doesn't work, run this on the server instead. OpenFit keeps running meanwhile.</p>
+        <pre class="small" id="adminCmd"></pre>
+      </div>
     </section>
 
     <section class="card">
@@ -202,15 +220,17 @@ const OUTCOMES = {
 };
 const GROUP_NOTES = {
   app: "OpenFit itself: rebuilt by Update OpenFit, and every user moved onto it.",
-  admin: "This Admin: rebuilt from the command line (below).",
+  admin: "This Admin: pulled by Update OpenFit, then rebuilt by Update the Admin (below).",
   library: "The app library: no rebuild needed.",
   other: "Docs, tests and the rest.",
 };
-const KINDS = { update: "Update", undo: "Undo", add_user: "Add user" };
+const KINDS = { update: "Update", undo: "Undo", add_user: "Add user", admin_update: "Update the Admin" };
 const STATES = {
   running: ["Running", "good"], stopped: ["Stopped", "muted"], missing: ["Not found", "crit"], unknown: ["Unknown", "warn"],
 };
 let polling = null;
+let selfUpdating = false;  // an Admin update is running: a request that fails is the Admin restarting
+let restarting = null;  // polls GET / while it does, and reloads once it answers
 let removing = null;  // the user Remove asks about
 let deleting = null;  // the removed user Delete data asks about
 let portTouched = false;  // Add user's port typed in: the suggestion stops replacing it
@@ -322,7 +342,8 @@ function paintOp(op) {
     return;
   }
   const what = op.kind === "undo" ? "Undo last update"
-    : op.kind === "add_user" ? `Add user ${op.user ? op.user.name : ""}` : "Update OpenFit";
+    : op.kind === "add_user" ? `Add user ${op.user ? op.user.name : ""}`
+    : op.kind === "admin_update" ? "Update the Admin" : "Update OpenFit";
   head.append(el("strong", what, "grow"), pill(op.outcome));
   for (const line of op.log || []) {
     const div = el("div");
@@ -422,12 +443,18 @@ function paint(s) {
   const au = s.admin_update;
   $("adminNote").hidden = !au.available;
   if (au.available) {
-    $("adminWhat").textContent = au.pulled
-      ? "Its new files are already on the server. Run this on the server to rebuild it:"
-      : "Update OpenFit first: that pulls the Admin's new files too. Then run this on the server:";
+    $("adminWhat").textContent = au.can_self_update
+      ? "Its new files are already on the server."
+      : "Update OpenFit first: it brings the Admin's new code with it.";
     commitList($("adminCommits"), au.commits);
+    $("adminActs").hidden = !au.can_self_update;
+    $("adminBtn").disabled = running;
+    $("adminGo").disabled = running;
+    $("adminManual").hidden = !au.can_self_update;
     $("adminCmd").textContent = au.command;
   }
+  if (!au.can_self_update) $("adminSure").hidden = true;
+  selfUpdating = !!(s.op && s.op.kind === "admin_update" && s.op.outcome === "running");
 
   paintOp(s.op);
   const rows = $("historyRows");
@@ -455,14 +482,17 @@ function paint(s) {
 async function loadStatus() {
   const r = await api("/api/status");
   if (r.status === 200) paint(r.data);
+  else if (r.status === 0 && selfUpdating) watchRestart();
   else if (r.status !== 401) $("updatesMsg").textContent = r.data.error || "Couldn't read the Admin's status.";
 }
 
 function startPolling() {
-  if (polling) return;
+  if (polling || restarting) return;
   polling = setInterval(async () => {
     const r = await api("/api/op");
+    if (r.status === 0 && selfUpdating) return watchRestart();
     if (r.status !== 200) return;
+    selfUpdating = !!(r.data.op && r.data.op.kind === "admin_update" && r.data.op.outcome === "running");
     paintOp(r.data.op);
     if (!r.data.op || r.data.op.outcome !== "running") {
       stopPolling();
@@ -474,6 +504,27 @@ function startPolling() {
 function stopPolling() {
   if (polling) clearInterval(polling);
   polling = null;
+}
+
+// The Admin has stopped answering in its own update: it's being swapped.
+// GET / every 2s, and a reload once it answers - the page the Admin now
+// running serves, which carries on with the op until it's finished.
+function watchRestart() {
+  stopPolling();
+  if (restarting) return;
+  $("restartBanner").hidden = false;
+  restarting = setInterval(async () => {
+    let res;
+    try {
+      res = await fetch("/", { cache: "no-store", credentials: "same-origin" });
+    } catch (e) {
+      return;
+    }
+    if (res.ok) {
+      clearInterval(restarting);
+      location.reload();
+    }
+  }, 2000);
 }
 
 async function start(path, btn) {
@@ -623,6 +674,26 @@ for (const b of document.querySelectorAll("[data-cancel]")) {
   b.addEventListener("click", () => { $("updateSure").hidden = true; $("undoSure").hidden = true; });
 }
 $("updateGo").addEventListener("click", () => start("/api/update", $("updateGo")));
+
+$("adminBtn").addEventListener("click", () => { $("adminSure").hidden = false; });
+$("adminCancel").addEventListener("click", () => { $("adminSure").hidden = true; });
+$("adminGo").addEventListener("click", async () => {
+  const btn = $("adminGo"), msg = $("adminMsg");
+  msg.className = "msg";
+  msg.textContent = "";
+  btn.disabled = true;
+  const r = await api("/api/admin/update", {});
+  btn.disabled = false;
+  $("adminSure").hidden = true;
+  if (r.status === 202) {
+    selfUpdating = true;
+    msg.textContent = "Updating the Admin… its progress is under Activity.";
+  } else {
+    msg.className = "msg err";
+    msg.textContent = r.data.error || "That didn't start.";
+  }
+  loadStatus();
+});
 $("undoGo").addEventListener("click", () => start("/api/undo", $("undoGo")));
 
 show(document.body.dataset.state || "login");

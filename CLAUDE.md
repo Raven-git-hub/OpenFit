@@ -1733,7 +1733,7 @@ own calls to its device API. Full direction:
   installing through `install_app()` from its files as text, as Browse
   will. Not `apps/`, so it can't be confused with `app/`. The distribution
   design it starts is `docs/architecture/distribution.md`.
-- `admin/` — the OpenFit Admin (A1, A2, `docs/architecture/admin.md`): its own
+- `admin/` — the OpenFit Admin (A1, A2, A4, `docs/architecture/admin.md`): its own
   image (`python:3.12-slim`, git, the docker CLI and compose plugin copied
   from pinned images) and compose file (`docker compose -f
   admin/docker-compose.yml -p openfit-admin up -d --build`), port 8090, the
@@ -1764,13 +1764,32 @@ own calls to its device API. Full direction:
   `up --no-start`, the running ones health-checked, the undo sequence for
   everyone if any is unhealthy; backups pruned to 3 sets) and Undo (only
   while the users are the update's — by name and `created_at` — and its
-  every backup is there). Modules prefixed
+  every backup is there). And Update the Admin (A4): offered once an
+  Update OpenFit has pulled the Admin's new files and nothing more for it
+  waits on GitHub (`admin_update()`'s `can_self_update`), `POST
+  /api/admin/update` (a background op, `admin_update`, behind the one
+  lock) finds its own container by its labels, tags its image
+  `openfit-admin:prev`, snapshots its six settings files into
+  `/data/self-update/<stamp>/` (3 kept), builds the new image while it
+  runs, and hands the swap to a `docker run -d --rm --name
+  openfit-admin-swap` helper on `:prev` — never the new image —
+  (`admin_swap.py`'s `swap()`): wait 3s, recreate the Admin, health-check
+  it on 8090 and, unhealthy, retag `:prev` as `:local`, put the snapshot
+  back and recreate again — `ok`, `rolled_back` or `failed`, its log in
+  `/data/self_update_result.json` as it goes. The Admin running afterwards
+  finishes the op from it (`_pick_up_swap()` at startup, before
+  `_mark_interrupted()`; `_settle()` once the helper has gone), holding
+  the lock meanwhile; it's never marked interrupted. The `openfit-admin`
+  project only through `admin_compose()`: `build admin` or `up -d
+  --no-build --force-recreate admin`, nothing else. Modules prefixed
   `admin_` so they never clash with `app/`'s on the test path:
   `admin_ops.py` (every command through one `Runner`, argument lists, never a
   shell; git as the repo's owner; compose only `-p openfit` with the repo's
-  file or `-p openfit-<name>` with the user's own; only those projects'
+  file or `-p openfit-<name>` with the user's own — or the Admin's own
+  project through `admin_compose()`; only those projects'
   compose-labelled containers and `--rm` helpers labelled
-  `openfit.admin.helper=true`), `admin_auth.py`
+  `openfit.admin.helper=true`), `admin_swap.py` (the update helper),
+  `admin_auth.py`
   (setup code, a ≥12-character password, sessions, 5 bad logins per IP per
   5 minutes → 429), `admin_server.py` (Flask; every `/api` route but
   setup/login needs a session, every non-GET JSON with `X-OpenFit-Admin: 1`)
@@ -2789,9 +2808,11 @@ same PR:
   rollback and Undo. Then A2 landed (`admin/` only): adding users, a
   compose project, volume and port each from a compose file the Admin
   writes (no `.env`), Start/Stop/Remove and a confirmed Delete data, and
-  Update and Undo moving every user together. Still to come, in order:
-  the user login before any second real person, A4 the
-  Admin's self-update, then library serving and Browse with L3 and L4
+  Update and Undo moving every user together. Then A4 landed (`admin/`
+  only), ahead of the user login: Update the Admin, a helper container on
+  the old image swapping the Admin over and rolling back image and
+  settings if it doesn't answer. Still to come, in order:
+  the user login before any second real person, then library serving and Browse with L3 and L4
   (they wait for Browse), then organisation repos; the `.local` names and
   the proxy deferred (users on `IP:port`). L3 as agreed: `replaces` (declared in the library copy's
   `app.yaml`, run only at the new app's install, one transaction moving

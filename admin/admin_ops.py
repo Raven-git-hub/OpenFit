@@ -22,6 +22,12 @@ user system's image, and the kept volume of a user removed from
 users.json, when its deletion is confirmed. Nothing else on the server is
 listed, inspected, stopped or removed.
 
+The Admin's own project, openfit-admin, is touched only to update the
+Admin itself, and only through admin_compose(): the running Admin builds
+its new image, then hands the swap to a helper container (admin_swap.py),
+which recreates the Admin on it and puts the old one back if it doesn't
+answer.
+
 Git runs as the repo's owner (the uid and gid that own OPENFIT_REPO), so
 the files it writes stay the owner's and git never refuses the repo as
 someone else's. Docker runs as root, for the socket.
@@ -58,6 +64,10 @@ USER_NAME = re.compile(r"[a-z0-9]{1,20}\Z")
 USER_VOLUME = re.compile(r"openfit-[a-z0-9]{1,20}_tracker-data\Z")
 _STAMP = re.compile(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ\Z")
 
+# An Admin update's settings snapshot, /data/self-update/<stamp>/, and its op.
+_FILE_STAMP = re.compile(r"\d{8}T\d{6}Z\Z")
+SWAP_OP_ID = re.compile(r"\d{8}T\d{6}Z-admin_update\Z")
+
 # What docker and git hand back, checked before it goes into a command.
 _CONTAINER_ID = re.compile(r"[0-9a-f]{12,64}\Z")
 _IMAGE_ID = re.compile(r"sha256:[0-9a-f]{64}\Z")
@@ -83,6 +93,26 @@ ADMIN_PROJECT = "openfit-admin"
 ADMIN_IMAGE = "openfit-admin:local"
 ADMIN_VOLUME = "openfit-admin_admin-data"
 ADMIN_PORT = 8090
+ADMIN_SERVICE = "admin"
+
+# The Admin's own update. Its current image is kept as :prev, which is also
+# the image the helper runs; its settings files are copied into a snapshot
+# the helper can put back; the helper writes its log to the result file.
+ADMIN_PREV = "openfit-admin:prev"
+SWAP_NAME = "openfit-admin-swap"
+SWAP_RESULT = "self_update_result.json"
+SWAP_OUTCOMES = ("ok", "rolled_back", "failed")
+SNAPSHOTS = "self-update"
+SNAPSHOT_FILES = ("admin.json", "users.json", "auth.json", "secret_key", "history.json", "last_check.json")
+KEEP_SNAPSHOTS = 3
+# The only compose commands ever run on the Admin's own project.
+ADMIN_COMPOSE_ARGS = (
+    ("build", ADMIN_SERVICE),
+    ("up", "-d", "--no-build", "--force-recreate", ADMIN_SERVICE),
+)
+# What an Admin update's step returns once the helper has it: the op stays
+# running, and the lock held, until the helper has gone (Admin._settle).
+HANDED_OVER = object()
 
 FIRST_USER_PORT = 8101  # where Add user's suggested port starts
 USER_SERVICE = "tracker"
@@ -111,10 +141,18 @@ HEALTH_FOR = 60
 KEEP_BACKUPS = 3
 KEEP_HISTORY = 20
 
-HEALTH_CODE = (
-    "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen("
-    "'http://127.0.0.1:80/', timeout=5).status == 200 else 1)"
-)
+
+def health_code(port):
+    """Run in a container with `python -c`: exit 0 if its own server answers
+    a GET / on `port` with a 200."""
+    return (
+        "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen("
+        f"'http://127.0.0.1:{port}/', timeout=5).status == 200 else 1)"
+    )
+
+
+HEALTH_CODE = health_code(80)
+ADMIN_HEALTH_CODE = health_code(ADMIN_PORT)
 
 
 class Runner:
@@ -388,13 +426,125 @@ def fingerprint(folder):
     return h.hexdigest()
 
 
+def iso(ts):
+    return datetime.fromtimestamp(ts, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def labelled(runner, project, service, what):
+    """The containers compose labels as `project`'s `service` (never a
+    one-off `compose run`): [{id, state}], each id checked."""
+    rc, out, err = runner.run([
+        "docker", "ps", "-a", "--no-trunc",
+        "--filter", f"label=com.docker.compose.project={project}",
+        "--filter", f"label=com.docker.compose.service={service}",
+        "--filter", "label=com.docker.compose.oneoff=False",
+        "--format", "{{.ID}}\t{{.State}}",
+    ])
+    if rc != 0:
+        raise OpError(f"Couldn't ask Docker about {what}.", _tail(out, err))
+    rows = [line.split("\t") for line in out.splitlines() if line.strip()]
+    for row in rows:
+        if not _CONTAINER_ID.match(row[0]):
+            raise OpError("Docker gave back a container id the Admin doesn't recognise.", row[0])
+    return [{"id": row[0], "state": row[1] if len(row) > 1 else ""} for row in rows]
+
+
+def find_admin(runner):
+    """The Admin's own container, by its compose labels, or None."""
+    rows = labelled(runner, ADMIN_PROJECT, ADMIN_SERVICE, "the Admin's own container")
+    if len(rows) > 1:
+        raise OpError("There's more than one Admin container, so the Admin won't guess which is itself.")
+    return rows[0] if rows else None
+
+
+def swap_helper(runner):
+    """Whether there's a container named as the update helper is: one
+    still at work, or anything else a second helper's name would clash
+    with."""
+    rc, out, err = runner.run(["docker", "ps", "-a", "--no-trunc", "--filter", f"name=^{SWAP_NAME}$",
+                               "--format", "{{.ID}}"])
+    if rc != 0:
+        raise OpError("Couldn't ask Docker about the Admin's update helper.", _tail(out, err))
+    return bool(out.strip())
+
+
+def admin_compose(runner, repo, *args):
+    """docker compose on the Admin's own project: -p openfit-admin with the
+    repo's admin/docker-compose.yml, and only ever one of its two commands -
+    `build admin`, run by the Admin, and `up -d --no-build --force-recreate
+    admin`, run by the helper. The one way such a command is run."""
+    if args not in ADMIN_COMPOSE_ARGS:
+        raise ValueError(f"a compose command on the Admin's own project that isn't one of its two: {args!r}")
+    compose_file = os.path.join(repo, "admin", "docker-compose.yml")
+    return runner.run(["docker", "compose", "-p", ADMIN_PROJECT, "-f", compose_file, *args],
+                      cwd=os.path.dirname(compose_file))
+
+
+def admin_command(repo):
+    """The Admin's own update, by hand on the server."""
+    return f"cd {repo} && docker compose -f admin/docker-compose.yml -p {ADMIN_PROJECT} up -d --build"
+
+
+def wait_healthy(runner, find, code, clock, sleep):
+    """Poll a container until `code` exits 0 in it, every HEALTH_EVERY
+    seconds for up to HEALTH_FOR. `find()` gives its id, or None (an
+    OpError counts as None), and is asked again until it gives one."""
+    deadline = clock() + HEALTH_FOR
+    cid = None
+    while True:
+        if cid is None:
+            try:
+                cid = find()
+            except OpError:
+                cid = None
+        if cid:
+            rc, _out, _err = runner.run(["docker", "exec", cid, "python", "-c", code], timeout=30)
+            if rc == 0:
+                return True
+        if clock() >= deadline:
+            return False
+        sleep(HEALTH_EVERY)
+
+
+def snapshot_dir(data_dir, stamp):
+    return os.path.join(data_dir, SNAPSHOTS, stamp)
+
+
+def read_swap_result(data_dir):
+    """/data/self_update_result.json, the helper's log: {op_id, stamp,
+    outcome, lines: [{t, text}]}, outcome "running" until it's done, or
+    None if there's none. Anything not exactly that is a ValueError."""
+    path = os.path.join(data_dir, SWAP_RESULT)
+    if not os.path.lexists(path):
+        return None
+    raw = _read_json(path, None)
+    if not isinstance(raw, dict) or set(raw) != {"op_id", "stamp", "outcome", "lines"}:
+        raise ValueError(f"{path} isn't exactly {{op_id, stamp, outcome, lines}}")
+    if not isinstance(raw["op_id"], str) or not SWAP_OP_ID.match(raw["op_id"]):
+        raise ValueError(f"{path}: op_id isn't valid: {raw['op_id']!r}")
+    if not isinstance(raw["stamp"], str) or not _FILE_STAMP.match(raw["stamp"]):
+        raise ValueError(f"{path}: stamp isn't valid: {raw['stamp']!r}")
+    if raw["outcome"] not in ("running", *SWAP_OUTCOMES):
+        raise ValueError(f"{path}: outcome isn't valid: {raw['outcome']!r}")
+    lines = raw["lines"]
+    if not isinstance(lines, list) or not all(
+        isinstance(line, dict) and set(line) == {"t", "text"} and all(isinstance(v, str) for v in line.values())
+        for line in lines
+    ):
+        raise ValueError(f"{path}: lines aren't [{{t, text}}]")
+    return raw
+
+
 class Admin:
     """The OpenFit users the Admin manages, and the operations on them.
 
     One operation at a time (`lock`): a check, an update, an undo, adding,
-    starting, stopping or removing a user, or deleting a removed user's
-    data. An update, an undo and adding a user run in a background thread,
-    their progress in `op`; the rest run in the caller's thread.
+    starting, stopping or removing a user, deleting a removed user's data,
+    or updating the Admin itself. An update, an undo, adding a user and an
+    Admin update run in a background thread, their progress in `op`; the
+    rest run in the caller's thread. An Admin update keeps the lock after
+    its thread has handed over to the helper, until the helper has gone
+    (`_settle`).
     """
 
     def __init__(
@@ -425,13 +575,16 @@ class Admin:
         self.users_path = os.path.join(data_dir, "users.json")
         self.check_path = os.path.join(data_dir, "last_check.json")
         self.history_path = os.path.join(data_dir, "history.json")
+        self.swap_result = os.path.join(data_dir, SWAP_RESULT)
         self.lock = threading.Lock()
         self._op_lock = threading.Lock()
+        self._settle_lock = threading.Lock()
         self.op = None
         self.thread = None
+        self._awaiting = None  # an Admin update the helper has: (op, "handover" or "startup")
         os.makedirs(self.backups_dir, exist_ok=True)
         self.registry()  # a bad users.json stops the Admin starting
-        self._mark_interrupted()
+        self._mark_interrupted(keep=self._pick_up_swap())
 
     # --- the users --------------------------------------------------------
 
@@ -513,24 +666,10 @@ class Admin:
 
     def find_container(self, user):
         """`user`'s container, by its compose labels, or None."""
-        rc, out, err = self.docker(
-            "ps", "-a", "--no-trunc",
-            "--filter", f"label=com.docker.compose.project={user.project}",
-            "--filter", f"label=com.docker.compose.service={user.service}",
-            "--filter", "label=com.docker.compose.oneoff=False",
-            "--format", "{{.ID}}\t{{.State}}",
-        )
-        if rc != 0:
-            raise OpError(f"Couldn't ask Docker about {user.name}'s OpenFit container.", _tail(out, err))
-        rows = [line.split("\t") for line in out.splitlines() if line.strip()]
-        if not rows:
-            return None
+        rows = labelled(self.runner, user.project, user.service, f"{user.name}'s OpenFit container")
         if len(rows) > 1:
             raise OpError(f"{user.name} has more than one OpenFit container, so the Admin won't guess which.")
-        cid = rows[0][0]
-        if not _CONTAINER_ID.match(cid):
-            raise OpError("Docker gave back a container id the Admin doesn't recognise.", cid)
-        return {"id": cid, "state": rows[0][1] if len(rows[0]) > 1 else ""}
+        return rows[0] if rows else None
 
     def inspect(self, cid):
         rc, out, err = self.docker("inspect", "--type", "container", cid)
@@ -576,22 +715,8 @@ class Admin:
 
     def healthy(self, user):
         """Poll `user`'s OpenFit until it answers, for up to HEALTH_FOR seconds."""
-        deadline = self.clock() + HEALTH_FOR
-        cid = None
-        while True:
-            if cid is None:
-                try:
-                    c = self.find_container(user)
-                except OpError:
-                    c = None
-                cid = c and c["id"]
-            if cid:
-                rc, _out, _err = self.docker("exec", cid, "python", "-c", HEALTH_CODE, timeout=30)
-                if rc == 0:
-                    return True
-            if self.clock() >= deadline:
-                return False
-            self.sleep(HEALTH_EVERY)
+        return wait_healthy(self.runner, lambda: (self.find_container(user) or {}).get("id"), HEALTH_CODE,
+                            self.clock, self.sleep)
 
     # --- checking for updates --------------------------------------------
 
@@ -601,8 +726,7 @@ class Admin:
 
     def check(self):
         """Fetch, then report what's new, by group. Never touches HEAD or the tree."""
-        if not self.lock.acquire(blocking=False):
-            raise Busy()
+        self._take_lock()
         try:
             return self._check()
         finally:
@@ -718,28 +842,227 @@ class Admin:
         threading.Thread(target=loop, name="admin-auto-check", daemon=True).start()
         return stop
 
+    # --- the Admin's own update ------------------------------------------
+
     def admin_update(self, check):
-        """The Admin's own update, which A1 leaves to the command line.
+        """The Admin's own update.
 
         `commits` are new on GitHub and not pulled yet; `pulled` means the
         repo's admin/ already differs from the code this Admin is running
         (an Update OpenFit pulled it), so a rebuild is all it takes.
+        `can_self_update`: pulled, and nothing more for the Admin waiting
+        on GitHub - one repo is one pull, so Update OpenFit comes first.
+        `command` is the same update by hand, on the server.
         """
         group = next((g for g in (check or {}).get("groups", []) if g["key"] == "admin"), None)
         commits = group["commits"] if group else []
+        unpulled = bool(commits or (group and group["files"]))
         mine = fingerprint(self.self_dir)
         pulled = mine is not None and fingerprint(os.path.join(self.repo, "admin")) not in (None, mine)
         return {
-            "available": bool(commits or (group and group["files"])) or pulled,
+            "available": unpulled or pulled,
             "pulled": pulled,
             "commits": commits,
-            "command": f"cd {self.repo} && docker compose -f admin/docker-compose.yml -p {ADMIN_PROJECT} up -d --build",
+            "command": admin_command(self.repo),
+            "can_self_update": pulled and not unpulled,
         }
+
+    def start_admin_update(self):
+        """The lock and the offer here, so a refusal is a 409 with nothing
+        done; the rest (an op with a log) in the background."""
+        self._take_lock()
+        try:
+            au = self.admin_update(self.last_check())
+            if not au["can_self_update"]:
+                raise Refused("Update OpenFit first: it brings the Admin's new code with it."
+                              if au["available"] else "The Admin is up to date.")
+            op = self._begin("admin_update")
+        except BaseException:
+            self.lock.release()
+            raise
+        self._spawn(op, self._admin_update)
+        return self.current_op()
+
+    def _admin_update(self, op):
+        """Build the new Admin while this one runs, then hand the swap to the
+        helper - which runs the image this Admin is running now, kept as
+        openfit-admin:prev, never the new one."""
+        try:
+            self.say(op, "Finding the Admin's own container…")
+            me = find_admin(self.runner)
+            if me is None:
+                raise OpError("The Admin's own container wasn't found: it's started with "
+                              f"`docker compose -f admin/docker-compose.yml -p {ADMIN_PROJECT} up -d --build`.")
+            image_id = self.inspect(me["id"]).get("Image", "")
+            if not _IMAGE_ID.match(image_id):
+                raise OpError("Couldn't tell which image the Admin is running.", image_id)
+            if swap_helper(self.runner):
+                self.say(op, f"There's already a container called {SWAP_NAME}: another Admin update's helper.")
+                return self._finish(op, "failed", "An Admin update is already under way. Nothing was changed.")
+            self.say(op, "Keeping a copy of the version the Admin is on…")
+            rc, out, err = self.docker("tag", image_id, ADMIN_PREV)
+            if rc != 0:
+                raise OpError("Couldn't keep a copy of the Admin's version.", _tail(out, err))
+            stamp = self._stamp()
+            self.say(op, "Keeping a copy of the Admin's settings…")
+            self._snapshot(stamp)
+        except OpError as e:
+            self.say(op, e.message, e.detail)
+            return self._finish(op, "failed", "Nothing was changed.")
+
+        self.say(op, "Building the new Admin. This one keeps running meanwhile…")
+        rc, out, err = admin_compose(self.runner, self.repo, "build", ADMIN_SERVICE)
+        if rc != 0:
+            self.say(op, "The new Admin didn't build.", _tail(out, err))
+            return self._finish(op, "failed", "The build failed, so nothing was changed. The Admin kept running.")
+
+        self.say(op, "Starting the helper that swaps the Admin over…")
+        rc, out, err = self.docker(
+            "run", "-d", "--rm", "--name", SWAP_NAME, "--label", HELPER_LABEL,
+            "-v", "/var/run/docker.sock:/var/run/docker.sock",
+            "-v", f"{self.repo}:{self.repo}",
+            "-v", f"{self.admin_volume}:/data",
+            "-e", f"OPENFIT_REPO={self.repo}",
+            ADMIN_PREV,
+            "python", "/app/admin_swap.py", stamp, op["id"],
+        )
+        if rc != 0:
+            self.say(op, "The helper didn't start.", _tail(out, err))
+            return self._finish(op, "failed", "The helper didn't start, so the Admin wasn't swapped. It's still on its old version.")
+        self.say(op, "Handing over to the helper. The Admin restarts in a moment, and this page reconnects by itself.")
+        # The log so far, for whichever Admin finishes the op: saved, and in
+        # the snapshot too, which a rollback puts back. The helper waits a
+        # few seconds before it touches anything.
+        self._save_op(op)
+        try:
+            shutil.copy2(self.history_path, os.path.join(snapshot_dir(self.data_dir, stamp), "history.json"))
+        except OSError as e:
+            print(f"[admin] admin_update: couldn't add the log to the settings snapshot: {e}", flush=True)
+        with self._settle_lock:
+            self._awaiting = (op, "handover")
+        return HANDED_OVER
+
+    def _snapshot(self, stamp):
+        """The Admin's settings files, each if present, copied into
+        /data/self-update/<stamp>/ for the helper to put back; the newest
+        KEEP_SNAPSHOTS kept."""
+        root = os.path.join(self.data_dir, SNAPSHOTS)
+        folder = snapshot_dir(self.data_dir, stamp)
+        try:
+            shutil.rmtree(folder, ignore_errors=True)
+            os.makedirs(folder, mode=0o700)
+            for name in SNAPSHOT_FILES:
+                live = os.path.join(self.data_dir, name)
+                if os.path.isfile(live):
+                    shutil.copy2(live, os.path.join(folder, name))
+            stamps = sorted((n for n in os.listdir(root) if _FILE_STAMP.match(n)
+                             and os.path.isdir(os.path.join(root, n))), reverse=True)
+            for old in stamps[KEEP_SNAPSHOTS:]:
+                shutil.rmtree(os.path.join(root, old), ignore_errors=True)
+        except OSError as e:
+            raise OpError("Couldn't keep a copy of the Admin's settings.", str(e))
+
+    def _pick_up_swap(self):
+        """At startup, before _mark_interrupted: the helper's result, if an
+        Admin update left one. Finished, it finishes its op. Still "running",
+        the helper is at work - checking this very Admin answers - so the op
+        stays running and the lock is held until the helper has gone; its
+        id is returned, for _mark_interrupted to leave alone."""
+        try:
+            result = read_swap_result(self.data_dir)
+        except ValueError as e:
+            print(f"[admin] removing the update helper's result, which doesn't read: {e}", flush=True)
+            self._drop_swap_result()
+            return None
+        if result is None:
+            return None
+        op = next((o for o in self.history() if o.get("id") == result["op_id"] and o.get("kind") == "admin_update"), None)
+        if op is None:
+            print(f"[admin] removing the update helper's result: no Admin update {result['op_id']} to finish", flush=True)
+            self._drop_swap_result()
+            return None
+        if result["outcome"] != "running":
+            self._adopt(op, result, "startup")
+            return None
+        self.lock.acquire()
+        op.update(outcome="running", summary="", finished_at=None)
+        self._save_op(op)
+        with self._op_lock:
+            self.op = op
+        self._awaiting = (op, "startup")
+        return op["id"]
+
+    def _settle(self):
+        """An Admin update the helper has, finished once the helper has gone,
+        from its result; until then the op stays running and the lock held,
+        so nothing starts that the swap or its rollback would cut off. A
+        no-op unless one is waiting. Run before the op is read or the lock
+        taken."""
+        if self._awaiting is None:
+            return
+        with self._settle_lock:
+            if self._awaiting is None:
+                return
+            op, where = self._awaiting
+            try:
+                if swap_helper(self.runner):
+                    return
+            except OpError:
+                return  # asked again next time
+            try:
+                # Read once the helper has gone: its last write is its outcome.
+                result = read_swap_result(self.data_dir)
+            except ValueError as e:
+                print(f"[admin] the update helper's result doesn't read: {e}", flush=True)
+                result = None
+            if result is not None and result["op_id"] != op["id"]:
+                result = None
+            self._adopt(op, result, where)
+            self._awaiting = None
+            with self._op_lock:
+                if self.op is op:
+                    self.op = None
+            self.lock.release()
+
+    def _adopt(self, op, result, where):
+        """The helper's lines and outcome onto its op, and its result file
+        removed. With no outcome (no result, or one still "running" when
+        the helper has gone), the helper stopped part-way: failed."""
+        outcome = result["outcome"] if result else "running"
+        with self._op_lock:
+            op["log"].extend({"t": line["t"], "text": line["text"]} for line in (result or {}).get("lines", []))
+        if outcome == "ok":
+            try:
+                summary = f"The Admin updated itself to {self.head()['short']}."
+            except OpError:
+                summary = "The Admin updated itself."
+        elif outcome == "rolled_back":
+            summary = "The new Admin didn't come up, so the old one was put back, with its settings as they were."
+        elif outcome == "failed":
+            summary = "The Admin update didn't finish. The log says where things stand, and what to run on the server."
+        else:
+            outcome = "failed"
+            if where == "handover":
+                self.say(op, "The helper stopped before it swapped the Admin over, so this is still the old version.")
+            else:
+                self.say(op, "The helper stopped before it finished, after the step above. This Admin is answering; "
+                         "if it isn't the version you expected, run this on the server: " + admin_command(self.repo))
+            summary = "The helper stopped part-way. The log says how far it got."
+        self._finish(op, outcome, summary)
+        self._drop_swap_result()
+
+    def _drop_swap_result(self):
+        try:
+            os.remove(self.swap_result)
+        except FileNotFoundError:
+            pass
+        except OSError as e:
+            print(f"[admin] couldn't remove {self.swap_result}: {e}", flush=True)
 
     # --- operations and their record ---------------------------------------
 
     def _iso(self):
-        return datetime.fromtimestamp(self.clock(), timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        return iso(self.clock())
 
     def _stamp(self):
         return datetime.fromtimestamp(self.clock(), timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -754,11 +1077,13 @@ class Admin:
         ops = [o for o in self.history() if o.get("id") != snap["id"]] + [snap]
         _write_json(self.history_path, ops[-KEEP_HISTORY:])
 
-    def _mark_interrupted(self):
+    def _mark_interrupted(self, keep=None):
+        """Every op still "running" at startup, but `keep` (one the helper
+        still has), is one the Admin stopped in the middle of."""
         ops = self.history()
         changed = False
         for o in ops:
-            if o.get("outcome") == "running":
+            if o.get("outcome") == "running" and o.get("id") != keep:
                 o["outcome"] = "interrupted"
                 o["summary"] = "The Admin stopped while this was running."
                 changed = True
@@ -767,6 +1092,7 @@ class Admin:
 
     def current_op(self):
         """The running operation, else the last one, else None."""
+        self._settle()
         with self._op_lock:
             if self.op is not None:
                 return json.loads(json.dumps(self.op))
@@ -810,14 +1136,16 @@ class Admin:
 
     def _spawn(self, op, step, *args):
         def body():
+            handed_over = False
             try:
-                step(op, *args)
+                handed_over = step(op, *args) is HANDED_OVER
             except Exception as e:  # a bug, not a failed step: say so, never leave it "running"
                 self._finish(op, "failed", f"Stopped on an unexpected error: {e}")
             finally:
-                with self._op_lock:
-                    self.op = None
-                self.lock.release()
+                if not handed_over:  # else the op and the lock are _settle's
+                    with self._op_lock:
+                        self.op = None
+                    self.lock.release()
 
         self.thread = threading.Thread(target=body, name=f"admin-{op['kind']}", daemon=True)
         self.thread.start()
@@ -828,6 +1156,7 @@ class Admin:
             self.thread.join(timeout)
 
     def _take_lock(self):
+        self._settle()
         if not self.lock.acquire(blocking=False):
             raise Busy()
 
@@ -1400,6 +1729,7 @@ class Admin:
     # --- the page's view ----------------------------------------------------
 
     def status(self):
+        self._settle()
         s = self.settings
         try:
             head = self.head()

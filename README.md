@@ -702,6 +702,8 @@ line never had:
 - **Undo last update** does the same rollback by hand, for every user, while
   the users are the ones the update had.
 - **Backups**: one per user per update; the newest three updates' are kept.
+- **Update the Admin**: the Admin updates itself, rolling back by itself if
+  the new version doesn't start.
 
 It manages the OpenFit you already run, in place: the same compose project,
 the same `/data` volume and the same port 8080. Install it once from the
@@ -715,10 +717,13 @@ docker logs openfit-admin-admin-1     # the one-time setup code
 ```
 
 Then open `http://<server IP>:8090`, enter the setup code, and choose a
-password of at least 12 characters. The Admin's own update is a command it
-shows you when there's one (it doesn't update itself yet):
-`docker compose -f admin/docker-compose.yml -p openfit-admin up -d --build`,
-from the repo.
+password of at least 12 characters. When an Update OpenFit brings the Admin's
+own new code, **Update the Admin** swaps it over through a short-lived helper
+and puts the old one back if the new one doesn't answer; the page reconnects
+by itself. (The Admin installed before this has no helper yet, so install
+this one with the command its note shows,
+`docker compose -f admin/docker-compose.yml -p openfit-admin up -d --build`
+from the repo, once.)
 
 It holds the Docker socket, so it has full control of the host. It only ever
 acts on its own users' compose projects and on helper containers it labels as
@@ -731,7 +736,7 @@ internet. The design and every step, in order:
 ## Architecture
 
 ```
-admin/                        The OpenFit Admin: users and updates (port 8090)
+admin/                        The OpenFit Admin: users, updates, its own update (port 8090)
 app/
   main.py                     Flask API + scheduler, loads plugins from plugins/
   apps.py                     Finds, loads and installs the apps (/data/apps)

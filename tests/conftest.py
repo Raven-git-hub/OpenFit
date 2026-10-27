@@ -140,6 +140,9 @@ Call = namedtuple("Call", "args cwd as_owner")
 CONTAINERS = ["a1" * 32, "b2" * 32, "c3" * 32, "d4" * 32, "e6" * 32, "f7" * 32]
 IMAGE_ID = "sha256:" + "e5" * 32
 VOLUME = "openfit_tracker-data"
+# The Admin's own: the image its container runs, and the update helper's id.
+ADMIN_IMAGE_ID = "sha256:" + "ad" * 32
+HELPER_ID = "5a" * 32
 
 
 def container_id(project, n):
@@ -171,9 +174,14 @@ class FakeRunner:
 
     `projects` is what Docker holds: project -> {"n": how many containers
     it's had, "state": running/exited/created, or None for no container}.
-    The primary's, openfit, starts with C0 running. `volumes` the volumes
+    The primary's, openfit, starts with C0 running, and the Admin's own,
+    openfit-admin, with its first container running. `volumes` the volumes
     there are: a project's appears when it's brought up, goes with down -v
-    or volume rm."""
+    or volume rm. `helper` is whether the Admin's update helper,
+    openfit-admin-swap, is there: `docker run -d` makes it.
+
+    `frames` holds, for each call, the names of the functions it was made
+    through (innermost first), so a test can tell which code ran it."""
 
     def __init__(self, repo, backups_dir):
         import admin_ops
@@ -182,8 +190,10 @@ class FakeRunner:
         self.backups_dir = backups_dir
         self.calls = []
         self.results = []
+        self.frames = []
         self.rules = []
-        self.projects = {"openfit": {"n": 0, "state": "running"}}
+        self.projects = {"openfit": {"n": 0, "state": "running"}, "openfit-admin": {"n": 0, "state": "running"}}
+        self.helper = False
         self.volumes = {VOLUME}
         self.images = {"openfit-tracker:latest"}
         self.unhealthy = set()
@@ -192,6 +202,11 @@ class FakeRunner:
         assert isinstance(args, list), f"a command must be a list, not {args!r}"
         assert all(isinstance(a, str) for a in args), args
         self.calls.append(Call(list(args), cwd, as_owner))
+        frame, names = sys._getframe(1), []
+        while frame is not None:
+            names.append(frame.f_code.co_name)
+            frame = frame.f_back
+        self.frames.append(names)
         result = self._answer(args, cwd, as_owner, timeout)
         self.results.append(result)
         return result
@@ -227,6 +242,8 @@ class FakeRunner:
 
     def docker(self, args):
         sub = args[1]
+        if sub == "ps" and "name=^openfit-admin-swap$" in args:
+            return 0, (HELPER_ID + "\n" if self.helper else ""), ""
         if sub == "ps":
             label = next(a for a in args if a.startswith("label=com.docker.compose.project="))
             project = label.split("=", 2)[2]
@@ -238,11 +255,14 @@ class FakeRunner:
             return 0, f"{cid}\t{self.projects[project]['state']}\n", ""
         if sub == "inspect":
             project = self._project_of(args[-1])
-            info = {"Id": args[-1], "Image": IMAGE_ID,
+            info = {"Id": args[-1], "Image": ADMIN_IMAGE_ID if project == "openfit-admin" else IMAGE_ID,
                     "Mounts": [{"Type": "volume", "Name": f"{project}_tracker-data", "Destination": "/data"}]}
             return 0, json.dumps([info]), ""
         if sub == "exec":
             return (1 if args[2] in self.unhealthy else 0), "", ""
+        if sub == "run" and args[2] == "-d" and "openfit-admin-swap" in args:
+            self.helper = True
+            return 0, HELPER_ID + "\n", ""
         if sub == "run" and "czf" in args:
             name = args[args.index("czf") + 1].rsplit("/", 1)[1]
             with open(os.path.join(self.backups_dir, name), "wb") as f:
@@ -278,6 +298,7 @@ class FakeRunner:
     def clear(self):
         self.calls.clear()
         self.results.clear()
+        self.frames.clear()
 
     def fail(self, matches, rc=1, err="it went wrong"):
         self.rules.append((matches, (rc, "", err)))
