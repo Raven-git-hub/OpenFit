@@ -75,9 +75,9 @@ def test_api_apps_lists_each_apps_reads_and_files(client, apps_dir):
     install(client, {"app.yaml": "id: notes\n" + SIZE})
 
     assert client.get("/api/apps").get_json() == [
-        {"id": "notes", "name": "notes", "default_size": {"w": 1, "h": 1}, "sizes": [{"w": 1, "h": 1}],
+        {"id": "notes", "name": "notes", "library": None, "default_size": {"w": 1, "h": 1}, "sizes": [{"w": 1, "h": 1}],
          "reads": [], "config": [], "metrics": [], "files": ["app.yaml"]},
-        {"id": "walk", "name": "Walk", "default_size": {"w": 1, "h": 1}, "sizes": [{"w": 1, "h": 1}],
+        {"id": "walk", "name": "Walk", "library": None, "default_size": {"w": 1, "h": 1}, "sizes": [{"w": 1, "h": 1}],
          "reads": ["steps", "distance_m"], "config": [], "metrics": [], "files": ["app.py", "app.yaml", "thresholds.yaml"]},
     ]
 

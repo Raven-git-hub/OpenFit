@@ -397,12 +397,13 @@ a.btn{display:inline-block;text-decoration:none;}
 .aticks .rh-cell{gap:2px;}
 .atick-l{font-size:10.5px;text-transform:uppercase;letter-spacing:.8px;color:var(--muted);font-weight:600;}
 .atick-v{font-family:var(--font-mono);font-size:12.5px;color:var(--muted);}
-/* Refresh on the left, Update, Duplicate and Uninstall at the far end;
-   the confirm under them */
+/* Refresh on the left, Update, Duplicate and Uninstall at the far end -
+   a library app's note in Update's place; the confirm under them */
 .a-acts, .a-confirm, .a-msg{grid-column:1 / -1;}
 .a-acts{display:flex;align-items:center;justify-content:space-between;gap:10px;}
 .a-acts[hidden]{display:none;}
-.a-acts-end{display:flex;gap:10px;}
+.a-acts-end{display:flex;align-items:center;gap:10px;}
+.a-acts-end .a-lib{margin:0;}
 .a-msg{margin-top:0;}
 .a-msg:empty{display:none;}
 .danger-panel code{font-family:var(--font-mono);font-size:12.5px;}
@@ -2717,7 +2718,9 @@ h5 + .dnote{margin-top:0;}
       <div class="a-acts">
         <button class="btn sm" data-act="refresh" type="button">Refresh</button>
         <span class="a-acts-end">
-          <button class="btn sm" data-act="update" type="button" aria-haspopup="dialog">Update</button>
+          ${a.library
+            ? `<span class="dnote a-lib">From the ${esc(a.library)} library · updated by your admin</span>`
+            : '<button class="btn sm" data-act="update" type="button" aria-haspopup="dialog">Update</button>'}
           <button class="btn sm" data-act="duplicate" type="button" aria-haspopup="dialog">Duplicate</button>
           <button class="btn sm danger" data-act="uninstall" type="button">Uninstall</button>
         </span>
@@ -2785,9 +2788,11 @@ h5 + .dnote{margin-top:0;}
 
     /* Update: this app's files - every one read back - opened in the Add
        popup to change and apply in place: the same id, its data kept.
-       Nothing is written until Update there, past its confirm. */
+       Nothing is written until Update there, past its confirm. A library
+       app has none: it's read-only here, updated in its library (the
+       server refuses one, 403) - Duplicate makes a copy of one's own. */
     const upd = act('update');
-    upd.onclick = async () => {
+    if(upd) upd.onclick = async () => {
       const current = await readBack(upd, 'update');
       if(current) openAddApp(current, null, a);
     };
@@ -2977,11 +2982,14 @@ h5 + .dnote{margin-top:0;}
      installed - and a copy of a copy counts on from the same base, so
      "Steps 2" bases to "Steps". The base id is put in INSTALL_ID's form
      (a hand-placed app can have capitals or '_'), so the id is one an
-     install takes - and the server re-checks it anyway. */
+     install takes - and the server re-checks it anyway. A library app's
+     source goes first: a copy of openfit.frms is frms-2, a custom app of
+     one's own (only a library install makes a dotted id). */
   function dupeTarget(app, installed){
     const name = String(app.name || app.id);
     const baseName = name.replace(/\s+\d+$/, '') || name;
-    const baseId = String(app.id).replace(/-\d+$/, '').toLowerCase().replace(/_/g, '-');
+    const baseId = String(app.id).replace(/^[a-z][a-z0-9]*\./, '')
+      .replace(/-\d+$/, '').toLowerCase().replace(/_/g, '-');
     const ids = new Set(installed.map(a => a.id));
     const names = new Set(installed.map(a => a.name));
     let n = 2;

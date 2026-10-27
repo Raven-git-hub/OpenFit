@@ -53,7 +53,7 @@ import json
 import re
 import secrets
 
-from apps import APP_ID, MAX_CELLS, tile_size
+from apps import MAX_CELLS, is_app_id, tile_size
 
 LAYOUT_KEY = "home_layout"
 
@@ -262,7 +262,8 @@ def parse_layout(body):
       most MAX_TAB_NAME characters; mode "flow"; subtitle text, at most
       MAX_SUBTITLE characters (empty for none); items a list.
     - each item an instance, {instance_id, app_id, size: {w, h},
-      config}: app_id one an app could have (the scanner's APP_ID);
+      config}: app_id one an app could have (apps.is_app_id(): a
+      custom app's id, or a library app's, openfit.frms);
       size whole cells, 1 to MAX_CELLS; config an object, {} if left
       out; instance_id a token (INSTANCE_ID) used once across every
       tab - or left out, and a fresh one is minted. The same app may be
@@ -337,7 +338,7 @@ def _parse_item(where, item, ids):
     """One instance of a tab's items, checked: see parse_layout(). Its
     instance_id is None if it's to be minted; a given one joins `ids`."""
     app_id = item.get("app_id") if isinstance(item, dict) else None
-    if not isinstance(app_id, str) or not APP_ID.match(app_id):
+    if not is_app_id(app_id):
         raise LayoutError(f"{where}: each item needs the app_id of an app: {item!r}")
     size = tile_size(item.get("size"))
     if size is None:

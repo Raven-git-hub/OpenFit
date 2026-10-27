@@ -365,9 +365,10 @@ def test_an_app_loading_from_a_folder_named_apart_from_its_id_isnt_orphaned(clie
 
 
 @pytest.mark.parametrize("app_id", [
-    # Not the scanner's id rule (APP_ID), so no folder to look for -
-    # even with rows under it.
-    "_x", "-x", "x.y",
+    # Not the scanner's id rule (APP_ID), nor a library app's
+    # (LIBRARY_APP_ID: x.y is one, openfit.weight's shape), so no folder
+    # to look for - even with rows under it.
+    "_x", "-x", "1x.y", "X.y", "x.y.z", "x.Y",
     # The prefix isn't stripped: this would be app:app:old.
     "app:old",
 ])
@@ -690,7 +691,7 @@ def test_a_metric_of_an_app_present_but_not_loading_is_never_removed(client, con
     assert derived(conn) == picks
 
 
-@pytest.mark.parametrize("app_id", ["_x", "-x", "x.y", "app:old"])
+@pytest.mark.parametrize("app_id", ["_x", "-x", "1x.y", "X.y", "x.y.z", "app:old"])
 def test_a_metric_of_an_id_no_app_could_have_is_a_404(client, conn, orphan, app_id):
     seed(conn, f"app:{app_id}", metrics=[("2026-10-04", "steps", 7)])
     before, roles, picks = counts(conn), stored_roles(conn), derived(conn)
