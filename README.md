@@ -81,9 +81,10 @@ continuous it is, and which source wins each metric — not the product.
   and **Uninstall** (browsing and building apps from it are still to come).
 - A first **app host**: the Home tab shows the apps you install (none ship with
   OpenFit) as live tiles — see [Apps on the Home tab](#apps-on-the-home-tab).
-- The **OpenFit Admin**, optional and in its own container: it checks for and
-  applies OpenFit's updates from a web page, with a backup of your data before
-  each one and an undo — see [Admin](#admin).
+- The **OpenFit Admin**, optional and in its own container: it adds more users
+  (each with their own OpenFit, storage and port), and checks for and applies
+  OpenFit's updates for everyone from a web page, with a backup of everyone's
+  data before each one and an undo — see [Admin](#admin).
 
 ## Webhook input (push)
 
@@ -679,18 +680,28 @@ authorization returns a fresh refresh token.
 ## Admin
 
 The **OpenFit Admin** is a small web admin, in its own container on port 8090,
-that updates OpenFit for you. It replaces SSHing in to run `git pull && docker
-compose up -d --build`, and adds the safety nets the command line never had:
+that adds users and updates OpenFit for everyone. It replaces SSHing in to run
+`git pull && docker compose up -d --build`, and adds the safety nets the command
+line never had:
 
+- **Users**: the OpenFit you already run is the primary user, and **Add user**
+  gives someone else an OpenFit of their own: their own container, storage and
+  port (8101 and up suggested), on the version everyone runs. Their compose file
+  is the Admin's own, so your `.env` (your logins, your secret key) never
+  reaches them. **Start**, **Stop** and **Remove** each user; a removed user's
+  data is kept until you **Delete data** by typing their name.
 - **Check now**, and a check by itself every week. It shows what's new on
   GitHub, grouped as user system, Admin, app library and other, with the merged
   PRs linked.
-- **Update OpenFit** refuses a server copy with local changes. It keeps the
-  current image, pulls and builds while OpenFit keeps running, then stops it,
-  **backs up its data**, starts the new version and checks it answers. If it
-  doesn't come up, the Admin puts the data, image and code back by itself.
-- **Undo last update** does the same rollback by hand.
-- **Backups**: the newest three, taken before each update.
+- **Update OpenFit** moves everyone together: one version on the server at a
+  time. It refuses a server copy with local changes, keeps the current image,
+  pulls and builds while everyone keeps running, then stops everyone who was
+  running, **backs up everyone's data**, puts everyone on the new version (a
+  stopped user stays stopped) and checks they answer. If anyone doesn't come
+  up, the Admin puts everyone's data, the image and the code back by itself.
+- **Undo last update** does the same rollback by hand, for every user, while
+  the users are the ones the update had.
+- **Backups**: one per user per update; the newest three updates' are kept.
 
 It manages the OpenFit you already run, in place: the same compose project,
 the same `/data` volume and the same port 8080. Install it once from the
@@ -710,16 +721,17 @@ shows you when there's one (it doesn't update itself yet):
 from the repo.
 
 It holds the Docker socket, so it has full control of the host. It only ever
-acts on OpenFit's own compose project and on helper containers it labels as
+acts on its own users' compose projects and on helper containers it labels as
 its own, never on anything else the server runs, and it never runs a command
-through a shell. It's plain HTTP for your LAN: don't expose port 8090 to the
+through a shell. An added user's OpenFit has no login yet, like yours: add
+only people on your own network until the user login lands. It's plain HTTP for your LAN: don't expose port 8090 to the
 internet. The design and every step, in order:
 [docs/architecture/admin.md](docs/architecture/admin.md).
 
 ## Architecture
 
 ```
-admin/                        The OpenFit Admin: updates OpenFit for you (port 8090)
+admin/                        The OpenFit Admin: users and updates (port 8090)
 app/
   main.py                     Flask API + scheduler, loads plugins from plugins/
   apps.py                     Finds, loads and installs the apps (/data/apps)

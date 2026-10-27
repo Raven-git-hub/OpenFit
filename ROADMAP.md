@@ -176,7 +176,15 @@ the order was changed so the Admin comes first, in A-slices:
    dirty tree, backs up the data, health-checks the new version and rolls back
    by itself if it doesn't come up, and Undo does the same by hand. Its own
    login, and only ever OpenFit's own containers.
-2. A2: adding users, one compose project per user.
+2. **A2, built:** adding users, one compose project per user
+   (`docs/architecture/admin.md`). The existing OpenFit is the primary user;
+   Add user gives someone their own container, volume and port, from a
+   compose file the Admin writes itself (no `.env`, so the primary's logins and
+   secret key never reach them). Start, Stop and Remove each user, and a
+   removed user's data is kept until it's deleted by typing their name. Update
+   and Undo move every user together: one build, everyone backed up as one
+   set, everyone recreated as they were, the running ones health-checked, and
+   everyone rolled back if anyone doesn't come up.
 3. The user login (the user system's login page), before any second real
    person gets a container.
 4. A4: the Admin's self-update.

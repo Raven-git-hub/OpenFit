@@ -1733,22 +1733,44 @@ own calls to its device API. Full direction:
   installing through `install_app()` from its files as text, as Browse
   will. Not `apps/`, so it can't be confused with `app/`. The distribution
   design it starts is `docs/architecture/distribution.md`.
-- `admin/` — the OpenFit Admin (A1, `docs/architecture/admin.md`): its own
+- `admin/` — the OpenFit Admin (A1, A2, `docs/architecture/admin.md`): its own
   image (`python:3.12-slim`, git, the docker CLI and compose plugin copied
   from pinned images) and compose file (`docker compose -f
   admin/docker-compose.yml -p openfit-admin up -d --build`), port 8090, the
   docker socket, its volume `openfit-admin_admin-data` at `/data`, and the
   repo mounted at its own host path (`OPENFIT_REPO`, from `admin/.env`). It
-  manages the one existing user system (`/data/admin.json`: project
-  `openfit`, service `tracker`, port 8080, branch `main`): a check (`git
-  fetch`, the changes grouped by top folder — `app/`, `admin/`, `library/`,
-  other — weekly and on a button), Update OpenFit (clean tree, `:prev` tag,
-  `merge --ff-only`, build, stop, a `tar` backup by a helper, up, a 60s
-  health check, the undo sequence if unhealthy) and Undo. Modules prefixed
+  manages users (a `User` record each, `Admin.users()` primary first): the
+  **primary**, the existing user system adopted in place (`/data/admin.json`:
+  `user` `andy` — `[a-z0-9]{1,20}`, not `admin` — project `openfit`, service
+  `tracker`, port 8080, branch `main`; the repo's compose file; never
+  removed), and **added** users in `/data/users.json` (`{users: [{name, port,
+  created_at}], removed: [{name, port, removed_at, volume}]}`, strictly
+  checked on every read — a bad entry stops the Admin starting), each
+  project `openfit-<name>` from `/data/users/<name>/docker-compose.yml`,
+  written from `USER_COMPOSE` (image `openfit-tracker:latest`, `pull_policy:
+  never`, a port, volume `tracker-data` — no `env_file`/`environment`, so
+  the repo's `.env` never reaches them). Add user (`POST /api/users`, an
+  `add_user` op: image built and the name's volume not already there, else
+  409; write, `up -d --no-build`, health check, then `users.json`; a failure
+  `down -v` — the one `-v`, on the volume that add made — or `down` for a
+  removed user's kept data, reattached), Start/Stop (`compose up -d
+  --no-build`/`stop`, any user), Remove (`down`, never `-v`; the entry to
+  `removed`) and Delete data (`docker volume rm`, only with `confirm` = the
+  name and no container left). A check (`git fetch`, the changes grouped by
+  top folder — `app/`, `admin/`, `library/`, other — weekly and on a
+  button), Update OpenFit for everyone (clean tree, `:prev` tag, `merge
+  --ff-only`, one build, every running user stopped, a `tar` backup each
+  by a helper — one stamp, a set — each recreated as it was, `up -d` or
+  `up --no-start`, the running ones health-checked, the undo sequence for
+  everyone if any is unhealthy; backups pruned to 3 sets) and Undo (only
+  while the users are the update's — by name and `created_at` — and its
+  every backup is there). Modules prefixed
   `admin_` so they never clash with `app/`'s on the test path:
   `admin_ops.py` (every command through one `Runner`, argument lists, never a
-  shell; git as the repo's owner; only the compose-labelled container and
-  `--rm` helpers labelled `openfit.admin.helper=true`), `admin_auth.py`
+  shell; git as the repo's owner; compose only `-p openfit` with the repo's
+  file or `-p openfit-<name>` with the user's own; only those projects'
+  compose-labelled containers and `--rm` helpers labelled
+  `openfit.admin.helper=true`), `admin_auth.py`
   (setup code, a ≥12-character password, sessions, 5 bad logins per IP per
   5 minutes → 429), `admin_server.py` (Flask; every `/api` route but
   setup/login needs a session, every non-GET JSON with `X-OpenFit-Admin: 1`)
@@ -2764,8 +2786,11 @@ same PR:
   the Admin came first, in A-slices: A1 landed (`admin/`, above; no change
   to `app/`) — the old SSH update behind buttons for the one existing
   OpenFit, with a backup before each update, a health check, automatic
-  rollback and Undo. Still to come, in order: A2 adding users (one compose
-  project each), the user login before any second real person, A4 the
+  rollback and Undo. Then A2 landed (`admin/` only): adding users, a
+  compose project, volume and port each from a compose file the Admin
+  writes (no `.env`), Start/Stop/Remove and a confirmed Delete data, and
+  Update and Undo moving every user together. Still to come, in order:
+  the user login before any second real person, A4 the
   Admin's self-update, then library serving and Browse with L3 and L4
   (they wait for Browse), then organisation repos; the `.local` names and
   the proxy deferred (users on `IP:port`). L3 as agreed: `replaces` (declared in the library copy's
