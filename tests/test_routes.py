@@ -4013,9 +4013,12 @@ def test_a_file_input_is_built_as_text_and_capped_as_the_server_caps_it(client):
 
 # The page's own sender, run under node with fetch stood in for: what it
 # hands fetch, as FormData - and, encoded by node's own Request, the
-# bytes a browser would put on the wire.
+# bytes a browser would put on the wire. Through apiFetch(), as every
+# request is, so on this origin.
 FORM_SCRIPT = r"""
     const enc = encodeURIComponent;
+    globalThis.location = {href:'http://openfit.test/', origin:'http://openfit.test', reload(){}};
+    FETCHER
     SENDER
     API
     const r = {}, sent = [];
@@ -4068,17 +4071,18 @@ def test_a_file_input_posts_multipart_the_action_route_takes(client, tmp_path, m
 
     page = _page(client)
     content = "2026-01-03 81.2\n2026-01-05 80.9\n"
-    script = (FORM_SCRIPT.replace("SENDER", _js(page, "sendForm")).replace("API", _js(page, "api"))
-              .replace("CONTENT", json.dumps(content)))
+    script = (FORM_SCRIPT.replace("FETCHER", _js(page, "apiFetch")).replace("SENDER", _js(page, "sendForm"))
+              .replace("API", _js(page, "api")).replace("CONTENT", json.dumps(content)))
     r = _node(script)
 
     # A POST to the action route of FormData - no Content-Type of the
-    # page's own, so the browser sets the multipart one, boundary and all
-    # - holding the action, the tile's config as JSON, and the file under
-    # the input's key, as picked.
+    # page's own, so the browser sets the multipart one, boundary and all,
+    # only the header every write carries - holding the action, the
+    # tile's config as JSON, and the file under the input's key, as
+    # picked.
     assert r["url"] == "/api/app/import/action"
     assert r["request"] == {
-        "method": "POST", "headers": None, "form": True,
+        "method": "POST", "headers": {"X-OpenFit": "1"}, "form": True,
         "entries": [["action", "import"], ["cfg", '{"days":3}'],
                     ["file", {"name": "weigh-ins.txt", "type": "text/plain", "size": len(content)}]],
     }
@@ -4125,9 +4129,143 @@ def test_the_file_sender_reaches_the_action_route_through_the_api_block(client):
         "    },"
     ) in page
     send_form = _js(page, "sendForm")
-    assert "fetch(url, {method:'POST', body:form})" in send_form
+    assert "apiFetch(url, {method:'POST', body:form})" in send_form
     assert "Content-Type" not in send_form
     assert page.count("sendForm(") == 2
+
+
+# ---------- signing in: the page's side ----------
+#
+# The page makes every request through apiFetch(): the one place it calls
+# fetch, which puts the X-OpenFit header on its writes (the server's guard
+# refuses a write without it) and reloads on a 401 (the session gone: the
+# reload is the sign-in). And Sign out sits at the foot of Settings.
+
+# fetch( as a call of its own - not apiFetch( - wherever it's written.
+BARE_FETCH = re.compile(r"(?<![\w$])fetch\(")
+
+
+def test_every_request_the_page_makes_goes_through_api_fetch(client):
+    page = _page(client)
+    fetcher = _js(page, "apiFetch")
+    assert len(BARE_FETCH.findall(fetcher)) == 1
+    # Nowhere else on the page: the one inside apiFetch is the only one.
+    assert len(BARE_FETCH.findall(page)) == 1
+    # Every sender uses it; nothing reaches the server another way.
+    for sender in ("getJSON", "fetchJSON", "postJSON", "send", "sendForm"):
+        assert "apiFetch(" in _js(page, sender), sender
+    for other in ("XMLHttpRequest", "sendBeacon", "EventSource", "WebSocket"):
+        assert other not in page, other
+
+
+API_FETCH_SCRIPT = r"""
+    globalThis.location = {href:'http://openfit.test/', origin:'http://openfit.test', reloads:0,
+                           reload(){ this.reloads++; }};
+    const sent = [];
+    let status = 200;
+    globalThis.fetch = async (url, opts) => { sent.push([url, opts]); return {status, ok:status < 300}; };
+    FETCHER
+    (async () => {
+      const r = {};
+      await apiFetch('/api/apps');
+      await apiFetch('/api/apps', {method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'});
+      await apiFetch('/api/apps/x', {method:'delete'});
+      await apiFetch('/api/apps', {method:'HEAD'});
+      await apiFetch('/api/apps', {method:'GET'});
+      await apiFetch('http://elsewhere.test/x', {method:'POST'});
+      await apiFetch('//elsewhere.test/x', {method:'PUT'});
+      await apiFetch('http://openfit.test/api/x', {method:'PUT'});
+      r.sent = sent.map(([url, opts]) => [url, (opts || {}).headers || null]);
+      // The caller's options are its own: never changed.
+      const opts = {method:'POST', headers:{A:'b'}};
+      await apiFetch('/api/x', opts);
+      r.opts = opts;
+      r.before = location.reloads;
+      status = 403;
+      await apiFetch('/api/x', {method:'POST'});
+      r.on403 = location.reloads;
+      status = 401;
+      const resp = await apiFetch('/api/apps');
+      r.on401 = [location.reloads, resp.status];
+      await apiFetch('/api/x', {method:'POST'});
+      r.again = location.reloads;
+      console.log(JSON.stringify(r));
+    })().catch(e => { console.error(e); process.exit(1); });
+"""
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
+def test_api_fetch_marks_its_writes_and_reloads_on_a_401(client):
+    page = _page(client)
+    r = _node(API_FETCH_SCRIPT.replace("FETCHER", _js(page, "apiFetch")))
+    h = {"X-OpenFit": "1"}
+    # The header on every write to this origin, beside the caller's own
+    # headers - never on a read, nor on a request to anywhere else.
+    assert r["sent"] == [
+        ["/api/apps", None],
+        ["/api/apps", {"Content-Type": "application/json", **h}],
+        ["/api/apps/x", h],
+        ["/api/apps", None],
+        ["/api/apps", None],
+        ["http://elsewhere.test/x", None],
+        ["//elsewhere.test/x", None],
+        ["http://openfit.test/api/x", h],
+    ]
+    assert r["opts"] == {"method": "POST", "headers": {"A": "b"}}
+    # A 401 reloads - one each - and is still handed back; nothing else does.
+    assert r["before"] == 0 and r["on403"] == 0
+    assert r["on401"] == [1, 401]
+    assert r["again"] == 2
+
+
+def test_settings_ends_with_sign_out(client):
+    page = _page(client)
+    settings = _js_function(page, "openSettings")
+    button = '<button class="btn sm" data-act="signout" type="button">Sign out</button>'
+    assert settings.count(button) == 1
+    # At the popup's end: after its own Close and Save.
+    assert settings.index('data-act="save"') < settings.index(button)
+    assert settings.index(button) > settings.rindex("modal-actions")
+    assert "    signOut:      ()             => send('/api/auth/logout', 'POST')," in page
+
+
+SIGN_OUT_SCRIPT = r"""
+    const els = {};
+    const q = sel => els[sel] || (els[sel] = {sel, onclick:null, disabled:false, value:'data', focus(){}});
+    let html = '', closed = 0;
+    const openModal = h => { html = h; return {box:{querySelector:q}, close:() => { closed++; }}; };
+    const tabButtons = () => [], openingTab = () => 'data', esc = s => s;
+    const OPENING_TAB = 'of-opening-tab';
+    const calls = [];
+    const api = {signOut:async () => { calls.push('signOut'); return {ok:true}; }};
+    globalThis.location = {reload(){ calls.push('reload'); }};
+    SETTINGS
+    openSettings();
+    (async () => {
+      const out = q('[data-act="signout"]');
+      const pending = out.onclick();
+      const held = out.disabled;
+      await pending;
+      console.log(JSON.stringify({calls, held, closed, shown:html.includes('>Sign out</button>')}));
+    })().catch(e => { console.error(e); process.exit(1); });
+"""
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
+def test_sign_out_ends_the_session_then_reloads(client):
+    page = _page(client)
+    r = _node(SIGN_OUT_SCRIPT.replace("SETTINGS", _js(page, "openSettings")))
+    # Held while it's asked, then the reload: the sign-in, signed out.
+    assert r == {"calls": ["signOut", "reload"], "held": True, "closed": 0, "shown": True}
+
+
+def test_sign_out_through_the_route_signs_the_page_out(client):
+    assert client.get("/api/apps").status_code == 200
+    assert client.post("/api/auth/logout").get_json() == {"ok": True}
+    assert client.get("/api/apps").status_code == 401
+    resp = client.get("/")
+    assert re.search(r'<body data-view="signin">', resp.get_data(as_text=True))
+    resp.close()
 
 
 # ---------- the timeline element ----------

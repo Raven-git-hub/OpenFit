@@ -11,6 +11,7 @@ import threading
 from datetime import date
 
 import pytest
+from conftest import signed_in
 
 import main
 import migrations
@@ -148,7 +149,7 @@ def background(garmin):
 
 def post_sync():
     """POST /api/sync/garmin from the calling thread, as a request would."""
-    resp = main.app.test_client().post("/api/sync/garmin")
+    resp = signed_in(main.app.test_client()).post("/api/sync/garmin")
     return resp.status_code, resp.get_json()
 
 

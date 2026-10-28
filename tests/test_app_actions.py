@@ -37,6 +37,7 @@ from io import BytesIO
 from pathlib import Path
 
 import pytest
+from conftest import signed_in
 
 import apps
 import host
@@ -1875,7 +1876,7 @@ def test_weigh_ins_migrated_by_006_still_read_back(db_at_version, monkeypatch):
     conn.close()
 
     monkeypatch.setitem(main.app.config, "DB_PATH", path)
-    assert main.app.test_client().get("/api/metric/weight_kg").get_json()["points"] == [
+    assert signed_in(main.app.test_client()).get("/api/metric/weight_kg").get_json()["points"] == [
         {"date": "2026-01-01", "value": 82.0, "source": "manual"},
         {"date": "2026-01-02", "value": 81.5, "source": "manual"},
         {"date": "2026-01-03", "value": 80.25, "source": "manual"},

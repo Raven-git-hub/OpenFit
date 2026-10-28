@@ -11,6 +11,7 @@ writing the readings - as a sync does.
 import sqlite3
 
 import pytest
+from conftest import signed_in
 
 from derived import backfill_derived, recompute_derived
 from metrics import METRICS
@@ -211,7 +212,7 @@ def test_activity_migrated_by_005_reads_back_unchanged(db_at_version, monkeypatc
     conn.close()
 
     monkeypatch.setitem(main.app.config, "DB_PATH", path)
-    client = main.app.test_client()
+    client = signed_in(main.app.test_client())
 
     assert client.get("/api/activity").get_json() == [
         {"date": "2026-01-02", "steps": 7000, "resting_hr": 61, "source": "garmin"},
