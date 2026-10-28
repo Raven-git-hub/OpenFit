@@ -78,6 +78,9 @@
   .msg.pre { white-space: pre-wrap; }
   .small, pre.small { font-size: 12px; }
   .banner { border-color: var(--warn); }
+  .hint { display: block; font-size: 12px; color: var(--warn); margin-top: 2px; }
+  ul.apps { list-style: none; padding: 0; margin: 8px 0 0; display: flex; flex-wrap: wrap; gap: 6px; }
+  ul.apps li { font-family: var(--mono); font-size: 13px; background: var(--inset); border-radius: 6px; padding: 1px 8px; }
   [hidden] { display: none !important; }
 </style>
 </head>
@@ -174,6 +177,27 @@
       <div class="msg" id="updatesMsg"></div>
     </section>
 
+    <section class="card" id="libraryCard">
+      <h2>App library</h2>
+      <p class="muted">The apps every user can install, published from OpenFit's library. New apps reach everyone
+        without a restart.</p>
+      <div class="muted" id="libWhen"></div>
+      <div class="confirm" id="libStale" hidden>
+        <p><strong>The app library couldn't be updated.</strong> <span id="libWhy"></span></p>
+        <pre class="small" id="libDetail" hidden></pre>
+        <div class="row"><button type="button" id="publishBtn">Publish again</button></div>
+      </div>
+      <ul class="apps" id="libApps"></ul>
+      <div class="row" id="libActs" style="margin-top:12px" hidden>
+        <button class="primary" id="appsBtn" type="button">Update apps</button>
+      </div>
+      <div class="confirm" id="appsSure" hidden>
+        <p>Publishes the new apps to every user. Nobody's OpenFit restarts.</p>
+        <div class="row"><button type="button" id="appsCancel">Cancel</button><button class="primary" type="button" id="appsGo">Update apps</button></div>
+      </div>
+      <div class="msg pre" id="libMsg"></div>
+    </section>
+
     <section class="card" id="adminNote" hidden>
       <h2>An Admin update is available</h2>
       <p id="adminWhat"></p>
@@ -221,10 +245,12 @@ const OUTCOMES = {
 const GROUP_NOTES = {
   app: "OpenFit itself: rebuilt by Update OpenFit, and every user moved onto it.",
   admin: "This Admin: pulled by Update OpenFit, then rebuilt by Update the Admin (below).",
-  library: "The app library: no rebuild needed.",
+  library: "The app library: no rebuild needed. On its own, Update apps (below) publishes it to every user, with no restarts.",
   other: "Docs, tests and the rest.",
 };
-const KINDS = { update: "Update", undo: "Undo", add_user: "Add user", admin_update: "Update the Admin" };
+const KINDS = {
+  update: "Update", undo: "Undo", add_user: "Add user", admin_update: "Update the Admin", update_apps: "Update apps",
+};
 const STATES = {
   running: ["Running", "good"], stopped: ["Stopped", "muted"], missing: ["Not found", "crit"], unknown: ["Unknown", "warn"],
 };
@@ -343,7 +369,8 @@ function paintOp(op) {
   }
   const what = op.kind === "undo" ? "Undo last update"
     : op.kind === "add_user" ? `Add user ${op.user ? op.user.name : ""}`
-    : op.kind === "admin_update" ? "Update the Admin" : "Update OpenFit";
+    : op.kind === "admin_update" ? "Update the Admin"
+    : op.kind === "update_apps" ? "Update apps" : "Update OpenFit";
   head.append(el("strong", what, "grow"), pill(op.outcome));
   for (const line of op.log || []) {
     const div = el("div");
@@ -381,11 +408,17 @@ function paintUsers(s, busy) {
     const [text, tone] = STATES[u.state] || [u.state, "muted"];
     const state = el("td");
     state.append(el("span", text, "pill " + tone));
+    // A container from before the app library: it gets the mount when it's next made anew.
+    if (!u.library && (u.state === "running" || u.state === "stopped")) {
+      state.append(el("span", "Restart to see the app library", "hint"));
+    }
     const acts = el("td", null, "actions");
     const running = u.state === "running";
     const verb = running ? "stop" : "start";
+    const path = `/api/users/${encodeURIComponent(u.name)}/`;
     acts.append(button(running ? "Stop" : "Start", "", (b) => userAction(
-      `/api/users/${encodeURIComponent(u.name)}/${verb}`, b, {}, running ? "Stopping…" : "Starting…"), busy));
+      path + verb, b, {}, running ? "Stopping…" : "Starting…"), busy));
+    acts.append(button("Restart", "", (b) => userAction(path + "restart", b, {}, "Restarting…"), busy));
     if (!u.primary) acts.append(button("Remove", "danger", () => askRemove(u.name), busy));
     const tr = el("tr");
     tr.append(who, link, state, acts);
@@ -410,6 +443,30 @@ function paintUsers(s, busy) {
   $("deleteGo").disabled = busy || $("deleteName").value !== deleting;
 }
 
+function paintLibrary(s, busy) {
+  const lib = s.library;
+  $("libWhen").textContent = lib.published_at
+    ? `Published ${when(lib.published_at)}, from version ${lib.short}.` : "Not published yet.";
+  const apps = $("libApps");
+  apps.replaceChildren();
+  for (const name of lib.apps) apps.append(el("li", name));
+  if (lib.published_at && !lib.apps.length) apps.append(el("li", "No apps"));
+  // Behind the code: a publish failed (or never ran). Publish again tries once more.
+  $("libStale").hidden = lib.current !== false;
+  $("libWhy").textContent = lib.short
+    ? `It's still on version ${lib.short}, not the version OpenFit is on.` : "Nothing is published yet.";
+  const why = lib.error
+    ? [lib.error.text.startsWith("The app library couldn't be updated") ? "" : lib.error.text, lib.error.detail]
+    : [];
+  $("libDetail").textContent = why.filter(Boolean).join("\n");
+  $("libDetail").hidden = !$("libDetail").textContent;
+  $("publishBtn").disabled = busy;
+  $("libActs").hidden = !s.update_apps_available;
+  $("appsBtn").disabled = busy;
+  $("appsGo").disabled = busy;
+  if (!s.update_apps_available) $("appsSure").hidden = true;
+}
+
 function paint(s) {
   const running = s.op && s.op.outcome === "running";
   paintUsers(s, running);
@@ -425,7 +482,11 @@ function paint(s) {
       ? `${check.behind} new commit${check.behind === 1 ? "" : "s"} on GitHub.`
       : "OpenFit is up to date."));
   }
+  if (s.update_apps_available) {
+    summary.append(el("p", "Only the app library changed: Update apps, on the App library card, publishes it.", "muted"));
+  }
   paintGroups(check);
+  paintLibrary(s, running);
 
   $("updateBtn").hidden = !s.update_available;
   $("updateBtn").disabled = running;
@@ -695,6 +756,44 @@ $("adminGo").addEventListener("click", async () => {
   loadStatus();
 });
 $("undoGo").addEventListener("click", () => start("/api/undo", $("undoGo")));
+
+$("appsBtn").addEventListener("click", () => { $("appsSure").hidden = false; });
+$("appsCancel").addEventListener("click", () => { $("appsSure").hidden = true; });
+$("appsGo").addEventListener("click", async () => {
+  const btn = $("appsGo"), msg = $("libMsg");
+  msg.className = "msg pre";
+  msg.textContent = "";
+  btn.disabled = true;
+  const r = await api("/api/library/update", {});
+  btn.disabled = false;
+  $("appsSure").hidden = true;
+  if (r.status === 202) {
+    msg.textContent = "Updating the apps… its progress is under Activity.";
+  } else {
+    msg.className = "msg pre err";
+    msg.textContent = r.data.error || "That didn't start.";
+  }
+  loadStatus();
+});
+
+// Publish again runs in the request: a short wait, then the card read again.
+$("publishBtn").addEventListener("click", async () => {
+  const btn = $("publishBtn"), msg = $("libMsg");
+  msg.className = "msg pre";
+  msg.textContent = "";
+  btn.disabled = true;
+  btn.textContent = "Publishing…";
+  const r = await api("/api/library/publish", {});
+  btn.disabled = false;
+  btn.textContent = "Publish again";
+  if (r.status === 200) {
+    msg.textContent = "Published the app library.";
+  } else {
+    msg.className = "msg pre err";
+    msg.textContent = (r.data.error || "That didn't work.") + (r.data.detail ? "\n" + r.data.detail : "");
+  }
+  loadStatus();
+});
 
 show(document.body.dataset.state || "login");
 </script>

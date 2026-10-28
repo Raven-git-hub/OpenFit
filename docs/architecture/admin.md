@@ -1,6 +1,6 @@
-# The OpenFit Admin (A1, A2, A4): updates behind buttons, users, and its own update
+# The OpenFit Admin (A1, A2, A4, A5): updates behind buttons, users, its own update, and the app shelf
 
-_Built: A1, A2 and A4, slices of the Admin in
+_Built: A1, A2, A4 and A5, slices of the Admin in
 [distribution.md](distribution.md). The code is `admin/`; the tests are
 `tests/test_admin_*.py`._
 
@@ -23,6 +23,15 @@ A4 lets the Admin **update itself**: Update the Admin, in place of a command
 to run on the server, through a short-lived helper container that swaps the
 Admin over and puts the old one back if the new one doesn't answer.
 
+A5 builds the **app shelf**: a Docker volume the Admin fills with the
+official apps (the repo's `library/`), which every user's OpenFit mounts
+read-only at `/library`. User containers stay fully offline: there's no
+network between containers, only the shared read-only volume. Every app on
+the shelf is available to every user (no allowlist). An app-only change goes
+out with **Update apps**: no rebuild and no restarts. Each user gets the
+mount at their next recreate, and **Restart** does that on its own. Nothing
+in the user system reads `/library` yet: Browse is B1.
+
 ## What the Admin doesn't do yet
 
 - A login in the user system: an added user's OpenFit is open to anyone who
@@ -32,8 +41,11 @@ Admin over and puts the old one back if the new one doesn't answer.
   different versions.
 - Update OpenFit and update itself in one go: Update OpenFit pulls the
   Admin's new code, and Update the Admin is a second button.
-- Serve the library, Browse, organisation repos, `replaces` (L3) or
-  host-version labels (L4).
+- Browse, or installing an app from the shelf (B1); self-updating installed
+  apps (B3); organisation repos (A6); `replaces` (L3) or host-version labels
+  (L4).
+- Scheduled updates: an update runs now, or is found by the weekly check and
+  left for a person.
 - Fetch anything from GitHub but the repo itself: pull request numbers are
   read from merge commit titles and linked, never fetched.
 - The proxy and `.local` names. OpenFit and the Admin are reached at
@@ -103,7 +115,8 @@ in the order they were added):
 - **The primary user** is the OpenFit that was already running, adopted in
   place exactly as in A1. Its name is `admin.json`'s `user` (`andy`), its
   compose project `openfit`, its compose file the repo's own
-  `docker-compose.yml`, its port `admin.json`'s (8080). Its project builds
+  `docker-compose.yml` (with the Admin's override after it, since A5: the
+  shelf's mount), its port `admin.json`'s (8080). Its project builds
   the image every user runs, `openfit-tracker:latest`. It can be stopped and
   started, never removed.
 - **An added user** is one the Admin made. Each has the compose project
@@ -120,19 +133,24 @@ in the order they were added):
         - "<port>:80"
       volumes:
         - tracker-data:/data
+        - openfit-library:/library:ro
       restart: unless-stopped
   volumes:
     tracker-data: {}
+    openfit-library:
+      external: true
   ```
 
-  Compose names its volume `openfit-<name>_tracker-data`.
+  Compose names its volume `openfit-<name>_tracker-data`. The app shelf is
+  mounted read-only from the Admin's volume, `external`, so compose never
+  makes or removes it (see [The app shelf](#the-app-shelf-a5)).
 
 **Why not the repo's compose file?** The root `docker-compose.yml` loads the
 repo's `.env` into the container, and that file can hold the primary's
 Garmin login and `OPENFIT_SECRET_KEY`. So an added user is never created from
 it. Their file has no `env_file`, no `environment` and no bind mount: the
-image, a port and a volume of their own, nothing else. A test holds the
-written file to the template byte for byte.
+image, a port, a volume of their own and the shelf, read-only, nothing else.
+A test holds the written file to the template byte for byte.
 
 The added users are kept in `/data/users.json`:
 
@@ -200,18 +218,26 @@ is reattached.", step 2 is skipped, and a failure takes the container down
 with a plain `down`, never `-v`. They come back on the port given, as a new
 user (a new `created_at`).
 
-### Start and stop
+### Start, stop and restart
 
-`POST /api/users/<name>/start` and `/stop`, for any user, the primary
-included; an unknown name is 404. Each takes the lock and runs in the
+`POST /api/users/<name>/start`, `/stop` and `/restart`, for any user, the
+primary included; an unknown name is 404. Each takes the lock and runs in the
 request:
 
 - Stop is `docker compose … stop tracker`.
 - Start is `docker compose … up -d --no-build tracker`, which recreates the
-  container if the image has moved on since it was last started (a user
-  stopped through an update starts on the new version).
+  container if the image or the compose files have moved on since it was
+  last started (a user stopped through an update starts on the new version).
+- Restart (A5) is `docker compose … up -d --no-build --force-recreate
+  tracker`, then the health check, as an update does: the container made
+  anew from the user's compose files on the image `:latest` names. It's how
+  a user picks up the shelf's mount without waiting for an update, and it
+  starts a stopped user.
 
-A failure is a 502 with the output behind it, a port clash said as above.
+A failure is a 502 with the output behind it, a port clash said as above; a
+restart that comes up but doesn't answer is a 502 too ("<name>'s OpenFit
+restarted, but didn't answer."). Start and Restart first check the shelf's
+volume is there, as every recreate does (below).
 
 ### Remove, and delete data
 
@@ -271,15 +297,19 @@ retried hourly until one succeeds.
 ## Updating OpenFit, for everyone
 
 **Update OpenFit** is offered when the last check shows anything new
-(pulling brings everything, so it's one button). It asks first: "This stops
-every user's OpenFit for about a minute and backs up everyone's data first."
-One operation runs at a time (an update, an undo, a check, or a user action),
-and a second request gets 409.
+(pulling brings everything, so it's one button), unless only the app library
+changed: then it's **Update apps** (below), since there's nothing in OpenFit
+to update. It asks first: "This stops every user's OpenFit for about a minute
+and backs up everyone's data first." One operation runs at a time (an update,
+an undo, a check, or a user action), and a second request gets 409.
 
 The refusals run in the request, so each is an immediate 409 with nothing
-changed: no update on offer; a dirty tree ("The server's copy of OpenFit has
-local changes: `<files>`. Nothing was changed."); a repo not on `main`. The
-rest runs in a background thread, in this order:
+changed: no update on offer (with only apps changed: "Only the app library
+changed, so there's nothing in OpenFit to update: use Update apps."); a dirty
+tree ("The server's copy of OpenFit has local changes: `<files>`. Nothing was
+changed."); a repo not on `main`; the shelf's volume not there ("The Admin
+needs updating first: its app library storage isn't there yet."). The rest
+runs in a background thread, in this order:
 
 1. **Remember.** `HEAD` is noted as `old`. The primary's container is found
    by its compose labels, and its image is tagged `openfit-tracker:prev`.
@@ -306,9 +336,14 @@ rest runs in a background thread, in this order:
 6. **Health check** each user that was running. Their container is found
    again (compose made a new one), and `docker exec <container> python -c
    "<urlopen http://127.0.0.1:80/, exit 0 on a 200>"` is polled every 2 s for
-   up to 60 s. If all answer, the update is done: backups are pruned to the
-   newest 3 sets, the check is refreshed, "ok". If anyone doesn't, the undo
-   sequence (below) runs for everyone: "Updated, didn't come up, rolled back."
+   up to 60 s. If anyone doesn't, the undo sequence (below) runs for
+   everyone: "Updated, didn't come up, rolled back."
+7. **Publish the apps** (A5) from the new `HEAD` to the shelf. A publish
+   that fails doesn't undo the update: the shelf stays as it was, the log
+   says so ("The update itself is done. Use Publish again, on the App
+   library card, …"), and the page's App library card shows "The app library
+   couldn't be updated" with **Publish again**. Then backups are pruned to
+   the newest 3 sets, the check is refreshed, "ok".
 
 **Backing out.** If anyone doesn't stop, or any backup fails, the update is
 called off: the backups this update took are deleted (a partial set), the code
@@ -341,6 +376,10 @@ by their `created_at`). Otherwise there's nothing to undo. It warns:
 4. `git reset --hard <old>` (as the owner).
 5. Recreate each user as they were (running, or created and stopped, as in
    step 5 above), then health-check the ones that were running.
+6. Publish the apps again from `HEAD` (A5), so the shelf matches the code
+   again: after an Undo, the old version's apps. A rollback does the same,
+   though an update's publish only runs once everyone answered, so the shelf
+   is usually there already and nothing is rewritten.
 
 **If a restore fails** for one user, it stops there: nobody is started, and
 the code and image stay on the new version (starting anyone on a
@@ -378,19 +417,28 @@ pruned.
 
 - **Users**: the version everyone is on, then a row per user: name ("you"
   beside the primary), `http://<host>:<port>` as a link, state (Running,
-  Stopped, Not found), Start or Stop, and Remove (not for the primary, with
-  its confirm). **Add user**: a name, a port prefilled with the suggestion,
+  Stopped, Not found), with "Restart to see the app library" under it for a
+  container without the shelf's mount, Start or Stop, Restart, and Remove
+  (not for the primary, with its confirm). **Add user**: a name, a port prefilled with the suggestion,
   and Add; the progress shows under Activity. **Kept data**: each removed
   user with Delete data, which asks for their name.
-- **Updates**: the check, Update OpenFit and Undo last update, as above.
+- **Updates**: the check, Update OpenFit and Undo last update, as above; with
+  only the app library changed, a line pointing to Update apps.
+- **App library** (A5): when the shelf was published and from which version,
+  the apps on it by folder name, **Update apps** when it's offered (with its
+  confirm), and, when the shelf isn't on the version OpenFit is on (a publish
+  failed), "The app library couldn't be updated", why, and **Publish again**.
 - **An Admin update is available**: only when there is one, with Update the
   Admin when it can run (below).
 - **Activity**: the running or last operation's log, and the last few.
 - **Backups**: each with its user, name, size and when.
 
-`GET /api/status` carries `users: [{name, port, primary, state}]` (state
-`running`, `stopped` or `missing`; `unknown` if Docker didn't answer),
-`removed: [{name, removed_at}]` and `next_port`, beside A1's fields. Every
+`GET /api/status` carries `users: [{name, port, primary, state, library}]`
+(state `running`, `stopped` or `missing`; `unknown` if Docker didn't answer;
+`library` whether its container has `openfit-library` mounted at `/library`,
+read from `docker inspect`), `removed: [{name, removed_at}]`, `next_port`,
+`update_apps_available` and `library: {published_at, commit, short, apps,
+current, error}`, beside A1's fields. Every
 state-changing call goes through the page's `fetch` wrapper (the CSRF header)
 and needs a session.
 
@@ -570,6 +618,166 @@ The settings the update started with are in the Admin's volume, under
 `self-update/<stamp>/`, if they need putting back by hand. If no Admin
 answers at all, `docker logs openfit-admin-admin-1` says why.
 
+## The app shelf (A5)
+
+Apps reach users through a **shelf**: a Docker volume the Admin fills, which
+every user's OpenFit mounts read-only at `/library`. There's no network
+between containers, so user containers stay fully offline. Every app on the
+shelf is available to every user; there's no allowlist. Installed apps are
+separate copies in each user's `/data/apps` (B1 will copy them from the
+shelf), and the user system already reloads an app whose files change, which
+is what B3's self-updating will rely on. No restart is ever needed to see new
+shelf contents: the mount is live.
+
+### The volume and its layout
+
+`admin/docker-compose.yml` has a volume `library`, `name: openfit-library`,
+mounted read-write in the Admin at `/library`. Compose makes it when the
+Admin is created from that file (Update the Admin does), and nothing ever
+removes it.
+
+```
+/library/
+  index.json
+  openfit -> .sets/openfit-<commit12>      (a relative symlink)
+  .sets/openfit-<commit12>/<app>/<files>
+```
+
+Each source (`openfit` now, organisation repos in A6) is a relative symlink
+to an immutable published set. `index.json` says what's on the shelf:
+
+```json
+{"published_at": "2026-10-27T12:00:00Z",
+ "sources": {"openfit": {"commit": "<40 hex>",
+                         "apps": {"steps": {"sha256": "<fingerprint>"}}}}}
+```
+
+The fingerprint is `admin_ops.fingerprint()` of the published app folder
+(each file's path and contents, dotfiles and caches left out). B1 and B3 read
+the index. Publishing one source keeps any other source's entry as it is.
+
+### Publishing
+
+`Admin.publish_official()` publishes the repo's `library/` at `HEAD`: the
+working tree, which the Admin keeps clean. What's copied:
+
+- **Apps**: each top-level folder named `[a-z0-9][a-z0-9-]*` is one app, at
+  most 200 of them, by name. Anything else at the top level (a file, a link,
+  another name) is left out and logged, and so is an app folder with no
+  `app.yaml`, or one over **64 files** or **16 MB**.
+- **Files**: regular files only, never through a link (a link is left out and
+  logged; files are opened `O_NOFOLLOW`). Dotfiles, `__pycache__` and `*.pyc`
+  are left out. Sub-folders are copied as they are.
+- Nothing else is checked: the Admin has no `apps.py`, and the user system
+  checks an app when it's installed (B1), as it does today.
+
+It's atomic (`publish_set()`): the apps are copied into a hidden
+`.sets/.tmp-openfit-<commit12>-<hex>`, renamed to `.sets/openfit-<commit12>`
+once whole, then a new link `openfit.new` is made beside the old one and
+renamed over it (`os.replace`): a reader sees the old set or the new one,
+never half of either. `index.json` is written last, by a temp file and
+`os.replace`. Then older sets are deleted, keeping the current one and the
+one before it. A publish that fails leaves the shelf exactly as it was: the
+new set deleted, the link and the index untouched (or, if it failed after the
+swap, put back). Publishing the commit the shelf is already on never rewrites
+its set (a set never changes); only the index, if it doesn't already say so.
+
+Publishing never runs a docker command or a helper: it's file work through
+the Admin's own mount. Every path written is under `/library`, built with
+`os.path.join` from checked names, and each is resolved with
+`os.path.realpath` and checked to sit inside `/library` before it's written.
+
+### When it runs
+
+1. **The Admin's startup**, before the weekly check and the server start: if
+   `index.json` is missing, or its `openfit` commit isn't `HEAD`. So the shelf
+   appears by itself on first rollout. A failure is logged and shown on the
+   page; it never stops the Admin starting.
+2. **The end of a successful Update OpenFit**, after the health checks and
+   before pruning (step 7 above). A failure there doesn't undo the update.
+3. **An Undo or a rollback that resets the code**: published again from the
+   reset `HEAD`, so the shelf matches the code again.
+4. **Update apps** (below).
+5. **Publish again** (`POST /api/library/publish`), offered on the App
+   library card when the shelf isn't on the version OpenFit is on: a short
+   operation under the lock, in the request; a failure is a 502 with why.
+
+### Update apps
+
+Offered when the last check shows new commits (`behind > 0`), nothing in the
+**User system** or **Admin** groups, and something in the **App library**
+group (docs and the rest can come too). While it's offered, Update OpenFit
+isn't: there's nothing in OpenFit to update. When OpenFit or the Admin also
+changed, only Update OpenFit is offered, and it publishes the apps as part of
+its run. It asks first: "Publishes the new apps to every user. Nobody's
+OpenFit restarts."
+
+`POST /api/library/update` starts it (`kind: "update_apps"`, background,
+under the lock). The refusals, in the request: nothing to apply ("OpenFit
+itself changed too, so use Update OpenFit: it updates the apps as well.", or
+"Check for updates first."), a dirty tree, a repo not on `main`, as for
+Update OpenFit. Then:
+
+1. `HEAD` noted as `old`, then `git merge --ff-only origin/main`.
+2. **What really arrived**: `git diff --name-only <old> HEAD`. If anything
+   under `app/` or `admin/` came in (GitHub moved since the check, and
+   something fetched it), `git reset --hard <old>` and fail: "OpenFit itself
+   changed since the last check. Check again, then use Update OpenFit."
+3. **Publish.** If it fails, `git reset --hard <old>` and fail, the shelf as
+   it was.
+4. The check refreshed, "ok": "Updated the app library to `<short>`."
+
+No container is stopped, recreated or restarted, and no docker command runs
+at all.
+
+### The mounts
+
+- **Added users**: the template above mounts `openfit-library:/library:ro`
+  and declares the volume `external: true`.
+- **The primary** gets it from an override the Admin writes into its own
+  volume, `/data/primary.override.yml`:
+
+  ```yaml
+  services:
+    tracker:
+      volumes:
+        - openfit-library:/library:ro
+  volumes:
+    openfit-library:
+      external: true
+  ```
+
+  `compose()` passes it after the repo's file for every primary command:
+  `-f <OPENFIT_REPO>/docker-compose.yml -f /data/primary.override.yml`, those
+  two, in that order. The repo's `docker-compose.yml` is unchanged. The
+  override is in the Admin's storage, not on a host path, so **starting the
+  primary by hand** with compose in the repo (`docker compose up -d`) leaves
+  the shelf out, from whenever that recreates its container until the Admin
+  next recreates it (an update, or Restart).
+- **At startup** the Admin writes the override if it's missing or differs,
+  and rewrites every added user's compose file from the template if it
+  differs. Neither restarts anyone: a user picks the mount up at their next
+  recreate, an update or **Restart**.
+- `GET /api/status` marks each user `library: true` or `false`, read from
+  `docker inspect`: is `openfit-library` mounted at `/library`? The page shows
+  "Restart to see the app library" beside a user without it.
+- **The volume must be there before any recreate.** Every user's compose
+  files name it as external, so recreating one without it would fail. So
+  Restart, Start, Add user, Update OpenFit and Undo first run `docker volume
+  inspect openfit-library`, and if it's missing refuse (409): "The Admin
+  needs updating first: its app library storage isn't there yet." (It's
+  missing only if the Admin wasn't recreated from its new compose file.)
+  Update apps recreates nobody, so it doesn't ask.
+
+### Rolling A5 out
+
+1. **Update OpenFit**, which pulls this code.
+2. **Update the Admin** (the button exists since A4). The new Admin's compose
+   file makes the shelf's volume, and the new Admin publishes to it as it
+   starts, and writes the users' mounts.
+3. **Restart** each user to give them the mount. Nothing reads it until B1,
+   so there's no rush.
+
 ## The safety rules
 
 The Admin holds the docker socket, so it has full control of the host. A
@@ -577,8 +785,9 @@ shared server runs other things (n8n, Open WebUI, Music Assistant,
 Tailscale sidecars and more), and the Admin must never touch any of them.
 
 - **Its own users' projects only.** Every compose command is one of two
-  shapes: `docker compose -p openfit -f <OPENFIT_REPO>/docker-compose.yml …`,
-  run in `OPENFIT_REPO`, for the primary; or `docker compose -p
+  shapes: `docker compose -p openfit -f <OPENFIT_REPO>/docker-compose.yml -f
+  /data/primary.override.yml …`, run in `OPENFIT_REPO`, for the primary
+  (exactly those two files, in that order); or `docker compose -p
   openfit-<name> -f /data/users/<name>/docker-compose.yml …`, for a name in
   `users.json`. The repo's compose file is only ever used with `-p openfit`,
   and `compose()` refuses any other pairing (a test builds a `User` breaking
@@ -601,14 +810,22 @@ Tailscale sidecars and more), and the Admin must never touch any of them.
   `openfit.admin.helper=true`, always `--rm`, from its own image (the
   backup helpers, and the update helper above);
   `docker image inspect openfit-tracker:latest`; `docker volume inspect` of
-  the volume a user being added would get; and `docker volume rm
+  the volume a user being added would get, and of the shelf's,
+  `openfit-library`, before anything that recreates a user; and `docker volume rm
   openfit-<name>_tracker-data`, for a name in `removed`, under Delete data's
   confirm. The tags it sets are `openfit-tracker:prev` and
   `openfit-tracker:latest`. Nothing else is listed, inspected, stopped or
   removed; the Admin doesn't list other containers, even to find free ports.
 - **Data deleted in two places only.** `down -v` only in a failed add, on a
   volume that add made; `docker volume rm` only in Delete data. Remove is
-  always a plain `down`.
+  always a plain `down`. The shelf's volume is never removed: the users'
+  files name it `external`, so not even a failed add's `down -v` touches it.
+- **The shelf is written as files, never through docker.** Publishing is
+  file work through the Admin's own `/library` mount: no docker command and
+  no helper (a test fails any docker call made from a publishing function).
+  Every path it writes is under `/library`, built from checked names and
+  each resolved (`os.path.realpath`) and checked inside the shelf before
+  it's written; nothing in the repo is followed through a link.
 - **No shell.** Every command is an argument list, run through one `Runner`
   (`admin_ops.py`) with `subprocess.run`, never a shell. What a person types
   reaches a command only as a user's name or port, after the rules above. The
@@ -631,7 +848,8 @@ compose file, because the backup helpers mount it by name), at `/data`:
 | --- | --- |
 | `admin.json` | The settings, written with the defaults on first start: `{"user": "andy", "project": "openfit", "service": "tracker", "port": 8080, "branch": "main"}`, the primary user. No UI changes them. |
 | `users.json` | The added users and the removed ones whose data is kept (above). |
-| `users/<name>/docker-compose.yml` | Each added user's compose file, from the template. |
+| `users/<name>/docker-compose.yml` | Each added user's compose file, from the template; rewritten at startup if it differs. |
+| `primary.override.yml` | The primary's mount of the shelf (A5), passed after the repo's compose file; rewritten at startup if it differs. |
 | `auth.json` | The password hash (0600). |
 | `secret_key` | The session key (0600). |
 | `last_check.json` | The last check, and the last failed one's error. |
@@ -641,7 +859,8 @@ compose file, because the backup helpers mount it by name), at `/data`:
 | `self_update_result.json` | The update helper's log while it runs, `{op_id, stamp, outcome, lines}`; deleted once an Admin has finished the operation from it. |
 
 Each user's own data is their volume: `openfit_tracker-data` for the primary,
-`openfit-<name>_tracker-data` for an added user.
+`openfit-<name>_tracker-data` for an added user. The app shelf is the volume
+`openfit-library` (A5), the Admin's `/library` and every user's, read-only.
 
 ## Try it
 
@@ -653,3 +872,9 @@ For A4: install it the old way once (Update OpenFit, then the command the
 note shows). The next time an Update OpenFit brings Admin changes, the note
 shows **Update the Admin**: the page goes away for under a minute, comes
 back by itself, and Activity reads "The Admin updated itself to `<sha>`."
+
+For A5: Update OpenFit, then Update the Admin. The App library card shows
+the shelf published from the version OpenFit is on, with its apps. Restart a
+user, and the "Restart to see the app library" hint beside them goes. The
+next app-only change on GitHub shows **Update apps** in place of Update
+OpenFit, and nobody's OpenFit restarts.

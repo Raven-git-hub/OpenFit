@@ -1,11 +1,11 @@
 # OpenFit distribution: the library, the Admin and the user system
 
 _Design record · decided 2026-10-27. Built so far: the library folder (L1),
-library app ids with read-only library apps (L2), and three Admin slices:
+library app ids with read-only library apps (L2), and four Admin slices:
 updates for the existing OpenFit (A1), adding users, with updates moving
-everyone together (A2), and the Admin's self-update (A4, all three
-[admin.md](admin.md)); everything else here is designed, not yet in the
-code._
+everyone together (A2), the Admin's self-update (A4) and the app shelf (A5,
+all four [admin.md](admin.md)); everything else here is designed, not yet in
+the code._
 
 OpenFit is splitting into three layers: the repo, an **Admin** container that
 manages user containers on a server, and the **user system** (today's `app/`).
@@ -14,19 +14,21 @@ Apps such as FRMS are no longer part of the user system. They live in a
 records how the three fit together, so each slice is built against one design
 rather than its own guess. Until a slice lands, the code is as `CLAUDE.md`
 describes it: no auth on core but the webhook's token, and an Admin that
-adds users, updates them all together (A1, A2) and updates itself (A4), and
+adds users, updates them all together (A1, A2), updates itself (A4) and
+publishes the official apps to a read-only shelf every user mounts (A5), and
 nothing more.
 
 ## Layers
 
 - **The repo.** One repo holds `app/` (the user system), `library/` (the
-  official apps) and `admin/` (the Admin, three of its slices built). The official repo is public. An
+  official apps) and `admin/` (the Admin, four of its slices built). The official repo is public. An
   organisation's app repo is separate and private, and the Admin reads it with
   a read-only key.
 - **The Admin.** One container per server. It creates users, checks for
-  updates, applies them and serves the app library. It is the only OpenFit
-  component that talks to the internet (GitHub), and only to check for
-  updates or pull them.
+  updates, applies them and serves the app library, as a read-only shelf: a
+  volume it fills, which every user's container mounts (A5). It is the only
+  OpenFit component that talks to the internet (GitHub), and only to check
+  for updates or pull them.
 - **The user system.** One container per user, with its own `/data` volume.
   It is fully offline apart from its own sync plugins' calls to their device
   APIs, as it is today.
@@ -37,7 +39,8 @@ nothing more.
   are reported separately for the user system, the admin system and the app
   repository, each with its release notes. A change is classified by the
   folder it's in, so an app change never triggers an image rebuild: the
-  library is outside the image (below).
+  library is outside the image (below). An app-only change goes out with
+  **Update apps**, with no rebuild and no restarts (A5).
 - **Updating is always manual.** The user system image is built once per
   version, tagged by commit. Each user's data is backed up, then their
   container is recreated on the new image. The previous tag is kept, for
@@ -102,10 +105,35 @@ project goes through one function and is one of two (`build admin`, `up -d
 --no-build --force-recreate admin`); no user's project is touched. A4
 itself is installed with the manual command one last time.
 
+### The app shelf (A5, built)
+
+**Delivery is a read-only shelf, with no allowlist.** The Admin's compose
+file has a volume, `openfit-library`, which the Admin fills through its own
+mount at `/library` and every user's OpenFit mounts read-only at `/library`:
+the primary through an override the Admin writes, `/data/primary.override.yml`,
+passed after the repo's compose file (which doesn't change); an added user
+through their template. There's no network between containers, so user
+containers stay fully offline, and every app on the shelf is available to
+every user. The official apps (the repo's `library/`) are published as an
+immutable set, `.sets/openfit-<commit12>`, behind a relative symlink
+`openfit`, swapped in one step so a reader sees the old set or the new, never
+half; `index.json`, written last, says each source's commit and each app's
+fingerprint, for B1 and B3 to read. Publishing is file work, no docker
+command; a publish that fails leaves the shelf as it was. It runs at the
+Admin's startup when the shelf is behind the code, at the end of Update
+OpenFit, after an Undo or rollback, and in **Update apps**, offered in place
+of Update OpenFit when only the app library changed: pull, check nothing
+under `app/` or `admin/` arrived, publish, with no container stopped,
+recreated or restarted. The mount is live, so new shelf contents need no
+restart; a user picks the mount itself up at their next recreate, an update
+or **Restart** (new in A5, per user). Nothing reads `/library` yet: Browse is
+B1.
+
 ## Apps
 
 - **The library** holds the official apps plus each organisation repo's. Any
-  user can install any library app; there is no allowlist.
+  user can install any library app; there is no allowlist. It reaches users
+  as the read-only shelf (A5, above).
 - **Names.** A library app is named `<source>.<name>`: `openfit.` for an
   official app, `openfitavi.` for the example aviation repo's. **The repo
   assigns the source, never the app** (decided, and built in L2, below): a
@@ -251,9 +279,19 @@ a second real person gets a container. Re-ordered 2026-10-27, after A1:
 4. **A4: the Admin's self-update** (built), through a short-lived helper
    container running the old Admin's image. Built ahead of the user login.
 5. **Library serving and Browse**, with `replaces` (L3) and host-version
-   labels (L4). L3 and L4 wait for Browse: nothing installs from the library
-   until it exists. The library groundwork already built, L1 and L2, stands.
-6. **Organisation repos.**
+   labels (L4). The serving is built: **A5, the app shelf** (above), ahead of
+   the user login, since nothing reads it until Browse. Browse (B1),
+   installing from the shelf and self-updating installed apps (B3) are the
+   user system's, to come. L3 and L4 wait for Browse: nothing installs from
+   the library until it exists. The library groundwork already built, L1 and
+   L2, stands.
+6. **Organisation repos** (A6): each a source of its own on the shelf.
+
+### Parked
+
+- **Scheduled updates**: an update at a time the admin picks, alongside "now"
+  and the automatic check (which only ever finds an update, never applies
+  one).
 
 The proxy and the mDNS announcer are deferred: users are on `IP:port` until
 then. The backup file (export, passphrase, restore) is designed above and not

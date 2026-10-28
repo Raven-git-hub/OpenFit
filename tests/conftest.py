@@ -140,6 +140,7 @@ Call = namedtuple("Call", "args cwd as_owner")
 CONTAINERS = ["a1" * 32, "b2" * 32, "c3" * 32, "d4" * 32, "e6" * 32, "f7" * 32]
 IMAGE_ID = "sha256:" + "e5" * 32
 VOLUME = "openfit_tracker-data"
+LIBRARY_VOLUME = "openfit-library"
 # The Admin's own: the image its container runs, and the update helper's id.
 ADMIN_IMAGE_ID = "sha256:" + "ad" * 32
 HELPER_ID = "5a" * 32
@@ -173,12 +174,16 @@ class FakeRunner:
     backup file appears in the Admin's backups) and come up healthy.
 
     `projects` is what Docker holds: project -> {"n": how many containers
-    it's had, "state": running/exited/created, or None for no container}.
-    The primary's, openfit, starts with C0 running, and the Admin's own,
-    openfit-admin, with its first container running. `volumes` the volumes
-    there are: a project's appears when it's brought up, goes with down -v
-    or volume rm. `helper` is whether the Admin's update helper,
-    openfit-admin-swap, is there: `docker run -d` makes it.
+    it's had, "state": running/exited/created, or None for no container,
+    "library": whether its container has the app shelf mounted - read, when
+    compose makes one, from the compose files it's given}. The primary's,
+    openfit, starts with C0 running, and the Admin's own, openfit-admin,
+    with its first container running; neither has the shelf (they're from
+    before it). `volumes` the volumes there are: the shelf's, openfit-library,
+    from the start (the Admin's compose project made it); a project's
+    appears when it's brought up, goes with down -v or volume rm. `helper`
+    is whether the Admin's update helper, openfit-admin-swap, is there:
+    `docker run -d` makes it.
 
     `frames` holds, for each call, the names of the functions it was made
     through (innermost first), so a test can tell which code ran it."""
@@ -192,9 +197,10 @@ class FakeRunner:
         self.results = []
         self.frames = []
         self.rules = []
-        self.projects = {"openfit": {"n": 0, "state": "running"}, "openfit-admin": {"n": 0, "state": "running"}}
+        self.projects = {"openfit": {"n": 0, "state": "running", "library": False},
+                         "openfit-admin": {"n": 0, "state": "running", "library": False}}
         self.helper = False
-        self.volumes = {VOLUME}
+        self.volumes = {VOLUME, LIBRARY_VOLUME}
         self.images = {"openfit-tracker:latest"}
         self.unhealthy = set()
 
@@ -234,7 +240,7 @@ class FakeRunner:
 
     def add_project(self, project, state="running"):
         """A project already up when the test starts: its container, its volume."""
-        self.projects[project] = {"n": 0, "state": state}
+        self.projects[project] = {"n": 0, "state": state, "library": False}
         self.volumes.add(f"{project}_tracker-data")
 
     def _project_of(self, cid):
@@ -255,8 +261,11 @@ class FakeRunner:
             return 0, f"{cid}\t{self.projects[project]['state']}\n", ""
         if sub == "inspect":
             project = self._project_of(args[-1])
+            mounts = [{"Type": "volume", "Name": f"{project}_tracker-data", "Destination": "/data"}]
+            if project and self.projects[project].get("library"):
+                mounts.append({"Type": "volume", "Name": LIBRARY_VOLUME, "Destination": "/library", "RW": False})
             info = {"Id": args[-1], "Image": ADMIN_IMAGE_ID if project == "openfit-admin" else IMAGE_ID,
-                    "Mounts": [{"Type": "volume", "Name": f"{project}_tracker-data", "Destination": "/data"}]}
+                    "Mounts": mounts}
             return 0, json.dumps([info]), ""
         if sub == "exec":
             return (1 if args[2] in self.unhealthy else 0), "", ""
@@ -281,10 +290,11 @@ class FakeRunner:
             return 0, args[3] + "\n", ""
         if sub == "compose":
             project = args[3]
-            p = self.projects.setdefault(project, {"n": -1, "state": None})
+            p = self.projects.setdefault(project, {"n": -1, "state": None, "library": False})
             if "up" in args:
                 if not p["state"] or "--force-recreate" in args or p["state"] != "running":
                     p["n"] += 1
+                    p["library"] = self.mounts_library(args)
                 p["state"] = "created" if "--no-start" in args else "running"
                 self.volumes.add(f"{project}_tracker-data")
             elif "stop" in args and p["state"]:
@@ -294,6 +304,18 @@ class FakeRunner:
                 if "-v" in args:
                     self.volumes.discard(f"{project}_tracker-data")
         return 0, "", ""
+
+    @staticmethod
+    def mounts_library(args):
+        """Whether the compose files in a compose command mount the shelf (a
+        file the temp repo hasn't got - the Admin's own - mounts nothing)."""
+        files = [args[i + 1] for i, a in enumerate(args) if a == "-f"]
+        texts = []
+        for path in files:
+            if os.path.exists(path):
+                with open(path, encoding="utf-8") as f:
+                    texts.append(f.read())
+        return any(f"{LIBRARY_VOLUME}:/library:ro" in text for text in texts)
 
     def clear(self):
         self.calls.clear()
@@ -399,6 +421,8 @@ def admin_env(tmp_path, monkeypatch):
     git is kept off the machine's own config. `self_dir` stands for the
     Admin's own running code: a copy of the repo's admin/ as it was
     cloned, so a pull that changes admin/ reads as "pulled, not rebuilt".
+    `library` stands for the app shelf, the Admin's /library: an empty
+    folder, published to only when a test asks.
     """
     import admin_ops
 
@@ -411,14 +435,16 @@ def admin_env(tmp_path, monkeypatch):
     data = tmp_path / "admin-data"
     running = tmp_path / "running-admin"
     shutil.copytree(os.path.join(repos.repo, "admin"), running)
+    library = tmp_path / "library"
+    library.mkdir()
     clock = FakeClock()
     fake = FakeRunner(repos.repo, str(data / "backups"))
 
     def make():
         return admin_ops.Admin(repos.repo, str(data), runner=fake, clock=clock,
-                               sleep=clock.sleep, self_dir=str(running))
+                               sleep=clock.sleep, self_dir=str(running), library_dir=str(library))
 
-    env = SimpleNamespace(repos=repos, fake=fake, clock=clock, data=data, make=make)
+    env = SimpleNamespace(repos=repos, fake=fake, clock=clock, data=data, make=make, library=library)
     env.admin = make()
     env.backups = data / "backups"
     return env

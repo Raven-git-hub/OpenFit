@@ -20,7 +20,8 @@ PASSWORD = "a long password!"
 C0, C1, C2 = CONTAINERS[:3]
 
 # The compose file an added user gets, byte for byte: only the image and
-# the port filled in. No env_file, no environment, no bind mount.
+# the port filled in. No env_file, no environment, no bind mount; the app
+# shelf read-only, from the Admin's volume.
 TEMPLATE = """services:
   tracker:
     image: openfit-tracker:latest
@@ -29,9 +30,12 @@ TEMPLATE = """services:
       - "8101:80"
     volumes:
       - tracker-data:/data
+      - openfit-library:/library:ro
     restart: unless-stopped
 volumes:
   tracker-data: {}
+  openfit-library:
+    external: true
 """
 
 
@@ -56,9 +60,10 @@ def ucompose(env, name, *args):
 
 
 def pcompose(env, *args):
-    """The primary's: project openfit, the repo's compose file."""
-    return Call(["docker", "compose", "-p", "openfit", "-f",
-                 os.path.join(env.repos.repo, "docker-compose.yml"), *args], env.repos.repo, False)
+    """The primary's: project openfit, the repo's compose file, then the
+    Admin's override."""
+    return Call(["docker", "compose", "-p", "openfit", "-f", os.path.join(env.repos.repo, "docker-compose.yml"),
+                 "-f", str(env.data / "primary.override.yml"), *args], env.repos.repo, False)
 
 
 def git(env, *args):
@@ -67,6 +72,10 @@ def git(env, *args):
 
 def docker(*args):
     return Call(["docker", *args], None, False)
+
+
+# Before anything that recreates a user: the app shelf's volume is there.
+SHELF = docker("volume", "inspect", "--format", "{{.Name}}", "openfit-library")
 
 
 def ps(project):
@@ -176,6 +185,7 @@ def test_adding_a_user_runs_in_the_exact_order(logged_in, admin_env):
 
     assert env.fake.calls == [
         docker("image", "inspect", "--format", "{{.Id}}", "openfit-tracker:latest"),
+        SHELF,
         docker("volume", "inspect", "--format", "{{.Name}}", "openfit-sam_tracker-data"),
         ucompose(env, "sam", "up", "-d", "--no-build"),
         ps("openfit-sam"),
@@ -185,6 +195,7 @@ def test_adding_a_user_runs_in_the_exact_order(logged_in, admin_env):
     assert written == TEMPLATE.encode()
     for banned in (b"env_file", b"environment", b".env", b"build", b"/home", b"/data:"):
         assert banned not in written.replace(b"tracker-data:/data", b""), banned
+    assert b"openfit-library:/library:ro" in written
     assert listed == [False]  # only once it answered
     assert op["outcome"] == "ok"
     assert op["user"] == {"name": "sam", "port": 8101}
@@ -193,8 +204,8 @@ def test_adding_a_user_runs_in_the_exact_order(logged_in, admin_env):
                              "removed": []}
     s = logged_in.get("/api/status").get_json()
     assert s["users"] == [
-        {"name": "andy", "port": 8080, "primary": True, "state": "running"},
-        {"name": "sam", "port": 8101, "primary": False, "state": "running"},
+        {"name": "andy", "port": 8080, "primary": True, "state": "running", "library": False},
+        {"name": "sam", "port": 8101, "primary": False, "state": "running", "library": True},
     ]
     assert s["next_port"] == 8102
     assert s["removed"] == []
@@ -255,8 +266,9 @@ def test_an_add_that_does_not_come_up_is_taken_back(admin_env):
     op = add(env, "sam", 8102)
 
     calls = env.fake.calls
-    assert calls[:3] == [
+    assert calls[:4] == [
         docker("image", "inspect", "--format", "{{.Id}}", "openfit-tracker:latest"),
+        SHELF,
         docker("volume", "inspect", "--format", "{{.Name}}", "openfit-sam_tracker-data"),
         ucompose(env, "sam", "up", "-d", "--no-build"),
     ]
@@ -315,7 +327,7 @@ def test_adding_a_removed_user_again_reattaches_their_data(admin_env):
 
     assert texts(op)[0] == "sam was removed before. Their kept data is reattached."
     commands = env.fake.commands()
-    assert not any(c[1:3] == ["volume", "inspect"] for c in commands)  # theirs is expected
+    assert not any(c[1:3] == ["volume", "inspect"] and c[-1] != "openfit-library" for c in commands)  # theirs is expected
     assert env.fake.calls[-1] == ucompose(env, "sam", "down")  # never -v: the kept data stays
     assert not any("-v" in c for c in commands if c[1] == "compose")
     assert op["outcome"] == "failed"
@@ -435,7 +447,7 @@ def test_start_and_stop_any_user(logged_in, admin_env, name):
 
     env.fake.clear()
     assert logged_in.post(f"/api/users/{name}/start", json={}, headers=H).status_code == 200
-    assert env.fake.calls == [command("up", "-d", "--no-build", "tracker")]
+    assert env.fake.calls == [SHELF, command("up", "-d", "--no-build", "tracker")]
     assert state() == "running"
     assert not env.admin.lock.locked()
 
@@ -791,8 +803,9 @@ def test_undo_restores_every_recorded_user(logged_in, admin_env):
     env.admin.wait(10)
     undo = env.admin.current_op()
 
-    assert env.fake.calls[:20] == [
+    assert env.fake.calls[:21] == [
         git(env, "log", "-1", "--format=%H%x09%h%x09%s", "HEAD"),
+        SHELF,
         pcompose(env, "stop", "tracker"),
         ucompose(env, "sam", "stop", "tracker"),
         ucompose(env, "kim", "stop", "tracker"),
@@ -808,7 +821,7 @@ def test_undo_restores_every_recorded_user(logged_in, admin_env):
         ucompose(env, "kim", "up", "--no-start", "--no-build", "--force-recreate", "tracker"),
         ps("openfit"), health(C2),
     ]
-    assert env.fake.calls[20:22] == [ps("openfit-sam"), health(sam(2))]
+    assert env.fake.calls[21:23] == [ps("openfit-sam"), health(sam(2))]
     assert undo["outcome"] == "ok"
     assert undo["summary"] == f"Back on {update['old']['short']}, with everyone's data as it was before the update."
     assert undo["users"] == update["users"]
@@ -837,7 +850,7 @@ def test_undo_is_refused_once_the_users_have_changed(logged_in, admin_env, chang
     r = logged_in.post("/api/undo", json={}, headers=H)
     assert r.status_code == 409
     assert r.get_json()["error"] == "There's no update to undo."
-    assert {c.args[1] for c in env.fake.calls if c.args[0] == "docker"} == {"ps"}  # the status's look, only
+    assert {c.args[1] for c in env.fake.calls if c.args[0] == "docker"} == {"ps", "inspect"}  # the status's look, only
 
 
 def test_undo_needs_every_backup_of_its_set(admin_env):
@@ -885,7 +898,9 @@ def test_a_restore_that_fails_mid_undo_stops_there(admin_env):
     calls = env.fake.calls
     failed = calls.index(restore("openfit-sam_tracker-data", names["sam"]))
     assert restore(VOLUME, names["andy"]) in calls[:failed]
-    assert calls[failed + 1:] == []  # no kim, no retag, no reset, nobody started
+    # No kim, no retag, no reset, nobody started: only HEAD read, to see the
+    # shelf still matches the code.
+    assert [c.args for c in calls[failed + 1:]] == [["git", "log", "-1", "--format=%H%x09%h%x09%s", "HEAD"]]
     assert undo["outcome"] == "failed"
     log = "\n".join(texts(undo))
     assert "sam's data couldn't be put back." in log
@@ -934,9 +949,9 @@ def test_the_status_lists_every_user(logged_in, admin_env):
     env.fake.add_project("openfit-lee", None)
     s = logged_in.get("/api/status").get_json()
     assert s["users"] == [
-        {"name": "andy", "port": 8080, "primary": True, "state": "running"},
-        {"name": "sam", "port": 8101, "primary": False, "state": "running"},
-        {"name": "kim", "port": 8102, "primary": False, "state": "stopped"},
+        {"name": "andy", "port": 8080, "primary": True, "state": "running", "library": False},
+        {"name": "sam", "port": 8101, "primary": False, "state": "running", "library": False},
+        {"name": "kim", "port": 8102, "primary": False, "state": "stopped", "library": False},
     ]
     assert s["next_port"] == 8103
     env.fake.projects["openfit-sam"]["state"] = None

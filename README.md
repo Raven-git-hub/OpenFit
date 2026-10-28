@@ -84,7 +84,8 @@ continuous it is, and which source wins each metric — not the product.
 - The **OpenFit Admin**, optional and in its own container: it adds more users
   (each with their own OpenFit, storage and port), and checks for and applies
   OpenFit's updates for everyone from a web page, with a backup of everyone's
-  data before each one and an undo — see [Admin](#admin).
+  data before each one and an undo, and publishes the official apps to a
+  read-only app shelf every user's OpenFit mounts — see [Admin](#admin).
 
 ## Webhook input (push)
 
@@ -704,6 +705,11 @@ line never had:
 - **Backups**: one per user per update; the newest three updates' are kept.
 - **Update the Admin**: the Admin updates itself, rolling back by itself if
   the new version doesn't start.
+- **The app shelf**: the official apps (`library/`), published to a volume
+  every user's OpenFit mounts read-only at `/library`, with no network between
+  them. An app-only change goes out with **Update apps**: no rebuild, nobody
+  restarts. **Restart** a user to give them the shelf (nothing reads it until
+  Browse lands).
 
 It manages the OpenFit you already run, in place: the same compose project,
 the same `/data` volume and the same port 8080. Install it once from the
@@ -736,7 +742,7 @@ internet. The design and every step, in order:
 ## Architecture
 
 ```
-admin/                        The OpenFit Admin: users, updates, its own update (port 8090)
+admin/                        The OpenFit Admin: users, updates, its own update, the app shelf (port 8090)
 app/
   main.py                     Flask API + scheduler, loads plugins from plugins/
   apps.py                     Finds, loads and installs the apps (/data/apps)

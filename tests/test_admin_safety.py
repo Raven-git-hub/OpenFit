@@ -1,8 +1,11 @@
 """The Admin stays in its lane: its users' compose projects, each with its
-own compose file; their labelled containers; its own --rm helpers; the
-user system's image; a removed user's kept volume, only on a confirmed
-delete; and its own project, only to update itself. Argument lists, never
-a shell; git as the repo's owner, docker as root."""
+own compose files (the primary's exactly the repo's and the Admin's
+override, in that order); their labelled containers; its own --rm
+helpers; the user system's image; the app shelf's volume, only ever
+looked at; a removed user's kept volume, only on a confirmed delete; and
+its own project, only to update itself. Publishing the shelf runs no
+docker command at all. Argument lists, never a shell; git as the repo's
+owner, docker as root."""
 
 import glob
 import json
@@ -44,6 +47,11 @@ def add(env, name, port):
 
 def three_users(env):
     seed_users(env, ("sam", 8101, "running"), ("kim", 8102, "exited"))
+
+
+def apps_pending(env, message="New app"):
+    env.repos.push({"library/caffeine/app.yaml": f"id: caffeine  # {message}\n"}, message)
+    env.admin.check()
 
 
 def update_the_admin(env, unhealthy=()):
@@ -136,6 +144,52 @@ def scenario_start_stop(env):
         env.admin.start_user(name)
 
 
+def scenario_restart(env):
+    seed_users(env, ("sam", 8101, "running"), ("kim", 8102, "exited"))
+    for name in ("sam", "kim", "andy"):
+        env.admin.restart_user(name)
+    env.admin.status()
+
+
+def scenario_restart_without_the_shelf(env):
+    seed_users(env, ("sam", 8101, "running"))
+    env.fake.volumes.discard("openfit-library")
+    for name in ("sam", "andy"):
+        with pytest.raises(admin_ops.Refused):
+            env.admin.restart_user(name)
+    pending(env)
+    with pytest.raises(admin_ops.Refused):
+        env.admin.start_update()
+
+
+def scenario_update_apps(env):
+    three_users(env)
+    env.admin.publish_at_startup()
+    apps_pending(env)
+    env.admin.start_update_apps()
+    env.admin.wait(10)
+    assert env.admin.current_op()["outcome"] == "ok"
+    env.admin.status()
+
+
+def scenario_update_publishes(env):
+    three_users(env)
+    env.admin.publish_at_startup()
+    env.repos.push({"app/main.py": "print('new')\n", "library/caffeine/app.yaml": "id: caffeine\n"}, "Both")
+    env.admin.check()
+    assert update(env)["outcome"] == "ok"
+    assert undo(env)["outcome"] == "ok"
+
+
+def scenario_publish_again(env):
+    seed_users(env, ("sam", 8101, "running"))
+    env.make().publish_at_startup()
+    env.repos.push({"library/caffeine/app.yaml": "id: caffeine\n"}, "New app")
+    subprocess.run(["git", "pull", "-q", "--ff-only"], cwd=env.repos.repo, check=True, capture_output=True)
+    env.admin.publish_again()
+    env.admin.status()
+
+
 def scenario_remove_user(env):
     seed_users(env, ("sam", 8101, "running"), ("kim", 8102, "running"))
     env.admin.remove_user("sam")
@@ -221,6 +275,11 @@ SCENARIOS = [
     scenario_add_user_port_clash,
     scenario_add_removed_user_fails,
     scenario_start_stop,
+    scenario_restart,
+    scenario_restart_without_the_shelf,
+    scenario_update_apps,
+    scenario_update_publishes,
+    scenario_publish_again,
     scenario_remove_user,
     scenario_delete_data,
     scenario_update_everyone,
@@ -291,6 +350,7 @@ def admin_lane(env, call, out, labelled, images):
 
 def assert_in_lane(env, allow):
     root_file = os.path.join(env.repos.repo, "docker-compose.yml")
+    override = str(env.data / "primary.override.yml")
     names = known_names(env) | ({allow["volume_rm"]} if allow.get("volume_rm") else set())
     assert "admin" not in names
     projects = {"openfit"} | {f"openfit-{n}" for n in names}
@@ -309,19 +369,23 @@ def assert_in_lane(env, allow):
         sub = a[1]
         if sub == "compose":
             assert a[2] == "-p" and a[4] == "-f", a
-            project, compose_file = a[3], a[5]
+            project = a[3]
             assert project in projects, a
             if project == "openfit":
-                assert compose_file == root_file and call.cwd == env.repos.repo, a
+                # The primary's files, exactly: the repo's, then the override.
+                assert a[4:8] == ["-f", root_file, "-f", override] and call.cwd == env.repos.repo, a
+                rest = a[8:]
             else:
                 name = project.removeprefix("openfit-")
-                assert compose_file == str(env.data / "users" / name / "docker-compose.yml"), a
+                assert a[4:6] == ["-f", str(env.data / "users" / name / "docker-compose.yml")], a
                 assert call.cwd == str(env.data / "users" / name), a
-            assert compose_file != root_file or project == "openfit", a  # the repo's file is the primary's alone
-            if "-v" in a:
-                assert a[6:] == ["down", "-v"] and project != "openfit" and allow.get("down_v"), a
+                rest = a[6:]
+            assert "-f" not in rest, a
+            assert root_file not in a or project == "openfit", a  # the repo's file is the primary's alone
+            if "-v" in rest:
+                assert rest == ["down", "-v"] and project != "openfit" and allow.get("down_v"), a
             else:
-                assert a[-1] == "tracker" or a[6:] in (["down"], ["up", "-d", "--no-build"]), a
+                assert rest[-1] == "tracker" or rest in (["down"], ["up", "-d", "--no-build"]), a
         elif sub == "ps":
             label = [x for x in a if x.startswith("label=com.docker.compose.project=")]
             assert len(label) == 1 and label[0].split("=", 2)[2] in projects, a
@@ -343,7 +407,8 @@ def assert_in_lane(env, allow):
         elif sub == "image":
             assert a == ["docker", "image", "inspect", "--format", "{{.Id}}", "openfit-tracker:latest"], a
         elif sub == "volume" and a[2] == "inspect":
-            assert a[3:5] == ["--format", "{{.Name}}"] and a[5] in {f"openfit-{n}_tracker-data" for n in names}, a
+            looked_at = {f"openfit-{n}_tracker-data" for n in names} | {"openfit-library"}
+            assert a[3:5] == ["--format", "{{.Name}}"] and a[5] in looked_at, a
             assert len(a) == 6, a
         elif sub == "volume" and a[2] == "rm":
             assert allow.get("volume_rm") and a == ["docker", "volume", "rm", f"openfit-{allow['volume_rm']}_tracker-data"], a
@@ -368,6 +433,21 @@ def test_the_admin_stays_in_its_lane(admin_env, scenario):
     commands = admin_env.fake.commands()
     assert any(a[-2:] == ["down", "-v"] for a in commands) == bool(allow.get("down_v"))
     assert any(a[1:3] == ["volume", "rm"] for a in commands) == bool(allow.get("volume_rm"))
+
+
+PUBLISHING = {"publish_set", "publish_official", "publish_at_startup", "publish_again", "_publish_step",
+              "_republish"}
+
+
+@pytest.mark.parametrize("scenario", SCENARIOS, ids=lambda f: f.__name__.removeprefix("scenario_"))
+def test_publishing_runs_no_docker_command(admin_env, scenario):
+    scenario(admin_env)
+    for call, frames in zip(admin_env.fake.calls, admin_env.fake.frames):
+        if call.args[0] == "docker":
+            assert not PUBLISHING & set(frames), (call.args, frames)
+    # Where a scenario publishes, it really did: the check isn't vacuous.
+    if scenario in (scenario_update_apps, scenario_update_publishes, scenario_publish_again):
+        assert admin_ops.shelf_source(admin_ops.read_shelf(str(admin_env.library)), "openfit")
 
 
 @pytest.mark.parametrize("scenario", SCENARIOS, ids=lambda f: f.__name__.removeprefix("scenario_"))
