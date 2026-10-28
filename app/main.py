@@ -14,11 +14,13 @@ import urllib.parse
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta, timezone
 
-from flask import Flask, jsonify, request, send_from_directory
+from flask import Flask, jsonify, make_response, render_template, request, send_from_directory, session
+from flask.sessions import SecureCookieSessionInterface
 from apscheduler.executors.pool import ThreadPoolExecutor
 from apscheduler.jobstores.base import JobLookupError
 from apscheduler.schedulers.background import BackgroundScheduler
 
+import auth
 from migrations import connect, run_migrations
 from plugins import PLUGINS
 from plugins.base import OAUTH_REDIRECT_URI, write_metric
@@ -94,6 +96,37 @@ app.config["APPS_DIR"] = APPS_DIR
 app.config["LIBRARY_DIR"] = LIBRARY_DIR
 # Flask turns a body over it away with a 413 before reading any of it.
 app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD_BYTES
+# Who may use this OpenFit (auth.py): its one account's file and the
+# sessions' key, both on the data volume, beside the database.
+app.config["AUTH_PATH"] = os.getenv("OPENFIT_AUTH_PATH", auth.DEFAULT_AUTH_PATH)
+app.config["SESSION_KEY_PATH"] = os.getenv("OPENFIT_SESSION_KEY_PATH", auth.DEFAULT_SESSION_KEY_PATH)
+# The session cookie: HttpOnly, and Lax, so a link from elsewhere opens
+# the app signed in while another site's form can't post as you (the
+# X-OpenFit header, below, is the guard for writes). Not Secure: OpenFit
+# is plain HTTP on the LAN, where a Secure cookie would never come back,
+# and from away Tailscale encrypts it in transit. 30 days, renewed on
+# every request, so it lapses only after a month unused.
+app.config.update(
+    SESSION_COOKIE_NAME="openfit_session",
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE="Lax",
+    SESSION_COOKIE_SECURE=False,
+    PERMANENT_SESSION_LIFETIME=timedelta(days=30),
+    SESSION_REFRESH_EACH_REQUEST=True,
+)
+
+
+class _KeyFileSessions(SecureCookieSessionInterface):
+    """Flask's signed-cookie sessions, under the key in SESSION_KEY_PATH:
+    read as a request comes in (so the path in app.config is the one used
+    - a test's own), and made on the first."""
+
+    def get_signing_serializer(self, app):
+        app.secret_key = auth.session_key(app.config["SESSION_KEY_PATH"])
+        return super().get_signing_serializer(app)
+
+
+app.session_interface = _KeyFileSessions()
 
 
 def get_conn():
@@ -135,11 +168,122 @@ def too_large(e):
     return jsonify({"ok": False, "error": f"Request too large (max {MAX_UPLOAD_BYTES // (1024 * 1024)} MB)."}), 413
 
 
-# ---------- static ----------
+# ---------- signing in ----------
 
+# One account a container (auth.py): every route needs a session but
+# these - the page, which is the sign-in or locked view until there is
+# one, the setup page, and the three calls those two make - and the
+# webhook, which devices push to with their own token in its URL.
+OPEN_ENDPOINTS = {"index", "setup_page", "auth_status", "auth_login", "auth_setup"}
+WEBHOOK_ENDPOINTS = {"webhook"}
+# A write must carry this header, set by the page's apiFetch(): another
+# site's form can't send it, and its script can't without a CORS
+# preflight OpenFit never answers. The webhook is exempt - a device
+# posting a reading has no page.
+CSRF_HEADER = "X-OpenFit"
+SAFE_METHODS = ("GET", "HEAD", "OPTIONS")
+# Failed sign-ins per address, in memory (auth.Fails).
+_fails = auth.Fails()
+
+
+def signed_in():
+    """Whether this request's session carries the current session tag -
+    none is valid while no password is set, and a new password ends every
+    older one."""
+    tag = auth.session_tag(app.config["AUTH_PATH"])
+    got = session.get("auth")
+    return tag is not None and isinstance(got, str) and hmac.compare_digest(got.encode(), tag.encode())
+
+
+@app.before_request
+def guard():
+    webhook = request.endpoint in WEBHOOK_ENDPOINTS
+    if request.method not in SAFE_METHODS and not webhook and request.headers.get(CSRF_HEADER) != "1":
+        return jsonify({"ok": False, "error": "This request didn't come from OpenFit's page."}), 403
+    if webhook or request.endpoint in OPEN_ENDPOINTS or signed_in():
+        return None
+    return jsonify({"ok": False, "error": "signed out"}), 401
+
+
+def _no_store(resp):
+    # What / serves depends on the session: never cached, so a signed-out
+    # browser can't be shown the app from its cache, nor the other way.
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
+
+
+def _signin_page(view):
+    return _no_store(make_response(render_template("signin.html", view=view, min_password=auth.MIN_PASSWORD)))
+
+
+def _sign_in(tag):
+    session.clear()
+    session.permanent = True
+    session["auth"] = tag
+
+
+def _auth_body():
+    body = request.get_json(force=True, silent=True)
+    return body if isinstance(body, dict) else {}
+
+
+# The three views of signin.html: sign in (a password is set), locked
+# (none is), and setup (a setup link, opened). All 200, never a
+# redirect: the Admin's health check is a 200 from /.
 @app.route("/")
 def index():
-    return send_from_directory("templates", "index.html")
+    if signed_in():
+        return _no_store(send_from_directory("templates", "index.html"))
+    return _signin_page("signin" if auth.password_set(app.config["AUTH_PATH"]) else "locked")
+
+
+@app.route("/setup")
+def setup_page():
+    """A setup link, /setup#<token>: the token is in the fragment, so it
+    never reaches this server's log; the page reads it and posts it."""
+    return _signin_page("setup")
+
+
+@app.route("/api/auth/status", methods=["GET"])
+def auth_status():
+    return jsonify({"signed_in": signed_in(), "password_set": auth.password_set(app.config["AUTH_PATH"])})
+
+
+@app.route("/api/auth/login", methods=["POST"])
+def auth_login():
+    """{password}: 200 and a session; 401 for a wrong password, 429 after
+    five wrong in five minutes from one address, 409 while locked."""
+    try:
+        tag = auth.login(app.config["AUTH_PATH"], _fails, request.remote_addr or "", _auth_body().get("password"))
+    except auth.AuthError as e:
+        return jsonify({"ok": False, "error": e.message}), e.status
+    _sign_in(tag)
+    return jsonify({"ok": True})
+
+
+@app.route("/api/auth/logout", methods=["POST"])
+def auth_logout():
+    session.clear()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/auth/setup", methods=["POST"])
+def auth_setup():
+    """{token, password}: the password set with a setup link's token, and
+    this browser signed in. The token works once; every other session
+    ends. 403 for a token that's wrong, used or expired; 400 for a
+    password too short."""
+    body = _auth_body()
+    try:
+        tag = auth.setup(app.config["AUTH_PATH"], body.get("token"), body.get("password"))
+    except auth.AuthError as e:
+        return jsonify({"ok": False, "error": e.message}), e.status
+    _sign_in(tag)
+    print("[auth] a password was set through a setup link; every other session is signed out")
+    return jsonify({"ok": True})
+
+
+# ---------- static ----------
 
 
 # The console's spoken explanations (its voice buttons). The clips ship
@@ -1472,10 +1616,11 @@ def set_source_role_route(metric):
 # one reading to /api/webhook/<token> the moment it happens. One URL for
 # every metric - the body names which.
 #
-# The token in the URL is the auth, and this is the one route that has
-# any: everything else stays on the trusted-network model. The token is
-# the webhook_token settings row, made on first ask and regenerated to
-# revoke a leaked one.
+# The token in the URL is the auth: the one route a session doesn't
+# guard, and exempt from the X-OpenFit header, since a device posting a
+# reading signs in to nothing (see guard()). The token is the
+# webhook_token settings row, made on first ask - by a signed-in page -
+# and regenerated to revoke a leaked one.
 
 WEBHOOK_TOKEN_KEY = "webhook_token"
 
@@ -2359,6 +2504,9 @@ def start_scheduler():
 def serve():
     migrate()
     backfill()
+    if not auth.password_set(app.config["AUTH_PATH"]):
+        print("[auth] No password yet, so this OpenFit is locked. Make a setup link with the Admin's "
+              "Setup link button, or: docker exec <container> python auth_cli.py setup-link", flush=True)
     start_scheduler()
     app.run(host="0.0.0.0", port=80)
 

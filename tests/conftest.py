@@ -8,7 +8,12 @@ in test_plugin_contract.py, or by the real plugins with their network
 calls stubbed (test_sleep_sessions.py).
 
 The same goes for the encryption key: every test gets a throwaway one in
-its tmp_path, so nothing can read or create /data/.secret_key.
+its tmp_path, so nothing can read or create /data/.secret_key - and for
+the user system's account and session key (/data/auth.json and
+/data/.session_key). The shared `client` is signed in, as the page is:
+a password set, its session carrying the tag, and the X-OpenFit header
+on every request. A test of signing in starts from a client of its own,
+signed out.
 
 The Admin's tests (test_admin_*.py) need no docker and no network
 either: git runs for real against temporary repos (a bare "origin" and a
@@ -37,6 +42,7 @@ for _path in (ADMIN_DIR, APP_DIR):
     if _path not in sys.path:
         sys.path.insert(0, _path)
 
+import auth as openfit_auth  # noqa: E402
 import crypto as openfit_crypto  # noqa: E402
 from migrations import discover_migrations, run_migrations  # noqa: E402
 
@@ -52,6 +58,47 @@ def secret_key_file(tmp_path, monkeypatch):
     monkeypatch.delenv(openfit_crypto.KEY_ENV, raising=False)
     monkeypatch.setenv(openfit_crypto.KEY_PATH_ENV, str(path))
     return path
+
+
+@pytest.fixture(autouse=True)
+def auth_files(tmp_path, monkeypatch):
+    """Point the user system's account and session key at throwaway files
+    for every test, and forget failed sign-ins: nothing can read or write
+    /data/auth.json or /data/.session_key, and one test's wrong passwords
+    never count against another's."""
+    import main
+
+    files = SimpleNamespace(auth=tmp_path / "auth.json", key=tmp_path / ".session_key")
+    monkeypatch.setitem(main.app.config, "AUTH_PATH", str(files.auth))
+    monkeypatch.setitem(main.app.config, "SESSION_KEY_PATH", str(files.key))
+    monkeypatch.setattr(main, "_fails", openfit_auth.Fails())
+    return files
+
+
+# The shared client's password. Its hash is made once for the whole run:
+# hashing is slow on purpose, and most tests sign in.
+TEST_PASSWORD = "a test password, long enough"
+TEST_TAG = "c0" * 16
+_test_hash = []
+
+
+def signed_in(client):
+    """`client`, signed in to the user system as the page is: the test's
+    auth.json holding TEST_PASSWORD and TEST_TAG (written straight in, so
+    no request is made), its session carrying the tag, and the X-OpenFit
+    header on every request it sends."""
+    import main
+    from werkzeug.security import generate_password_hash
+
+    if not _test_hash:
+        _test_hash.append(generate_password_hash(TEST_PASSWORD))
+    with open(main.app.config["AUTH_PATH"], "w", encoding="utf-8") as f:
+        json.dump({"password_hash": _test_hash[0], "session_tag": TEST_TAG, "setup": None}, f)
+    with client.session_transaction() as sess:
+        sess.permanent = True
+        sess["auth"] = TEST_TAG
+    client.environ_base["HTTP_X_OPENFIT"] = "1"
+    return client
 
 
 @pytest.fixture
@@ -115,7 +162,7 @@ def conn(db_path):
 
 @pytest.fixture
 def client(db_path):
-    """Flask test client pointed at the temp database.
+    """Flask test client pointed at the temp database, signed in.
 
     Importing main must not start the scheduler or create tables; if that
     regresses, these tests are the first thing to notice.
@@ -126,7 +173,7 @@ def client(db_path):
     main.app.config["DB_PATH"] = db_path
     main.app.config["TESTING"] = True
     with main.app.test_client() as client:
-        yield client
+        yield signed_in(client)
     main.app.config["DB_PATH"] = previous
 
 
@@ -144,6 +191,9 @@ LIBRARY_VOLUME = "openfit-library"
 # The Admin's own: the image its container runs, and the update helper's id.
 ADMIN_IMAGE_ID = "sha256:" + "ad" * 32
 HELPER_ID = "5a" * 32
+# What a user's auth_cli.py prints for a setup link, in the fake.
+SETUP_TOKEN = "Tk_" + "a1B2-" * 8
+SETUP_EXPIRES = "2026-10-28T12:00:00Z"
 
 
 def container_id(project, n):
@@ -183,7 +233,8 @@ class FakeRunner:
     from the start (the Admin's compose project made it); a project's
     appears when it's brought up, goes with down -v or volume rm. `helper`
     is whether the Admin's update helper, openfit-admin-swap, is there:
-    `docker run -d` makes it.
+    `docker run -d` makes it. A setup link's exec in a user's container
+    prints SETUP_TOKEN.
 
     `frames` holds, for each call, the names of the functions it was made
     through (innermost first), so a test can tell which code ran it."""
@@ -267,6 +318,8 @@ class FakeRunner:
             info = {"Id": args[-1], "Image": ADMIN_IMAGE_ID if project == "openfit-admin" else IMAGE_ID,
                     "Mounts": mounts}
             return 0, json.dumps([info]), ""
+        if sub == "exec" and args[3:] == ["python", "auth_cli.py", "setup-link"]:
+            return 0, json.dumps({"token": SETUP_TOKEN, "expires_at": SETUP_EXPIRES}) + "\n", ""
         if sub == "exec":
             return (1 if args[2] in self.unhealthy else 0), "", ""
         if sub == "run" and args[2] == "-d" and "openfit-admin-swap" in args:

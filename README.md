@@ -125,8 +125,9 @@ curl -X POST http://<your-server-ip>:8080/api/webhook/<token> \
 - Pushing the same metric and source for a day again replaces the reading, and
   the day's derived value is updated at once.
 
-The token in the URL **is** the auth — the only route that has any. Get it (and
-the full URL) from `GET /api/webhook-token`; it's made on first ask. If it leaks
+The token in the URL **is** the auth: the one route that needs no sign-in (and
+no `X-OpenFit` header), since a device signs in to nothing. Get it (and the full
+URL) from `GET /api/webhook-token`, signed in; it's made on first ask. If it leaks
 (it sits in your automation's config and in OpenFit's request log),
 `POST /api/webhook-token/regenerate` replaces it, and the old one stops working
 immediately. This is also the path by which on-device sources (e.g. Apple
@@ -140,9 +141,10 @@ from the **derived** profile — the one value OpenFit picked per metric per day
 each tagged with the source it came from — never the raw per-source readings, so
 an app gets one trusted answer and never has to reconcile devices itself.
 Sessions and intraday series aren't picked between sources yet: every source's
-are listed, each tagged. Same trusted-network model as the rest of the API: no
-auth. These shapes are the stable contract; the `/api/activity` route is a
-compatibility shim, not for apps.
+are listed, each tagged. Behind the sign-in, as the whole API is (see
+[Signing in](#signing-in)): an installed app reads the same answers through its
+ctx, in the server's own process. These shapes are the stable contract; the
+`/api/activity` route is a compatibility shim, not for apps.
 
 **Discovery — `GET /api/catalog`.** Every metric, session kind and series that
 has data:
@@ -634,7 +636,39 @@ cp .env.example .env
 docker compose up -d --build
 ```
 
-Visit `http://<your-server-ip>:8080`. It runs fine with zero plugins configured.
+Visit `http://<your-server-ip>:8080`. It's **locked** until you set a password
+(see [Signing in](#signing-in)): make a setup link, then open it.
+
+```bash
+docker compose exec tracker python auth_cli.py setup-link
+# {"token": "...", "expires_at": "..."}  ->  http://<your-server-ip>:8080/setup#<token>
+```
+
+It runs fine with zero plugins configured.
+
+### Signing in
+
+Each OpenFit has **one account**, with a password of at least 12 characters.
+It's still one person per container and database, not accounts inside one.
+Until a password is set the page only says it's locked, and every API route but
+the webhook answers 401.
+
+- **A setup link** sets the password: `http://<host>:<port>/setup#<token>`. It
+  works once, for 24 hours, and a newer link replaces an older one. The same
+  link resets a forgotten password, and signs out every other browser. With the
+  [Admin](#admin), **Setup link** on a user's row makes one. Without it, run
+  `python auth_cli.py setup-link` in the container (above, or `docker exec
+  <container> python auth_cli.py setup-link`). There's no email and no other
+  way to make one.
+- **Signing in** stays signed in for 30 days from the last visit. Five wrong
+  passwords from one address in five minutes and it waits. **Sign out** is at
+  the foot of **settings**.
+- **The webhook** is unchanged: devices push with its own token, signed in to
+  nothing. Everything else (the console, Home, the access contract) needs a
+  session, and every write the header `X-OpenFit: 1`, which the page sends.
+
+The design, and why the cookie isn't `Secure`:
+[docs/architecture/auth.md](docs/architecture/auth.md).
 
 ### Connecting a device
 
@@ -699,6 +733,10 @@ line never had:
   is the Admin's own, so your `.env` (your logins, your secret key) never
   reaches them. **Start**, **Stop** and **Remove** each user; a removed user's
   data is kept until you **Delete data** by typing their name.
+- **Setup link**: every OpenFit is locked until it has a password. The button
+  on a user's row makes a one-time link that sets it (or resets a forgotten
+  one), shown once for you to send: it works for 24 hours, and a new one
+  replaces it. The Admin keeps no copy.
 - **Check now**, and a check by itself every week. It shows what's new on
   GitHub, grouped as user system, Admin, app library and other, with the merged
   PRs linked.
@@ -742,9 +780,9 @@ from the repo, once.)
 It holds the Docker socket, so it has full control of the host. It only ever
 acts on its own users' compose projects and on helper containers it labels as
 its own, never on anything else the server runs, and it never runs a command
-through a shell. An added user's OpenFit has no login yet, like yours: add
-only people on your own network until the user login lands. It's plain HTTP for your LAN: don't expose port 8090 to the
-internet. The design and every step, in order:
+through a shell. Every user's OpenFit has its own sign-in, set through a setup
+link. It's all plain HTTP for your LAN: don't expose port 8090, or the users'
+ports, to the internet; from away, use Tailscale. The design and every step, in order:
 [docs/architecture/admin.md](docs/architecture/admin.md).
 
 ## Architecture
@@ -753,9 +791,12 @@ internet. The design and every step, in order:
 admin/                        The OpenFit Admin: users, updates, its own update, the app shelf (port 8090)
 app/
   main.py                     Flask API + scheduler, loads plugins from plugins/
+  auth.py                     The one account: password, setup links, sessions (/data/auth.json)
+  auth_cli.py                 python auth_cli.py setup-link - the one way a setup link is made
   apps.py                     Finds, loads and installs the apps (/data/apps)
   host.py                     The app host: an app's ctx, its spec builders, render
   templates/index.html        The data console + Home's app tiles (vanilla JS, no build step)
+  templates/signin.html       The sign-in, locked and setup pages
   audio/                      The console's voice clips, baked into the image
   plugins/
     base.py                   SyncPlugin interface every pull plugin implements
@@ -878,15 +919,19 @@ plugin.
 - Google Health uses a standard OAuth refresh token, revocable anytime from your
   Google account permissions; Garmin uses the password only for the first login,
   then a cached session token.
-- No login on the web UI. Fine on a trusted home network; don't expose it to the
-  public internet without auth in front (reverse proxy or VPN).
+- One account per OpenFit, signed in with a password (a werkzeug hash in
+  `/data/auth.json`, 0600, never in the database). Locked until it's set. It's
+  plain HTTP on your LAN, so the session cookie is `HttpOnly` and
+  `SameSite=Lax` but not `Secure` (a browser wouldn't send it back over
+  `http://`); from away, use Tailscale, which encrypts it in transit. Don't
+  expose it to the public internet.
 - The Admin, if you install it, is the one part that talks to the internet:
   it fetches the OpenFit repo from GitHub to check for and pull updates. The
   user system itself never does. The Admin has its own login.
 
-**Multi-user:** not row-level multi-tenancy. If this ever runs for more than one
-person, the plan is one isolated container per user behind a shared "Host" layer
-(see [ROADMAP.md](ROADMAP.md)).
+**Multi-user:** not row-level multi-tenancy. Each person has an isolated
+container of their own, with one account, managed by the Admin (see
+[ROADMAP.md](ROADMAP.md)).
 
 ## License
 

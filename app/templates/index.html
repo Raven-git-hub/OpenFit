@@ -466,6 +466,9 @@ a.btn{display:inline-block;text-decoration:none;}
 .modal-actions.split{justify-content:space-between;}
 /* one button on the left, the rest on the right - Delete tab */
 .modal-actions .lead{margin-right:auto;}
+/* the Settings popup's foot: Sign out, under its own controls */
+.modal-actions.settings-foot{align-items:center;border-top:1px solid var(--border);padding-top:14px;}
+.modal-actions.settings-foot .hint{margin:0;}
 /* a source's Settings: its account as a label / value list */
 .info{display:grid;grid-template-columns:auto minmax(0,1fr);margin:14px 0 0;}
 .info dt, .info dd{display:flex;align-items:center;padding:10px 0;border-bottom:1px solid var(--border);}
@@ -1155,27 +1158,43 @@ h5 + .dnote{margin-top:0;}
   /* =========================================================
      API - the only place that knows about URLs
      ========================================================= */
+  /* Every request the page makes goes through here, the one place it
+     calls fetch. A write to this OpenFit (anything but a GET or HEAD, to a
+     URL on this origin) carries the header the server's guard asks every
+     write for - another site's page can't set it. And a 401 - the
+     session ran out, or the password was changed in another browser -
+     reloads the page, which is then the sign-in. */
+  async function apiFetch(url, opts){
+    opts = Object.assign({}, opts);
+    const method = String(opts.method || 'GET').toUpperCase();
+    if(method!=='GET' && method!=='HEAD' && new URL(url, location.href).origin===location.origin){
+      opts.headers = Object.assign({}, opts.headers, {'X-OpenFit':'1'});
+    }
+    const r = await fetch(url, opts);
+    if(r.status===401) location.reload();
+    return r;
+  }
   async function getJSON(url, fallback){
-    try{ const r = await fetch(url); return r.ok ? await r.json() : fallback; }
+    try{ const r = await apiFetch(url); return r.ok ? await r.json() : fallback; }
     catch(e){ return fallback; }
   }
   /* The console's own reads. A failure here is shown, not papered over
      with an empty fallback that would read as "no data". */
   async function fetchJSON(url){
-    const r = await fetch(url);
+    const r = await apiFetch(url);
     if(!r.ok) throw new Error(url+' -> '+r.status);
     return r.json();
   }
   /* A POST whose reply is the thing asked for, not an {ok} envelope:
      a failure throws, as fetchJSON's does. */
   async function postJSON(url, body){
-    const r = await fetch(url, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
+    const r = await apiFetch(url, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
     if(!r.ok) throw new Error(url+' -> '+r.status);
     return r.json();
   }
   async function send(url, method, body){
     try{
-      const r = await fetch(url, {
+      const r = await apiFetch(url, {
         method,
         headers: body!==undefined ? {'Content-Type':'application/json'} : undefined,
         body: body!==undefined ? JSON.stringify(body) : undefined,
@@ -1189,7 +1208,7 @@ h5 + .dnote{margin-top:0;}
      the browser to set. The same {ok, ...} reply. */
   async function sendForm(url, form){
     try{
-      const r = await fetch(url, {method:'POST', body:form});
+      const r = await apiFetch(url, {method:'POST', body:form});
       const data = await r.json().catch(()=>({}));
       return r.ok ? Object.assign({ok:true}, data) : Object.assign({ok:false}, data);
     }catch(e){ return {ok:false, error:'network error'}; }
@@ -1277,6 +1296,9 @@ h5 + .dnote{margin-top:0;}
     appSources:      ()          => fetchJSON('/api/app-sources'),
     removeAppSource: id          => send('/api/app-sources/'+enc(id), 'DELETE'),
     removeAppSourceMetric: (id, metric) => send('/api/app-sources/'+enc(id)+'/'+enc(metric), 'DELETE'),
+    /* Signing out: this browser's session ended (the page then reloads,
+       onto the sign-in). */
+    signOut:      ()             => send('/api/auth/logout', 'POST'),
   };
 
   /* =========================================================
@@ -5586,12 +5608,24 @@ h5 + .dnote{margin-top:0;}
       <div class="modal-actions">
         <button class="btn sm" data-act="close" type="button">Close</button>
         <button class="btn sm primary" data-act="save" type="button">Save</button>
+      </div>
+      <div class="modal-actions split settings-foot">
+        <span class="hint">Signed in on this browser.</span>
+        <button class="btn sm" data-act="signout" type="button">Sign out</button>
       </div>`);
     const select = box.querySelector('#openingTab');
     box.querySelector('[data-act="close"]').onclick = close;
     box.querySelector('[data-act="save"]').onclick = () => {
       try{ localStorage.setItem(OPENING_TAB, select.value); }catch(e){}
       close();
+    };
+    // Whatever the server says, the reload shows where this browser
+    // stands: the sign-in once the session is gone.
+    const out = box.querySelector('[data-act="signout"]');
+    out.onclick = async () => {
+      out.disabled = true;
+      await api.signOut();
+      location.reload();
     };
     select.focus();
   }

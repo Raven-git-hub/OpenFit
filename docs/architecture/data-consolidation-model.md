@@ -256,7 +256,8 @@ canonical key competing in the default per-metric pick.
 **Built:** `GET /api/catalog` (metrics, session kinds and series),
 `GET /api/metric/<metric>`, `GET /api/sessions/<kind>`,
 `GET /api/series/<metric>` (intraday samples; a per-source passthrough for now,
-§5) — read-only, no auth, provenance included, stable and additive-only.
+§5) — read-only, behind the sign-in (U1, `auth.md`), provenance included,
+stable and additive-only.
 
 An app installed in the host reads the same contract in process, through its
 ctx rather than over HTTP: `ctx.metric()` is `GET /api/metric/<metric>` and

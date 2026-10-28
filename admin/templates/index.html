@@ -81,6 +81,9 @@
   .hint { display: block; font-size: 12px; color: var(--warn); margin-top: 2px; }
   ul.apps { list-style: none; padding: 0; margin: 8px 0 0; display: flex; flex-wrap: wrap; gap: 6px; }
   ul.apps li { font-family: var(--mono); font-size: 13px; background: var(--inset); border-radius: 6px; padding: 1px 8px; }
+  dialog.card { width: min(520px, calc(100% - 32px)); color: var(--ink); padding: 18px 20px; }
+  dialog::backdrop { background: rgba(0, 0, 0, .45); }
+  dialog input { font-family: var(--mono); font-size: 13px; }
   [hidden] { display: none !important; }
 </style>
 </head>
@@ -152,6 +155,17 @@
         </div>
       </div>
     </section>
+
+    <dialog class="card" id="linkDialog" aria-labelledby="linkTitle">
+      <h2 id="linkTitle">Setup link</h2>
+      <p id="linkFor"></p>
+      <input id="linkText" readonly aria-label="The setup link">
+      <div class="row" style="margin-top:12px">
+        <button class="primary" type="button" id="linkCopy">Copy</button>
+        <span class="grow muted" id="linkCopied"></span>
+        <button type="button" id="linkClose">Close</button>
+      </div>
+    </dialog>
 
     <section class="card" id="updatesCard">
       <h2>Updates</h2>
@@ -419,6 +433,7 @@ function paintUsers(s, busy) {
     acts.append(button(running ? "Stop" : "Start", "", (b) => userAction(
       path + verb, b, {}, running ? "Stopping…" : "Starting…"), busy));
     acts.append(button("Restart", "", (b) => userAction(path + "restart", b, {}, "Restarting…"), busy));
+    acts.append(button("Setup link", "", (b) => makeLink(u.name, b), busy || !running));
     if (!u.primary) acts.append(button("Remove", "danger", () => askRemove(u.name), busy));
     const tr = el("tr");
     tr.append(who, link, state, acts);
@@ -656,6 +671,48 @@ async function userAction(path, btn, body, busyText) {
   await loadStatus();
   return r.status === 200;
 }
+
+// A setup link for a user's OpenFit: their own container makes it, and it
+// comes back here once - shown in the dialog, kept nowhere, gone when the
+// dialog closes. It sets their password the first time, and resets it.
+async function makeLink(name, btn) {
+  const msg = $("usersMsg");
+  msg.className = "msg pre";
+  msg.textContent = "";
+  const text = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "Making…";
+  const r = await api(`/api/users/${encodeURIComponent(name)}/setup-link`, {});
+  btn.disabled = false;
+  btn.textContent = text;
+  if (r.status !== 200) {
+    msg.className = "msg pre err";
+    msg.textContent = (r.data.error || "That didn't work.") + (r.data.detail ? "\n" + r.data.detail : "");
+    return;
+  }
+  $("linkFor").textContent = `Send this to ${name}. It works once, for 24 hours. A new link replaces this one.`;
+  $("linkText").value = r.data.link;
+  $("linkCopied").textContent = "";
+  $("linkDialog").showModal();
+  $("linkText").select();
+}
+
+// The clipboard API needs HTTPS (or localhost), which the Admin on the LAN
+// isn't: there, the selected text is copied the old way.
+$("linkCopy").addEventListener("click", async () => {
+  const field = $("linkText");
+  let ok = false;
+  if (navigator.clipboard && window.isSecureContext) {
+    try { await navigator.clipboard.writeText(field.value); ok = true; } catch (e) { ok = false; }
+  }
+  if (!ok) {
+    field.select();
+    try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
+  }
+  $("linkCopied").textContent = ok ? "Copied." : "Select the link and copy it.";
+});
+$("linkClose").addEventListener("click", () => $("linkDialog").close());
+$("linkDialog").addEventListener("close", () => { $("linkText").value = ""; $("linkCopied").textContent = ""; });
 
 function closeConfirms() {
   removing = null;

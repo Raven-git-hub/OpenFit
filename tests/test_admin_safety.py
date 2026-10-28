@@ -1,6 +1,7 @@
 """The Admin stays in its lane: its users' compose projects, each with its
 own compose files (the primary's exactly the repo's and the Admin's
-override, in that order); their labelled containers; its own --rm
+override, in that order); their labelled containers, where it execs only
+the health check and a setup link's `python auth_cli.py setup-link`; its own --rm
 helpers; the user system's image; the app shelf's volume, only ever
 looked at; a removed user's kept volume, only on a confirmed delete; and
 its own project, only to update itself. Publishing the shelf runs no
@@ -230,6 +231,15 @@ def scenario_backup_fails_everyone(env):
     assert update(env)["outcome"] == "failed"
 
 
+def scenario_setup_link(env):
+    seed_users(env, ("sam", 8101, "running"), ("kim", 8102, "exited"))
+    for name in ("andy", "sam"):
+        assert env.admin.setup_link(name, "192.168.1.10:8090")["link"]
+    with pytest.raises(admin_ops.Refused):
+        env.admin.setup_link("kim", "192.168.1.10:8090")
+    env.admin.status()
+
+
 def scenario_admin_update(env):
     three_users(env)
     pending(env)
@@ -286,6 +296,7 @@ SCENARIOS = [
     scenario_rollback_everyone,
     scenario_undo_everyone,
     scenario_backup_fails_everyone,
+    scenario_setup_link,
     scenario_admin_update,
     scenario_admin_rollback,
     scenario_admin_rollback_fails,
@@ -397,7 +408,10 @@ def assert_in_lane(env, allow):
             assert a[2:4] == ["--type", "container"] and a[4] in ids, a
             images.update((i["Image"], "users") for i in json.loads(out))
         elif sub == "exec":
+            # In a user's container, only ever the health check or a setup
+            # link - the Admin's own health check is the admin lane's.
             assert a[2] in ids, a
+            assert a[3:] in (["python", "-c", admin_ops.HEALTH_CODE], ["python", "auth_cli.py", "setup-link"]), a
         elif sub == "tag":
             assert (a[2], "users") in images or a[2] == "openfit-tracker:prev", a
             assert a[3] in ("openfit-tracker:prev", "openfit-tracker:latest"), a

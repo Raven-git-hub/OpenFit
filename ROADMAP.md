@@ -27,9 +27,9 @@ open, self-hosted equivalent of Apple HealthKit / Google Health Connect.
 
 One container per user, managed by a shared host (like Umbrel/YunoHost manage
 self-hosted app fleets). Each person's container has its own SQLite file, so
-isolation is physical, not row-level. No `user_id`. One account per container,
-with a login page — still not row-level multi-tenancy: one person, one
-container, one database. The provisioning moves to the OpenFit Admin (Phase 5);
+isolation is physical, not row-level. No `user_id`. One account per container
+(U1, built: `docs/architecture/auth.md`), with a login page — still not
+row-level multi-tenancy: one person, one container, one database. The provisioning moves to the OpenFit Admin (Phase 5);
 the design is `docs/architecture/distribution.md`.
 
 ## Phase 1 — Data layer hardening — DONE
@@ -185,8 +185,13 @@ the order was changed so the Admin comes first, in A-slices:
    and Undo move every user together: one build, everyone backed up as one
    set, everyone recreated as they were, the running ones health-checked, and
    everyone rolled back if anyone doesn't come up.
-3. The user login (the user system's login page), before any second real
-   person gets a container.
+3. **U1, built:** the user login (`docs/architecture/auth.md`), before any
+   second real person gets a container. One account per container, still no
+   `user_id`: locked until a password is set, through a one-time setup link
+   the Admin's **Setup link** makes (`python auth_cli.py setup-link`, run in
+   the user's container), the same link resetting a forgotten one. Every
+   route but the webhook behind a session, every write behind an `X-OpenFit`
+   header, Sign out in settings.
 4. **A4, built:** the Admin's self-update (`docs/architecture/admin.md`).
    Update the Admin, in place of a command to run on the server: offered once
    Update OpenFit has pulled the Admin's new files, it builds the new Admin

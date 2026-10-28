@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OpenFit</title>
+<style>
+/* The sign-in, locked and setup views (main.py's index and setup_page):
+   one small page, self-contained like index.html - no external calls,
+   no web fonts - on index.html's own tokens, so it re-skins with them.
+   The bare :root block is the light theme; the two after it the dark
+   (the OS's, then the toggle's choice, read from the same localStorage
+   key, of-theme). */
+:root{
+  color-scheme:light;
+  --bg:#eef1f0;
+  --surface:#ffffff;
+  --inset:#f4f6f5;
+  --border:#d5dcda;
+  --border-strong:#c2cbc9;
+  --ink:#141c1b;
+  --muted:#697472;
+  --accent:#0e9c8b;
+  --accent-ink:#ffffff;
+  --crit:#c94f4a;
+  --radius:14px;
+  --radius-sm:9px;
+  --shadow:0 1px 2px rgba(20,28,27,.06), 0 8px 24px rgba(20,28,27,.05);
+  --font-display:'Archivo', system-ui, sans-serif;
+  --font-body:'IBM Plex Sans', system-ui, sans-serif;
+  --font-mono:'IBM Plex Mono', ui-monospace, monospace;
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    color-scheme:dark;
+    --bg:#0e1316;
+    --surface:#161d21;
+    --inset:#121a1e;
+    --border:#2a343a;
+    --border-strong:#39454c;
+    --ink:#e9eeef;
+    --muted:#7f8c92;
+    --accent:#31d3bf;
+    --accent-ink:#052420;
+    --crit:#ea6a63;
+    --shadow:0 1px 2px rgba(0,0,0,.3), 0 10px 30px rgba(0,0,0,.35);
+  }
+}
+:root[data-theme="dark"]{
+  color-scheme:dark;
+  --bg:#0e1316;
+  --surface:#161d21;
+  --inset:#121a1e;
+  --border:#2a343a;
+  --border-strong:#39454c;
+  --ink:#e9eeef;
+  --muted:#7f8c92;
+  --accent:#31d3bf;
+  --accent-ink:#052420;
+  --crit:#ea6a63;
+  --shadow:0 1px 2px rgba(0,0,0,.3), 0 10px 30px rgba(0,0,0,.35);
+}
+
+*{box-sizing:border-box;}
+html,body{margin:0;}
+body{
+  background:var(--bg);color:var(--ink);font-family:var(--font-body);
+  -webkit-font-smoothing:antialiased;font-size:15px;line-height:1.45;
+  min-height:100vh;display:grid;place-items:center;padding:24px 16px;
+}
+button{font-family:inherit;cursor:pointer;}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:4px;}
+[hidden]{display:none !important;}
+.card{
+  background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);
+  box-shadow:var(--shadow);padding:26px 24px 24px;width:min(380px,100%);
+}
+.brand{display:flex;align-items:center;gap:11px;margin-bottom:20px;}
+.brand-mark{
+  width:32px;height:32px;border-radius:8px;flex:none;
+  background:
+    radial-gradient(circle at 50% 50%, var(--accent) 0 4px, transparent 5px),
+    conic-gradient(from -90deg, var(--accent) 0 72%, var(--border-strong) 72% 100%);
+  -webkit-mask:radial-gradient(circle at 50% 50%, transparent 6px, #000 7px);
+          mask:radial-gradient(circle at 50% 50%, transparent 6px, #000 7px);
+}
+.brand-name{font-family:var(--font-display);font-weight:800;letter-spacing:.5px;font-size:23px;}
+.brand-name b{color:var(--accent);}
+h1{font-family:var(--font-display);font-weight:700;font-size:17px;margin:0 0 6px;}
+p{margin:0 0 14px;color:var(--muted);font-size:14px;}
+.field{display:flex;flex-direction:column;gap:5px;margin-bottom:12px;}
+.field label{font-size:11.5px;text-transform:uppercase;letter-spacing:.8px;color:var(--muted);font-weight:600;}
+.input{
+  background:var(--inset);border:1px solid var(--border);color:var(--ink);
+  border-radius:var(--radius-sm);padding:10px 11px;font-size:14px;font-family:var(--font-body);width:100%;
+}
+.input:focus{border-color:var(--accent);outline:none;}
+.btn{
+  border:1px solid var(--accent);background:var(--accent);color:var(--accent-ink);
+  border-radius:var(--radius-sm);padding:9px 14px;font-weight:600;font-size:13.5px;width:100%;margin-top:4px;
+}
+.btn:hover{filter:brightness(1.05);}
+.btn:disabled{opacity:.5;cursor:not-allowed;filter:none;}
+.msg{font-size:12.5px;font-family:var(--font-mono);color:var(--crit);margin-top:10px;min-height:16px;}
+.msg:empty{min-height:0;margin:0;}
+</style>
+</head>
+<body data-view="{{ view }}">
+<main class="card">
+  <div class="brand">
+    <div class="brand-mark"></div>
+    <div class="brand-name">Open<b>Fit</b></div>
+  </div>
+
+  <section id="locked" hidden>
+    <h1>Locked</h1>
+    <p>This OpenFit is locked until a password is set. Ask your admin for a setup link.</p>
+  </section>
+
+  <section id="signin" hidden>
+    <h1>Sign in</h1>
+    <form id="signinForm">
+      <div class="field">
+        <label for="signinPassword">Password</label>
+        <input class="input" id="signinPassword" type="password" autocomplete="current-password" required>
+      </div>
+      <button class="btn" type="submit">Sign in</button>
+      <div class="msg" id="signinMsg" role="alert"></div>
+    </form>
+    <p style="margin:14px 0 0;font-size:13px">Forgotten it? Ask your admin for a setup link.</p>
+  </section>
+
+  <section id="setup" hidden>
+    <h1>Set your password</h1>
+    <p id="setupHint">At least {{ min_password }} characters. This link works once.</p>
+    <form id="setupForm">
+      <div class="field">
+        <label for="setupPassword">New password</label>
+        <input class="input" id="setupPassword" type="password" autocomplete="new-password"
+               minlength="{{ min_password }}" required>
+      </div>
+      <div class="field">
+        <label for="setupAgain">The same again</label>
+        <input class="input" id="setupAgain" type="password" autocomplete="new-password"
+               minlength="{{ min_password }}" required>
+      </div>
+      <button class="btn" type="submit">Set password</button>
+      <div class="msg" id="setupMsg" role="alert"></div>
+    </form>
+  </section>
+</main>
+<script>
+(function(){
+  "use strict";
+  const $ = id => document.getElementById(id);
+  const MIN_PASSWORD = Number("{{ min_password }}");
+
+  // The theme the app was last set to in this browser (its toggle).
+  try{
+    const t = localStorage.getItem('of-theme');
+    if(t==='light' || t==='dark') document.documentElement.setAttribute('data-theme', t);
+  }catch(e){}
+
+  // The one sender here: JSON, with the header the server's guard asks
+  // every write for. {status, data}; a network failure is status 0.
+  async function post(url, body){
+    try{
+      const r = await fetch(url, {
+        method:'POST',
+        headers:{'Content-Type':'application/json', 'X-OpenFit':'1'},
+        body:JSON.stringify(body),
+      });
+      const data = await r.json().catch(() => ({}));
+      return {status:r.status, data};
+    }catch(e){
+      return {status:0, data:{error:"OpenFit isn't answering."}};
+    }
+  }
+  // Signed in: the app, in this tab's place - so the setup link's address,
+  // token and all, isn't left in its history.
+  const enter = () => location.replace('/');
+
+  function hold(form, on){
+    form.querySelectorAll('input, button').forEach(n => { n.disabled = on; });
+  }
+
+  const view = document.body.dataset.view;
+  const section = $(view) || $('locked');
+  section.hidden = false;
+
+  if(view==='signin'){
+    const form = $('signinForm'), msg = $('signinMsg'), field = $('signinPassword');
+    field.focus();
+    form.onsubmit = async e => {
+      e.preventDefault();
+      msg.textContent = '';
+      hold(form, true);
+      const r = await post('/api/auth/login', {password:field.value});
+      if(r.status===200) return enter();
+      hold(form, false);
+      msg.textContent = r.data.error || "That didn't work.";
+      field.select();
+    };
+  }
+
+  if(view==='setup'){
+    const form = $('setupForm'), msg = $('setupMsg');
+    const token = location.hash.slice(1);
+    if(!token){
+      $('setupHint').textContent = "This setup link isn't complete. Ask your admin for a new one.";
+      form.hidden = true;
+      return;
+    }
+    $('setupPassword').focus();
+    form.onsubmit = async e => {
+      e.preventDefault();
+      const password = $('setupPassword').value;
+      msg.textContent = '';
+      if(password.length < MIN_PASSWORD){
+        msg.textContent = 'The password needs at least ' + MIN_PASSWORD + ' characters.';
+        return;
+      }
+      if(password !== $('setupAgain').value){
+        msg.textContent = "The two passwords aren't the same.";
+        return;
+      }
+      hold(form, true);
+      const r = await post('/api/auth/setup', {token, password});
+      if(r.status===200) return enter();
+      hold(form, false);
+      msg.textContent = r.data.error || "That didn't work.";
+    };
+  }
+})();
+</script>
+</body>
+</html>

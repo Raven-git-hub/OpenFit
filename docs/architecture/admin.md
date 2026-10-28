@@ -1,7 +1,8 @@
-# The OpenFit Admin (A1, A2, A4, A5): updates behind buttons, users, its own update, and the app shelf
+# The OpenFit Admin (A1, A2, A4, A5, U1): updates behind buttons, users, its own update, the app shelf and setup links
 
 _Built: A1, A2, A4 and A5, slices of the Admin in
-[distribution.md](distribution.md). The code is `admin/`; the tests are
+[distribution.md](distribution.md), and U1's setup links (the user login,
+[auth.md](auth.md)). The code is `admin/`; the tests are
 `tests/test_admin_*.py`._
 
 Until A1, OpenFit was updated by SSHing to the docker host and running:
@@ -34,9 +35,6 @@ system's Browse (B1) reads `/library` and installs from it.
 
 ## What the Admin doesn't do yet
 
-- A login in the user system: an added user's OpenFit is open to anyone who
-  can reach its port, as the primary's is. It comes before a second real
-  person gets a container (the next step in the build order).
 - Rename a user, or change a user's port after it's added. Users on
   different versions.
 - Update OpenFit and update itself in one go: Update OpenFit pulls the
@@ -257,6 +255,35 @@ way a user's data is deleted:
 - Then `docker volume rm <volume>`, the stored name, checked again against
   `openfit-[a-z0-9]{1,20}_tracker-data` and the user's own. On success the
   entry is dropped. Their backups stay until they're pruned.
+
+### Setup links (U1)
+
+Every user's OpenFit is locked until it has a password ([auth.md](auth.md)),
+and a password is set - or a forgotten one reset - through a one-time setup
+link. **Setup link** on a user's row (usable while their OpenFit is running)
+is `POST /api/users/<name>/setup-link`, for any user, the primary included:
+
+- their container, found by its labels as every command finds it, must be
+  running, else 409 ("<name>'s OpenFit isn't running. Start it, then make the
+  link.");
+- then `docker exec <id> python auth_cli.py setup-link`, exactly: the user
+  system's own CLI makes the token, stores its hash (replacing any earlier
+  link) and prints one JSON line, `{token, expires_at}`;
+- the token is held to `[A-Za-z0-9_-]{40,50}` and the expiry to a UTC stamp,
+  and anything but one such line is a 502 ("<name>'s OpenFit didn't give
+  back a setup link the Admin recognises."); a failed exec is a 502 with its
+  error output, never what it printed;
+- the reply is `{link, expires_at}`, the link
+  `http://<host>:<their port>/setup#<token>`, the host as your browser
+  reached the Admin (as the users' addresses are built).
+
+It takes the lock, so it waits for nothing: while another operation runs
+it's a 409. Nothing is stored and it's not an operation: there's no entry in
+`history.json`, and the log line is only "Made a setup link for <name>." The
+page shows the link once, in a dialog - "Send this to <name>. It works once,
+for 24 hours. A new link replaces this one." - with a Copy button (on plain
+HTTP the clipboard API isn't there, so it copies the selected text), and
+empties it as the dialog closes.
 
 ### Managed from the Admin
 
@@ -805,7 +832,9 @@ Tailscale sidecars and more), and the Admin must never touch any of them.
   volume on it.
 - **Its own containers only.** Every docker command targets one of: a
   container compose labels as one of those projects' `tracker` service (not a
-  one-off `compose run`), found by `docker ps -a` with those label filters; a
+  one-off `compose run`), found by `docker ps -a` with those label filters,
+  where the only commands it execs are the health check (`python -c` and
+  the fixed code) and a setup link's `python auth_cli.py setup-link`; a
   helper container the Admin starts itself, labelled
   `openfit.admin.helper=true`, always `--rm`, from its own image (the
   backup helpers, and the update helper above);
@@ -863,6 +892,12 @@ Each user's own data is their volume: `openfit_tracker-data` for the primary,
 `openfit-library` (A5), the Admin's `/library` and every user's, read-only.
 
 ## Try it
+
+Setup links (U1), once Update OpenFit and then Update the Admin have run:
+every OpenFit shows "locked". Press **Setup link** on your row, open the
+link, set a password and you're signed in. Press it again and open the new
+link in another browser: setting a password there signs the first browser
+out. A stopped user's button is greyed out (the route says 409).
 
 On the server, once the Admin is rebuilt with A2: open the Admin, add a test
 user (say `test`, on the suggested port), open their address and see a fresh
