@@ -723,7 +723,10 @@ authorization returns a fresh refresh token.
 ## Admin
 
 The **OpenFit Admin** is a small web admin, in its own container on port 8090,
-that adds users and updates OpenFit for everyone. It replaces SSHing in to run
+that adds users and updates OpenFit for everyone. Its page is the **Admin
+Portal**, in OpenFit's own style: the server, versions, the app library's
+sources and the activity log down the left, and the Users and Repo tabs on
+the right. It replaces SSHing in to run
 `git pull && docker compose up -d --build`, and adds the safety nets the command
 line never had:
 
@@ -737,9 +740,14 @@ line never had:
   on a user's row makes a one-time link that sets it (or resets a forgotten
   one), shown once for you to send: it works for 24 hours, and a new one
   replaces it. The Admin keeps no copy.
-- **Check now**, and a check by itself every week. It shows what's new on
-  GitHub, grouped as user system, Admin, app library and other, with the merged
-  PRs linked.
+- **Check now**, and a check by itself every week. **Update available**
+  beside a version opens what's new on GitHub, grouped as user system, Admin,
+  app library and other, with the merged PRs linked, and **Proceed** runs the
+  update. A version's name opens its last update: when, how it went, and what
+  it brought.
+- **System information**: the server's name, Docker version, CPUs and memory
+  (and nothing else Docker says about the host), the free disk, the backups,
+  the users and when the Admin started.
 - **Update OpenFit** moves everyone together: one version on the server at a
   time. It refuses a server copy with local changes, keeps the current image,
   pulls and builds while everyone keeps running, then stops everyone who was
@@ -748,12 +756,14 @@ line never had:
   up, the Admin puts everyone's data, the image and the code back by itself.
 - **Undo last update** does the same rollback by hand, for every user, while
   the users are the ones the update had.
-- **Backups**: one per user per update; the newest three updates' are kept.
+- **Backups**: one per user per update; the newest three updates' are kept,
+  listed under **User data** with removed users' kept data.
 - **Update the Admin**: the Admin updates itself, rolling back by itself if
   the new version doesn't start.
-- **The app shelf**: the official apps (`library/`), published to a volume
-  every user's OpenFit mounts read-only at `/library`, with no network between
-  them. An app-only change goes out with **Update apps**: no rebuild, nobody
+- **The app shelf**: the official apps (`library/`, named by its
+  `repo.yaml`), published to a volume every user's OpenFit mounts read-only at
+  `/library`, with no network between them; the **Repo** tab lists each
+  source's apps with their descriptions. An app-only change goes out with **Update apps**: no rebuild, nobody
   restarts. **Restart** a user to give them the shelf, which their OpenFit's
   Browse reads.
 

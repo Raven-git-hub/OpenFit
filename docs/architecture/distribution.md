@@ -5,10 +5,11 @@ corrected in B1: FRMS alone), library app ids with read-only library apps
 (L2), four Admin slices: updates for the existing OpenFit (A1), adding users,
 with updates moving everyone together (A2), the Admin's self-update (A4) and
 the app shelf (A5, all four [admin.md](admin.md)), Browse (B1), the user
-system installing from the shelf, and the user login (U1,
+system installing from the shelf, the user login (U1,
 [auth.md](auth.md)): one account per user container, set through setup
-links from the Admin; everything else here is designed, not yet in the
-code._
+links from the Admin, and the Admin Portal (S1, [admin.md](admin.md)): the
+Admin's page in OpenFit's style. S2 is next; everything else here is
+designed, not yet in the code._
 
 OpenFit is splitting into three layers: the repo, an **Admin** container that
 manages user containers on a server, and the **user system** (today's `app/`).
@@ -25,7 +26,8 @@ and publishes the official apps to a read-only shelf every user mounts
 ## Layers
 
 - **The repo.** One repo holds `app/` (the user system), `library/` (the
-  official apps) and `admin/` (the Admin, four of its slices built). The official repo is public. An
+  official apps, and `repo.yaml`, their name and blurb) and `admin/` (the
+  Admin, five of its slices built). The official repo is public. An
   organisation's app repo is separate and private, and the Admin reads it with
   a read-only key.
 - **The Admin.** One container per server. It creates users, checks for
@@ -108,6 +110,26 @@ into the operation's outcome. Every compose command on the Admin's own
 project goes through one function and is one of two (`build admin`, `up -d
 --no-build --force-recreate admin`); no user's project is touched. A4
 itself is installed with the manual command one last time.
+
+### The Admin Portal (S1, built; S2 next)
+
+The Admin's page, redrawn in OpenFit's style: OpenFit's theme tokens and
+components, copied and held to OpenFit's by a drift test, under OpenFit's
+header with ADMIN PORTAL beside the brand. A left column of four panels
+that are always there: **System information** (the server's name, Docker
+version, CPUs and memory from `docker info`, of which nothing else is kept;
+the free disk, the backups, the users and when the Admin started),
+**Versions** (the users' and the Admin's, when each was last updated, what
+the last update brought, and Update available opening one update popup),
+**Repos** (each shelf source, its version and last publish) and the
+**Activity log**. On the right, two tabs: **Users** (the users, Add user,
+User data - backups and removed users' kept data in one list - and what
+everyone runs) and **Repo** (each source and its apps, with their
+descriptions). The library's `repo.yaml` names a source on the shelf, and
+`index.json` gains each source's and app's name and description. A
+re-layout and a few reads: every route, operation and safety rule is as it
+was. **S2**, next, wires up the places S1 leaves disabled: reverting the
+Admin, downloading backups and kept data, and deleting a single backup.
 
 ### The app shelf (A5, built)
 
@@ -334,7 +356,11 @@ a second real person gets a container. Re-ordered 2026-10-27, after A1:
    Still the user system's, to come: B2, `replaces` moving an older app's data
    across (L3's rules), and B3, self-updating installed apps; then L4. The
    library groundwork built before, L1 (corrected in B1) and L2, stands.
-6. **Organisation repos** (A6): each a source of its own on the shelf.
+6. **The Admin Portal**: S1 (built), the page in OpenFit's style, with
+   the reads behind its panels; **S2 next**: reverting the Admin,
+   downloading backups and kept data, deleting single backups.
+7. **Organisation repos** (A6): each a source of its own on the shelf, its
+   name and blurb from its own `repo.yaml`.
 
 ### Parked
 

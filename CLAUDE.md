@@ -1891,7 +1891,8 @@ own calls to its device API. Full direction:
   tile (`paintTiles()`, `repaintTile()`) through a panel to its input. No apps → a note pointing to ＋ Add Application (or the apps
   folder); `/api/apps` failing → a Retry.
 - `library/` — the official app library: the apps OpenFit publishes,
-  currently FRMS alone (`frms`, its `app.yaml` with a `description` —
+  named by its `repo.yaml` (`name: OpenFit`, a `description`: the source's
+  name and blurb in the shelf's index, S1), currently FRMS alone (`frms`, its `app.yaml` with a `description` —
   the owner's to edit — and `replaces: [frms]`); outside the image build
   context (`docker-compose.yml` builds `./app`), never copied into the user
   system, but published by the Admin to every user's shelf, where Browse
@@ -1905,7 +1906,7 @@ own calls to its device API. Full direction:
   byte-identical, to `tests/fixtures/apps/`. Not `apps/`, so it can't be
   confused with `app/`. The distribution design it starts is
   `docs/architecture/distribution.md`.
-- `admin/` — the OpenFit Admin (A1, A2, A4, A5, U1's setup links, `docs/architecture/admin.md`): its own
+- `admin/` — the OpenFit Admin (A1, A2, A4, A5, U1's setup links, S1's portal, `docs/architecture/admin.md`): its own
   image (`python:3.12-slim`, git, the docker CLI and compose plugin copied
   from pinned images) and compose file (`docker compose -f
   admin/docker-compose.yml -p openfit-admin up -d --build`), port 8090, the
@@ -1997,7 +1998,31 @@ own calls to its device API. Full direction:
   line "Made a setup link for <name>." — the token never in history or a
   log; the page's dialog shows it once (Copy, the clipboard API else
   `execCommand`), emptied on close. In a user's container the Admin execs
-  only the health check and that. Modules prefixed
+  only the health check and that. The page is the **Admin Portal**
+  (S1, `templates/index.html`): OpenFit's look copied - its token blocks
+  (light, the OS's dark, `data-theme="dark"`; only the tokens it uses, each
+  OpenFit's value in every block, the drift test in
+  `tests/test_admin_portal.py`) and components - OpenFit's header with
+  ADMIN PORTAL, `settings` (Log out) and the theme chip
+  (`openfit-admin-theme`); a left column of four panels (System
+  information, Versions, Repos, Activity log) and Users / Repo tabs
+  (`openfit-admin-tab`); one update popup (Proceed the existing route), a
+  last-update and a last-publish popup, and S2's places (Revert the Admin,
+  Download, Delete a backup) disabled. `status()` gains `system` (`docker
+  info --format '{{json .}}'`, `DOCKER_INFO_ARGS`, at most once a
+  `DOCKER_INFO_EVERY` 60s, of which `server_fields()` keeps only `Name`,
+  `ServerVersion`, `NCPU`, `MemTotal`; `statvfs` of `/data`, the backups'
+  bytes, users running/stopped/missing, `started_at`), `versions` (HEAD and
+  the newest commit touching `admin/`, "older" by the fingerprint, last
+  updated the newest ok op of the kind, `last`/`current` with `_range()`'s
+  commits and PRs, cached), `repos` (the shelf's sources, OpenFit first, then
+  by name) and `activity` (every kept op, with its log), and each backup its
+  `update`; an Admin update records `old`/`new` (`_admin_base()`).
+  `publish_set()` reads `library/repo.yaml` (`repo_info()`: `name` 1–40,
+  `description` ≤ 300, else the source id, logged) and each app's
+  `app.yaml` (`app_info()`, null where it won't read) into `index.json`'s
+  entries, and `publish_at_startup()` republishes an entry with no `name`
+  (an index from before S1; the set untouched). Modules prefixed
   `admin_` so they never clash with `app/`'s on the test path:
   `admin_ops.py` (every command through one `Runner`, argument lists, never a
   shell; git as the repo's owner; compose only `-p openfit` with the repo's
@@ -3060,7 +3085,12 @@ same PR:
   auth_cli.py setup-link`, which the Admin's Setup link runs in the user's
   container by `docker exec`), the same link the reset; every route but
   the webhook behind a session, every write behind `X-OpenFit: 1` (the
-  page's `apiFetch()`), Sign out in settings. Still to come, in order:
+  page's `apiFetch()`), Sign out in settings. Then the Admin Portal (S1;
+  `admin/`, `library/repo.yaml`, no change to `app/`): the Admin's page in
+  OpenFit's style, a left column of System information, Versions, Repos and
+  the Activity log, Users and Repo tabs, and the reads behind them; S2 next
+  (revert the Admin, download backups and kept data, delete one backup).
+  Still to come, in order:
   B2 (`replaces`
   moving the data, L3's rules) and self-updating installed apps (B3),
   with L4, then organisation repos (A6); installing an app with folders
