@@ -303,6 +303,40 @@ def test_a_publish_whose_index_cant_be_written_puts_the_link_back(admin_env, mon
     assert snapshot(env) == before
 
 
+def test_the_index_is_written_only_after_the_link_is_swapped(admin_env, monkeypatch):
+    # A reader that sees the new index must find the new set behind the
+    # link: so a swap that fails leaves the index exactly as it was.
+    env = admin_env
+    env.admin.publish_official()
+    before = (env.library / "index.json").read_bytes()
+    land(env, {"library/caffeine/app.yaml": "id: caffeine\n"}, "Caffeine")
+    real = admin_ops._point
+
+    def point(root, source, target):
+        if target is not None and target.endswith(head(env)[:12]):
+            raise OSError("the link couldn't be swapped")
+        return real(root, source, target)
+
+    monkeypatch.setattr(admin_ops, "_point", point)
+    with pytest.raises(admin_ops.OpError):
+        env.admin.publish_official()
+    assert (env.library / "index.json").read_bytes() == before
+
+
+def test_a_file_is_never_copied_through_a_link(tmp_path):
+    real = tmp_path / "real.txt"
+    real.write_text("a secret")
+    link = tmp_path / "link.txt"
+    link.symlink_to(real)
+    dst = tmp_path / "out" / "copy.txt"
+    dst.parent.mkdir()
+
+    with pytest.raises(OSError):
+        admin_ops._copy_file(str(link), str(dst))
+    assert not os.path.lexists(dst)
+    assert os.listdir(dst.parent) == []
+
+
 def test_a_first_publish_that_fails_leaves_the_shelf_empty(admin_env, monkeypatch):
     env = admin_env
 
