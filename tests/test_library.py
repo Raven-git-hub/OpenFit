@@ -1,8 +1,11 @@
 """
-The official app library: library/, the apps OpenFit publishes.
+The official app library: library/, the apps OpenFit publishes - FRMS
+alone today. The apps the host's tests run against as real apps
+(caffeine, import, mood, steps, steps-metres, weight, workout-log) are
+test fixtures, in tests/fixtures/apps/: they were never official, and
+the shelf (A5) publishes whatever library/ holds to every user.
 
-Each folder in it is one app, filed under its own id, and the host's
-tests run against them as real apps. Three things hold for the whole
+Each folder in it is one app, filed under its own id. Three things hold for the whole
 library, whatever apps it gains: it sits outside the image's build
 context, so it's never copied into the user system; every folder is
 named for the id its app.yaml gives; and every app installs through the
@@ -58,3 +61,12 @@ def test_every_library_app_installs_through_the_hosts_own_install_path(tmp_path)
         except apps.InstallError as e:
             pytest.fail(f"library/{folder.name} doesn't install: {e}")
         assert installed["id"] == folder.name
+
+
+def test_the_library_is_frms_alone_and_the_test_apps_are_fixtures():
+    assert [p.name for p in library_apps()] == ["frms"]
+    fixtures = ROOT / "tests" / "fixtures" / "apps"
+    test_apps = ["caffeine", "import", "mood", "steps", "steps-metres", "weight", "workout-log"]
+    assert sorted(p.name for p in fixtures.iterdir() if p.is_dir()) == test_apps
+    for name in test_apps:
+        assert apps.load_app(str(fixtures / name)).id == name

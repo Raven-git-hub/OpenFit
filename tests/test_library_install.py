@@ -25,6 +25,9 @@ import apps
 from metrics import WEIGHT_KG
 
 LIBRARY = Path(__file__).parent.parent / "library"
+# The test apps, installed here from a library all the same: what's tested
+# is the id mechanics, not what the official library holds (FRMS alone).
+FIXTURE_APPS = Path(__file__).parent / "fixtures" / "apps"
 
 TODAY = date.today().isoformat()
 
@@ -45,12 +48,13 @@ def apps_dir(tmp_path, monkeypatch):
 def library_files(name):
     """A library app's files, as Browse will send them: each plain file
     directly in its folder, as text - exactly the bytes it holds."""
-    folder = LIBRARY / name
+    folder = LIBRARY / name if name == "frms" else FIXTURE_APPS / name
     return {p.name: p.read_bytes().decode("utf-8") for p in sorted(folder.iterdir()) if p.is_file()}
 
 
 def install(apps_dir, name, source="openfit"):
-    """library/<name> installed from the `source` library."""
+    """library/<name> - or a test app, tests/fixtures/apps/<name> - installed
+    from the `source` library."""
     return apps.install_library_app(apps_dir, source, library_files(name))
 
 
@@ -442,7 +446,7 @@ def test_a_hand_placed_copy_is_a_library_app_by_its_folders_name(client, apps_di
     # Copied onto the volume under the library's name, as an admin might:
     # the folder carries the source, so it loads, writes and is read-only
     # just as installed.
-    shutil.copytree(LIBRARY / "weight", apps_dir / "openfit.weight", ignore=shutil.ignore_patterns("__pycache__"))
+    shutil.copytree(FIXTURE_APPS / "weight", apps_dir / "openfit.weight", ignore=shutil.ignore_patterns("__pycache__"))
 
     [listed] = client.get("/api/apps").get_json()
     assert (listed["id"], listed["library"]) == ("openfit.weight", "openfit")

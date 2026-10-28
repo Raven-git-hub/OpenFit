@@ -219,12 +219,12 @@ def test_index_splits_applications_into_controls_and_a_list(client, monkeypatch)
     import main
 
     # What the list shows: the installed apps, as /api/apps returns them -
-    # the eight real apps.
-    library = os.path.join(os.path.dirname(__file__), "..", "library")
-    monkeypatch.setitem(main.app.config, "APPS_DIR", library)
+    # the seven test apps.
+    fixtures = os.path.join(os.path.dirname(__file__), "fixtures", "apps")
+    monkeypatch.setitem(main.app.config, "APPS_DIR", fixtures)
     apps = client.get("/api/apps").get_json()
     assert [(a["id"], a["name"]) for a in apps] == [
-        ("caffeine", "Caffeine"), ("frms", "FRMS"), ("import", "Import weigh-ins"), ("mood", "Mood"),
+        ("caffeine", "Caffeine"), ("import", "Import weigh-ins"), ("mood", "Mood"),
         ("steps", "Steps"), ("steps-metres", "Distance (from steps)"), ("weight", "Weight"),
         ("workout-log", "Workout log"),
     ]
@@ -2034,7 +2034,7 @@ def dupe_apps(tmp_path, monkeypatch):
     import main
 
     path = tmp_path / "apps"
-    fixtures = os.path.join(os.path.dirname(__file__), "..", "library")
+    fixtures = os.path.join(os.path.dirname(__file__), "fixtures", "apps")
     for app_id in ("steps", "steps-metres"):
         shutil.copytree(os.path.join(fixtures, app_id), path / app_id,
                         ignore=shutil.ignore_patterns("__pycache__"))
@@ -3673,7 +3673,7 @@ def test_a_file_input_posts_multipart_the_action_route_takes(client, tmp_path, m
     uploads.mkdir()
     monkeypatch.setitem(main.app.config, "APPS_DIR", str(apps_dir))
     monkeypatch.setattr(tempfile, "tempdir", str(uploads))
-    fixture = os.path.join(os.path.dirname(__file__), "..", "library", "import")
+    fixture = os.path.join(os.path.dirname(__file__), "fixtures", "apps", "import")
     files = {name: open(os.path.join(fixture, name), encoding="utf-8").read() for name in ("app.yaml", "app.py")}
     assert client.post("/api/apps", json={"files": files}).status_code == 201
 
@@ -6880,7 +6880,7 @@ def orphaned_app(client, db_path, tmp_path, monkeypatch):
     path = tmp_path / "apps"
     path.mkdir()
     shutil.copytree(
-        os.path.join(os.path.dirname(__file__), "..", "library", "steps"), path / "steps",
+        os.path.join(os.path.dirname(__file__), "fixtures", "apps", "steps"), path / "steps",
         ignore=shutil.ignore_patterns("__pycache__"),
     )
     monkeypatch.setitem(main.app.config, "APPS_DIR", str(path))
@@ -7169,7 +7169,7 @@ def test_your_data_names_an_apps_own_metric_and_lists_its_source(client, tmp_pat
 
     path = tmp_path / "apps"
     shutil.copytree(
-        os.path.join(os.path.dirname(__file__), "..", "library", "caffeine"), path / "caffeine",
+        os.path.join(os.path.dirname(__file__), "fixtures", "apps", "caffeine"), path / "caffeine",
         ignore=shutil.ignore_patterns("__pycache__"),
     )
     monkeypatch.setitem(main.app.config, "APPS_DIR", str(path))
