@@ -141,7 +141,19 @@ own calls to its device API. Full direction:
   `series` refused — not yet); `range` `[low, high]`, finite non-bool
   numbers, low ≤ high, kept as written, or absent/null (any finite
   number); a bad block fails the load, as a bad `config` does — install's
-  `check_app()` doesn't check it), all
+  `check_app()` doesn't check it), `description` (text ≤
+  `MAX_DESCRIPTION` 300 once trimmed, blank none — what Browse shows),
+  `requires` (the **app level** it needs, a whole number ≥ 1, not a bool,
+  default 1; `APP_LEVEL` = 1, "the app contract this OpenFit provides;
+  raised when apps gain something an older OpenFit lacks" — checked first,
+  an app needing more skipped: "needs OpenFit app level 2; this OpenFit is
+  level 1"; `manifest_requires()`, `level_problem()`) and `replaces` (a
+  list of ≤ `MAX_REPLACES` 5 ids passing `is_app_id()`, none twice, never
+  the library app's own full id — a custom app's own bare id isn't refused,
+  its `replaces` never acted on, so FRMS's library files pasted in as
+  `frms` load; `manifest_replaces(raw, own)`: B1 parses it, B2 moves the
+  data), each on `InstalledApp` (`.description`, `.requires`,
+  `.replaces`) and none in `summary()`, all
   optional but type-checked, and its **size, required**:
   `sizes`, a non-empty list of the tile sizes it's drawn at, each `{w, h}`
   in cells, whole numbers 1–`MAX_CELLS` (6, Home's width), none twice,
@@ -196,9 +208,11 @@ own calls to its device API. Full direction:
   reinstall."` (install only creates, never updates — that's
   `update_app()`); then
   `check_app(manifest, files)` — **the correctness layer that grows**; its
-  one rule so far is a size (`manifest_sizes()`: "won't deploy without a
-  size", refused 400 with the scanner's own reason); no other manifest
-  field is checked, `app.py` isn't parsed, nothing is run. Only then is
+  rules so far: the app level (`requires` checked, an app needing more than
+  `APP_LEVEL` refused 400 with the scanner's words), then a size
+  (`manifest_sizes()`: "won't deploy without a size", refused 400 with the
+  scanner's own reason); no other manifest field is checked, `app.py`
+  isn't parsed, nothing is run. Only then is
   anything written: into a hidden
   `.install-<hex>` folder (the scanner skips dot-folders; `_stage()`,
   shared with update), renamed to `<id>` once whole, under a process lock
@@ -208,7 +222,8 @@ own calls to its device API. Full direction:
   status)` having written nothing; containment checks run before anything
   touches the disk and never move into `check_app()`.
   `install_library_app(apps_dir, source, files)` is the one way an app is
-  added from a library (no route calls it yet: Browse will) — and so the
+  added from a library (Browse's install route calls it, with the files
+  read from the shelf: `app/shelf.py`, below) — and so the
   one way a dotted id is made: `source` matching `LIBRARY_SOURCE`
   (`[a-z][a-z0-9]*`) else 400 "a library source is lowercase letters and
   digits, starting with a letter: ..."; the manifest's id through
@@ -275,6 +290,54 @@ own calls to its device API. Full direction:
   (1 MiB) → 413, not UTF-8 → 415; else its text, as given. Nothing outside
   the app's folder is ever read. `UninstallError`/`AppFileError` are
   `InstallError`'s siblings, all `LibraryError(message, status)`.
+- `app/shelf.py` — the app shelf, read (B1): the apps the Admin publishes
+  to the read-only `/library` (A5) — `LIBRARY_DIR`, `$OPENFIT_LIBRARY`,
+  default `/library`, `app.config["LIBRARY_DIR"]` in tests — laid out as
+  `index.json` (`{published_at, sources: {source: {commit, apps: {app:
+  {sha256}}}}}`), a relative link `<source>` onto
+  `.sets/<source>-<commit12>/`, and the app folders. Never written.
+  `list_shelf(library_dir, apps_dir, conn)` → `{available, apps}`:
+  `available` false (and `apps` []) with no folder or an `index.json` that
+  doesn't read as the Admin writes it (a mapping with a mapping of
+  `sources`; opened `O_NOFOLLOW`, ≤ 1 MB); a source a key of `sources` in
+  `LIBRARY_SOURCE`'s shape with a mapping of `apps` whose
+  `<library>/<source>` `realpath`s to a folder inside the shelf (else
+  skipped, logged `[library] skipping the source ...`); an app a key of its
+  `apps` in `INSTALL_ID`'s shape whose folder `realpath`s inside the
+  source's, its `app.yaml` (≤ `MAX_MANIFEST_BYTES` 256 KB, `O_NOFOLLOW`,
+  `S_ISREG` once open, `yaml.safe_load`) a mapping whose `id` is the
+  folder's name, `name` (default the folder's) non-blank, and
+  `description`/`requires`/`replaces` by `apps.py`'s rules (`own` the full
+  id) — else left out, logged `[library] skipping <id>: <why>`; its files
+  (`_listing()`) the regular files directly in it (`scandir`,
+  `follow_symlinks=False`: no link, dotfile, `.pyc` or name
+  `filename_problem()` refuses), and whether it has a sub-folder (`__pycache__`
+  and dot-folders aside). Each `{id: "<source>.<app>", source, app, name,
+  description, files, state, replaces_name}`, by `name.casefold()` then id;
+  `state` the first of `installed` (`app_present()`), `unsupported`
+  (a sub-folder: `HAS_FOLDERS`, "It has folders inside it, which this
+  OpenFit can't install yet."), `needs_update` (`requires > APP_LEVEL`),
+  `replaces_pending` (an id it replaces present — `replaces_name` that
+  app's name, or its id if it doesn't load — else one with a row under
+  `app:<id>` in `metrics`, `sessions` or `samples`, `LIMIT 1` each —
+  `replaces_name` its id), `available`. `shelf_app()` one entry, or None;
+  `refusal(entry)` its 409 words ("Already installed", `HAS_FOLDERS`,
+  "Needs a newer OpenFit.", "<name> replaces your <replaces_name>. Moving
+  it across comes in a coming update.") or None.
+  `read_app_files(library_dir, source, app)` → `{name: text}`, found the
+  same way, each file `O_NOFOLLOW|O_NONBLOCK` and `S_ISREG` once open (a
+  link swapped in since the listing refused, 404), ≤ `MAX_APP_FILES` 64 and
+  `MAX_APP_BYTES` 16 MB (the Admin's own; 413), UTF-8 (else 415 naming the
+  file), then `_check_files()`; `LibraryError` 404 for an app not on it.
+  Routes (`app/main.py`): `GET /api/library` → `list_shelf()`; `GET
+  /api/library/<source>/<app>` → `{id, name, files: [{name, text}]}`,
+  `app.yaml`, `app.py`, then the rest by name; `POST
+  /api/library/<source>/<app>/install` — any body ignored, the state
+  afresh (409 `refusal()` unless available), then `read_app_files()` and
+  `install_library_app()` → POST `/api/apps`'s reply (201 `{ok, id,
+  has_app_py}`, refusals `{ok: false, error}` at their status). Each
+  checks `source` (`LIBRARY_SOURCE`) and `app` (`INSTALL_ID`) first (400),
+  then the shelf (404).
 - `app/host.py` — the app host: `Ctx(conn, today=None, app=None)`, built
   per render call for the app (`app` its `InstalledApp`; None, a ctx for no
   app, reads canonical keys only), is all an app's `render()` gets — its
@@ -570,14 +633,15 @@ own calls to its device API. Full direction:
   `errorhandler(413)` as `{"ok": false, "error": "Request too large (max
   25 MB)."}`. Full contract:
   `docs/architecture/app-host.md`.
-  The two real apps, `steps` and `steps-metres`, are committed in
-  `library/` (as deployed in `/data/apps`) and run against the
+  The test apps are fixtures, in `tests/fixtures/apps/` (never official:
+  `library/` is FRMS alone). The two real apps, `steps` and `steps-metres`,
+  are committed there (as deployed in `/data/apps`) and run against the
   host by `tests/test_app_host.py`: they're correct per the contract, so a
   failure there is fixed in the host, never by editing them. Their `app.py`
   is verbatim; their `app.yaml` declares `sizes: [{ w: 1, h: 1 }]`, the
   canonical form, where the deployed copies still say `default_size: { w:
   2, h: 2 }` — which keeps loading (tested from the fixtures, swapped back).
-  Beside them, the first writer: `weight` (`library/weight/`,
+  Beside them, the first writer: `weight` (`tests/fixtures/apps/weight/`,
   deployed by installing it — the platform ships no apps), the end-to-end
   test of the write path (`tests/test_app_actions.py`). Its `app.yaml`:
   id `weight`, fixed (its source is `app:weight`), name "Weight", `sizes:
@@ -591,7 +655,7 @@ own calls to its device API. Full direction:
   `nan` → `ValueError("Enter your weight in kg, as a positive number")`),
   then `ctx.write_metric("weight_kg", kg)` for today — one a day, a
   second the same day replacing it. And the first to invent a metric:
-  `caffeine` (`library/caffeine/`, run by
+  `caffeine` (`tests/fixtures/apps/caffeine/`, run by
   `tests/test_app_custom_metrics.py`, the end-to-end test of app metrics).
   Its `app.yaml`: id `caffeine`, name "Caffeine", `sizes: [{ w: 1, h: 1 },
   { w: 2, h: 1 }]`, `reads: [caffeine_mg]`, `metrics:` one — `caffeine_mg`,
@@ -604,7 +668,7 @@ own calls to its device API. Full direction:
   junk, a negative → `ValueError("Enter today's caffeine in mg, as a
   number")`), then `ctx.write_metric("caffeine_mg", mg)` for today, the
   declared range the host's to hold it to — one a day, replacing. And
-  the first with a dropdown: `mood` (`library/mood/`, run by
+  the first with a dropdown: `mood` (`tests/fixtures/apps/mood/`, run by
   `tests/test_app_actions.py`, the end-to-end test of an input of kind
   `"select"`). Its `app.yaml`: id `mood`, name "Mood", `sizes: [{ w: 1,
   h: 1 }, { w: 2, h: 1 }]`, `reads: [mood]` — no `metrics:` (`mood` is
@@ -616,7 +680,7 @@ own calls to its device API. Full direction:
   `ValueError("Choose a mood from 1 to 5")` (the app holds the choice to
   its options, not the host), then `ctx.write_metric("mood", int(raw))`
   for today — one a day, replacing. And the first with a file picker:
-  `import` (`library/import/`, run by
+  `import` (`tests/fixtures/apps/import/`, run by
   `tests/test_app_actions.py`, the end-to-end test of an input of kind
   `"file"` and the multipart route — the proof the app parses, not
   OpenFit). Its `app.yaml`: id `import`, name "Import weigh-ins", `sizes:
@@ -637,7 +701,7 @@ own calls to its device API. Full direction:
   "line N: <why>" and the earlier lines rolled back by the route: all or
   nothing; a day replaced, a day twice the file's last line. And the
   first to write a session: `workout-log`
-  (`library/workout-log/`, run by `tests/test_app_actions.py`,
+  (`tests/fixtures/apps/workout-log/`, run by `tests/test_app_actions.py`,
   the end-to-end test of `ctx.write_session()`). Its `app.yaml`: id
   `workout-log`, name "Workout log", `sizes: [{ w: 1, h: 1 }, { w: 2, h:
   1 }]`, `reads: []` — no `metrics:` (`workout` is an existing kind).
@@ -1021,7 +1085,7 @@ own calls to its device API. Full direction:
   the one `data-panel="home"` panel, `home.activeTab = id`,
   `renderActiveTab()` — and `markTabs()` sets `.active`/`aria-current` on the
   panel's tab, or on Home the layout tab it draws. Add source once every
-  connector is connected, and Applications' Browse / Build / Create each
+  connector is connected, and Applications' Build / Create each
   open one shared coming-soon placeholder modal
   (`comingSoon(title)`); while a connector is still unconnected, Add source
   opens its real add flow, from a `.pop` menu of the unconnected ones —
@@ -1118,8 +1182,8 @@ own calls to its device API. Full direction:
   controls card (`#appsCard`, painted once at boot by `paintAppControls()`):
   the title and its voice button, then **＋ Add Application** (Add source's
   style; it opens the install popup, below) with **Browse** / **Build** /
-  **Create** grouped at the far end — placeholders, each opening
-  `comingSoon()` — then a status line (`#appsMsg`, empty until an install
+  **Create** grouped at the far end — Browse `openBrowse()` (below), Build
+  and Create placeholders, each opening `comingSoon()` — then a status line (`#appsMsg`, empty until an install
   reports, `appsNote()`), and no app rows. Below it,
   the list panel (`#appListCard`, `paintApps()`), the right column's
   equivalent of Your data's list: a `.alist` container of rows, one per
@@ -1185,8 +1249,38 @@ own calls to its device API. Full direction:
   `DELETE`s `/api/apps/<id>`, then `loadApps()` + `loadHome()` (the row and
   the tile go) and `loadAppSources()` (what it wrote stays, orphaned now:
   Connected sources' Remove data) and notes "✓ Uninstalled <name>"; an
-  error stays in the row. Alerts are their own branch. **The Add Application popup** (`openAddApp(prefill,
-  copyOf, update)` — ＋ Add Application calls it bare; Duplicate passes the copy's
+  error stays in the row. Alerts are their own branch. **Browse**
+  (`openBrowse()`, its own section of the page, reading only
+  `api.library()`/`api.libraryApp()`): a `.wide` `.modal` "Browse
+  applications" — loading, then `SHELF_OFF` ("The app library isn't
+  connected to this OpenFit yet. Restart it from the Admin page to connect
+  it.") for `available` false, "There are no apps in the library yet.",
+  "Couldn't read the app library." for a failed read, or a `.alist` of
+  `shelfRow()`s in the server's order, each an `expandable()` row (its own
+  `open` Set, `aria-expanded`/`aria-controls`, panel id `shelf-panel-…`
+  from `appPanelId()`): the name and a library tag (`.shelf-src`,
+  `libraryName()`: `LIBRARY_NAMES` "OpenFit" for `openfit`, else the source
+  as written), both `textContent`; open, `shelfPanel()`: the description
+  (or "No description.") and **Add Application** (`btn sm primary`) for
+  `available`, else the state in words (`SHELF_STATES`: Installed;
+  "Replaces your <replaces_name>: available in a coming update."; "Needs a
+  newer OpenFit."; the unsupported reason), as text. Add Application
+  `api.libraryApp(source, app)` — a refusal in the row, Browse kept — then
+  closes Browse and `openAddApp(files, null, null, lib)`, `lib` `{source,
+  app, id, name}`: **library mode** — titled "Add application from the
+  library", the hint "The files of <name> from the <library> library, as
+  published. They're installed exactly as shown, and your admin keeps them
+  up to date. To make your own changes, install it, then Duplicate it."
+  (`esc()`d), every file in a slot (`app.yaml`, then `app.py` only if it has
+  one, then the rest) through `fileSlot()`'s fifth argument, `readOnly`
+  (the box and name `readOnly`, no Upload, Remove or picker), ＋ Add file
+  hidden; Review's id `lib.id` (never parsed from the `app.yaml`), the
+  files, notice and tab picker as any install's; Install
+  `api.installLibraryApp(source, app)` → `POST
+  /api/library/<source>/<app>/install` with no body, then as any install's
+  success (`placeNewAppOnTab()`, `appInstalled()`), a refusal the server's
+  message. **The Add Application popup** (`openAddApp(prefill,
+  copyOf, update, lib)` — ＋ Add Application calls it bare; Duplicate passes the copy's
   `[{name, text}]` and the source's name, and the popup is titled
   "Duplicate application", says it's a copy, and starts with `app.yaml`
   and `app.py` in their slots and an added slot per other file, each
@@ -1270,7 +1364,9 @@ own calls to its device API. Full direction:
   `/api/sync/<plugin>`), and the app routes (`/api/apps`, `POST /api/apps`,
   `PUT /api/apps/<id>`, `DELETE /api/apps/<id>`, `POST /api/app/<id>/render`, `POST
   /api/app/<id>/action`, `/api/app/<id>/file`, `/api/app-sources`, `DELETE
-  /api/app-sources/<id>`, `DELETE /api/app-sources/<id>/<metric>`) and Home's layout (`GET`/`PUT /api/home-layout`);
+  /api/app-sources/<id>`, `DELETE /api/app-sources/<id>/<metric>`), the
+  library's (`/api/library`, `/api/library/<source>/<app>`, `POST
+  /api/library/<source>/<app>/install`) and Home's layout (`GET`/`PUT /api/home-layout`);
   not `/api/activity` (the last-sync stamp that read it
   is gone). See `docs/architecture/frontend-redesign-and-widget-model.md`.
   **Home** reads `GET /api/apps` and `GET /api/home-layout` together, then
@@ -1722,17 +1818,21 @@ own calls to its device API. Full direction:
   for its app — `renderSpec(spec, name, appId)`, the id threaded from the
   tile (`paintTiles()`, `repaintTile()`) through a panel to its input. No apps → a note pointing to ＋ Add Application (or the apps
   folder); `/api/apps` failing → a Retry.
-- `library/` — the official app library: the apps OpenFit publishes, which
-  the host's tests also run against as real apps; outside the image build
+- `library/` — the official app library: the apps OpenFit publishes,
+  currently FRMS alone (`frms`, its `app.yaml` with a `description` —
+  the owner's to edit — and `replaces: [frms]`); outside the image build
   context (`docker-compose.yml` builds `./app`), never copied into the user
-  system. One folder an app, named for its id — the eight above:
-  `caffeine`, `frms`, `import`, `mood`, `steps`, `steps-metres`, `weight`,
-  `workout-log` (an app reaches `/data/apps` only by being installed).
-  `tests/test_library.py` holds it to that: the folder outside the build
-  context, every folder its app's id (`load_app(folder).id`), and every app
-  installing through `install_app()` from its files as text, as Browse
-  will. Not `apps/`, so it can't be confused with `app/`. The distribution
-  design it starts is `docs/architecture/distribution.md`.
+  system, but published by the Admin to every user's shelf, where Browse
+  installs it from. One folder an app, named for its id (an app reaches
+  `/data/apps` only by being installed). `tests/test_library.py` holds it
+  to that: the folder outside the build context, every folder its app's
+  id (`load_app(folder).id`), every app installing through `install_app()`
+  from its files as text, and the library FRMS alone. The seven test apps
+  L1 put there (`caffeine`, `import`, `mood`, `steps`, `steps-metres`,
+  `weight`, `workout-log`) were never official: B1 moved them,
+  byte-identical, to `tests/fixtures/apps/`. Not `apps/`, so it can't be
+  confused with `app/`. The distribution design it starts is
+  `docs/architecture/distribution.md`.
 - `admin/` — the OpenFit Admin (A1, A2, A4, A5, `docs/architecture/admin.md`): its own
   image (`python:3.12-slim`, git, the docker CLI and compose plugin copied
   from pinned images) and compose file (`docker compose -f
@@ -2847,11 +2947,20 @@ same PR:
   library's serving: the app shelf, a read-only volume every user mounts
   at `/library` (no allowlist, no network between containers), the
   official apps published to it atomically, Update apps for app-only
-  changes (no rebuild, no restarts) and Restart per user; nothing reads
-  it until Browse. Still to come, in order:
-  the user login before any second real person, then Browse (B1) and
-  self-updating installed apps (B3) with L3 and L4
-  (they wait for Browse), then organisation repos (A6); scheduled updates
+  changes (no rebuild, no restarts) and Restart per user. Then Browse
+  landed (B1; no migration): the user system reads the shelf
+  (`app/shelf.py`) and installs from it (`GET /api/library`, `GET`/`POST
+  /api/library/<source>/<app>[/install]`, the files the shelf's, never
+  the page's), the page's Browse and the Add popup's read-only library
+  mode its front end; the manifest gained `description`, `requires` (an
+  app level, `APP_LEVEL` 1: skipped and refused above it) and `replaces`
+  (parsed; the install refused while what it replaces, or its data, is
+  here); and `library/` was corrected to FRMS alone, the other seven
+  apps moved to `tests/fixtures/apps/`. Still to come, in order:
+  the user login before any second real person, then B2 (`replaces`
+  moving the data, L3's rules) and self-updating installed apps (B3),
+  with L4, then organisation repos (A6); installing an app with folders
+  inside it is out; scheduled updates
   parked; the `.local` names and
   the proxy deferred (users on `IP:port`). L3 as agreed: `replaces` (declared in the library copy's
   `app.yaml`, run only at the new app's install, one transaction moving

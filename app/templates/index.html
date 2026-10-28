@@ -421,6 +421,12 @@ a.btn{display:inline-block;text-decoration:none;}
 }
 /* the controls card's one line of news - what the last install did */
 .app-msg:empty{display:none;}
+/* Browse: the library's apps as Applications rows, a library tag at the
+   end of each; open, the description beside Add Application or why not */
+.shelf .alist{max-height:60vh;overflow-y:auto;}
+.arow.shelf-row{grid-template-columns:16px minmax(0,1fr) auto;}
+.shelf-panel .dnote{margin:0;max-width:none;}
+.shelf-act{display:flex;align-items:flex-start;justify-content:flex-end;}
 
 /* the Add Application popup: wider than the other modals, to hold the
    app's files - one slot each, a name over a paste box, with Upload */
@@ -1252,6 +1258,13 @@ h5 + .dnote{margin-top:0;}
        one replaces its files with these, its id and data kept. */
     installApp:   files          => send('/api/apps', 'POST', {files}),
     updateApp:    (id, files)    => send('/api/apps/'+enc(id), 'PUT', {files}),
+    /* The app library - the shelf the Admin publishes: what's on it, one
+       app's files ({id, name, files: [{name, text}]}) to show, and one
+       installed from it. The install sends no files: the server reads
+       them from the shelf, so what's installed is what was published. */
+    library:      ()             => fetchJSON('/api/library'),
+    libraryApp:   (source, app)  => send('/api/library/'+enc(source)+'/'+enc(app), 'GET'),
+    installLibraryApp: (source, app) => send('/api/library/'+enc(source)+'/'+enc(app)+'/install', 'POST'),
     /* One of an app's files, as text ({id, name, text}), for the viewer -
        a name /api/apps listed; and uninstalling one, folder and all. */
     appFile:      (id, name)     => send('/api/app/'+enc(id)+'/file?name='+enc(name), 'GET'),
@@ -2392,7 +2405,7 @@ h5 + .dnote{margin-top:0;}
   }
 
   /* A stand-in for popups that aren't built yet: Add source (when nothing
-     is left to add), and Applications' Browse / Build / Create. */
+     is left to add), and Applications' Build / Create. */
   function comingSoon(title){
     const {box, close} = openModal(`
       <h4>${esc(title)}</h4>
@@ -2600,8 +2613,8 @@ h5 + .dnote{margin-top:0;}
      APPLICATIONS - the right-hand column of the Data tab
      Two blocks. On top, the controls card: the title, then Add
      Application, which opens the install popup (below), and Browse /
-     Build / Create - placeholders, each opening the coming-soon
-     modal. Below it, the list: one row per installed app, from
+     Build / Create - Browse the app library (below), the other two
+     placeholders, each opening the coming-soon modal. Below it, the list: one row per installed app, from
      /api/apps (the list Home draws its tiles from), with its own
      loading, empty and error states. A row expands as Your data's
      do: what the app reads, its files (each opens read-only), a slot
@@ -2880,8 +2893,8 @@ h5 + .dnote{margin-top:0;}
   }
 
   /* The controls card's buttons, Add Application in Add source's style,
-     then the other ways to get one, grouped at the far end - those
-     three still placeholders. */
+     then the other ways to get one, grouped at the far end: Browse, the
+     app library, then Build and Create - those two still placeholders. */
   const APP_ACTIONS = [
     ['browse', 'Browse', 'Browse applications'],
     ['build',  'Build',  'Build an application'],
@@ -2903,9 +2916,114 @@ h5 + .dnote{margin-top:0;}
     const group = el('div','app-tools');
     group.setAttribute('role','group');
     group.setAttribute('aria-label','Other ways to get an application');
-    APP_ACTIONS.forEach(([act, label, title]) => group.appendChild(button(act, label, title)));
+    APP_ACTIONS.forEach(([act, label, title]) => {
+      const b = group.appendChild(button(act, label, title));
+      if(act === 'browse') b.onclick = () => openBrowse();
+    });
     wrap.appendChild(group);
     return wrap;
+  }
+
+  /* =========================================================
+     BROWSE - the app library
+     The apps on the shelf the Admin publishes (GET /api/library), in
+     the order it lists them, by name. A row is an Applications row
+     (expandable()): the app's name and its library's tag, opening onto
+     its description and Add Application - or, for one that can't be
+     added, why not. Add Application reads the app's files from the
+     library and opens the Add popup on them in library mode: read-only,
+     and installed by the library's own route, which reads the files
+     from the shelf itself - the page never sends them.
+     ========================================================= */
+  const LIBRARY_NAMES = {openfit:'OpenFit'};
+  const libraryName = source => LIBRARY_NAMES[source] || source;
+  /* Why an app on the shelf can't be added, by its state. */
+  const SHELF_STATES = {
+    installed:        () => 'Installed',
+    replaces_pending: a  => `Replaces your ${a.replaces_name}: available in a coming update.`,
+    needs_update:     () => 'Needs a newer OpenFit.',
+    unsupported:      () => "It has folders inside it, which this OpenFit can't install yet.",
+  };
+  const SHELF_OFF = "The app library isn't connected to this OpenFit yet. Restart it from the Admin page to connect it.";
+
+  async function openBrowse(){
+    const {box, close} = openModal(`
+      <h4>Browse applications</h4>
+      <div class="shelf" data-f="shelf"><div class="dstate">Loading the app library…</div></div>
+      <div class="modal-actions">
+        <button class="btn sm" data-act="close" type="button">Close</button>
+      </div>`);
+    box.classList.add('wide');
+    const done = box.querySelector('[data-act="close"]');
+    done.onclick = close;
+    done.focus();
+    const shelf = box.querySelector('[data-f="shelf"]');
+    const note = text => {
+      const n = el('div','dstate');
+      n.textContent = text;
+      shelf.replaceChildren(n);
+    };
+    let read;
+    try{ read = await api.library(); }
+    catch(e){ note("Couldn't read the app library."); return; }
+    const apps = read && Array.isArray(read.apps) ? read.apps : [];
+    if(!read || !read.available){ note(SHELF_OFF); return; }
+    if(!apps.length){ note('There are no apps in the library yet.'); return; }
+    const list = el('div','alist');
+    const open = new Set();
+    apps.forEach(a => list.appendChild(shelfRow(a, open, close)));
+    shelf.replaceChildren(list);
+  }
+
+  /* One app on the shelf: its name and its library, opening onto its
+     panel. Both set as text. */
+  function shelfRow(a, open, closeBrowse){
+    const item = el('div','ditem aitem');
+    item.dataset.app = a.id;
+    const head = el('button','drow arow shelf-row',
+      '<span class="chev" aria-hidden="true">›</span><span class="a-name"></span><span class="d-app shelf-src"></span>');
+    head.querySelector('.a-name').textContent = a.name || a.id;
+    head.querySelector('.shelf-src').textContent = libraryName(a.source);
+    return expandable(item, head, {
+      open, id:a.id, panelId:appPanelId(a).replace('app-panel-', 'shelf-panel-'),
+      panel:() => shelfPanel(a, closeBrowse),
+    });
+  }
+
+  /* An open shelf row: the description, then Add Application - or the
+     state in words. Add Application reads the app's files, closes
+     Browse and opens the Add popup on them, read-only. */
+  function shelfPanel(a, closeBrowse){
+    const p = el('div','dpanel shelf-panel', `
+      <p class="dnote shelf-desc"></p>
+      <div class="shelf-act"></div>
+      <div class="form-msg bad a-msg" role="alert"></div>`);
+    p.id = appPanelId(a).replace('app-panel-', 'shelf-panel-');
+    p.querySelector('.shelf-desc').textContent = a.description || 'No description.';
+    const slot = p.querySelector('.shelf-act'), msg = p.querySelector('.a-msg');
+    if(a.state !== 'available'){
+      slot.appendChild(el('p','dnote shelf-state')).textContent =
+        (SHELF_STATES[a.state] || (() => "It can't be added."))(a);
+      return p;
+    }
+    const add = slot.appendChild(el('button','btn sm primary','Add Application'));
+    add.type = 'button';
+    add.dataset.act = 'add';
+    add.setAttribute('aria-haspopup','dialog');
+    add.onclick = async () => {
+      add.disabled = true;
+      msg.textContent = '';
+      const res = await api.libraryApp(a.source, a.app);
+      if(!res.ok || !Array.isArray(res.files)){
+        msg.textContent = res.error || `Couldn't read the files of ${a.name || a.id}.`;
+        add.disabled = false;
+        return;
+      }
+      closeBrowse();
+      openAddApp(res.files, null, null,
+        {source:a.source, app:a.app, id:res.id || a.id, name:res.name || a.name || a.id});
+    };
+    return p;
   }
 
   /* =========================================================
@@ -3037,8 +3155,9 @@ h5 + .dnote{margin-top:0;}
      name into an empty name field. Text files: what's installed is text.
      prefill, {name, text} or null, fills it to start with (a duplicate's
      files): the box with its text, an added slot's name field with its
-     name - as values, never markup. */
-  function fileSlot(fixed, required, say, prefill){
+     name - as values, never markup. readOnly (a library app's files)
+     shows it as it is: the box and name read-only, no Upload or Remove. */
+  function fileSlot(fixed, required, say, prefill, readOnly){
     const PLACEHOLDER = {
       'app.yaml': 'id: my-app&#10;name: My app&#10;sizes: [{w: 1, h: 1}]',
       'app.py':   'def render(ctx, cfg):&#10;    return ctx.empty(&quot;Nothing yet&quot;)',
@@ -3051,11 +3170,11 @@ h5 + .dnote{margin-top:0;}
           : `<input class="input fname" type="text" aria-label="File name"
                     placeholder="file name"
                     autocomplete="off" autocapitalize="off" spellcheck="false">`}
-        <span class="fslot-btns">
+        ${readOnly ? '' : `<span class="fslot-btns">
           <button class="btn sm" data-act="upload" type="button">Upload</button>
           ${fixed ? '' : '<button class="btn sm" data-act="remove" type="button">Remove</button>'}
         </span>
-        <input type="file" hidden>
+        <input type="file" hidden>`}
       </div>
       <textarea class="input" rows="6" wrap="off" spellcheck="false" autocomplete="off"
                 autocapitalize="off" aria-label="${fixed ? esc(fixed) : 'File'} contents"
@@ -3068,6 +3187,11 @@ h5 + .dnote{margin-top:0;}
     if(prefill){
       text.value = prefill.text;
       if(name) name.value = prefill.name;
+    }
+    if(readOnly){
+      text.readOnly = true;
+      if(name) name.readOnly = true;
+      return slot;
     }
     slot.querySelector('[data-act="upload"]').onclick = () => picker.click();
     picker.onchange = async () => {
@@ -3111,11 +3235,20 @@ h5 + .dnote{margin-top:0;}
      installed app ({id, name}), makes it that app's update, prefilled
      with its files: its id shown locked, and held to by Review; no tab
      to pick (it's placed already); and Review the confirm - "Update
-     <name>?" - whose Update replaces the app's files with these. */
-  function openAddApp(prefill, copyOf, update){
+     <name>?" - whose Update replaces the app's files with these. lib,
+     {source, app, id, name}, is library mode, from Browse: prefill the
+     library app's files, every one in a slot and read-only, no file to
+     add; Review's id lib.id, never read from the app.yaml; and Install
+     the library's install, which sends no files - the server reads them
+     from the shelf. */
+  function openAddApp(prefill, copyOf, update, lib){
     const given = Array.isArray(prefill) ? prefill : null;
     const updName = update ? update.name || update.id : '';
-    const hint = update
+    const hint = lib
+      ? `<p class="hint">The files of <b>${esc(lib.name)}</b> from the ${esc(libraryName(lib.source))}
+          library, as published. They're installed exactly as shown, and your admin keeps them up
+          to date. To make your own changes, install it, then Duplicate it.</p>`
+      : update
       ? `<p class="hint">The files of <b>${esc(updName)}</b>, as installed. Change any of them, add
           one or remove one, then review the update: these become its files — a file whose slot
           you remove is deleted — and what it has written is kept.</p>
@@ -3130,11 +3263,12 @@ h5 + .dnote{margin-top:0;}
           one, or upload it.</p>`;
     const verb = update ? 'Update' : 'Install';
     const {box, close} = openModal(`
-      <h4>${update ? 'Update application' : given ? 'Duplicate application' : 'Add an application'}</h4>
+      <h4>${lib ? 'Add application from the library' : update ? 'Update application'
+            : given ? 'Duplicate application' : 'Add an application'}</h4>
       <div data-step="files">
         ${hint}
         <div class="fslots"></div>
-        <button class="btn sm" data-act="add-file" type="button">＋ Add file</button>
+        <button class="btn sm" data-act="add-file" type="button"${lib ? ' hidden' : ''}>＋ Add file</button>
       </div>
       <div data-step="confirm" hidden>
         <p class="install-id" data-f="id"></p>
@@ -3168,10 +3302,12 @@ h5 + .dnote{margin-top:0;}
     let files = null;   // what Review settled on, and Install sends
 
     const prefilled = n => given && given.find(x => x.name === n) || null;
-    slots.appendChild(fileSlot('app.yaml', true, say, prefilled('app.yaml')));
-    slots.appendChild(fileSlot('app.py', false, say, prefilled('app.py')));
+    const readOnly = !!lib;
+    slots.appendChild(fileSlot('app.yaml', true, say, prefilled('app.yaml'), readOnly));
+    // A library app's slots are its files: no empty app.py to fill.
+    if(!lib || prefilled('app.py')) slots.appendChild(fileSlot('app.py', false, say, prefilled('app.py'), readOnly));
     if(given) given.filter(x => x.name !== 'app.yaml' && x.name !== 'app.py')
-      .forEach(x => slots.appendChild(fileSlot('', false, say, x)));
+      .forEach(x => slots.appendChild(fileSlot('', false, say, x, readOnly)));
     act('add-file').onclick = () => {
       const slot = fileSlot('', false, say);
       slots.appendChild(slot);
@@ -3198,7 +3334,8 @@ h5 + .dnote{margin-top:0;}
       }
       files = got.files;
       const yamlText = files.find(x => x.name === 'app.yaml').text;
-      const read = update ? updateId(yamlText, update.id) : manifestId(yamlText);
+      // A library app's id is the library's to say: <source>.<app>.
+      const read = lib ? {id:lib.id} : update ? updateId(yamlText, update.id) : manifestId(yamlText);
       const idLine = f('id');
       idLine.classList.toggle('bad', !read.id);
       if(read.id) idLine.innerHTML = `${verb} application: <code>${esc(read.id)}</code>`;
@@ -3232,8 +3369,10 @@ h5 + .dnote{margin-top:0;}
       install.disabled = true; install.textContent = update ? 'Updating…' : 'Installing…';
       const body = {};
       files.forEach(x => { body[x.name] = x.text; });
-      // An update replaces the app's files with these, in place.
-      const res = update ? await api.updateApp(update.id, body) : await api.installApp(body);
+      // An update replaces the app's files with these, in place; a
+      // library install sends none - the server reads the shelf's.
+      const res = lib ? await api.installLibraryApp(lib.source, lib.app)
+        : update ? await api.updateApp(update.id, body) : await api.installApp(body);
       if(res.ok){
         // The tab picked, if there was a choice (null: the default's).
         const tabId = f('tabField').hidden ? null : f('tab').value;

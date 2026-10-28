@@ -381,7 +381,15 @@ a library has an id of the form `<source>.<name>`, such as `openfit.frms`
 (the library names the source; the app's own `app.yaml` just says `frms`).
 It's read-only here: its row has no Update, only a note that it's updated by
 your admin, and Duplicate gives you a copy of your own to change (`frms-2`).
-Installing from the library is Browse's, still to come.
+
+**Browse**, beside Add Application, lists the apps in the library your admin
+publishes (FRMS, today): open one for its description and **Add
+Application**, which shows its files read-only in the install popup and
+installs them exactly as published, as `openfit.<name>`. An app it can't add
+says why: already installed, it needs a newer OpenFit, it has folders inside
+it, or it replaces an app of yours whose data moving across comes in a coming
+update (FRMS, while your own `frms` is installed). If Browse says the library
+isn't connected, restart yourself from the Admin page.
 
 To install one, copy its folder onto the volume, or use **＋ Add
 Application** on the Data tab: paste or upload its `app.yaml`, its `app.py`
@@ -463,7 +471,7 @@ source like its readings, writing the same kind and start again replaces it,
 and it's read back alongside every device's: by any app with
 `ctx.sessions(kind)`, or through `GET /api/sessions/<kind>`.
 Nothing is derived from a session, so no day is re-derived for it. The
-**Workout log** app (`library/workout-log/`), which files a workout
+**Workout log** app (`tests/fixtures/apps/workout-log/`, a test app), which files a workout
 just finished from how many minutes it lasted, is the example.
 
 The **FRMS** app (`library/frms/`) puts the two together. It's
@@ -588,7 +596,7 @@ your data like any other: listed in the catalog (marked with the app that define
 them), shown in Your data under their category, and served by
 `GET /api/metric/app:<id>:<key>`. Uninstall the app and they drop out, though
 what it wrote stays until you remove it (below). The **Caffeine** app
-(`library/caffeine/`) is the example.
+(`tests/fixtures/apps/caffeine/`, a test app) is the example.
 
 Removing that data is its own, explicit step, once the app is gone. An
 uninstalled app's source shows in **Connected sources** with a red **Remove
@@ -612,7 +620,7 @@ data** takes only that metric's readings from that app, re-derives their days
 primary if it named the app — the app's other data stays. That's `DELETE
 /api/app-sources/<id>/<metric>`, with the same guards.
 
-The **Weight** app above (in full in `library/weight/`) is the one
+The **Weight** app above (in full in `tests/fixtures/apps/weight/`, a test app) is the one
 way to log a weigh-in by hand: install it from its two files and its tile goes
 on Home. It replaced the old `/api/weights` routes. Weigh-ins logged before it
 keep their source, `manual`: history, still shown and picked, never added to.
@@ -708,8 +716,8 @@ line never had:
 - **The app shelf**: the official apps (`library/`), published to a volume
   every user's OpenFit mounts read-only at `/library`, with no network between
   them. An app-only change goes out with **Update apps**: no rebuild, nobody
-  restarts. **Restart** a user to give them the shelf (nothing reads it until
-  Browse lands).
+  restarts. **Restart** a user to give them the shelf, which their OpenFit's
+  Browse reads.
 
 It manages the OpenFit you already run, in place: the same compose project,
 the same `/data` volume and the same port 8080. Install it once from the
@@ -758,8 +766,8 @@ app/
   derived.py                  Picks the one derived value per metric per day
   crypto.py                   Encrypt/decrypt for stored device credentials
   migrations/                 Versioned .sql schema migrations + runner
-library/                      The official apps OpenFit publishes (outside the image)
-tests/                        pytest suite (temp DB, no network)
+library/                      The official apps OpenFit publishes, FRMS today (outside the image)
+tests/                        pytest suite (temp DB, no network); its test apps in fixtures/apps/
 docs/architecture/            Design direction (read these first)
 ```
 

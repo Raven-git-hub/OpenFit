@@ -35,14 +35,14 @@ from plugins.base import write_session
 
 
 # The two real apps Home was built for, steps and steps-metres, committed
-# in library/ as they're deployed in /data/apps, so every run
+# in tests/fixtures/apps/ as they're deployed in /data/apps, so every run
 # checks the host against the genuine apps. They are correct per the
 # contract: when one fails here, fix the host, never these files. Their
 # app.py is verbatim; their app.yaml declares sizes: [{ w: 1, h: 1 }], the
 # canonical form, where the deployed copies still have the older
 # default_size: { w: 2, h: 2 } - which the host keeps loading
 # (test_the_deployed_manifests_still_load).
-REAL_APPS = Path(__file__).parent.parent / "library"
+REAL_APPS = Path(__file__).parent / "fixtures" / "apps"
 
 
 def real(folder, name):

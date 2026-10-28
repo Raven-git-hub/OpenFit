@@ -24,7 +24,7 @@ import pytest
 import apps
 import home_layout
 
-REAL_APPS = Path(__file__).parent.parent / "library"
+REAL_APPS = Path(__file__).parent / "fixtures" / "apps"
 
 
 @pytest.fixture

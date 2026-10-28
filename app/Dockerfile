@@ -9,7 +9,7 @@ ENV PYTHONUNBUFFERED=1
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY main.py crypto.py derived.py metrics.py first_login.py apps.py host.py home_layout.py ./
+COPY main.py crypto.py derived.py metrics.py first_login.py apps.py host.py home_layout.py shelf.py ./
 COPY plugins ./plugins
 COPY migrations ./migrations
 COPY templates ./templates

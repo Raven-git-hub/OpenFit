@@ -48,6 +48,9 @@ config:                       # optional: the app's settings, an ordered list of
   - {key: stride_m, label: Stride length (m), type: number, default: 0.75}
 metrics:                      # optional: the metrics the app invents, an ordered list
   - {key: caffeine_mg, label: Caffeine, unit: mg, category: "Nutrition & hydration", grain: daily, range: [0, 2000]}
+description: Counts your steps.   # optional: what Browse says of it, at most 300 characters
+requires: 1                   # optional: the app level it needs (APP_LEVEL), 1 when it doesn't say
+replaces: [steps-old]         # optional, a library app's: the app ids it takes over (B2)
 ```
 
 The id is part of the app's URL, so it's letters, digits, `-` and `_`,
@@ -123,6 +126,30 @@ any rule above broken, and the app doesn't load: logged and skipped, as a bad
 `config` is. See [Writing](#writing-apps-as-sources) for how they're read and
 written, and [Routes](#routes) for where they're served.
 
+Three more fields, all optional, are what [Browse](#browse-the-app-library)
+reads of an app on the library's shelf, and the scanner checks them too (one
+broken, and the app doesn't load; `GET /api/apps` lists none of them):
+
+- **`description`**: what Browse shows when the app's row is opened. Text of
+  at most 300 characters (`MAX_DESCRIPTION`) once trimmed; blank is none.
+- **`requires`**: the **app level** the app needs, a whole number from 1 (not
+  a bool, not `"2"`), 1 when it doesn't say. `APP_LEVEL` in `app/apps.py` is
+  the app contract this OpenFit provides, 1 today, raised when apps gain
+  something an older OpenFit lacks. An app needing more doesn't load (the
+  scanner skips it: `needs OpenFit app level 2; this OpenFit is level 1`),
+  and an install or update refuses it with those words (`check_app()`, 400).
+  It's checked first, before any other field: a level-2 app may mean
+  something by a field that this OpenFit can't read.
+- **`replaces`**: a library app's, the app ids it takes over, such as
+  `openfit.frms`'s `replaces: [frms]` for the `frms` installed before the
+  library. A list of at most 5 (`MAX_REPLACES`), each an id an app could have
+  (`is_app_id()`), none twice and never the library app's own id
+  (`openfit.frms`). The move itself, the old app's data to the new id, is B2;
+  until then it's parsed only, and Browse says the app is pending while an app
+  it replaces, or that app's data, is still here (below). A custom app's
+  `replaces` is carried and never acted on, so its own bare id isn't refused:
+  FRMS's library files pasted in as `frms` still load.
+
 **`app.py`**, when there is one, defines `render(ctx, cfg)`, which returns a
 display spec. This is the real `steps` app:
 
@@ -154,16 +181,20 @@ it reads a setting defensively, such as `cfg.get("stride_m", 0.75)` (the real
 expect.
 
 **The library.** `library/`, at the repo's top level, is the official app
-library: the apps OpenFit publishes, which the host's tests also run against as
-real apps; outside the image build context, never copied into the user system.
-The compose file builds `./app`, so an app reaches `/data/apps` only by being
-installed. It's a folder an app, each named for its id and each installing
-through `install_app()` from its files as they stand (`tests/test_library.py`),
-which is what Browse will do. How it's served and updated is
-[distribution.md](distribution.md)'s.
+library: the apps OpenFit publishes, currently FRMS alone. It's outside the
+image build context, never copied into the user system: the compose file
+builds `./app`, so an app reaches `/data/apps` only by being installed. It's a
+folder an app, each named for its id and each installing through
+`install_app()` from its files as they stand (`tests/test_library.py`). The
+Admin publishes it to every user's shelf, and Browse installs from there. How
+it's served and updated is [distribution.md](distribution.md)'s.
 
-**The reference apps.** The first two real apps, `steps` and `steps-metres`,
-are committed in `library/` as they're deployed in `/data/apps`.
+**The reference apps.** The apps the host's tests run against as real apps
+are test fixtures, in `tests/fixtures/apps/`: `caffeine`, `import`, `mood`,
+`steps`, `steps-metres`, `weight` and `workout-log`. They were in `library/`
+once, but were never official, and the shelf publishes whatever `library/`
+holds. The first two, `steps` and `steps-metres`, are committed there as
+they're deployed in `/data/apps`.
 The test suite runs them against the host on every change
 (`test_app_host.py`). They're correct by definition: when one fails, the host
 is fixed to match it, never the app. Their `app.py` is verbatim. Their
@@ -1225,7 +1256,7 @@ on under the same source. A Duplicate is a different app, `app:<new-id>`.
 
 ### The weight app
 
-The first writer, committed in `library/weight/` (deployed by
+The first writer, committed in `tests/fixtures/apps/weight/` (deployed by
 installing it: the platform ships no apps) and run by `test_app_actions.py`.
 
 ```yaml
@@ -1256,7 +1287,7 @@ new ones from `app:weight`.
 
 ### The caffeine app
 
-The first app to invent a metric, committed in `library/caffeine/`
+The first app to invent a metric, committed in `tests/fixtures/apps/caffeine/`
 and run by `test_app_custom_metrics.py`.
 
 ```yaml
@@ -1288,7 +1319,7 @@ Nutrition & hydration, marked `app`.
 ### The mood app
 
 The first app with a dropdown (an input of kind `"select"`), committed in
-`library/mood/` and run by `test_app_actions.py`.
+`tests/fixtures/apps/mood/` and run by `test_app_actions.py`.
 
 ```yaml
 id: mood
@@ -1310,7 +1341,7 @@ under `app:mood`. One mood a day: logging again replaces it.
 ### The import app
 
 The first app with a file picker (an input of kind `"file"`), committed in
-`library/import/` and run by `test_app_actions.py`: it loads past
+`tests/fixtures/apps/import/` and run by `test_app_actions.py`: it loads past
 weigh-ins from a plain-text file, and is the proof that the app parses, not
 OpenFit.
 
@@ -1343,7 +1374,7 @@ pick like the weight app: a day Garmin weighed is still Garmin's.
 ### The workout-log app
 
 The first app to write a session, committed in
-`library/workout-log/` and run by `test_app_actions.py`: it logs a
+`tests/fixtures/apps/workout-log/` and run by `test_app_actions.py`: it logs a
 workout just finished, and is the proof that `ctx.write_session()` lands an
 interval under the app's own source.
 
@@ -1723,8 +1754,8 @@ checks), and deeper correctness checks.
 
 `install_library_app(apps_dir, source, files)`, in `app/apps.py` beside
 `install_app()`, installs an app from a library, its files as the library has
-them. No route calls it yet: Browse will
-([distribution.md](distribution.md)).
+them. Browse's install (`POST /api/library/<source>/<app>/install`, below)
+calls it, with the files read from the shelf.
 
 1. **The source** (`openfit`) must be lowercase letters and digits, starting
    with a letter (`LIBRARY_SOURCE`), or it's a 400: `a library source is
@@ -1749,6 +1780,73 @@ by side, each under its own id and writing under its own source
 sessions' ids `app:openfit.frms:<kind>:<start>`). A paste or a duplicate goes
 through `install_app()`, whose `INSTALL_ID` has no dot, so it can never take
 a library app's id.
+
+### Browse: the app library
+
+The Admin publishes the official apps to a shelf every user mounts read-only
+at `/library` (A5, [distribution.md](distribution.md)): `index.json`, a
+relative link `openfit` onto `.sets/openfit-<commit12>/`, and the app folders
+in it. The user system reads it at `LIBRARY_DIR` (`$OPENFIT_LIBRARY`,
+`/library` by default; `app.config["LIBRARY_DIR"]` in tests), through
+`app/shelf.py`, and never writes it.
+
+**Reading the shelf** treats it as data that could hold anything. A source is
+a key of the index's `sources` in `LIBRARY_SOURCE`'s shape whose folder
+resolves (`realpath`) to a folder inside the shelf; an app, a key of that
+source's `apps` in `INSTALL_ID`'s shape whose folder resolves to one inside
+the source's. Its `app.yaml` is read (at most 256 KB, `yaml.safe_load`, opened
+without following a link) for its `name` (the app's name when it says none),
+`description`, `requires` and `replaces`, by the field rules above, and its id
+must be its folder's name. Its files are the regular files directly in its
+folder: no link, dotfile, `__pycache__` or `.pyc`. Anything that fails is left
+out and logged (`[library] skipping openfit.x: ...`), never shown.
+
+`list_shelf()` → `{available, apps}`. `available` is false when there's no
+shelf, or its `index.json` doesn't read as the Admin writes it. Each app is
+`{id: "<source>.<app>", source, app, name, description, files, state,
+replaces_name}`, sorted by name (case folded), then id, and `state` is the
+first that applies:
+
+1. **`installed`**: an app is present under its id (`app_present()`).
+2. **`unsupported`**: it has a folder inside it, which this OpenFit can't
+   install yet.
+3. **`needs_update`**: it requires a higher app level than `APP_LEVEL`.
+4. **`replaces_pending`**: an id it replaces is installed, or has rows under
+   its source, `app:<id>`, in `metrics`, `sessions` or `samples`.
+   `replaces_name` is that installed app's name, else the id.
+5. **`available`**.
+
+`read_app_files()` reads an app's files as `{name: text}`, the same path
+checks first, each file opened `O_NOFOLLOW` and checked to be a regular file
+once open (so one swapped for a link after the listing is refused), within the
+Admin's own limits (64 files, 16 MB), as UTF-8 (else refused, naming the
+file), then install's own name and text checks (`_check_files()`).
+
+**The page.** Browse, in the Applications card, opens **Browse applications**:
+loading, then the list, or "The app library isn't connected to this OpenFit
+yet. Restart it from the Admin page to connect it." (no shelf) or "There are
+no apps in the library yet.". Each row is a disclosure button (the
+Applications list's `expandable()`): the name and a library tag ("OpenFit"
+for `openfit`, another source as written). Open, it shows the description (or
+"No description.") and **Add Application** for an available app, or the
+state in words: Installed; "Replaces your <name>: available in a coming
+update."; "Needs a newer OpenFit."; or the unsupported reason. All of it set
+as text.
+
+**Add Application** reads the app's files (`GET
+/api/library/<source>/<app>`), closes Browse and opens the Add popup in
+**library mode**: titled "Add application from the library", every file in a
+slot (`app.yaml`, then `app.py` if it has one, then the rest), read-only (the
+boxes and names read-only, no Upload, no Remove, no ＋ Add file), under "The
+files of <name> from the <library> library, as published. They're installed
+exactly as shown, and your admin keeps them up to date. To make your own
+changes, install it, then Duplicate it." Review shows "Install application:
+`openfit.<app>`", the id the library's (never parsed from the `app.yaml`),
+with the files, the custom-code notice and the tab choice as for any install.
+**Install** calls the library's install, which sends no files: the server
+reads them from the shelf, so the page's copy is never trusted. Success is
+any install's (the tab placement, then the list and Home re-read); a refusal
+shows the server's message.
 
 ## An app's row: reads, files, Refresh, Uninstall
 
@@ -1895,7 +1993,8 @@ everything up to the swap leaves the app exactly as it was.
    404: `'<id>' isn't installed — use Add Application to install it`. A
    folder whose app doesn't load isn't installed as far as the Library knows,
    as for uninstall.
-5. **`check_app()`**, the install's correctness layer (a size, so far).
+5. **`check_app()`**, the install's correctness layer (the app level and a
+   size, so far).
 6. **The files are staged** in a hidden `.update-<hex>` folder (the scanner
    skips dot-folders), written as an install's are (`_stage()`, which both
    use).
@@ -1962,6 +2061,21 @@ again, or uninstall the app, to see or remove it.
   {"ok": true, "id"}`, or a 400 (an id no app could have) or 404 (no app
   loads under it) that removes nothing. See
   [Uninstalling an app](#uninstalling-an-app-delete-apiappsid).
+- `GET /api/library` → the shelf, `{available, apps: [{id, source, app,
+  name, description, files, state, replaces_name}]}` (`list_shelf()`; see
+  [Browse](#browse-the-app-library)).
+- `GET /api/library/<source>/<app>` → `{id, name, files: [{name, text}]}`,
+  `app.yaml` first, then `app.py`, then the rest by name. 400 for a source
+  or name no library app could have (`LIBRARY_SOURCE`, `INSTALL_ID`, checked
+  first), 404 when the shelf isn't there or the app isn't on it, 415 for a
+  file that isn't text.
+- `POST /api/library/<source>/<app>/install` → installs the app from the
+  shelf's own files as `<source>.<app>`; any body is ignored. The app's state
+  is worked out afresh first: 409 "Already installed", or the state's words
+  for one that's unsupported, needs a newer OpenFit, or replaces an app still
+  here ("<name> replaces your <replaces_name>. Moving it across comes in a
+  coming update."). Then `install_library_app()`: `201 {"ok": true, "id",
+  "has_app_py"}`, as `POST /api/apps`, its refusals as that route gives them.
 - `POST /api/app/<id>/render` with `{"cfg": {key: value}}` → the app's spec,
   rendered now with that `cfg`, passed to `render()` as given. A body with no
   `cfg`, or one that isn't an object (or no body at all), renders with `{}`.
@@ -2247,11 +2361,12 @@ saved positions and gives `paintTiles` start cells. The sizes, the CSS grid,
   [frontend-redesign-and-widget-model.md](frontend-redesign-and-widget-model.md)),
   Add Application installs one ([above](#installing-an-app)), and each row
   expands to what the app reads, its files, Refresh, Update, Duplicate and
-  Uninstall ([above](#an-apps-row-reads-files-refresh-uninstall)). Browse,
-  Build and Create are still placeholders; Browse will install from a library
-  through `install_library_app()` ([above](#installing-from-a-library-install_library_app)),
-  and `replaces`, a library app taking over an older app's id and data, is
-  the next slice ([distribution.md](distribution.md)). Still to come: the writes ticker
+  Uninstall ([above](#an-apps-row-reads-files-refresh-uninstall)). Browse
+  installs from the app library ([above](#browse-the-app-library)); Build and
+  Create are still placeholders. Still to come for Browse: `replaces` moving
+  an older app's id and data across (B2), self-updating installed library apps
+  (B3) and installing an app with folders inside it
+  ([distribution.md](distribution.md)). Still to come: the writes ticker
   (an app can write back now) and alerts (an app that doesn't load, or whose
   render fails, flagged in its row; Update can't reach one, since it isn't
   listed). Disabling an app is out, and so are partial updates (one file,

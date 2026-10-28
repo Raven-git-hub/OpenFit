@@ -52,7 +52,7 @@ later. Precise types in the contract doc prevent this entire class of failure.
 ### 3. Commit reference apps as test fixtures — never let them live only on the volume.
 
 The apps that exercise the contract (currently `steps`, `steps-metres`) live in
-the repo under `library/` and are run verbatim by the acceptance test,
+the repo under `tests/fixtures/apps/` and are run verbatim by the acceptance test,
 so any host or `ctx` change that breaks a real app fails CI.
 
 Why: the three round-trips above had one shared root cause — the real app files
@@ -101,7 +101,7 @@ in three different homes.
   renderer are platform code in the repo. An app is a folder on the data volume at
   `/data/apps/<id>/`, outside the shipped image, persisting across rebuilds —
   because an app is the user's, per-instance, not shipped product. (Reference apps
-  are *also* mirrored into `library/` for CI; that copy is for tests,
+  are *also* mirrored into `tests/fixtures/apps/` for CI; that copy is for tests,
   the volume copy is what runs.)
 - **Files in an app folder:** `app.yaml` always (the manifest — the one file the
   host must parse to see the app, and which must declare the app's tile
@@ -269,7 +269,7 @@ What a declaration can't be yet, and why:
   OpenFit already has (`sleep`, `workout`, `duties_rostered`,
   `duties_complete`) is supported now: no declaration, just
   `ctx.write_session(kind, start, end, summary)` — write what exists. The
-  reference apps are `library/workout-log/` and, from a file,
+  reference apps are `tests/fixtures/apps/workout-log/` and, from a file,
   `library/frms/`.
 - **Only your own.** Reading another app's custom metric isn't offered — read the
   canonical metrics and your own.
@@ -284,7 +284,7 @@ What a declaration can't be yet, and why:
 
 A bad block — an unknown category, a built-in key, a key twice, a misspelt field
 (`ragne`) — means the app doesn't load, logged like any manifest error. The
-reference app is `library/caffeine/`.
+reference app is `tests/fixtures/apps/caffeine/`.
 
 ## Sizes: the app declares them, the host never guesses
 

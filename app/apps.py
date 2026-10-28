@@ -9,7 +9,10 @@ default) holding its manifest and, usually, its engine:
                     (sizes the tile's allowed sizes in cells, the default
                     first; config an ordered list of fields:
                     {key, label, type, default}; metrics the ones the
-                    app invents: {key, label, unit, category, grain, range})
+                    app invents: {key, label, unit, category, grain, range}),
+                    and, all optional, description (what Browse says of
+                    it), requires (the app level it needs: APP_LEVEL) and
+                    replaces (the app ids a library app takes over: B2)
         app.py      def render(ctx, cfg): -> a display spec (see host.py)
                     and, optionally, def handle(ctx, action, payload):
                     what its tile's input sends (POST /api/app/<id>/action)
@@ -45,7 +48,9 @@ one's own, under a bare id.
 This is the one way the host finds an app: the Home tab's routes use it
 now, and the Library reuses it. install_app() is the one way one is
 added from the browser (POST /api/apps), install_library_app() the one
-way one is added from a library (Browse, to come), update_app() the one
+way one is added from a library (Browse: POST
+/api/library/<source>/<app>/install, its files read from the shelf by
+shelf.py, never sent by the page), update_app() the one
 way one's files are replaced (PUT /api/apps/<id>), uninstall_app() the
 one way one is removed (DELETE /api/apps/<id>), and read_app_file() the
 one way a file in one is read back (GET /api/app/<id>/file): see their
@@ -118,6 +123,85 @@ class AppError(Exception):
     """An app folder that doesn't load, and why."""
 
 
+# The app contract this OpenFit provides; raised when apps gain something
+# an older OpenFit lacks. An app's `requires` names the level it needs
+# (1 when it doesn't say): the scanner skips one that needs more, and
+# install refuses it (check_app()), so an app written for a newer
+# OpenFit never half-runs on this one.
+APP_LEVEL = 1
+
+# The most a description says, trimmed: a line or two in Browse.
+MAX_DESCRIPTION = 300
+
+# The most apps one app replaces.
+MAX_REPLACES = 5
+
+
+def manifest_description(raw):
+    """The manifest's description, trimmed - what Browse shows of the app -
+    or None for none (absent, null or blank). Text of at most
+    MAX_DESCRIPTION characters, else AppError."""
+    value = raw.get("description")
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise AppError(f"description must be text, at most {MAX_DESCRIPTION} characters: {value!r}")
+    value = value.strip()
+    if len(value) > MAX_DESCRIPTION:
+        raise AppError(f"description must be at most {MAX_DESCRIPTION} characters: it has {len(value)}")
+    return value or None
+
+
+def manifest_requires(raw):
+    """The app level the manifest says the app needs: a whole number from
+    1 (not a bool), 1 when it doesn't say. Else AppError. Whether this
+    OpenFit has that level is level_problem()'s to say."""
+    value = raw.get("requires", 1)
+    if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+        raise AppError(f"requires must be a whole number from 1, the app level it needs: {value!r}")
+    return value
+
+
+def level_problem(requires):
+    """Why an app needing app level `requires` can't run on this OpenFit,
+    or None if it can."""
+    if requires > APP_LEVEL:
+        return f"needs OpenFit app level {requires}; this OpenFit is level {APP_LEVEL}"
+    return None
+
+
+def manifest_replaces(raw, own=None):
+    """The app ids the manifest says it replaces, in order: a list of at
+    most MAX_REPLACES, each one an app could have (is_app_id()), none
+    twice - [] for none. Else AppError.
+
+    A library app's: openfit.frms says replaces: [frms] to take over the
+    data of the frms installed before the library existed. B2 does that
+    move, at the library app's install; until then it's parsed, and
+    Browse and the library install say it's pending. `own` is the
+    library app's id (openfit.frms), which it can never replace. A
+    custom app's replaces is carried, never acted on, so its own bare id
+    isn't refused: FRMS's library files pasted in as frms still load.
+    """
+    value = raw.get("replaces")
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise AppError(f"replaces must be a list of the app ids it replaces, such as [frms]: {value!r}")
+    if len(value) > MAX_REPLACES:
+        raise AppError(f"replaces lists at most {MAX_REPLACES} apps: it lists {len(value)}")
+    replaces = []
+    for i, app_id in enumerate(value):
+        if not is_app_id(app_id):
+            raise AppError(f"replaces[{i}] isn't an app id: {app_id!r}")
+        if app_id in replaces:
+            raise AppError(f"replaces lists {app_id!r} twice")
+        if own is not None and app_id == own:
+            raise AppError(f"replaces can't name the app itself: {app_id!r}")
+        replaces.append(app_id)
+    return replaces
+
+
 @dataclass(frozen=True)
 class InstalledApp:
     id: str
@@ -133,6 +217,12 @@ class InstalledApp:
     handle: object = field(default=None, repr=False)
     # The metrics it invents (_metrics()), in its manifest's order.
     metrics: list = field(default_factory=list)
+    # What Browse says of it, the app level it needs and the apps it
+    # replaces: the manifest's, checked (manifest_description() and its
+    # siblings). Not listed by summary().
+    description: str = None
+    requires: int = 1
+    replaces: list = field(default_factory=list)
 
     def summary(self):
         """What GET /api/apps lists for it: the manifest's id, name, sizes
@@ -379,6 +469,12 @@ def _manifest(folder):
         raw = {}
     if not isinstance(raw, dict):
         raise AppError(f"{MANIFEST} must be a mapping")
+    # First: an app written for a newer OpenFit may mean something by its
+    # other fields that this one can't read, so that's the reason given.
+    requires = manifest_requires(raw)
+    problem = level_problem(requires)
+    if problem:
+        raise AppError(problem)
 
     # The id defaults to the folder's name, the name to the id - but a
     # folder named as a library app's id (openfit.frms) is one: that's
@@ -413,6 +509,9 @@ def _manifest(folder):
         "reads": list(reads),
         "config": _config(raw.get("config")),
         "metrics": _metrics(raw.get("metrics")),
+        "description": manifest_description(raw),
+        "requires": requires,
+        "replaces": manifest_replaces(raw, own=app_id if library_of(app_id) else None),
     }
 
 
@@ -671,8 +770,12 @@ def check_app(manifest, files):
 
     THE LAYER THAT GROWS. Past containment - app.yaml parsing to a
     mapping with a valid id, install_app()'s, met by the time this
-    runs - one check so far:
+    runs - two checks so far:
 
+    - the app level. `requires`, if given, must be a whole number from
+      1, and no more than APP_LEVEL: an app written for a newer OpenFit
+      is refused with the scanner's own words ("needs OpenFit app level
+      2; this OpenFit is level 1"), before anything else about it.
     - a size. The manifest must declare the tile size(s) the app is
       drawn at (manifest_sizes(): `sizes`, or the older `default_size`),
       each w and h a whole number of cells, 1 to MAX_CELLS. An app
@@ -680,7 +783,8 @@ def check_app(manifest, files):
       it's refused here, with the scanner's own reason.
 
     Nothing else is checked yet: not the manifest's other fields (name,
-    reads, config - the scanner checks those when it loads the app), not
+    reads, config, description, replaces - the scanner checks those when
+    it loads the app), not
     app.py's syntax, and nothing is ever run. As real apps' quirks are
     learned, a check that catches a broken app before it's on the volume
     goes here, raising InstallError with a message the popup shows as-is.
@@ -692,6 +796,9 @@ def check_app(manifest, files):
     files: {name: text}, every name a plain file name.
     """
     try:
+        problem = level_problem(manifest_requires(manifest))
+        if problem:
+            raise AppError(problem)
         manifest_sizes(manifest)
     except AppError as e:
         raise InstallError(str(e)) from None
@@ -737,7 +844,9 @@ def install_library_app(apps_dir, source, files):
     app's, so frms and openfit.frms install side by side), check_app(),
     then written whole or not at all. Nothing is imported or run.
 
-    No route calls it yet: Browse will.
+    Browse's install (POST /api/library/<source>/<app>/install) calls it,
+    with the files read from the shelf (shelf.read_app_files()) - never
+    the page's copy.
 
     Returns {"id", "has_app_py"}, the id the full one. Raises
     InstallError, having written nothing: 400 for a source that isn't

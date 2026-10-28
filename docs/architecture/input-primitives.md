@@ -52,7 +52,7 @@ category) rather than typing it.
   memory of a past render's options, and making it stateful for this would break
   the stateless action model. An app that cares rejects an unexpected value in
   `handle()`.
-- **Worked example.** The `mood` app, committed in `library/mood/`
+- **Worked example.** The `mood` app, committed in `tests/fixtures/apps/mood/`
   (the canonical `mood` metric — Other, 1–5, so no `metrics:` block): a select
   of the options `"1"`–`"5"`, "Mood today", under the latest day's mood (or
   `empty("No mood logged yet")`). Its `handle()` takes `log` only, refuses a
@@ -141,7 +141,7 @@ the platform stays open to any file an author brings.
   its type, its size beyond the cap, nor its content — and parses nothing,
   not even an `.ics`.
 - **Worked example.** The `import` app, committed in
-  `library/import/` — a bulk importer, the file equivalent of the
+  `tests/fixtures/apps/import/` — a bulk importer, the file equivalent of the
   Weight and Mood apps. A picker (`accept=".txt,.csv"`, "Import weigh-ins")
   under how many days of weigh-ins the dataset holds. Its `handle()` decodes
   the file itself (`f.text("utf-8-sig")`, a spreadsheet's byte-order mark
