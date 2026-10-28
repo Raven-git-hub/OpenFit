@@ -274,7 +274,8 @@ def test_index_splits_applications_into_controls_and_a_list(client, monkeypatch)
     assert "esc(a.name || a.id)" in row
 
     # The controls' buttons: Add Application in Add source's style, then
-    # Browse / Build / Create, each opening the coming-soon placeholder.
+    # Browse / Build / Create - Browse opening the app library, Build and
+    # Create the coming-soon placeholder.
     assert "const btn = el('button','btn sm','＋ Add source');" in page
     actions = _js_function(page, "appActionsRow")
     assert "button('add-app', '＋ Add Application', 'Add an application')" in actions
@@ -282,6 +283,7 @@ def test_index_splits_applications_into_controls_and_a_list(client, monkeypatch)
         assert re.search(rf"\['{act}',\s*'{label}',", page), label
     assert "const b = el('button','btn sm', esc(label));" in actions
     assert "b.onclick = () => comingSoon(title);" in actions
+    assert "if(act === 'browse') b.onclick = () => openBrowse();" in actions
     # ... except Add Application, which opens the install popup - empty:
     # the click's event isn't handed on as a prefill.
     assert "add.onclick = () => openAddApp();" in actions
@@ -294,13 +296,14 @@ def test_the_applications_list_writes_only_uninstall_and_the_popup_installs_or_u
     page = resp.get_data(as_text=True)
     resp.close()
     start = page.index("APPLICATIONS - the right-hand column")
-    popup = page.index("ADD APPLICATION - the popup that installs one", start)
+    browse = page.index("BROWSE - the app library", start)
+    popup = page.index("ADD APPLICATION - the popup that installs one", browse)
     home = page.index("HOME - the installed apps' tiles", popup)
 
     # The controls and the list read /api/apps, an app's files and its
     # render; their one write is Uninstall. All of it through the API
     # block - the only place that knows a URL - so no raw request here.
-    section = page[start:popup]
+    section = page[start:browse]
     assert "api.apps()" in section
     assert sorted(set(re.findall(r"api\.\w+", section))) == [
         "api.appFile", "api.apps", "api.renderApp", "api.uninstallApp",
@@ -310,14 +313,26 @@ def test_the_applications_list_writes_only_uninstall_and_the_popup_installs_or_u
     assert "appFile:      (id, name)     => send('/api/app/'+enc(id)+'/file?name='+enc(name), 'GET')," in page
     assert "uninstallApp: id             => send('/api/apps/'+enc(id), 'DELETE')," in page
 
+    # Browse only reads: the library, and an app's files in it.
+    section = page[browse:popup]
+    assert sorted(set(re.findall(r"api\.\w+", section))) == ["api.library", "api.libraryApp"]
+    for other in ("send(", "fetch(", "'POST'", "'PUT'", "'DELETE'", "localStorage", "'/api/"):
+        assert other not in section, other
+    assert "library:      ()             => fetchJSON('/api/library')," in page
+    assert "libraryApp:   (source, app)  => send('/api/library/'+enc(source)+'/'+enc(app), 'GET')," in page
+
     # The popup's one write is the install - or, opened by Update, the
-    # update - through the API block.
+    # update; from Browse, the library's install - through the API block.
     section = page[popup:home]
-    assert re.findall(r"api\.\w+", section) == ["api.updateApp", "api.installApp"]
+    assert re.findall(r"api\.\w+", section) == ["api.installLibraryApp", "api.updateApp", "api.installApp"]
     for other in ("send(", "fetch(", "'POST'", "'PUT'", "'DELETE'", "localStorage", "'/api/"):
         assert other not in section, other
     assert "installApp:   files          => send('/api/apps', 'POST', {files})," in page
     assert "updateApp:    (id, files)    => send('/api/apps/'+enc(id), 'PUT', {files})," in page
+    # ... and it sends no files: the server reads the shelf's.
+    assert (
+        "installLibraryApp: (source, app) => send('/api/library/'+enc(source)+'/'+enc(app)+'/install', 'POST'),"
+    ) in page
 
 
 def test_add_application_builds_the_app_from_file_slots(client):
@@ -328,8 +343,8 @@ def test_add_application_builds_the_app_from_file_slots(client):
 
     # The slots: app.yaml required, app.py optional, and Add file for the
     # rest, each named.
-    assert "fileSlot('app.yaml', true, say, prefilled('app.yaml'))" in popup
-    assert "fileSlot('app.py', false, say, prefilled('app.py'))" in popup
+    assert "fileSlot('app.yaml', true, say, prefilled('app.yaml'), readOnly)" in popup
+    assert "fileSlot('app.py', false, say, prefilled('app.py'), readOnly)" in popup
     assert "act('add-file').onclick" in popup and "fileSlot('', false, say)" in popup
     assert '>＋ Add file</button>' in popup
     # Each slot is a paste box with Upload beside it, filling the same box.
@@ -343,7 +358,7 @@ def test_add_application_builds_the_app_from_file_slots(client):
     # Review reads the id from the app.yaml - there's no id field - and
     # names it, or says why it can't.
     assert "const yamlText = files.find(x => x.name === 'app.yaml').text;" in popup
-    assert "const read = update ? updateId(yamlText, update.id) : manifestId(yamlText);" in popup
+    assert "const read = lib ? {id:lib.id} : update ? updateId(yamlText, update.id) : manifestId(yamlText);" in popup
     assert "const verb = update ? 'Update' : 'Install';" in popup
     assert "idLine.innerHTML = `${verb} application: <code>${esc(read.id)}</code>`;" in popup
     assert "else idLine.textContent = read.problem;" in popup
@@ -363,7 +378,10 @@ def test_add_application_builds_the_app_from_file_slots(client):
     # Install sends the files; success closes the popup, puts the app on
     # the tab picked (if one was), and re-reads the list and Home at once -
     # an error keeps it open, the server's message shown as given.
-    assert "const res = update ? await api.updateApp(update.id, body) : await api.installApp(body);" in popup
+    assert (
+        "const res = lib ? await api.installLibraryApp(lib.source, lib.app)\n"
+        "        : update ? await api.updateApp(update.id, body) : await api.installApp(body);"
+    ) in popup
     assert (
         "close();\n        if(tabId) await placeNewAppOnTab(res.id, tabId);\n"
         "        appInstalled(res, update ? 'Updated' : 'Installed');"
@@ -2402,7 +2420,10 @@ def test_an_open_app_row_has_update_before_duplicate(client):
     # The popup's update mode: its title, the id locked and shown as text,
     # Review held to the app's id and asking to confirm, Update PUTting.
     popup = _js_function(page, "openAddApp")
-    assert "update ? 'Update application' : given ? 'Duplicate application' : 'Add an application'" in popup
+    assert (
+        "lib ? 'Add application from the library' : update ? 'Update application'\n"
+        "            : given ? 'Duplicate application' : 'Add an application'"
+    ) in popup
     assert '<p class="install-id" data-f="locked">Application: <code>${esc(update.id)}</code>' in popup
     assert '<div class="danger-panel update-sure" data-f="sure">' in popup
     assert "<h5>Update ${esc(updName)}?</h5>" in popup
@@ -2945,6 +2966,374 @@ def test_installing_onto_a_chosen_tab_moves_the_new_app_and_saves_once(client, t
     assert stored["tabs"][1]["items"][-1] == new
     assert stored["default_tab"] == "home"
     assert client.get("/api/home-layout").get_json() == stored
+
+
+# ---------- Browse (B1): the app library ----------
+#
+# Browse lists the apps on the shelf the Admin publishes - GET
+# /api/library - a row each, opening onto its description and Add
+# Application, or why it can't be added. Add Application reads the app's
+# files from the library and opens the Add popup on them in library mode:
+# every file in a slot, read-only, the id the library's, and Install the
+# library's own route, which sends no files. The page's own openBrowse,
+# openAddApp and fileSlot run under node over the parsing DOM, against
+# what the server serves from a temp shelf laid out as the Admin's.
+
+BROWSE_PARTS = [
+    "$", "el", "home", "openModal", "expandable", "appPanelId", "LIBRARY_NAMES", "libraryName",
+    "SHELF_STATES", "SHELF_OFF", "openBrowse", "shelfRow", "shelfPanel",
+    "INSTALL_ID", "CUSTOM_CODE", "fileNameProblem", "NO_ID", "yamlId", "manifestId", "updateId",
+    "fileSlot", "slotFiles", "openAddApp", "placeNewAppOnTab",
+]
+
+BROWSE_HARNESS = r"""
+    const setTimeout = () => 0, clearTimeout = () => {};
+    const copy = x => JSON.parse(JSON.stringify(x));
+    // The server, as the test left it: the library's listing, each app's
+    // files as send() hands them on, and Home's layout. Every call noted.
+    let listing = LISTING;
+    const FILES_ = FILES;
+    let served = LAYOUT;
+    const calls = [], installed = [];
+    const api = {
+      library: async () => { calls.push(['library']); return copy(listing); },
+      libraryApp: async (source, app) => { calls.push(['libraryApp', source, app]); return copy(FILES_[source+'/'+app]); },
+      installLibraryApp: async (...args) => {
+        calls.push(['installLibraryApp', ...args]);
+        return {ok:true, id:args[0]+'.'+args[1], has_app_py:true};
+      },
+      installApp: async files => { calls.push(['installApp', copy(files)]); return {ok:true, id:'x'}; },
+      updateApp: async (id, files) => { calls.push(['updateApp', id, copy(files)]); return {ok:true, id}; },
+      homeLayout: async () => { calls.push(['homeLayout']); return copy(served); },
+      saveLayout: async layout => { calls.push(['saveLayout', copy(layout)]); served = copy(layout); return {ok:true}; },
+    };
+    const appInstalled = (res, done) => { installed.push([res, done]); };
+    const r = {};
+    const topBg = () => document.body.children[document.body.children.length-1];
+
+    // Browse opened: its title and note, then each row - name, tag, how
+    // it discloses - and, clicked open, its panel. Closed again after.
+    async function browse(){
+      await openBrowse();
+      const bg = topBg(), box = bg.children[0];
+      const state = box.querySelector('.dstate');
+      const out = {title:box.querySelector('h4').textContent, note:state ? state.textContent : null};
+      out.rows = box.querySelectorAll('.ditem').map(item => {
+        const head = item.querySelector('.drow');
+        const row = {id:item.dataset.app, name:head.querySelector('.a-name').textContent,
+          tag:head.querySelector('.shelf-src').textContent,
+          controls:head.attrs['aria-controls'], expanded:head.attrs['aria-expanded']};
+        head.onclick();
+        const panel = item.querySelector('.shelf-panel');
+        row.panel = panel.id;
+        row.opened = head.attrs['aria-expanded'];
+        row.desc = panel.querySelector('.shelf-desc').textContent;
+        const add = panel.querySelector('[data-act="add"]');
+        row.add = add ? [add.textContent, add.className] : null;
+        const st = panel.querySelector('.shelf-state');
+        row.state = st ? st.textContent : null;
+        head.onclick();
+        row.shut = [head.attrs['aria-expanded'], !item.querySelector('.shelf-panel')];
+        return row;
+      });
+      bg.children[0].querySelector('[data-act="close"]').onclick();
+      out.closed = !bg.parent;
+      return out;
+    }
+
+    // Add Application on the app `id` in Browse: what it read, the popup it
+    // opened - its slots - then Review, the tab `pick`ed (if asked), and
+    // Install: what was called.
+    async function addFromLibrary(id, pick){
+      await openBrowse();
+      const browseBg = topBg();
+      const item = browseBg.children[0].querySelectorAll('.ditem').find(i => i.dataset.app === id);
+      item.querySelector('.drow').onclick();
+      calls.splice(0);
+      await item.querySelector('[data-act="add"]').onclick();
+      const out = {read:calls.splice(0), browseClosed:!browseBg.parent};
+      const bg = topBg(), box = bg.children[0];
+      const q = s => box.querySelector(s);
+      out.popup = {
+        title: q('h4').textContent,
+        hint: q('[data-step="files"] .hint').textContent.replace(/\s+/g, ' ').trim(),
+        addFileHidden: q('[data-act="add-file"]').hidden,
+        slots: box.querySelectorAll('.fslot').map(s => {
+          const name = s.querySelector('.fname');
+          return {
+            file: s.dataset.file || '', tag: (s.querySelector('.fslot-tag') || {textContent:null}).textContent,
+            name: name ? [name.value, name.readOnly === true] : null,
+            text: s.querySelector('textarea').value, readOnly: s.querySelector('textarea').readOnly === true,
+            buttons: s.querySelectorAll('button').map(b => b.dataset.act), picker: !!s.querySelector('input[type="file"]'),
+          };
+        }),
+      };
+      q('[data-act="review"]').onclick();
+      const field = q('[data-f="tabField"]'), select = q('[data-f="tab"]');
+      const options = select.querySelectorAll('option');
+      out.review = {
+        id: q('[data-f="id"]').textContent, idHtml: q('[data-f="id"]').innerHTML,
+        files: box.querySelectorAll('[data-f="files"] li').map(li => li.textContent),
+        notice: !q('[data-f="notice"]').hidden, install: q('[data-act="install"]').textContent,
+        enabled: !q('[data-act="install"]').disabled,
+        tabs: field.hidden ? null : options.map(o => [o.attrs.value, o.textContent]),
+      };
+      const marked = options.find(o => 'selected' in o.attrs) || options[0];
+      select.value = pick !== undefined ? pick : marked ? marked.attrs.value : '';
+      await q('[data-act="install"]').onclick();
+      out.calls = calls.splice(0);
+      out.installed = installed.splice(0);
+      out.closed = !bg.parent;
+      return out;
+    }
+"""
+
+
+def _browse_script(page, listing, files, layout, scenario):
+    esc = re.search(r"\n  (const esc = .*?\);)\n", page, re.S).group(1)
+    harness = (BROWSE_HARNESS.replace("listing = LISTING", f"listing = {json.dumps(listing)}")
+               .replace("FILES_ = FILES", f"FILES_ = {json.dumps(files)}")
+               .replace("served = LAYOUT", f"served = {json.dumps(layout)}"))
+    return (
+        PARSING_DOM + esc + "\n" + "\n".join(_js(page, n) for n in BROWSE_PARTS) + harness
+        + "(async () => {\n" + scenario + "\nconsole.log(JSON.stringify(r));\n})()"
+        + ".catch(e => { console.error(e); process.exit(1); });"
+    )
+
+
+SHELF_COMMIT = "0123456789abcdef0123456789abcdef01234567"
+
+
+@pytest.fixture
+def browse_shelf(tmp_path, monkeypatch):
+    """A shelf laid out as the Admin publishes one - index.json, the
+    relative link openfit onto .sets/openfit-<commit12>/ - holding four
+    small apps, one of each state Browse words, and a second library's
+    app; and an apps folder holding the one installed."""
+    import main
+
+    root = tmp_path / "library"
+    sources = {
+        "openfit": {
+            # Available: three files, one an extra the popup slots too.
+            "walk": {"app.yaml": "id: walk\nname: Walk <b>\ndescription: Counts your steps & more.\n"
+                                 "sizes: [{w: 1, h: 1}]\n",
+                     "app.py": "def render(ctx, cfg):\n    return ctx.empty('<i>hi</i>')\n",
+                     "notes.txt": "stride: 0.75 m\n"},
+            "added": {"app.yaml": "id: added\nname: Added\nsizes: [{w: 1, h: 1}]\n"},
+            "newer": {"app.yaml": "id: newer\nname: Newer\nrequires: 2\nsizes: [{w: 1, h: 1}]\n"},
+            "heir": {"app.yaml": "id: heir\nname: Heir\nreplaces: [old]\nsizes: [{w: 1, h: 1}]\n"},
+            "deep": {"app.yaml": "id: deep\nname: Deep\nsizes: [{w: 1, h: 1}]\n", "assets/x.txt": "x"},
+        },
+        "acme": {
+            "tool": {"app.yaml": "id: tool\nname: alpha tool\nsizes: [{w: 1, h: 1}]\n"},
+        },
+    }
+    index = {"published_at": "2026-10-28T12:00:00Z", "sources": {}}
+    for source, shelf_apps in sources.items():
+        name = f"{source}-{SHELF_COMMIT[:12]}"
+        for app_id, files in shelf_apps.items():
+            for file_name, text in files.items():
+                path = root / ".sets" / name / app_id / file_name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(text)
+        (root / source).symlink_to(f".sets/{name}")
+        index["sources"][source] = {"commit": SHELF_COMMIT, "apps": {a: {"sha256": "0" * 64} for a in shelf_apps}}
+    (root / "index.json").write_text(json.dumps(index))
+    apps_dir = tmp_path / "apps"
+    for app_id, folder in (("openfit.added", "added"), ("old", None)):
+        (apps_dir / app_id).mkdir(parents=True)
+        text = sources["openfit"][folder]["app.yaml"] if folder else "id: old\nname: Old one\nsizes: [{w: 1, h: 1}]\n"
+        (apps_dir / app_id / "app.yaml").write_text(text)
+    monkeypatch.setitem(main.app.config, "LIBRARY_DIR", str(root))
+    monkeypatch.setitem(main.app.config, "APPS_DIR", str(apps_dir))
+    return root
+
+
+def _shelf_served(client, *wanted):
+    """What the page would read: /api/library, and each wanted app's files
+    as send() hands them on - {ok, ...body}."""
+    listing = client.get("/api/library").get_json()
+    files = {}
+    for source, app_name in wanted:
+        resp = client.get(f"/api/library/{source}/{app_name}")
+        files[f"{source}/{app_name}"] = {"ok": 200 <= resp.status_code < 300, **resp.get_json()}
+    return listing, files
+
+
+def test_browse_replaces_coming_soon_and_only_reads(client):
+    page = _page(client)
+    actions = _js_function(page, "appActionsRow")
+    assert "if(act === 'browse') b.onclick = () => openBrowse();" in actions
+    browse = _js_function(page, "openBrowse")
+    assert "comingSoon" not in browse
+    # Every name, tag, description and state set as text - the markup a
+    # row and a panel start from holds none of them - and the popup's
+    # library mode escapes what reaches its markup.
+    row, panel = _js_function(page, "shelfRow"), _js_function(page, "shelfPanel")
+    assert "innerHTML" not in row and "innerHTML" not in panel
+    markup = re.search(r"el\('button','drow arow shelf-row',\n\s*'([^']*)'\);", row).group(1)
+    assert "${" not in markup and "${" not in panel[: panel.index("p.id =")]
+    assert "head.querySelector('.a-name').textContent = a.name || a.id;" in row
+    assert "head.querySelector('.shelf-src').textContent = libraryName(a.source);" in row
+    assert "p.querySelector('.shelf-desc').textContent = a.description || 'No description.';" in panel
+    popup = _js_function(page, "openAddApp")
+    assert "<b>${esc(lib.name)}</b> from the ${esc(libraryName(lib.source))}" in popup
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
+def test_browse_lists_the_shelf_in_order_with_each_apps_state(client, browse_shelf):
+    listing, files = _shelf_served(client)
+    r = _node(_browse_script(_page(client), listing, files, None, "r.shown = await browse();"))
+
+    shown = r["shown"]
+    assert shown["title"] == "Browse applications"
+    assert shown["note"] is None and shown["closed"]
+    # By name, case folded, then id: each its library's tag, "OpenFit" for
+    # openfit and the source as written for another.
+    assert [(row["id"], row["name"], row["tag"]) for row in shown["rows"]] == [
+        ("openfit.added", "Added", "OpenFit"), ("acme.tool", "alpha tool", "acme"),
+        ("openfit.deep", "Deep", "OpenFit"), ("openfit.heir", "Heir", "OpenFit"),
+        ("openfit.newer", "Newer", "OpenFit"), ("openfit.walk", "Walk <b>", "OpenFit"),
+    ]
+    rows = {row["id"]: row for row in shown["rows"]}
+    for row in shown["rows"]:
+        # A disclosure button, shut until clicked, controlling its panel.
+        assert row["expanded"] == "false" and row["opened"] == "true" and row["shut"] == ["false", True]
+        assert row["controls"] == row["panel"] and row["panel"].startswith("shelf-panel-")
+    assert rows["openfit.walk"]["panel"] == "shelf-panel-openfit_2ewalk"
+    # Open: its description - or none - then Add Application, or why not.
+    assert rows["openfit.walk"]["desc"] == "Counts your steps & more."
+    assert rows["openfit.walk"]["add"] == ["Add Application", "btn sm primary"]
+    assert rows["openfit.walk"]["state"] is None
+    assert rows["acme.tool"]["desc"] == "No description." and rows["acme.tool"]["add"] is not None
+    assert {i: (rows[i]["add"], rows[i]["state"]) for i in
+            ("openfit.added", "openfit.heir", "openfit.newer", "openfit.deep")} == {
+        "openfit.added": (None, "Installed"),
+        "openfit.heir": (None, "Replaces your Old one: available in a coming update."),
+        "openfit.newer": (None, "Needs a newer OpenFit."),
+        "openfit.deep": (None, "It has folders inside it, which this OpenFit can't install yet."),
+    }
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
+def test_browse_says_when_the_library_isnt_there_or_is_empty(client, tmp_path, monkeypatch):
+    import main
+
+    monkeypatch.setitem(main.app.config, "LIBRARY_DIR", str(tmp_path / "missing"))
+    off = client.get("/api/library").get_json()
+    assert off == {"available": False, "apps": []}
+    empty = {"available": True, "apps": []}
+    r = _node(_browse_script(_page(client), off, {}, None, f"""
+        r.off = await browse();
+        listing = {json.dumps(empty)};
+        r.empty = await browse();
+        // The read failing outright.
+        api.library = async () => {{ throw new Error('500'); }};
+        r.failed = await browse();
+    """))
+    assert r["off"]["note"] == (
+        "The app library isn't connected to this OpenFit yet. Restart it from the Admin page to connect it."
+    )
+    assert r["empty"]["note"] == "There are no apps in the library yet."
+    assert r["failed"]["note"] == "Couldn't read the app library."
+    assert all(r[k]["rows"] == [] for k in r)
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
+def test_add_application_from_the_library_is_read_only_and_installs_by_the_library_route(client, browse_shelf):
+    listing, files = _shelf_served(client, ("openfit", "walk"), ("acme", "tool"))
+    # Two tabs on Home: the tab choice, as for any install.
+    layout = {"tabs": [{"id": "home", "name": "Home", "mode": "flow", "subtitle": "", "items": []},
+                       {"id": "two", "name": "Two", "mode": "flow", "subtitle": "", "items": []}],
+              "default_tab": "home"}
+    served = {"tabs": [{**layout["tabs"][0], "items": [
+        {"instance_id": "i1", "app_id": "openfit.walk", "size": {"w": 1, "h": 1}, "config": {}}]},
+        layout["tabs"][1]], "default_tab": "home"}
+    r = _node(_browse_script(_page(client), listing, files, served, f"""
+        home.layout = {json.dumps(layout)};
+        r.walk = await addFromLibrary('openfit.walk', 'two');
+        home.layout = null;
+        r.tool = await addFromLibrary('acme.tool');
+    """))
+
+    walk = r["walk"]
+    assert walk["read"] == [["libraryApp", "openfit", "walk"]] and walk["browseClosed"]
+    popup = walk["popup"]
+    assert popup["title"] == "Add application from the library"
+    assert popup["hint"] == (
+        "The files of Walk <b> from the OpenFit library, as published. They're installed exactly as shown, "
+        "and your admin keeps them up to date. To make your own changes, install it, then Duplicate it."
+    )
+    assert popup["addFileHidden"] is True
+    # Every file in a slot, as served - app.yaml, app.py, then the rest -
+    # each read-only, with no Upload, no Remove and no picker.
+    shelf_files = {f["name"]: f["text"] for f in files["openfit/walk"]["files"]}
+    assert popup["slots"] == [
+        {"file": "app.yaml", "tag": "Required", "name": None, "text": shelf_files["app.yaml"],
+         "readOnly": True, "buttons": [], "picker": False},
+        {"file": "app.py", "tag": "Optional", "name": None, "text": shelf_files["app.py"],
+         "readOnly": True, "buttons": [], "picker": False},
+        {"file": "", "tag": None, "name": ["notes.txt", True], "text": shelf_files["notes.txt"],
+         "readOnly": True, "buttons": [], "picker": False},
+    ]
+    # Review: the library's id, the files, the custom-code notice, the tab.
+    review = walk["review"]
+    assert review["id"] == "Install application: openfit.walk"
+    assert review["idHtml"] == "Install application: <code>openfit.walk</code>"
+    assert review["files"] == ["app.yaml", "app.py", "notes.txt"]
+    assert review["notice"] is True and review["enabled"] and review["install"] == "Install"
+    assert review["tabs"] == [["home", "Home"], ["two", "Two"]]
+    # Install: the library's route, no files - then placed on the tab
+    # picked, and the list and Home re-read.
+    assert walk["calls"][0] == ["installLibraryApp", "openfit", "walk"]
+    assert [c[0] for c in walk["calls"]] == ["installLibraryApp", "homeLayout", "saveLayout"]
+    saved = walk["calls"][2][1]
+    assert [[i["app_id"] for i in t["items"]] for t in saved["tabs"]] == [[], ["openfit.walk"]]
+    assert walk["installed"] == [[{"ok": True, "id": "openfit.walk", "has_app_py": True}, "Installed"]]
+    assert walk["closed"]
+
+    # Another library's app, with no app.py: its one file, its own tag.
+    tool = r["tool"]
+    assert [s["file"] for s in tool["popup"]["slots"]] == ["app.yaml"]
+    assert tool["popup"]["hint"].startswith("The files of alpha tool from the acme library, as published.")
+    assert tool["review"]["id"] == "Install application: acme.tool"
+    assert tool["review"]["notice"] is False and tool["review"]["tabs"] is None
+    assert tool["calls"] == [["installLibraryApp", "acme", "tool"]]
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
+def test_a_library_app_whose_files_cant_be_read_stays_in_browse(client, browse_shelf):
+    listing, _ = _shelf_served(client)
+    files = {"openfit/walk": {"ok": False, "error": "'logo.png' in openfit.walk isn't text, so it can't be installed"}}
+    r = _node(_browse_script(_page(client), listing, files, None, """
+        await openBrowse();
+        const bg = topBg();
+        const item = bg.children[0].querySelectorAll('.ditem').find(i => i.dataset.app === 'openfit.walk');
+        item.querySelector('.drow').onclick();
+        const add = item.querySelector('[data-act="add"]');
+        await add.onclick();
+        r.open = !!bg.parent && topBg() === bg;
+        r.msg = item.querySelector('.a-msg').textContent;
+        r.enabled = !add.disabled;
+    """))
+    assert r == {"open": True, "msg": "'logo.png' in openfit.walk isn't text, so it can't be installed", "enabled": True}
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
+def test_the_install_the_page_makes_is_the_shelfs_own(client, browse_shelf):
+    # The page's own call, made against the server: no body, and what's
+    # installed is the shelf's files, byte for byte.
+    listing, files = _shelf_served(client, ("openfit", "walk"))
+    r = _node(_browse_script(_page(client), listing, files, None, "r.walk = await addFromLibrary('openfit.walk');"))
+    [call] = [c for c in r["walk"]["calls"] if c[0] == "installLibraryApp"]
+    assert call == ["installLibraryApp", "openfit", "walk"]
+
+    resp = client.post(f"/api/library/{call[1]}/{call[2]}/install")
+    assert resp.status_code == 201
+    folder = browse_shelf.parent / "apps" / "openfit.walk"
+    for f in files["openfit/walk"]["files"]:
+        assert (folder / f["name"]).read_text() == f["text"]
 
 
 # ---------- apps as sources: the input element ----------

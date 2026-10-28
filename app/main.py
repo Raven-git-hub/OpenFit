@@ -23,10 +23,15 @@ from migrations import connect, run_migrations
 from plugins import PLUGINS
 from plugins.base import OAUTH_REDIRECT_URI, write_metric
 from apps import (
+    INSTALL_ID,
+    LIBRARY_SOURCE,
+    MANIFEST,
+    MODULE,
     LibraryError,
     app_present,
     find_app,
     install_app,
+    install_library_app,
     is_app_id,
     read_app_file,
     scan_apps,
@@ -34,6 +39,7 @@ from apps import (
     update_app,
 )
 from crypto import encrypt
+from shelf import list_shelf, read_app_files, refusal, shelf_app
 from home_layout import LayoutError, load_layout, parse_layout, save_layout
 from derived import (
     backfill_derived,
@@ -68,6 +74,8 @@ from host import (
 DB_PATH = os.getenv("DB_PATH", "/data/tracker.db")
 AUDIO_DIR = os.getenv("AUDIO_DIR", "/app/audio")
 APPS_DIR = os.getenv("APPS_DIR", "/data/apps")
+# The app shelf the Admin publishes, mounted read-only (shelf.py).
+LIBRARY_DIR = os.getenv("OPENFIT_LIBRARY", "/library")
 SYNC_INTERVAL_HOURS = int(os.getenv("SYNC_INTERVAL_HOURS", "6"))
 # The most a request may carry: a tile's file input sends its file in
 # one, and nothing else comes near it - an app's install is a few small
@@ -80,9 +88,10 @@ app = Flask(__name__, static_folder=None)
 # temp file. It still defaults to $DB_PATH, so nothing changes in the
 # container.
 app.config["DB_PATH"] = DB_PATH
-# Likewise the console's voice clips, and the installed apps.
+# Likewise the console's voice clips, the installed apps and the shelf.
 app.config["AUDIO_DIR"] = AUDIO_DIR
 app.config["APPS_DIR"] = APPS_DIR
+app.config["LIBRARY_DIR"] = LIBRARY_DIR
 # Flask turns a body over it away with a 413 before reading any of it.
 app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD_BYTES
 
@@ -760,6 +769,105 @@ def remove_app(app_id):
     except LibraryError as e:
         return jsonify({"ok": False, "error": str(e)}), e.status
     return jsonify({"ok": True, **removed})
+
+
+# Browse: the apps on the shelf the Admin publishes (shelf.py), read-only
+# at LIBRARY_DIR, and an install from it - of the shelf's own files,
+# read here: the page shows them, but never sends them.
+
+
+def _shelf_name_problem(source, app_name):
+    """Why a URL's source and app can't name an app on the shelf, or None."""
+    if not LIBRARY_SOURCE.match(source):
+        return f"a library source is lowercase letters and digits, starting with a letter: {source!r}"
+    if not INSTALL_ID.match(app_name):
+        return f"a library app's name is lowercase letters, digits and '-', starting with a letter or digit: {app_name!r}"
+    return None
+
+
+@app.route("/api/library", methods=["GET"])
+def list_library():
+    """The shelf, as Browse lists it: {available, apps: [{id, source, app,
+    name, description, files, state, replaces_name}]} (list_shelf()).
+
+    available is false - and apps [] - when there's no shelf mounted, or
+    its index.json doesn't read. Each app's state is the first that
+    applies: installed, unsupported (folders inside it), needs_update (a
+    newer app level than this OpenFit's), replaces_pending (an app it
+    replaces, or that app's data, is still here: replaces_name says
+    which), available.
+    """
+    conn = get_conn()
+    try:
+        return jsonify(list_shelf(app.config["LIBRARY_DIR"], app.config["APPS_DIR"], conn))
+    finally:
+        conn.close()
+
+
+@app.route("/api/library/<source>/<app_name>", methods=["GET"])
+def library_app_files(source, app_name):
+    """One app on the shelf and its files, for Add Application's read-only
+    popup: {id, name, files: [{name, text}]}, app.yaml first, then app.py,
+    then the rest by name.
+
+    400 for a source or name no library app could have; 404 when the
+    shelf isn't there or the app isn't on it; a file that can't be read
+    as text refused with read_app_files()'s status.
+    """
+    problem = _shelf_name_problem(source, app_name)
+    if problem:
+        return jsonify({"ok": False, "error": problem}), 400
+    conn = get_conn()
+    try:
+        entry = shelf_app(app.config["LIBRARY_DIR"], app.config["APPS_DIR"], conn, source, app_name)
+    finally:
+        conn.close()
+    if entry is None:
+        return jsonify({"ok": False, "error": f"{source}.{app_name} isn't in the app library"}), 404
+    try:
+        files = read_app_files(app.config["LIBRARY_DIR"], source, app_name)
+    except LibraryError as e:
+        return jsonify({"ok": False, "error": str(e)}), e.status
+    first = {MANIFEST: 0, MODULE: 1}
+    names = sorted(files, key=lambda name: (first.get(name, 2), name))
+    return jsonify({"id": entry["id"], "name": entry["name"],
+                    "files": [{"name": name, "text": files[name]} for name in names]})
+
+
+@app.route("/api/library/<source>/<app_name>/install", methods=["POST"])
+def install_from_library(source, app_name):
+    """Install an app from the shelf as <source>.<app>: what POST /api/apps
+    does, from the shelf's own files.
+
+    Any body is ignored: the files are read from the shelf here
+    (read_app_files()), never taken from the request, so what's
+    installed is exactly what the Admin published. The app's state is
+    worked out afresh first, and only an available one installs: 409
+    with its words for one that's installed, unsupported, needs a newer
+    OpenFit or replaces an app still here. 400 for a source or name no
+    library app could have, 404 when the shelf or the app isn't there;
+    then install_library_app()'s refusals, as POST /api/apps gives them.
+    201 {"ok": true, "id", "has_app_py"} - the id openfit.<app>.
+    """
+    problem = _shelf_name_problem(source, app_name)
+    if problem:
+        return jsonify({"ok": False, "error": problem}), 400
+    conn = get_conn()
+    try:
+        entry = shelf_app(app.config["LIBRARY_DIR"], app.config["APPS_DIR"], conn, source, app_name)
+    finally:
+        conn.close()
+    if entry is None:
+        return jsonify({"ok": False, "error": f"{source}.{app_name} isn't in the app library"}), 404
+    refused = refusal(entry)
+    if refused:
+        return jsonify({"ok": False, "error": refused}), 409
+    try:
+        files = read_app_files(app.config["LIBRARY_DIR"], source, app_name)
+        installed = install_library_app(app.config["APPS_DIR"], source, files)
+    except LibraryError as e:
+        return jsonify({"ok": False, "error": str(e)}), e.status
+    return jsonify({"ok": True, **installed}), 201
 
 
 @app.route("/api/app/<app_id>/file", methods=["GET"])

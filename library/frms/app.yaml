@@ -1,4 +1,9 @@
 id: frms
 name: FRMS
+description: >-
+  Fatigue risk management for airline crew. Upload your roster to see
+  your duties against your body clock and your sleep, and how much of
+  your rest your flying takes.
 sizes: [{ w: 6, h: 5 }]
 reads: [duties_rostered, duties_complete, sleep]
+replaces: [frms]
