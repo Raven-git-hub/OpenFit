@@ -22,8 +22,37 @@ own calls to its device API. Full direction:
 
 ## Layout
 - `app/main.py` — Flask API + APScheduler. `serve()` runs migrations, then the
-  one-time derived backfill, then the scheduler, then the app; none of that may
-  run on import (tests import it). Every connection comes from `get_conn()`,
+  one-time derived backfill, then (with no password set) logs that the
+  OpenFit is locked and how to make a setup link, then the scheduler, then
+  the app; none of that may run on import (tests import it). **The guard**
+  (U1, `docs/architecture/auth.md`): a `before_request`, `guard()`, gives
+  every request that isn't a GET/HEAD/OPTIONS and doesn't carry `X-OpenFit:
+  1` a 403 ("This request didn't come from OpenFit's page.") — login and
+  setup included, the webhook (`WEBHOOK_ENDPOINTS`) exempt — then lets
+  through only `OPEN_ENDPOINTS` (`index` `GET /`, `setup_page` `GET
+  /setup`, `auth_status` `GET /api/auth/status`, `auth_login` `POST
+  /api/auth/login`, `auth_setup` `POST /api/auth/setup`), the webhook, and
+  a request whose session carries the current `session_tag`
+  (`signed_in()`, `hmac.compare_digest`; none is valid while no password
+  is set); anything else, an unknown path or method too, is 401 `{"ok":
+  false, "error": "signed out"}`. `GET /` is `index.html` signed in, else
+  `signin.html`'s `signin` view (a password set) or `locked` view (none),
+  all 200, no redirect (the Admin's health check), `/` and `/setup`
+  `Cache-Control: no-store`. `POST /api/auth/login {password}` → 200 and a
+  session, 401 "That password isn't right.", 429 after five failures per
+  IP in five minutes (`_fails`, an `auth.Fails`, in memory), 409 while
+  locked; `POST /api/auth/logout` clears the session; `POST
+  /api/auth/setup {token, password}` → `auth.setup()` (403/400 as there)
+  then signs this browser in; `GET /api/auth/status` → `{signed_in,
+  password_set}`. Sessions: Flask's signed cookies through
+  `_KeyFileSessions` (the key read per request from
+  `app.config["SESSION_KEY_PATH"]`), `openfit_session`, `HttpOnly`,
+  `SameSite=Lax`, not `Secure` (plain HTTP on the LAN; Tailscale from
+  away), permanent for 30 days and refreshed on every request
+  (`SESSION_REFRESH_EACH_REQUEST`); `session["auth"]` the tag.
+  `app.config["AUTH_PATH"]`/`["SESSION_KEY_PATH"]` from
+  `$OPENFIT_AUTH_PATH`/`$OPENFIT_SESSION_KEY_PATH`, default
+  `/data/auth.json`/`/data/.session_key`. Every connection comes from `get_conn()`,
   per call (one per request or scheduled run — never a shared global one).
   One sync at a time: a process-level `_sync_lock` (`threading.Lock`, taken
   with `acquire(blocking=False)`, released in a `finally`) guards
@@ -110,6 +139,39 @@ own calls to its device API. Full direction:
   `derived`, never the reverse) and `source_rank()` order once; the caller
   checks `kind`.
 - `app/crypto.py` — Fernet encrypt/decrypt for stored credentials.
+- `app/auth.py` — the one account (U1; no Flask, so the CLI imports it
+  alone): `/data/auth.json` (0600), `{password_hash, session_tag, setup:
+  {token_hash, expires_at} | null}`, never in `settings` (which
+  `/api/settings/<key>` writes by any key); `read_state()` (missing or
+  malformed → no password: locked, never open), `_write_state()` (a 0600
+  `mkstemp` beside it, fsync, `os.replace`), every read-modify-write under
+  `_locked()` (a thread lock and an `flock` on `auth.json.lock`, so the
+  CLI and the server never lose each other's write and a token is used
+  once); `password_set()`, `session_tag()` (None with no password);
+  `make_setup_token(path, now=None)` → `(token, expires_at)`:
+  `secrets.token_urlsafe(32)`, its SHA-256 stored with an expiry
+  `SETUP_HOURS` (24) on, replacing any earlier one; `setup(path, token,
+  password)` → the new tag: the token matched by `hmac.compare_digest` on
+  its hash and unexpired else `AuthError(BAD_LINK, 403)` ("This setup link
+  is invalid or has expired. Ask your admin for a new one."), then
+  `password_problem()` (12–1024 characters, else 400, the token kept),
+  then a werkzeug hash, a fresh `session_tag` (`token_hex(16)`: every
+  other session ends) and `setup` null (single use); `Fails` (5 within
+  `FAIL_WINDOW` 300s per address → 429, as the Admin's) and `login()`;
+  `session_key(path)` (32 random bytes made once, `O_EXCL`, 0600, cached —
+  not crypto's `.secret_key`). `app/auth_cli.py` — `python auth_cli.py
+  setup-link` (`$OPENFIT_AUTH_PATH` else `/data/auth.json`), the one way a
+  token is made (no HTTP route makes one): one JSON line `{token,
+  expires_at}`; anything else a usage error, exit 2. The link is
+  `http://<host>:<port>/setup#<token>`, the token in the fragment, so it
+  never reaches a log. `app/templates/signin.html` — the `locked`,
+  `signin` and `setup` views (`<body data-view>`, rendered by Jinja with
+  `view` and `min_password`): `index.html`'s tokens and font stacks, light
+  and dark (the OS's, or `of-theme`), no external requests; its one sender
+  `post()` sends JSON with `X-OpenFit: 1`; setup reads
+  `location.hash`, checks the two passwords match and the length (the
+  inputs' `minlength` too), posts `/api/auth/setup`, and on success
+  `location.replace('/')` (the link out of the tab's history).
 - `app/apps.py` — the app scanner/loader, the one way the host finds an app
   (the Library reuses it): `scan_apps(apps_dir)` → the `InstalledApp`s that
   load, in folder-name order. An app is a folder in `APPS_DIR` (`$APPS_DIR`,
@@ -1074,7 +1136,10 @@ own calls to its device API. Full direction:
   drops to one column, at the old 940px cap, Applications under the data —
   narrower than that, a Your data row would squeeze the metric's name. `settings`
   opens the Settings popup (the `.modal` chrome): one control, **Opening
-  page**, a dropdown built from the tab strip (`.tab[data-tab]`, so Home's
+  page**, then at its foot (`.settings-foot`, "Signed in on this browser.")
+  **Sign out** (`data-act="signout"`: held, `api.signOut()` → `POST
+  /api/auth/logout`, then `location.reload()` — the sign-in); the
+  dropdown built from the tab strip (`.tab[data-tab]`, so Home's
   tabs, by name, and Data are in it), saved per browser in `localStorage`
   `of-opening-tab`; boot opens that tab via `showTab(openingTab())` in place
   of a hardcoded default: Data if unset; before the layout is read the
@@ -1113,7 +1178,7 @@ own calls to its device API. Full direction:
   `_store_account()`'s upsert keeps the account's Added date, and its data,
   cadence and source roles are untouched. No
   global cadence control: the universal Settings popup keeps Opening page
-  only. Remove is a two-step gate in
+  and Sign out only. Remove is a two-step gate in
   the same modal, no `confirm()`: "Disconnecting stops future syncs." over a
   danger panel "Wipe data?" ([Keep data] / [Wipe data]), then "Are you
   sure?" naming the source and whether its data goes ([Cancel] / [Remove] or
@@ -1355,7 +1420,13 @@ own calls to its device API. Full direction:
   `app/audio/` and baked into the image (`COPY audio ./audio` in
   `app/Dockerfile`), so they deploy with `git pull && docker compose up -d
   --build`; a new or changed clip is a commit plus a rebuild (the old
-  `/data/audio` volume drop-in is retired). Static serving is otherwise off. Reads
+  `/data/audio` volume drop-in is retired). Static serving is otherwise off.
+  Every request goes through `apiFetch(url, opts)`, the one place the page
+  calls `fetch` (a test holds `fetch(` to it): a request that isn't a GET
+  or HEAD, to this origin, gets `X-OpenFit: 1` beside its own headers (the
+  caller's `opts` never changed), and a 401 reloads the page (the session
+  gone: the reload is the sign-in) — `getJSON`, `fetchJSON`, `postJSON`,
+  `send` and `sendForm` all use it. Reads
   `/api/catalog?include_empty=1`, `/api/coverage` and `/api/source-roles`
   (dragging a daily metric's sources `PUT`s `/api/source-roles/<metric>`), plus
   the connector endpoints (`/api/connectors`, the OAuth add flow,
@@ -1366,7 +1437,8 @@ own calls to its device API. Full direction:
   /api/app/<id>/action`, `/api/app/<id>/file`, `/api/app-sources`, `DELETE
   /api/app-sources/<id>`, `DELETE /api/app-sources/<id>/<metric>`), the
   library's (`/api/library`, `/api/library/<source>/<app>`, `POST
-  /api/library/<source>/<app>/install`) and Home's layout (`GET`/`PUT /api/home-layout`);
+  /api/library/<source>/<app>/install`), Home's layout (`GET`/`PUT /api/home-layout`)
+  and `POST /api/auth/logout`;
   not `/api/activity` (the last-sync stamp that read it
   is gone). See `docs/architecture/frontend-redesign-and-widget-model.md`.
   **Home** reads `GET /api/apps` and `GET /api/home-layout` together, then
@@ -1833,7 +1905,7 @@ own calls to its device API. Full direction:
   byte-identical, to `tests/fixtures/apps/`. Not `apps/`, so it can't be
   confused with `app/`. The distribution design it starts is
   `docs/architecture/distribution.md`.
-- `admin/` — the OpenFit Admin (A1, A2, A4, A5, `docs/architecture/admin.md`): its own
+- `admin/` — the OpenFit Admin (A1, A2, A4, A5, U1's setup links, `docs/architecture/admin.md`): its own
   image (`python:3.12-slim`, git, the docker CLI and compose plugin copied
   from pinned images) and compose file (`docker compose -f
   admin/docker-compose.yml -p openfit-admin up -d --build`), port 8090, the
@@ -1913,7 +1985,19 @@ own calls to its device API. Full direction:
   `library` from `docker inspect`; every recreate (Restart, Start, Add
   user, Update OpenFit, Undo) first `docker volume inspect
   openfit-library`, 409 "The Admin needs updating first: …" without it;
-  the shelf volume is never removed. Modules prefixed
+  the shelf volume is never removed. Setup link (U1): `POST
+  /api/users/<name>/setup-link` → `Admin.setup_link(name, request.host)`,
+  any user, under the lock: their labelled container `running` else 409,
+  then exactly `docker exec <id> python auth_cli.py setup-link`
+  (`SETUP_LINK_ARGS`), its one JSON line's token held to
+  `[A-Za-z0-9_-]{40,50}` (`SETUP_TOKEN`) and expiry to a UTC stamp else
+  502 ("…didn't give back a setup link the Admin recognises."), a failed
+  exec 502 with its stderr only → `{link: address(host, port) +
+  "/setup#" + token, expires_at}`; not an op, nothing stored, the log
+  line "Made a setup link for <name>." — the token never in history or a
+  log; the page's dialog shows it once (Copy, the clipboard API else
+  `execCommand`), emptied on close. In a user's container the Admin execs
+  only the health check and that. Modules prefixed
   `admin_` so they never clash with `app/`'s on the test path:
   `admin_ops.py` (every command through one `Runner`, argument lists, never a
   shell; git as the repo's owner; compose only `-p openfit` with the repo's
@@ -1928,7 +2012,14 @@ own calls to its device API. Full direction:
   and `templates/index.html`. Nothing in `app/` knows it exists. Tests:
   `tests/test_admin_*.py` — real git in temp repos, docker through
   conftest's `FakeRunner`.
-- `tests/` — pytest, temp DB, no network.
+- `tests/` — pytest, temp DB, no network. conftest points every test's
+  `AUTH_PATH`/`SESSION_KEY_PATH` at `tmp_path` and resets `main._fails`
+  (`auth_files`, autouse); the shared `client` is `signed_in()`: a known
+  password's hash (made once a run) and `TEST_TAG` written into the test's
+  `auth.json`, its session carrying the tag, and `X-OpenFit: 1` on every
+  request (`environ_base`). There's no switch that turns auth off. A test
+  of signing in starts from a client of its own (`test_auth.py`'s
+  `guest`), signed out.
 - `docs/architecture/` — design direction (read first). `docs/design/` — frontend references.
 
 ## Data model
@@ -2307,7 +2398,8 @@ own calls to its device API. Full direction:
 - Webhook (push input, no migration): `POST /api/webhook/<token>` with
   `{"metric", "value", "date"?, "source"?}` writes one reading via
   `write_metric()` then `recompute_derived(since=date, until=date)`, in one
-  transaction. Token-as-auth — the only authed route: the `settings` row
+  transaction. Token-as-auth — the one route a session doesn't guard, and
+  exempt from the `X-OpenFit` header (a device has no page): the `settings` row
   `webhook_token` (`secrets.token_urlsafe`), compared with
   `hmac.compare_digest`; none stored or a mismatch → 401. `GET
   /api/webhook-token` returns it (made on first ask) with its `path`/`url`;
@@ -2320,8 +2412,8 @@ own calls to its device API. Full direction:
   rule is `plausible_value()` (`app/metrics.py`), shared with an app's
   `ctx.write_metric()`. Idempotent per `(date, source, metric)`. Metrics
   only — no session ingest yet.
-- The access contract — the app-facing read API (read-only, no auth, no
-  migration; in `app/main.py`). Apps read the DERIVED profile from
+- The access contract — the app-facing read API (read-only, behind the
+  sign-in like every route but the webhook, no migration; in `app/main.py`). Apps read the DERIVED profile from
   `derived_metrics`, never raw per-source `metrics` rows, so they never
   reconcile sources:
   - `GET /api/catalog` → `{"metrics": [{metric, unit, sources, first, last,
@@ -2450,14 +2542,20 @@ own calls to its device API. Full direction:
   verify the primary) and full history retained.
 
 ## Hard constraints
-- No multi-tenancy in core. No `user_id`, no auth on core (the webhook's URL
-  token is the one exception). Multi-user is a future per-container Host layer.
+- No multi-tenancy in core. No `user_id`. One account per container (U1,
+  `app/auth.py`): a password set through one-time setup links the Admin
+  makes, every route but the webhook (its URL token its own auth) behind a
+  session, every write behind the `X-OpenFit` header — never more than one
+  account in a container, never rows kept apart inside one. Multi-user is
+  one container per person, managed by the Admin.
 - Privacy-first: no telemetry, no external calls except a plugin's own device API.
   (The Admin, `admin/`, is outside the user system: its `git fetch` from
   GitHub is the one other call, and the user system never makes it.)
   Credentials encrypted at rest; their secrets (passwords, tokens) never
   returned over the API — `/api/connectors/<id>/detail`'s non-password
-  `login` is the one field read back.
+  `login` is the one field read back. The account's password and setup
+  token are stored only as hashes, in `/data/auth.json`, and never read
+  back over the API.
 - Ships no tracking apps. `app/templates/index.html` is the data console — what
   the dataset holds, its continuity, and which source wins each metric (see
   Layout) — not a tracker; don't build tracker features into core.
@@ -2956,8 +3054,14 @@ same PR:
   app level, `APP_LEVEL` 1: skipped and refused above it) and `replaces`
   (parsed; the install refused while what it replaces, or its data, is
   here); and `library/` was corrected to FRMS alone, the other seven
-  apps moved to `tests/fixtures/apps/`. Still to come, in order:
-  the user login before any second real person, then B2 (`replaces`
+  apps moved to `tests/fixtures/apps/`. Then the user login landed (U1;
+  no migration, `docs/architecture/auth.md`): one account per container,
+  locked until a password is set through a one-time setup link (`python
+  auth_cli.py setup-link`, which the Admin's Setup link runs in the user's
+  container by `docker exec`), the same link the reset; every route but
+  the webhook behind a session, every write behind `X-OpenFit: 1` (the
+  page's `apiFetch()`), Sign out in settings. Still to come, in order:
+  B2 (`replaces`
   moving the data, L3's rules) and self-updating installed apps (B3),
   with L4, then organisation repos (A6); installing an app with folders
   inside it is out; scheduled updates
@@ -2968,8 +3072,8 @@ same PR:
   and Home layout items, then removing the old folder; adopting an
   uninstalled old app's data, refusing rather than merging when the new
   id has data, the user confirming first); L4 host-version labels; the
-  backup file not yet placed. Until the login lands, the hard constraints
-  above stand as written.
+  backup file not yet placed. Out of U1, for later: two-factor sign-in,
+  passkeys, email, HTTPS and the `.local` names.
 Keep `GET /api/activity` returning its current flat shape (`{date, steps,
 resting_hr, source}`, plus `synced_at` with `?by_source=1` — its `sleep_hours`
 field went with `sleep_minutes` in v2) as a compatibility shim during the

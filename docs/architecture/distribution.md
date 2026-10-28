@@ -4,9 +4,11 @@ _Design record · decided 2026-10-27. Built so far: the library folder (L1,
 corrected in B1: FRMS alone), library app ids with read-only library apps
 (L2), four Admin slices: updates for the existing OpenFit (A1), adding users,
 with updates moving everyone together (A2), the Admin's self-update (A4) and
-the app shelf (A5, all four [admin.md](admin.md)), and Browse (B1), the user
-system installing from the shelf; everything else here is designed, not yet
-in the code._
+the app shelf (A5, all four [admin.md](admin.md)), Browse (B1), the user
+system installing from the shelf, and the user login (U1,
+[auth.md](auth.md)): one account per user container, set through setup
+links from the Admin; everything else here is designed, not yet in the
+code._
 
 OpenFit is splitting into three layers: the repo, an **Admin** container that
 manages user containers on a server, and the **user system** (today's `app/`).
@@ -14,10 +16,11 @@ Apps such as FRMS are no longer part of the user system. They live in a
 **library** the Admin serves, and a user installs them from Browse. This
 records how the three fit together, so each slice is built against one design
 rather than its own guess. Until a slice lands, the code is as `CLAUDE.md`
-describes it: no auth on core but the webhook's token, and an Admin that
-adds users, updates them all together (A1, A2), updates itself (A4) and
-publishes the official apps to a read-only shelf every user mounts (A5),
-which a user browses and installs from (B1), and nothing more.
+describes it: one account per user container, signed in with a password
+set through a setup link (U1), and an Admin that adds users, updates them
+all together (A1, A2), updates itself (A4), makes their setup links (U1)
+and publishes the official apps to a read-only shelf every user mounts
+(A5), which a user browses and installs from (B1), and nothing more.
 
 ## Layers
 
@@ -268,12 +271,15 @@ custom `frms` becoming `openfit.frms`:
 
 ### Accounts
 
-- **One account per user container**, with a login page. It's still not
-  row-level: there's no `user_id`, and one person has one container and one
-  database. Two-factor sign-in (authenticator codes, which work offline)
-  comes later. The Admin has its own, separate login.
+- **One account per user container**, with a login page (U1, built:
+  [auth.md](auth.md)). It's still not row-level: there's no `user_id`, and
+  one person has one container and one database. A container is locked until
+  its password is set. Two-factor sign-in (authenticator codes, which work
+  offline) comes later. The Admin has its own, separate login.
 - **The Admin creates users** through a one-time setup link, and the user
-  sets their own password.
+  sets their own password (U1, built: Setup link on the user's row, which
+  runs the user system's own `auth_cli.py` in their container). The same
+  link resets a forgotten password; there's no email.
 
 ### The backup file
 
@@ -314,10 +320,13 @@ a second real person gets a container. Re-ordered 2026-10-27, after A1:
    backup before every update, behind a login of the Admin's own.
 2. **A2: adding users** (built), one compose project per user, each on its
    own port, and updates and undo moving every user together.
-3. **The user login**: the user system's login page, before any second real
-   person gets a container (one account per container, still no `user_id`).
+3. **The user login (U1)** (built, [auth.md](auth.md)): the user system's
+   login page, before any second real person gets a container (one account
+   per container, still no `user_id`), locked until a password is set
+   through a setup link the Admin makes.
 4. **A4: the Admin's self-update** (built), through a short-lived helper
-   container running the old Admin's image. Built ahead of the user login.
+   container running the old Admin's image. Built ahead of the user login,
+   so U1's Admin change rolls out with Update the Admin.
 5. **Library serving and Browse**, with `replaces` (L3) and host-version
    labels (L4). The serving is built: **A5, the app shelf** (above), ahead of
    the user login. **Browse (B1)** is built: listing the shelf and installing
