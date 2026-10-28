@@ -850,7 +850,8 @@ def test_undo_is_refused_once_the_users_have_changed(logged_in, admin_env, chang
     r = logged_in.post("/api/undo", json={}, headers=H)
     assert r.status_code == 409
     assert r.get_json()["error"] == "There's no update to undo."
-    assert {c.args[1] for c in env.fake.calls if c.args[0] == "docker"} == {"ps", "inspect"}  # the status's look, only
+    # The status's look, only: its users' containers, and the server (docker info, a minute on).
+    assert {c.args[1] for c in env.fake.calls if c.args[0] == "docker"} == {"ps", "inspect", "info"}
 
 
 def test_undo_needs_every_backup_of_its_set(admin_env):

@@ -6,6 +6,7 @@ docker is conftest's FakeRunner, whose setup-link exec prints SETUP_TOKEN;
 the user system's side of the token is test_auth.py's."""
 
 import json
+import re
 import os
 
 import pytest
@@ -182,13 +183,17 @@ def test_the_route_needs_a_session_and_the_header(admin_client, admin_env):
 
 def test_the_page_shows_the_link_once(admin_client):
     html = admin_client.get("/").get_data(as_text=True)
-    # A Setup link button on every user's row, usable while they're running.
-    assert 'acts.append(button("Setup link", "", (b) => makeLink(u.name, b), busy || !running));' in html
+    # A Setup link button in every user's row, usable while they're running.
+    assert 'acts.append(button("Setup link", "btn sm", (b) => makeLink(u.name, b), isBusy || !running));' in html
     assert "api(`/api/users/${encodeURIComponent(name)}/setup-link`, {})" in html
-    # Shown in a dialog, with Copy and the brief's words.
-    assert '<dialog class="card" id="linkDialog" aria-labelledby="linkTitle">' in html
+    # Shown in a popup, with Copy and the brief's words.
+    assert '<div class="modal-bg" id="linkDialog" hidden>' in html
     assert "Send this to ${name}. It works once, for 24 hours. A new link replaces this one." in html
-    assert '<button class="primary" type="button" id="linkCopy">Copy</button>' in html
-    # Kept nowhere: no storage at all, and the field emptied as it closes.
-    assert "localStorage" not in html and "sessionStorage" not in html
-    assert '$("linkDialog").addEventListener("close", () => { $("linkText").value = "";' in html
+    assert '<button class="btn primary" type="button" id="linkCopy">Copy</button>' in html
+    # Kept nowhere: the page stores only this browser's theme and tab, never
+    # the link, and the field is emptied as the popup closes.
+    assert "sessionStorage" not in html and "indexedDB" not in html
+    assert re.findall(r"localStorage\.(\w+)\((\w*)", html) == [
+        ("getItem", "key"), ("removeItem", "key"), ("setItem", "key")]
+    assert 'const STORE = { theme: "openfit-admin-theme", tab: "openfit-admin-tab" };' in html
+    assert 'function closeLink() {\n  $("linkDialog").hidden = true;\n  $("linkText").value = "";' in html
