@@ -153,9 +153,9 @@ roster; each FRMS panel isolated from the others' faults. Then the circadian
 panel's glance additions: home's date and time under the cursor, each trip's
 layover as an amber bar on the duty strip (the roster's trips), and the WOCL in
 red under the body clock's curve. Next: the rest of the
-Library (the writes ticker, now apps write back; alerts;
-Browse / Build / Create are still placeholders — Browse will read the library,
-step 5 of Phase 5), and the grid pass (free cell placement, a second layout
+Library (the writes ticker, now apps write back; alerts; Build / Create are
+still placeholders — Browse reads the library, built in B1, step 5 of Phase
+5), and the grid pass (free cell placement, a second layout
 mode on the same sizes).
 
 ## Phase 5 — OpenFit Admin & distribution  ← in progress, alongside Phase 2
@@ -199,8 +199,13 @@ the order was changed so the Admin comes first, in A-slices:
    (`docs/architecture/admin.md`), a volume the Admin fills with the official
    apps and every user mounts read-only at `/library`, published atomically
    at startup, by Update OpenFit and by **Update apps** (app-only changes: no
-   rebuild, no restarts), with a Restart per user. Browse (B1) is next on the
-   user system's side.
+   rebuild, no restarts), with a Restart per user. **B1, built:** Browse — the
+   user system lists the shelf and installs an app from it, from the shelf's
+   own files, never the page's; the manifest gains `description`, `requires`
+   (an app level, `APP_LEVEL` 1) and `replaces`, parsed, with an install
+   refused while what it replaces is still here; and `library/` corrected to
+   FRMS alone, the other seven apps moved to `tests/fixtures/apps/`. Next: B2
+   (`replaces` moving the data), then B3 (self-updating installed apps).
 6. Organisation repos (A6).
 
 Parked: scheduled updates (an update at a time the admin picks).

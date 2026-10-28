@@ -29,8 +29,8 @@ read-only at `/library`. User containers stay fully offline: there's no
 network between containers, only the shared read-only volume. Every app on
 the shelf is available to every user (no allowlist). An app-only change goes
 out with **Update apps**: no rebuild and no restarts. Each user gets the
-mount at their next recreate, and **Restart** does that on its own. Nothing
-in the user system reads `/library` yet: Browse is B1.
+mount at their next recreate, and **Restart** does that on its own. The user
+system's Browse (B1) reads `/library` and installs from it.
 
 ## What the Admin doesn't do yet
 
@@ -41,9 +41,9 @@ in the user system reads `/library` yet: Browse is B1.
   different versions.
 - Update OpenFit and update itself in one go: Update OpenFit pulls the
   Admin's new code, and Update the Admin is a second button.
-- Browse, or installing an app from the shelf (B1); self-updating installed
-  apps (B3); organisation repos (A6); `replaces` (L3) or host-version labels
-  (L4).
+- Self-updating installed apps (B3); organisation repos (A6); `replaces`
+  moving an app's data (L3, built as B2) or host-version labels (L4). Browse,
+  installing an app from the shelf, is the user system's (B1).
 - Scheduled updates: an update runs now, or is found by the weekly check and
   left for a person.
 - Fetch anything from GitHub but the repo itself: pull request numbers are

@@ -1,11 +1,12 @@
 # OpenFit distribution: the library, the Admin and the user system
 
-_Design record · decided 2026-10-27. Built so far: the library folder (L1),
-library app ids with read-only library apps (L2), and four Admin slices:
-updates for the existing OpenFit (A1), adding users, with updates moving
-everyone together (A2), the Admin's self-update (A4) and the app shelf (A5,
-all four [admin.md](admin.md)); everything else here is designed, not yet in
-the code._
+_Design record · decided 2026-10-27. Built so far: the library folder (L1,
+corrected in B1: FRMS alone), library app ids with read-only library apps
+(L2), four Admin slices: updates for the existing OpenFit (A1), adding users,
+with updates moving everyone together (A2), the Admin's self-update (A4) and
+the app shelf (A5, all four [admin.md](admin.md)), and Browse (B1), the user
+system installing from the shelf; everything else here is designed, not yet
+in the code._
 
 OpenFit is splitting into three layers: the repo, an **Admin** container that
 manages user containers on a server, and the **user system** (today's `app/`).
@@ -15,8 +16,8 @@ records how the three fit together, so each slice is built against one design
 rather than its own guess. Until a slice lands, the code is as `CLAUDE.md`
 describes it: no auth on core but the webhook's token, and an Admin that
 adds users, updates them all together (A1, A2), updates itself (A4) and
-publishes the official apps to a read-only shelf every user mounts (A5), and
-nothing more.
+publishes the official apps to a read-only shelf every user mounts (A5),
+which a user browses and installs from (B1), and nothing more.
 
 ## Layers
 
@@ -126,8 +127,7 @@ of Update OpenFit when only the app library changed: pull, check nothing
 under `app/` or `admin/` arrived, publish, with no container stopped,
 recreated or restarted. The mount is live, so new shelf contents need no
 restart; a user picks the mount itself up at their next recreate, an update
-or **Restart** (new in A5, per user). Nothing reads `/library` yet: Browse is
-B1.
+or **Restart** (new in A5, per user). Browse (B1, below) reads it.
 
 ## Apps
 
@@ -144,7 +144,11 @@ B1.
   slice (L3, below). The one question still open for it is how `replaces`
   moves the data, and L3's rules for that are agreed.
 - **Host version.** A library app carries a host-version requirement, and
-  the host refuses an install it isn't compatible with.
+  the host refuses an install it isn't compatible with. Built in B1 as an
+  **app level**: a manifest's `requires` (1 when it doesn't say) against the
+  user system's `APP_LEVEL` (1), raised when apps gain something an older
+  OpenFit lacks. An app needing more doesn't load, won't install, and shows in
+  Browse as needing a newer OpenFit. L4's host-version labels build on it.
 - **Library apps are the Admin's to update.** The Admin pushes a library
   app's updates. A user can't edit a library app (Duplicate gives them a
   custom copy to change), and sees an "updated, what changed" note when one
@@ -154,20 +158,25 @@ B1.
   container, and the Admin never sees them.
 
 The library starts as `library/`, at the repo's top level: the apps OpenFit
-publishes, one folder an app, named for its id, which the host's tests also run
-against as real apps. It's outside the image's build context (the compose
-file builds `./app`), so it's never copied into the user system: an app
-reaches a user's `/data/apps` only by being installed. `tests/test_library.py`
-holds the three things that make it a library: it sits outside the build
-context, every folder is named for its app's id, and every app installs through
-the host's own `install_app()` from its files as text, which is what Browse
-will do. It's named `library/`, not `apps/`, so it can't be confused with
-`app/`, and so it matches the Library tab whose Browse will read it.
+publishes, one folder an app, named for its id. It's outside the image's build
+context (the compose file builds `./app`), so it's never copied into the user
+system: an app reaches a user's `/data/apps` only by being installed.
+`tests/test_library.py` holds the three things that make it a library: it
+sits outside the build context, every folder is named for its app's id, and
+every app installs through the host's own `install_app()` from its files as
+text. It's named `library/`, not `apps/`, so it can't be confused with `app/`.
+
+**Corrected in B1: the library is FRMS alone.** L1 moved eight apps into
+`library/`, but seven of them (`caffeine`, `import`, `mood`, `steps`,
+`steps-metres`, `weight`, `workout-log`) were leftovers from testing, never
+official apps, and once the shelf existed (A5) it published them to every
+user. B1 moved them, byte-identical, to `tests/fixtures/apps/`, where the
+host's tests run against them as before. `library/` holds only `frms`.
 
 ### Library app ids (L2, built)
 
 The host side of the names, the read-only rule and a function that installs
-from a library. Nothing calls it from a route yet: Browse will.
+from a library, which Browse's install calls (B1, below).
 
 - **Two id shapes.** A custom app's id is the scanner's `APP_ID`, as before.
   A library app's is `LIBRARY_APP_ID`: a source (a lowercase letter, then
@@ -208,7 +217,38 @@ from a library. Nothing calls it from a route yet: Browse will.
 The owner's installed `frms` keeps running as it is: nothing moves its data
 yet. That's `replaces`.
 
-### `replaces` (L3, agreed, not built)
+### Browse (B1, built)
+
+The user system reads the shelf (`app/shelf.py`, at `/library`, or
+`$OPENFIT_LIBRARY`) and installs from it, the page's Browse its front end
+([app-host.md](app-host.md#browse-the-app-library)).
+
+- **Reading the shelf.** The index's sources and their apps, by name; each
+  source's folder must resolve inside the shelf, each app's inside its
+  source's, and a file counts only if it's a regular file directly in the
+  app's folder, opened without following a link. An app whose `app.yaml`
+  doesn't read or check (its `name`, `description`, `requires`, `replaces`,
+  and its id its folder's name) is left out and logged.
+- **The list** (`GET /api/library`): every app, by name, with its
+  description, files and a **state**: installed, unsupported (it has
+  folders inside it), needs a newer OpenFit, replaces an app still here (it,
+  or its data, is), else available. No shelf, or an index that doesn't read,
+  and Browse says the library isn't connected yet: restart from the Admin.
+- **The install** (`POST /api/library/<source>/<app>/install`): any body
+  ignored, the state worked out afresh (409 with its words unless
+  available), the files read from the shelf, then `install_library_app()`.
+  The page shows the files read-only (`GET /api/library/<source>/<app>`)
+  but never sends them, so what's installed is exactly what was published.
+- **`replaces` is parsed and refused until B2.** `openfit.frms` declares
+  `replaces: [frms]`, so while the owner's `frms`, or its data, is here,
+  Browse says it replaces it and is available in a coming update, and the
+  install refuses it.
+
+### `replaces` (L3, agreed; the move is B2)
+
+B1 parses `replaces` (a list of at most 5 app ids, none twice, never the
+library app's own) and refuses the install while one is pending. B2 moves the
+data, by these rules.
 
 How a library app takes over an older app's id and data, such as the owner's
 custom `frms` becoming `openfit.frms`:
@@ -280,11 +320,11 @@ a second real person gets a container. Re-ordered 2026-10-27, after A1:
    container running the old Admin's image. Built ahead of the user login.
 5. **Library serving and Browse**, with `replaces` (L3) and host-version
    labels (L4). The serving is built: **A5, the app shelf** (above), ahead of
-   the user login, since nothing reads it until Browse. Browse (B1),
-   installing from the shelf and self-updating installed apps (B3) are the
-   user system's, to come. L3 and L4 wait for Browse: nothing installs from
-   the library until it exists. The library groundwork already built, L1 and
-   L2, stands.
+   the user login. **Browse (B1)** is built: listing the shelf and installing
+   from it, with `replaces` parsed and the app level (`requires`) checked.
+   Still the user system's, to come: B2, `replaces` moving an older app's data
+   across (L3's rules), and B3, self-updating installed apps; then L4. The
+   library groundwork built before, L1 (corrected in B1) and L2, stands.
 6. **Organisation repos** (A6): each a source of its own on the shelf.
 
 ### Parked

@@ -73,8 +73,9 @@ Right column:
    - **The controls card** (`#appsCard`): the "Applications" title and its
      voice button, then **＋ Add Application** in Add source's style on the
      left, with **Browse**, **Build** and **Create** grouped at the far end.
-     Add Application opens the install popup (below); the other three are
-     placeholders for now, each opening the coming-soon modal. Under the
+     Add Application opens the install popup (below), Browse the app
+     library ([app-host.md](app-host.md#browse-the-app-library)); Build and
+     Create are placeholders for now, each opening the coming-soon modal. Under the
      buttons, a status line that stays empty until an install has something
      to say. It holds no app rows.
    - **The app list** (`#appListCard`), directly below it: the right column's
@@ -198,8 +199,9 @@ the button comes back.
 **The coming-soon placeholder.** One reusable modal (`comingSoon(title)`),
 built on the same `.modal` chrome: a title, "Coming soon." and a Close button
 (Escape and a backdrop click close it too). Add source (with nothing left to
-add) and Applications' Browse, Build and Create open it, each with its own
-title.
+add) and Applications' Build and Create open it, each with its own title.
+Browse, once a placeholder too, opens the app library (B1,
+[app-host.md](app-host.md#browse-the-app-library)).
 
 ## Voice explanations: `GET /audio/<name>`
 
