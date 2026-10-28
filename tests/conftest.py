@@ -191,6 +191,9 @@ LIBRARY_VOLUME = "openfit-library"
 # The Admin's own: the image its container runs, and the update helper's id.
 ADMIN_IMAGE_ID = "sha256:" + "ad" * 32
 HELPER_ID = "5a" * 32
+# What a user's auth_cli.py prints for a setup link, in the fake.
+SETUP_TOKEN = "Tk_" + "a1B2-" * 8
+SETUP_EXPIRES = "2026-10-28T12:00:00Z"
 
 
 def container_id(project, n):
@@ -230,7 +233,8 @@ class FakeRunner:
     from the start (the Admin's compose project made it); a project's
     appears when it's brought up, goes with down -v or volume rm. `helper`
     is whether the Admin's update helper, openfit-admin-swap, is there:
-    `docker run -d` makes it.
+    `docker run -d` makes it. A setup link's exec in a user's container
+    prints SETUP_TOKEN.
 
     `frames` holds, for each call, the names of the functions it was made
     through (innermost first), so a test can tell which code ran it."""
@@ -314,6 +318,8 @@ class FakeRunner:
             info = {"Id": args[-1], "Image": ADMIN_IMAGE_ID if project == "openfit-admin" else IMAGE_ID,
                     "Mounts": mounts}
             return 0, json.dumps([info]), ""
+        if sub == "exec" and args[3:] == ["python", "auth_cli.py", "setup-link"]:
+            return 0, json.dumps({"token": SETUP_TOKEN, "expires_at": SETUP_EXPIRES}) + "\n", ""
         if sub == "exec":
             return (1 if args[2] in self.unhealthy else 0), "", ""
         if sub == "run" and args[2] == "-d" and "openfit-admin-swap" in args:

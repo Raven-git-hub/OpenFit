@@ -16,7 +16,9 @@ compose project `openfit` from the repo's own docker-compose.yml - or one
 the Admin added: project `openfit-<name>`, from a compose file the Admin
 wrote itself into /data/users/<name>/. Compose commands are only ever one
 of those projects with its own file. Docker commands only ever touch a
-container compose labels as one of those projects', the Admin's own
+container compose labels as one of those projects' - where the only
+commands it execs are the health check and the user system's own
+`python auth_cli.py setup-link`, for a setup link - the Admin's own
 helper containers (labelled openfit.admin.helper=true, always --rm), the
 user system's image, and the kept volume of a user removed from
 users.json, when its deletion is confirmed. Nothing else on the server is
@@ -196,6 +198,13 @@ def health_code(port):
 
 HEALTH_CODE = health_code(80)
 ADMIN_HEALTH_CODE = health_code(ADMIN_PORT)
+
+# A setup link (U1): the user system's own CLI, run in a user's running
+# container, makes the token and prints one JSON line - the only command
+# the Admin execs there besides the health check. The token is handed
+# straight back to the page, once: never in the Admin's history or log.
+SETUP_LINK_ARGS = ("python", "auth_cli.py", "setup-link")
+SETUP_TOKEN = re.compile(r"[A-Za-z0-9_-]{40,50}\Z")
 
 
 class Runner:
@@ -854,9 +863,9 @@ class Admin:
     """The OpenFit users the Admin manages, and the operations on them.
 
     One operation at a time (`lock`): a check, an update, an undo, adding,
-    starting, stopping, restarting or removing a user, deleting a removed
-    user's data, updating the apps, publishing them again, or updating the
-    Admin itself. An update, an undo, adding a user, updating the apps and
+    starting, stopping, restarting or removing a user, making a setup link,
+    deleting a removed user's data, updating the apps, publishing them
+    again, or updating the Admin itself. An update, an undo, adding a user, updating the apps and
     an Admin update run in a background thread, their progress in `op`;
     the rest run in the caller's thread. An Admin update keeps the lock
     after its thread has handed over to the helper, until the helper has
@@ -2229,6 +2238,39 @@ class Admin:
         :latest names - how a user picks up the app shelf's mount."""
         self._user_command(name, ("up", "-d", "--no-build", "--force-recreate"), "didn't restart",
                            recreates=True, check_health=True)
+
+    def setup_link(self, name, host):
+        """A setup link for `name`'s OpenFit: {link, expires_at}. Its own
+        CLI, `python auth_cli.py setup-link`, run in their running container
+        by docker exec, makes the token (replacing any earlier one) and
+        prints it; the link is http://<host>:<their port>/setup#<token>,
+        `host` as the browser reached the Admin. Nothing is stored here,
+        and the token is logged nowhere - not even in a failure's detail.
+        409 unless their OpenFit is running."""
+        self._known(name)
+        self._take_lock()
+        try:
+            user = self._known(name)
+            c = self.find_container(user)
+            if c is None or c["state"] != "running":
+                raise Refused(f"{user.name}'s OpenFit isn't running. Start it, then make the link.", 409)
+            rc, out, err = self.docker("exec", c["id"], *SETUP_LINK_ARGS, timeout=60)
+            if rc != 0:
+                # Its error output alone: what it printed is never repeated.
+                raise OpError(f"Couldn't make a setup link for {user.name}.", _tail("", err))
+            try:
+                made = json.loads(out)
+            except ValueError:
+                made = None
+            token = made.get("token") if isinstance(made, dict) else None
+            expires_at = made.get("expires_at") if isinstance(made, dict) else None
+            if (len(out.strip().splitlines()) != 1 or not isinstance(token, str) or not SETUP_TOKEN.match(token)
+                    or not isinstance(expires_at, str) or not _STAMP.match(expires_at)):
+                raise OpError(f"{user.name}'s OpenFit didn't give back a setup link the Admin recognises.")
+            print(f"[admin] Made a setup link for {user.name}.", flush=True)
+            return {"link": f"{address(host, user.port)}/setup#{token}", "expires_at": expires_at}
+        finally:
+            self.lock.release()
 
     def _user_command(self, name, args, failed, recreates=False, check_health=False):
         self._known(name)

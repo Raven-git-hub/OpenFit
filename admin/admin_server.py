@@ -170,6 +170,16 @@ def create_app(admin, auth, secret_key):
     def api_remove_user(name):
         return done(lambda: admin.remove_user(name))
 
+    @app.post("/api/users/<name>/setup-link")
+    def api_setup_link(name):
+        # The link goes back to the page once, in this reply; nothing keeps it.
+        try:
+            return jsonify(ok=True, **admin.setup_link(name, request.host))
+        except Refused as e:
+            return _fail(e.message, e.status)
+        except OpError as e:
+            return _fail(e.message, 502, detail=e.detail)
+
     @app.post("/api/removed/<name>/delete-data")
     def api_delete_data(name):
         return done(lambda: admin.delete_data(name, body().get("confirm")))
