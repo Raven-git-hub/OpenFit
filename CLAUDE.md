@@ -1906,7 +1906,7 @@ own calls to its device API. Full direction:
   byte-identical, to `tests/fixtures/apps/`. Not `apps/`, so it can't be
   confused with `app/`. The distribution design it starts is
   `docs/architecture/distribution.md`.
-- `admin/` — the OpenFit Admin (A1, A2, A4, A5, U1's setup links, S1's portal, `docs/architecture/admin.md`): its own
+- `admin/` — the OpenFit Admin (A1, A2, A4, A5, U1's setup links, S1's portal, S2, `docs/architecture/admin.md`): its own
   image (`python:3.12-slim`, git, the docker CLI and compose plugin copied
   from pinned images) and compose file (`docker compose -f
   admin/docker-compose.yml -p openfit-admin up -d --build`), port 8090, the
@@ -1954,9 +1954,56 @@ own calls to its device API. Full direction:
   `/data/self_update_result.json` as it goes. The Admin running afterwards
   finishes the op from it (`_pick_up_swap()` at startup, before
   `_mark_interrupted()`; `_settle()` once the helper has gone), holding
-  the lock meanwhile; it's never marked interrupted. The `openfit-admin`
+  the lock meanwhile; it's never marked interrupted. The op records its
+  `snapshot` stamp (one an older Admin started is given it from the
+  result, and its `old`/`new` noted again). And Revert the Admin (S2):
+  `revert_offer()` → `{offered, reason, update, old}` (`status()`'s
+  `admin_revert`) — only when the newest `admin_update` is ok, its
+  snapshot is there, the snapshot's `users.json` and the live one hold the
+  same people (`registry_people()`: users by name and `created_at`,
+  removed by name and `removed_at`), nothing runs, `openfit-admin:prev`
+  exists (`docker image inspect`) and the Admin's image isn't `:prev`'s —
+  else one line why; `POST /api/admin/revert` (an `admin_revert` op,
+  `undoes` the update, `old`/`new` swapped) finds itself, refuses an
+  existing helper, tags its image `openfit-admin:next`, takes a fresh
+  snapshot (pruning never takes the update's) and starts the helper on
+  `openfit-admin:local` (the image running now, never `:prev`) with
+  `admin_swap.py revert <update stamp> <fresh stamp> <op id>`
+  (`revert()`): wait 3s, `:prev` → `:local`, only `admin.json` and
+  `users.json` back from the update's snapshot (`REVERT_FILES`; the
+  password, `secret_key`, history and last check kept), recreate,
+  health-check; unhealthy, `:next` → `:local`, all six from the fresh
+  snapshot, recreate — `ok`, `rolled_back` or `failed`, finished as an
+  update is; an Admin from before reverts can't read that result (it
+  drops it and marks the op interrupted), so the helper finishes the
+  record for it (`finish_for_an_older_admin()`). `_admin_base()` counts an
+  ok revert (its `new`). The Admin's image tagged only through
+  `admin_tag()` (the running id → `:prev`/`:next`, `:prev`/`:next` →
+  `:local`), the helper's arguments only `swap_helper_args()`'s two forms.
+  The `openfit-admin`
   project only through `admin_compose()`: `build admin` or `up -d
-  --no-build --force-recreate admin`, nothing else. And the app shelf
+  --no-build --force-recreate admin`, nothing else. Downloads (S2) never
+  hold the password: `auth.json` and `.session_key` at the volume's root
+  (`NO_PASSWORD_MEMBERS`, with and without `./`) are left out, nothing
+  else. `GET /api/backups/<name>/download` (`BACKUP_NAME` and in
+  `list_backups()`, else 404) streams `without_password()` — the backup
+  read with `tarfile` (`r|gz`), a new `w|gz` written by a thread into a
+  pipe, no temp file — as `<backup>-nopassword.tar.gz`; `GET
+  /api/removed/<name>/download` (in `removed`, no container in their
+  project, else 404/409) streams `Runner.stream()` (a context manager
+  yielding stdout, killing the command if the reader goes, an `OpError`
+  on a non-zero exit) of exactly `kept_download_args()`: `docker run --rm
+  --label openfit.admin.helper=true --log-driver none -v
+  <volume>:/v:ro openfit-admin:local tar czf - -C /v
+  --exclude=./auth.json --exclude=./.session_key .`, as
+  `openfit-<name>-kept-<UTC date>-nopassword.tar.gz`. Both: a session,
+  no `X-OpenFit-Admin` (GETs that change nothing; a plain link), 409
+  while an op runs, checked and started (`primed()`, the first chunk
+  read) under the lock and then streamed without it; a failure before
+  the first byte a 502, one part-way cutting the download off; the log
+  "Downloaded <file> (no password)", never the contents. `POST
+  /api/backups/<name>/delete` deletes one, under the lock; each status
+  backup's `undo_relies` marks the set the Undo on offer puts back. And the app shelf
   (A5): the volume `openfit-library`, made by the Admin's compose file,
   written through the Admin's `/library` and mounted read-only at
   `/library` by every user — the primary through
@@ -2007,8 +2054,13 @@ own calls to its device API. Full direction:
   (`openfit-admin-theme`); a left column of four panels (System
   information, Versions, Repos, Activity log) and Users / Repo tabs
   (`openfit-admin-tab`); one update popup (Proceed the existing route), a
-  last-update and a last-publish popup, and S2's places (Revert the Admin,
-  Download, Delete a backup) disabled. `status()` gains `system` (`docker
+  last-update and a last-publish popup, and S2's places enabled: the
+  Admin's last update's Revert the Admin (its confirm, or off with
+  `admin_revert`'s reason), a backup's Download (the no-password warning,
+  then the link) and Delete (its confirm, the Undo line when
+  `undo_relies`), kept data's Download beside Delete data; `SELF` (an
+  `admin_update` or `admin_revert` running) is what reconnects the page.
+  `status()` gains `system` (`docker
   info --format '{{json .}}'`, `DOCKER_INFO_ARGS`, at most once a
   `DOCKER_INFO_EVERY` 60s, of which `server_fields()` keeps only `Name`,
   `ServerVersion`, `NCPU`, `MemTotal`; `statvfs` of `/data`, the backups'
@@ -2029,7 +2081,8 @@ own calls to its device API. Full direction:
   file and the override, or `-p openfit-<name>` with the user's own — or the Admin's own
   project through `admin_compose()`; only those projects'
   compose-labelled containers and `--rm` helpers labelled
-  `openfit.admin.helper=true`), `admin_swap.py` (the update helper),
+  `openfit.admin.helper=true`), `admin_swap.py` (the update and revert
+  helper),
   `admin_auth.py`
   (setup code, a ≥12-character password, sessions, 5 bad logins per IP per
   5 minutes → 429), `admin_server.py` (Flask; every `/api` route but
@@ -3088,9 +3141,15 @@ same PR:
   page's `apiFetch()`), Sign out in settings. Then the Admin Portal (S1;
   `admin/`, `library/repo.yaml`, no change to `app/`): the Admin's page in
   OpenFit's style, a left column of System information, Versions, Repos and
-  the Activity log, Users and Repo tabs, and the reads behind them; S2 next
-  (revert the Admin, download backups and kept data, delete one backup).
-  Still to come, in order:
+  the Activity log, Users and Repo tabs, and the reads behind them. Then
+  S2 (`admin/` only): Revert the Admin, back to the version before its
+  last update and that update's `admin.json`/`users.json`, through the
+  hand-over the other way round (a helper on the image running now,
+  `:next` and a fresh snapshot to fall back on); downloads of a backup or
+  a removed user's kept data that never hold the password (a restore
+  sets a new one through a setup link; the server's backups keep
+  everything); and deleting a single backup. Restoring from a download
+  comes with the backup file. Still to come, in order:
   B2 (`replaces`
   moving the data, L3's rules) and self-updating installed apps (B3),
   with L4, then organisation repos (A6); installing an app with folders
