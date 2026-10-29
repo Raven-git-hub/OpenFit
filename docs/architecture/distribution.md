@@ -1,11 +1,12 @@
 # OpenFit distribution: the library, the Admin and the user system
 
 _Design record · decided 2026-10-27. Built so far: the library folder (L1,
-corrected in B1: FRMS alone), library app ids with read-only library apps
-(L2), four Admin slices: updates for the existing OpenFit (A1), adding users,
-with updates moving everyone together (A2), the Admin's self-update (A4) and
-the app shelf (A5, all four [admin.md](admin.md)), Browse (B1), the user
-system installing from the shelf, the user login (U1,
+corrected in B1: FRMS alone; empty since A6, FRMS moved to the aviation
+repo), library app ids with read-only library apps (L2), five Admin slices:
+updates for the existing OpenFit (A1), adding users, with updates moving
+everyone together (A2), the Admin's self-update (A4), the app shelf (A5)
+and organisation repos (A6, all five [admin.md](admin.md)), Browse (B1),
+the user system installing from the shelf, the user login (U1,
 [auth.md](auth.md)): one account per user container, set through setup
 links from the Admin, the Admin Portal (S1, [admin.md](admin.md)): the
 Admin's page in OpenFit's style, and S2: reverting the Admin, downloads
@@ -22,22 +23,25 @@ describes it: one account per user container, signed in with a password
 set through a setup link (U1), and an Admin that adds users, updates them
 all together (A1, A2), updates itself and reverts that (A4, S2), makes
 their setup links (U1), publishes the official apps to a read-only shelf
-every user mounts (A5), which a user browses and installs from (B1), and
-hands over a backup or a removed user's data without its password (S2),
-and nothing more.
+every user mounts (A5) - and each organisation repo's beside them (A6) -
+which a user browses and installs from (B1), and hands over a backup or a
+removed user's data without its password (S2), and nothing more.
 
 ## Layers
 
 - **The repo.** One repo holds `app/` (the user system), `library/` (the
-  official apps, and `repo.yaml`, their name and blurb) and `admin/` (the
-  Admin, five of its slices built). The official repo is public. An
-  organisation's app repo is separate and private, and the Admin reads it with
-  a read-only key.
+  official apps, none today, and `repo.yaml`, their name and blurb) and
+  `admin/` (the Admin, six of its slices built). The official repo is
+  public. An organisation's app repo is separate and private, and the Admin
+  reads it with a read-only deploy key it makes for that repo alone (A6,
+  built: below).
 - **The Admin.** One container per server. It creates users, checks for
   updates, applies them and serves the app library, as a read-only shelf: a
   volume it fills, which every user's container mounts (A5). It is the only
   OpenFit component that talks to the internet (GitHub), and only to check
-  for updates or pull them.
+  for updates or pull them - the official repo over HTTPS, as the server's
+  checkout always has, and each organisation repo over SSH with its deploy
+  key (A6).
 - **The user system.** One container per user, with its own `/data` volume.
   It is fully offline apart from its own sync plugins' calls to their device
   APIs, as it is today.
@@ -165,11 +169,46 @@ recreated or restarted. The mount is live, so new shelf contents need no
 restart; a user picks the mount itself up at their next recreate, an update
 or **Restart** (new in A5, per user). Browse (B1, below) reads it.
 
+### Organisation repos (A6, built)
+
+**An organisation's apps come from its own repo**: a private GitHub repo,
+owned by whoever made it, laid out as `library/` is (a `repo.yaml` at its
+top - `source`, `name`, `description` - and one folder an app). The first
+is `github.com/Raven-git-hub/openfit-aviation`, source `openfitavi`. In the
+Admin Portal's Repo tab, **Add repository** takes the repo's GitHub address
+and makes an ed25519 key pair for that repo on that server alone; the page
+shows the public key, to add on GitHub as a read-only deploy key, and
+**Connect** clones the repo over SSH into the Admin's own storage
+(`/data/repos/<owner>__<repo>/`) and publishes its apps to the shelf under
+the source its `repo.yaml` names: `.sets/openfitavi-<commit12>`, a link
+`openfitavi`, and its own entry in `index.json`, beside OpenFit's and never
+touching it. Every user sees its apps in Browse, named by `repo.yaml`'s
+`name` (`source_name`). **Check now** and the weekly check fetch every
+connected repo too, and re-read its `repo.yaml` at what GitHub has; a repo
+that can't be reached is marked on its own row and never fails the check.
+Its update is **Update available** on its row: a fast-forward, the
+`repo.yaml` checked again, a publish, no restarts - or the clone put back
+and the shelf as it was. A repo whose `repo.yaml` changes its `source` is
+refused (a changing prefix would cut installed apps off from their data):
+remove it and add it again. **Remove** takes its apps off the shelf and
+deletes the clone and the key; what users installed from it stays theirs,
+no longer updated. Git over SSH is pinned: GitHub's own host keys, the
+repo's key alone, no prompt; no HTTPS and no tokens.
+
+**FRMS moved there.** It left the official library in A6: `library/` holds
+`repo.yaml` alone, and publishes an empty set; the copy the tests run
+against is `tests/fixtures/apps/frms/`, byte-identical. In the aviation
+repo, FRMS is `openfitavi.frms` - its `app.yaml` unchanged, `replaces:
+[frms]` and all - so B2 moves the owner's data once, from their own `frms`
+straight to `openfitavi.frms` (it never went through `openfit.frms`). Until
+B2, Browse says it replaces their FRMS, and won't install it.
+
 ## Apps
 
 - **The library** holds the official apps plus each organisation repo's. Any
   user can install any library app; there is no allowlist. It reaches users
-  as the read-only shelf (A5, above).
+  as the read-only shelf (A5, above), each repo a source of its own on it
+  (A6, above).
 - **Names.** A library app is named `<source>.<name>`: `openfit.` for an
   official app, `openfitavi.` for the example aviation repo's. **The repo
   assigns the source, never the app** (decided, and built in L2, below): a
@@ -207,7 +246,9 @@ text. It's named `library/`, not `apps/`, so it can't be confused with `app/`.
 `steps-metres`, `weight`, `workout-log`) were leftovers from testing, never
 official apps, and once the shelf existed (A5) it published them to every
 user. B1 moved them, byte-identical, to `tests/fixtures/apps/`, where the
-host's tests run against them as before. `library/` holds only `frms`.
+host's tests run against them as before. `library/` held only `frms` -
+until A6 moved FRMS to the aviation repo (above), and its copy here to
+`tests/fixtures/apps/frms/`. `library/` is `repo.yaml` alone today.
 
 ### Library app ids (L2, built)
 
@@ -275,10 +316,13 @@ The user system reads the shelf (`app/shelf.py`, at `/library`, or
   available), the files read from the shelf, then `install_library_app()`.
   The page shows the files read-only (`GET /api/library/<source>/<app>`)
   but never sends them, so what's installed is exactly what was published.
-- **`replaces` is parsed and refused until B2.** `openfit.frms` declares
-  `replaces: [frms]`, so while the owner's `frms`, or its data, is here,
-  Browse says it replaces it and is available in a coming update, and the
-  install refuses it.
+- **`replaces` is parsed and refused until B2.** FRMS declares `replaces:
+  [frms]` (from the aviation repo, `openfitavi.frms`), so while the owner's
+  `frms`, or its data, is here, Browse says it replaces it and is available
+  in a coming update, and the install refuses it.
+- **Each app's library by its name** (A6): every listed app carries
+  `source_name`, its source's name from the shelf's index (OpenFit,
+  OpenFit Aviation; else the source's id), which Browse's tag shows.
 
 ### `replaces` (L3, agreed; the move is B2)
 
@@ -287,7 +331,7 @@ library app's own) and refuses the install while one is pending. B2 moves the
 data, by these rules.
 
 How a library app takes over an older app's id and data, such as the owner's
-custom `frms` becoming `openfit.frms`:
+custom `frms` becoming `openfitavi.frms`:
 
 - **Declared in the library copy's `app.yaml`**, naming the old id.
 - **It runs only at install of the new app**, never on a scan or an update.
@@ -381,8 +425,11 @@ a second real person gets a container. Re-ordered 2026-10-27, after A1:
    downloading backups and kept data without the password, deleting single
    backups. Restoring from a downloaded file comes with the backup file and
    restore-on-add-user, below.
-7. **Organisation repos** (A6): each a source of its own on the shelf, its
-   name and blurb from its own `repo.yaml`.
+7. **Organisation repos** (A6, built): each a source of its own on the
+   shelf, its name and blurb from its own `repo.yaml`, cloned over SSH with
+   a read-only deploy key the Admin makes for it; FRMS moved to the first,
+   `openfit-aviation`. Next: B2, moving the owner's `frms` data straight to
+   `openfitavi.frms`.
 
 ### Parked
 

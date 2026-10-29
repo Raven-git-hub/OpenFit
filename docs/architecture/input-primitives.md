@@ -171,7 +171,8 @@ the platform stays open to any file an author brings.
 - Session write-back (`write_session`): the roster-to-sessions app waits on
   it; the `import` app writes metrics only. (Since landed, separately:
   `ctx.write_session()`, existing kinds only — `app-host.md`; and the roster
-  app on it, now FRMS, `library/frms/`.)
+  app on it, now FRMS, published from the aviation repo as
+  `openfitavi.frms`; its copy here `tests/fixtures/apps/frms/`.)
 
 ## A file input's toggle, and confirm-before-submit (built)
 

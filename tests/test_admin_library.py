@@ -171,12 +171,13 @@ def test_a_publish_puts_a_set_behind_the_link_and_indexes_it(admin_env):
             assert (shelf / app / name).read_bytes() == (repo / app / name).read_bytes()
     assert files_in(shelf / "steps") == ["app.py", "app.yaml", "assets/note.txt"]
     # Each app's fingerprint, and its name and description from its app.yaml
-    # (neither app has either); the source's from repo.yaml (none: its id).
+    # (neither app has either); the source's from repo.yaml (none: its id);
+    # and when this source was published (A6: each source has its own).
     apps = {app: {"sha256": admin_ops.fingerprint(str(shelf / app)), "name": None, "description": None}
             for app in ("caffeine", "steps")}
     assert index(env) == {"published_at": "2026-10-27T12:00:00Z",
                           "sources": {"openfit": {"commit": commit, "name": "openfit", "description": None,
-                                                  "apps": apps}}}
+                                                  "apps": apps, "published_at": "2026-10-27T12:00:00Z"}}}
     # The fingerprint of the published folder is the repo folder's too.
     assert apps["steps"]["sha256"] == admin_ops.fingerprint(str(repo / "steps"))
     assert list(index(env)["sources"]["openfit"]["apps"]) == ["caffeine", "steps"]
@@ -260,7 +261,7 @@ def test_a_repo_with_no_library_folder_publishes_an_empty_set(admin_env):
     run(env.repos.repo, "git", "commit", "-qm", "No library")
     env.admin.publish_official()
     assert index(env)["sources"]["openfit"] == {"commit": head(env), "name": "openfit", "description": None,
-                                                "apps": {}}
+                                                "apps": {}, "published_at": "2026-10-27T12:00:00Z"}
     assert os.listdir(env.library / "openfit") == []
 
 

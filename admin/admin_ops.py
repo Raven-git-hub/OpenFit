@@ -41,9 +41,18 @@ shelf volume is never removed. The primary gets the mount from an
 override file the Admin writes, /data/primary.override.yml, passed after
 the repo's compose file; an added user from the template below.
 
+Organisation repos (A6) are other GitHub repos of apps, each cloned into
+the Admin's own storage, /data/repos/<slug>/repo, with a read-only deploy
+key the Admin made for it (ssh-keygen, in one exact form), and published to
+the shelf beside the official apps, under the source its repo.yaml names.
+Their git runs only through org_git(): as root, in that clone, with the
+repo's own pinned GIT_SSH_COMMAND, and only the commands org_git_allowed()
+names. The private key is never read, returned or logged.
+
 Git runs as the repo's owner (the uid and gid that own OPENFIT_REPO), so
 the files it writes stay the owner's and git never refuses the repo as
-someone else's. Docker runs as root, for the socket.
+someone else's - all but an organisation repo's, above. Docker runs as
+root, for the socket.
 """
 
 import contextlib
@@ -205,6 +214,39 @@ MAX_REPO_NAME = 40
 MAX_DESCRIPTION = 300
 MAX_YAML_BYTES = 256 * 1024
 
+# Organisation repos (A6): another GitHub repo laid out as library/ is
+# (repo.yaml and an app folder each, at its top), cloned over SSH with a
+# read-only deploy key the Admin makes for it, and published to the shelf
+# as the source its repo.yaml names. /data/repos.json lists them; each has
+# /data/repos/<slug>/ - its key pair, deploy_key (0600, never read back)
+# and deploy_key.pub, and its clone, repo/. github.com alone, over SSH
+# alone: no HTTPS, no tokens.
+REPOS_FILE = "repos.json"
+REPOS_DIR = "repos"
+REPO_KEY = "deploy_key"
+REPO_CLONE = "repo"
+REPO_STATES = ("pending", "connected")
+REPO_OWNER = re.compile(r"[A-Za-z0-9-]{1,39}\Z")
+REPO_NAME = re.compile(r"[A-Za-z0-9._-]{1,100}\Z")
+REPO_SLUG = re.compile(r"[a-z0-9-]{1,39}__[a-z0-9._-]{1,100}\Z")
+_GITHUB_HTTPS = re.compile(r"https://github\.com/([^/]+)/([^/]+?)(?:\.git)?/?\Z")
+_GITHUB_SSH = re.compile(r"git@github\.com:([^/]+)/([^/]+?)(?:\.git)?\Z")
+# GitHub's host keys, copied into the image from admin/github_known_hosts.
+KNOWN_HOSTS = "/app/github_known_hosts"
+# The Admin's data folder as it goes into GIT_SSH_COMMAND, which git hands
+# to a shell: plain path characters only.
+_SAFE_PATH = re.compile(r"/[A-Za-z0-9._/-]*\Z")
+PUBLIC_KEY = re.compile(r"ssh-ed25519 [A-Za-z0-9+/]{68}(?: [ -~]{1,300})?\Z")
+NOT_OPENFIT = "Connected, but not an OpenFit repo yet: it needs a repo.yaml at the top."
+KEY_REFUSED = "GitHub didn't accept the key yet. Check it's added under the repo's Deploy keys, then Connect again."
+# What git and ssh say when GitHub turns a deploy key down: a key it
+# doesn't know, or a key for another repo.
+_KEY_REFUSALS = ("permission denied (publickey)", "repository not found")
+# What git adds after any failure over SSH: never the reason.
+_GIT_BOILERPLATE = ("fatal: could not read from remote repository", "please make sure you have the correct access",
+                    "and the repository exists")
+REPO_COMMITS = 20  # the most commits a never-published repo's update lists
+
 # The System information panel's view of the server: `docker info` with
 # exactly this format, at most once a DOCKER_INFO_EVERY seconds, of which
 # only SERVER_FIELDS are kept - never the host's container counts or names.
@@ -253,10 +295,12 @@ SETUP_TOKEN = re.compile(r"[A-Za-z0-9_-]{40,50}\Z")
 class Runner:
     """Runs one command, an argument list, and never through a shell.
 
-    run(args, cwd=None, as_owner=False) -> (returncode, stdout, stderr).
-    as_owner runs it as the uid and gid that own `owner_path` (the repo),
-    with HOME=/tmp and no supplementary groups. A command that can't start
-    is 127, one that runs too long 124: never an exception.
+    run(args, cwd=None, as_owner=False, env=None) -> (returncode, stdout,
+    stderr). as_owner runs it as the uid and gid that own `owner_path` (the
+    repo), with HOME=/tmp and no supplementary groups. env is variables to
+    add to the command's environment (an organisation repo's
+    GIT_SSH_COMMAND). A command that can't start is 127, one that runs too
+    long 124: never an exception.
     """
 
     def __init__(self, owner_path, timeout=1800):
@@ -267,10 +311,13 @@ class Runner:
         st = os.stat(self.owner_path)
         return st.st_uid, st.st_gid
 
-    def run(self, args, cwd=None, as_owner=False, timeout=None):
+    def run(self, args, cwd=None, as_owner=False, timeout=None, env=None):
         if not isinstance(args, list) or not all(isinstance(a, str) for a in args):
             raise TypeError("a command is a list of strings")
-        env = dict(os.environ, GIT_TERMINAL_PROMPT="0")
+        if env is not None and not (isinstance(env, dict) and all(
+                isinstance(k, str) and isinstance(v, str) for k, v in env.items())):
+            raise TypeError("a command's env is a mapping of strings")
+        env = {**os.environ, "GIT_TERMINAL_PROMPT": "0", **(env or {})}
         drop = {}
         if as_owner:
             env["HOME"] = "/tmp"
@@ -639,11 +686,12 @@ def _copy_file(src, dst):
             return out.tell()
 
 
-def _app_files(folder, app, log):
+def _app_files(folder, app, log, label="library"):
     """One app folder's files to publish, as tuples of path parts: its
     regular files, never a link (or anything through one); dotfiles,
     __pycache__ and .pyc left out. _Skip over MAX_APP_FILES or
-    MAX_APP_BYTES, or with no app.yaml of its own."""
+    MAX_APP_BYTES, or with no app.yaml of its own. `label` names where it
+    is in the log: library/, or an organisation repo's owner/repo."""
     found, total, todo = [], 0, [()]
     while todo:
         rel = todo.pop()
@@ -654,12 +702,12 @@ def _app_files(folder, app, log):
             if entry.name.startswith("."):
                 continue
             if entry.is_symlink():
-                log(f"Leaving out library/{app}/{'/'.join(parts)}: it's a link.")
+                log(f"Leaving out {label}/{app}/{'/'.join(parts)}: it's a link.")
             elif entry.is_dir(follow_symlinks=False):
                 if entry.name != "__pycache__":
                     todo.append(parts)
             elif not entry.is_file(follow_symlinks=False):
-                log(f"Leaving out library/{app}/{'/'.join(parts)}: it isn't a regular file.")
+                log(f"Leaving out {label}/{app}/{'/'.join(parts)}: it isn't a regular file.")
             elif not entry.name.endswith(".pyc"):
                 found.append(parts)
                 total += entry.stat(follow_symlinks=False).st_size
@@ -672,10 +720,12 @@ def _app_files(folder, app, log):
     return sorted(found)
 
 
-def _collect_apps(src, log):
+def _collect_apps(src, log, label="library", skip_hidden=False):
     """[(app, files)] for each app folder in `src`, by name: a top-level
     folder named as a library app is, at most MAX_APPS of them. Anything
-    else is left out, and logged. No library/ at all is no apps."""
+    else is left out, and logged - but, `skip_hidden`, a dotfile or
+    dot-folder (an organisation repo's .git, .github), left out quietly.
+    No library/ at all is no apps."""
     if os.path.islink(src):
         raise OSError(f"{src} is a link")
     if not os.path.isdir(src):
@@ -687,15 +737,17 @@ def _collect_apps(src, log):
     for entry in entries:
         if entry.name == REPO_FILE:
             continue  # the source's own name and blurb: repo_info() reads it
+        if skip_hidden and entry.name.startswith("."):
+            continue
         if not _SHELF_APP.match(entry.name) or not entry.is_dir(follow_symlinks=False):
-            log(f"Leaving out library/{entry.name}: it isn't an app folder.")
+            log(f"Leaving out {label}/{entry.name}: it isn't an app folder.")
         elif len(apps) >= MAX_APPS:
-            log(f"Leaving out library/{entry.name}: the app library holds at most {MAX_APPS} apps.")
+            log(f"Leaving out {label}/{entry.name}: the app library holds at most {MAX_APPS} apps.")
         else:
             try:
-                apps.append((entry.name, _app_files(entry.path, entry.name, log)))
+                apps.append((entry.name, _app_files(entry.path, entry.name, log, label)))
             except _Skip as e:
-                log(f"Leaving out library/{entry.name}: {e}.")
+                log(f"Leaving out {label}/{entry.name}: {e}.")
     return apps
 
 
@@ -715,6 +767,12 @@ def _read_yaml(path):
         if e.errno == errno.ELOOP:  # O_NOFOLLOW, on a link
             return None, "is a link"
         return None, f"won't open ({e.strerror or e})"
+    return _parse_yaml(raw)
+
+
+def _parse_yaml(raw):
+    """_read_yaml()'s answer for a file's bytes: (mapping, None), or (None,
+    why not)."""
     if len(raw) > MAX_YAML_BYTES:
         return None, f"is over {MAX_YAML_BYTES >> 10} KB"
     try:
@@ -734,12 +792,12 @@ def _blurb(value):
     return None
 
 
-def repo_info(src, source, log):
-    """The source's name and description, from library/repo.yaml: {name,
-    description}. `name` text of 1 to MAX_REPO_NAME characters and
-    `description` (optional) at most MAX_DESCRIPTION, each trimmed; a file
-    that's missing or isn't that is the source id and no description,
-    logged."""
+def repo_info(src, source, log, label="library"):
+    """The source's name and description, from library/repo.yaml (an
+    organisation repo's own, at its top): {name, description}. `name` text
+    of 1 to MAX_REPO_NAME characters and `description` (optional) at most
+    MAX_DESCRIPTION, each trimmed; a file that's missing or isn't that is
+    the source id and no description, logged."""
     data, why = _read_yaml(os.path.join(src, REPO_FILE))
     if data is not None:
         name, description = data.get("name"), data.get("description")
@@ -750,7 +808,7 @@ def repo_info(src, source, log):
             why = f"has a description that isn't text of at most {MAX_DESCRIPTION} characters"
         else:
             return {"name": name.strip(), "description": _blurb(description)}
-    log(f"library/{REPO_FILE} {why}, so the app library is named {source!r}, with no description.")
+    log(f"{label}/{REPO_FILE} {why}, so the app library is named {source!r}, with no description.")
     return {"name": source, "description": None}
 
 
@@ -791,6 +849,18 @@ def shelf_source(index, source):
     return None
 
 
+def _published_at(index, entry):
+    """When `entry`, a source's in `index`, was last published: its own
+    stamp (A6), else - an entry from before there were two sources - the
+    index's."""
+    if not entry:
+        return None
+    for when in (entry.get("published_at"), (index or {}).get("published_at")):
+        if isinstance(when, str):
+            return when
+    return None
+
+
 def _remove_tree(root, path, log):
     """A folder of the shelf's, gone (rmtree never follows a link); a
     failure logged, never raised."""
@@ -823,10 +893,14 @@ def _point(root, source, target):
 
 
 def _write_index(root, index, source, entry, now):
-    """index.json with `source`'s entry, any other source's kept: a temp
-    file, then renamed over it."""
+    """index.json with `source`'s entry (`entry` None: without it), every
+    other source's kept as it was read: a temp file, then renamed over
+    it."""
     sources = dict(index["sources"]) if index else {}
-    sources[source] = entry
+    if entry is None:
+        sources.pop(source, None)
+    else:
+        sources[source] = entry
     path = os.path.join(root, SHELF_INDEX)
     tmp = f"{path}.tmp"
     _inside(root, path)
@@ -838,12 +912,20 @@ def _write_index(root, index, source, entry, now):
     os.replace(tmp, path)
 
 
-def publish_set(src, library_dir, source, commit, now, log=print):
-    """Publish the app folders in `src` (the repo's library/) to the shelf
-    at `library_dir`, as `source` at `commit`. -> {commit, apps: {app:
-    {sha256, name, description}}, changed}. The source's entry in the
-    index also carries the name and description of `src`'s repo.yaml
-    (repo_info()), and each app's its own app.yaml's (app_info()).
+def _same_entry(old, entry):
+    """Whether the index's entry `old` already says `entry`: all but when it
+    was published."""
+    return isinstance(old, dict) and {k: v for k, v in old.items() if k != "published_at"} == entry
+
+
+def publish_set(src, library_dir, source, commit, now, log=print, label="library", skip_hidden=False):
+    """Publish the app folders in `src` (the repo's library/, or an
+    organisation repo's clone) to the shelf at `library_dir`, as `source`
+    at `commit`. -> {commit, apps: {app: {sha256, name, description}},
+    changed}. The source's entry in the index also carries the name and
+    description of `src`'s repo.yaml (repo_info()), each app's its own
+    app.yaml's (app_info()), and when this source was last published.
+    `label` and `skip_hidden` are _collect_apps()'s.
 
     The apps are copied into a new set, .sets/<source>-<commit12>, made
     whole under a hidden name first; then the link <source> is swapped
@@ -871,13 +953,13 @@ def publish_set(src, library_dir, source, commit, now, log=print):
         if before == f"{SHELF_SETS}/{name}" and os.path.isdir(final) and not os.path.islink(final):
             apps = {app: _app_entry(os.path.join(final, app))
                     for app in sorted(os.listdir(final)) if _SHELF_APP.match(app)}
-            entry = {"commit": commit, **repo_info(src, source, log), "apps": apps}
-            if shelf_source(index, source) == entry:
+            entry = {"commit": commit, **repo_info(src, source, log, label), "apps": apps}
+            if _same_entry(shelf_source(index, source), entry):
                 return {"commit": commit, "apps": apps, "changed": False}
-            _write_index(root, index, source, entry, now)
+            _write_index(root, index, source, {**entry, "published_at": now}, now)
             return {"commit": commit, "apps": apps, "changed": True}
-        apps = _collect_apps(src, log)
-        repo = repo_info(src, source, log)
+        apps = _collect_apps(src, log, label, skip_hidden)
+        repo = repo_info(src, source, log, label)
         _inside(root, sets)
         if os.path.islink(sets) or (os.path.lexists(sets) and not os.path.isdir(sets)):
             raise OSError(f"{SHELF_SETS} isn't a folder")
@@ -913,7 +995,7 @@ def publish_set(src, library_dir, source, commit, now, log=print):
         placed = True
         _point(root, source, f"{SHELF_SETS}/{name}")
         swapped = True
-        _write_index(root, index, source, {"commit": commit, **repo, "apps": published}, now)
+        _write_index(root, index, source, {"commit": commit, **repo, "apps": published, "published_at": now}, now)
     except (OSError, OpError) as e:
         # Back as it was: the link on the set it was on, the new set gone, a
         # set moved aside back in its place.
@@ -938,6 +1020,217 @@ def publish_set(src, library_dir, source, commit, now, log=print):
         if old_set.match(entry) and entry not in keep:
             _remove_tree(root, os.path.join(sets, entry), log)
     return {"commit": commit, "apps": published, "changed": True}
+
+
+def unpublish_source(library_dir, source, now, log=print):
+    """Take `source` off the shelf at `library_dir`: its link removed, then
+    its sets (.sets/<source>-<commit12>, and any a publish left part-way),
+    then its entry in index.json, last - every other source's link, sets
+    and entry exactly as they were. Never the official source. A source
+    that isn't there is nothing to do. An OpError if the link or the index
+    can't be changed; a set that won't delete is logged."""
+    if not _SHELF_SOURCE.match(source) or source == OFFICIAL_SOURCE:
+        raise ValueError(f"not a source to take off the shelf: {source!r}")
+    root = os.path.realpath(library_dir)
+    if not os.path.isdir(root):
+        raise OpError("The app library's storage isn't there, so nothing was taken off it.", library_dir)
+    index = read_shelf(root)
+    try:
+        _point(root, source, None)
+        sets = os.path.join(root, SHELF_SETS)
+        if os.path.isdir(sets) and not os.path.islink(sets):
+            mine = re.compile(rf"({source}-[0-9a-f]{{12}}|\.(tmp|old)-{source}-[0-9a-f]{{12}}-[0-9a-f]{{8}})\Z")
+            for entry in sorted(os.listdir(sets)):
+                if mine.match(entry):
+                    _remove_tree(root, os.path.join(sets, entry), log)
+        if index is not None and source in index["sources"]:
+            _write_index(root, index, source, None, now)
+    except OSError as e:
+        raise OpError("The repo's apps couldn't be taken off the app library.", str(e))
+
+
+# --- organisation repos (A6) ----------------------------------------------------
+
+
+def parse_github(url):
+    """(owner, repo) from a GitHub repo's address as a person pastes it -
+    https://github.com/<owner>/<repo>, with or without .git or a trailing
+    /, or git@github.com:<owner>/<repo>.git - or None for anything else:
+    another host, a path, a query or a fragment, an owner or repo GitHub
+    wouldn't have. Space around it is trimmed."""
+    if not isinstance(url, str):
+        return None
+    url = url.strip()
+    found = _GITHUB_HTTPS.match(url) or _GITHUB_SSH.match(url)
+    if not found:
+        return None
+    owner, repo = found.groups()
+    if not REPO_OWNER.match(owner) or not REPO_NAME.match(repo) or repo in (".", ".."):
+        return None
+    return owner, repo
+
+
+def repo_slug(owner, repo):
+    """The repo's folder and id here: <owner>__<repo>, lowercased, every
+    character outside [a-z0-9._-] made a -."""
+    return re.sub(r"[^a-z0-9._-]", "-", f"{owner}__{repo}".lower())
+
+
+def repo_ssh_url(owner, repo):
+    """The address the Admin clones from, and stores: SSH, always."""
+    return f"git@github.com:{owner}/{repo}.git"
+
+
+def repo_address(owner, repo):
+    """The repo on GitHub, for a person: its web page."""
+    return f"https://github.com/{owner}/{repo}"
+
+
+_REPO_KEYS = {"slug", "url", "owner", "repo", "added_at", "state", "source", "commit"}
+
+
+def load_repos(data_dir):
+    """/data/repos.json: {"repos": [{slug, url, owner, repo, added_at,
+    state, source, commit}]} - the organisation repos the Admin added, in
+    the order they were added. None yet is none.
+
+    Checked strictly on every read, like users.json: anything that isn't
+    exactly right is a ValueError naming the file and the key, so a
+    hand-edited entry never reaches a command or a path."""
+    path = os.path.join(data_dir, REPOS_FILE)
+    if not os.path.exists(path):
+        return {"repos": []}
+    raw = _read_json(path, None)
+    if not isinstance(raw, dict) or set(raw) != {"repos"} or not isinstance(raw["repos"], list):
+        raise ValueError(f"{path} isn't exactly {{\"repos\": [...]}}")
+    slugs, sources = set(), set()
+    for i, entry in enumerate(raw["repos"]):
+        where = f"{path}: repos[{i}]"
+        if not isinstance(entry, dict) or set(entry) != _REPO_KEYS:
+            raise ValueError(f"{where} isn't exactly {{{', '.join(sorted(_REPO_KEYS))}}}")
+        owner, repo = entry["owner"], entry["repo"]
+        if not isinstance(owner, str) or not REPO_OWNER.match(owner):
+            raise ValueError(f"{where}.owner isn't valid: {owner!r}")
+        if not isinstance(repo, str) or not REPO_NAME.match(repo) or repo in (".", ".."):
+            raise ValueError(f"{where}.repo isn't valid: {repo!r}")
+        slug = entry["slug"]
+        if slug != repo_slug(owner, repo) or not REPO_SLUG.match(slug) or slug in slugs:
+            raise ValueError(f"{where}.slug isn't valid: {slug!r}")
+        slugs.add(slug)
+        if entry["url"] != repo_ssh_url(owner, repo):
+            raise ValueError(f"{where}.url isn't valid: {entry['url']!r}")
+        if not isinstance(entry["added_at"], str) or not _STAMP.match(entry["added_at"]):
+            raise ValueError(f"{where}.added_at isn't valid: {entry['added_at']!r}")
+        if entry["state"] not in REPO_STATES:
+            raise ValueError(f"{where}.state isn't valid: {entry['state']!r}")
+        source, commit = entry["source"], entry["commit"]
+        if source is not None and (not isinstance(source, str) or not _SHELF_SOURCE.match(source)
+                                   or source == OFFICIAL_SOURCE or source in sources):
+            raise ValueError(f"{where}.source isn't valid: {source!r}")
+        if commit is not None and (not isinstance(commit, str) or not _COMMIT.match(commit)):
+            raise ValueError(f"{where}.commit isn't valid: {commit!r}")
+        if (source is None) != (commit is None) or (entry["state"] == "pending" and source is not None):
+            raise ValueError(f"{where}: source and commit are set together, and only once it's connected")
+        if source is not None:
+            sources.add(source)
+    return {"repos": raw["repos"]}
+
+
+def ssh_command(data_dir, slug):
+    """GIT_SSH_COMMAND for an organisation repo's git, exactly: its own
+    deploy key and no other, GitHub's pinned host keys and nothing else
+    trusted, never a prompt. Built from fixed parts, the Admin's data
+    folder and a checked slug - git hands it to a shell."""
+    if not isinstance(slug, str) or not REPO_SLUG.match(slug):
+        raise ValueError(f"not a repo's slug: {slug!r}")
+    if not _SAFE_PATH.match(data_dir) or ".." in data_dir.split("/"):
+        raise ValueError(f"the Admin's data folder can't go into an SSH command: {data_dir!r}")
+    key = os.path.join(data_dir, REPOS_DIR, slug, REPO_KEY)
+    return (f"ssh -i {key} -o IdentitiesOnly=yes -o UserKnownHostsFile={KNOWN_HOSTS} -o StrictHostKeyChecking=yes "
+            "-o BatchMode=yes -o ConnectTimeout=20")
+
+
+def _oid(x):
+    return isinstance(x, str) and bool(_COMMIT.match(x))
+
+
+def org_git_allowed(args, url, dest):
+    """Whether `args` (after `git`) is one of the commands an organisation
+    repo's git may be: clone (of its own address, into its own folder),
+    fetch origin, rev-parse of HEAD or its upstream, log, merge --ff-only
+    and reset --hard of a full commit, and cat-file of a full commit's
+    tree or an object by its full id. Nothing else, so nothing but those
+    ever runs with a repo's key."""
+    a = list(args)
+    if a[:2] == ["clone", "--"]:
+        return a[2:] == [url, dest]
+    if a == ["fetch", "origin"]:
+        return True
+    if a[:3] == ["rev-parse", "--verify", "-q"]:
+        return a[3:] in (["HEAD^{commit}"], ["@{upstream}^{commit}"])
+    if a[:2] in (["merge", "--ff-only"], ["reset", "--hard"]):
+        return len(a) == 3 and _oid(a[2])
+    if a[:1] == ["cat-file"] and len(a) == 3:
+        if a[1] == "-p":
+            return a[2].endswith("^{tree}") and _oid(a[2][:-7])
+        return a[1] in ("-s", "blob") and _oid(a[2])
+    if a[:3] == ["log", "--no-merges", "--format=%h%x09%s"] and len(a) == 4:
+        old, sep, new = a[3].partition("..")
+        return bool(sep) and _oid(old) and _oid(new)
+    if a[:5] == ["log", "-n", str(REPO_COMMITS), "--no-merges", "--format=%h%x09%s"] and len(a) == 6:
+        return _oid(a[5])
+    return False
+
+
+def _sentence(text):
+    """`text`, ending as a sentence does."""
+    return text if text.endswith((".", "!", "?")) else text + "."
+
+
+def git_reason(out, err):
+    """Why a git command over SSH failed, in one line: git's own words,
+    less the lines it adds after every failure - or its exit code."""
+    for line in f"{err}\n{out}".splitlines():
+        line = line.strip()
+        if line and not line.lower().startswith(_GIT_BOILERPLATE):
+            return line.removeprefix("fatal: ")[:200]
+    return "git didn't say why"
+
+
+def key_refused(out, err):
+    """Whether GitHub turned the repo's deploy key down."""
+    text = f"{out}\n{err}".lower()
+    return any(r in text for r in _KEY_REFUSALS)
+
+
+def repo_source(data, why, own_slug, recorded, reg):
+    """The source an organisation repo's repo.yaml names, if it can be
+    published as it: (source, None) - or (None, {text, detail}) saying why
+    not. `data`/`why` are _read_yaml()'s for the file, `recorded` the
+    source the repo was added as (None before its first publish) and `reg`
+    load_repos()' - every other repo's source is taken.
+
+    Not there, not a mapping, no source of LIBRARY_SOURCE's shape: not an
+    OpenFit repo yet. A source other than the one it was added as: never
+    published, as a changed prefix would cut installed apps off from their
+    data. 'openfit', OpenFit's own, or another repo's: refused."""
+    if data is None:
+        return None, {"text": NOT_OPENFIT, "detail": f"{REPO_FILE} {why}."}
+    source = data.get("source")
+    if not isinstance(source, str) or not _SHELF_SOURCE.match(source):
+        return None, {"text": NOT_OPENFIT,
+                      "detail": f"{REPO_FILE} has no source: lowercase letters and digits, starting with a letter."}
+    if recorded is not None and source != recorded:
+        return None, {"text": f"This repo now says it's '{source}', but it was added as '{recorded}'. "
+                              "Remove and add it again to change it.", "detail": None}
+    if source == OFFICIAL_SOURCE:
+        return None, {"text": f"Its {REPO_FILE} says it's '{OFFICIAL_SOURCE}', which is OpenFit's own. "
+                              "Choose another source in it.", "detail": None}
+    other = next((e for e in reg["repos"] if e["source"] == source and e["slug"] != own_slug), None)
+    if other is not None:
+        return None, {"text": f"Its {REPO_FILE} says it's '{source}', which {other['owner']}/{other['repo']} "
+                              "already is here. Choose another source in it.", "detail": None}
+    return source, None
 
 
 def labelled(runner, project, service, what):
@@ -1189,9 +1482,11 @@ class Admin:
     One operation at a time (`lock`): a check, an update, an undo, adding,
     starting, stopping, restarting or removing a user, making a setup link,
     deleting a removed user's data or a backup, starting a download,
-    updating the apps, publishing them again, or updating the Admin itself
-    or reverting it. An update, an undo, adding a user, updating the apps,
-    an Admin update and an Admin revert run in a background thread, their
+    updating the apps, publishing them again, updating the Admin itself or
+    reverting it, or adding, connecting, updating or removing an
+    organisation repo. An update, an undo, adding a user, updating the
+    apps, an Admin update, an Admin revert and a repo's connect and update
+    run in a background thread, their
     progress in `op`; the rest run in the caller's thread (a download only
     while it starts: once its file is open, or its helper under way, it
     streams without the lock). An Admin update or revert keeps the lock
@@ -1234,6 +1529,8 @@ class Admin:
         self.history_path = os.path.join(data_dir, "history.json")
         self.swap_result = os.path.join(data_dir, SWAP_RESULT)
         self.override_path = os.path.join(data_dir, PRIMARY_OVERRIDE)
+        self.repos_path = os.path.join(data_dir, REPOS_FILE)
+        self.repo_checks_path = os.path.join(data_dir, "repo_checks.json")
         self.library_dir = library_dir
         self.library_error = None  # the last publish's failure, until one succeeds
         self.lock = threading.Lock()
@@ -1247,6 +1544,7 @@ class Admin:
         self._ranges = {}  # (old, new, folder) -> the commits and PRs between: fixed once read
         os.makedirs(self.backups_dir, exist_ok=True)
         self.registry()  # a bad users.json stops the Admin starting
+        self.repos_registry()  # and so does a bad repos.json
         self._mark_interrupted(keep=self._pick_up_swap())
         self.write_mounts()
 
@@ -1470,10 +1768,12 @@ class Admin:
             last = self.last_check() or {}
             last["error"] = {"at": now, "text": e.message, "detail": e.detail}
             _write_json(self.check_path, last)
+            self._check_repos(now)  # a repo that answers is checked all the same
             raise
         result["checked_at"] = now
         result["error"] = None
         _write_json(self.check_path, result)
+        self._check_repos(now)
         return result
 
     def refresh_check(self):
@@ -1992,17 +2292,25 @@ class Admin:
 
     # --- the app shelf ------------------------------------------------------
 
+    def publish_source(self, source, src_dir, commit, log=None, label="library", skip_hidden=False):
+        """The app folders in `src_dir` published to the shelf as `source`, at
+        `commit` - the official library or an organisation repo's clone,
+        alike (publish_set()): its link, its sets and its entry in the
+        index, and no other source's. publish_set()'s result; an OpError
+        with the shelf as it was."""
+        log = log or (lambda text: print(f"[admin] app library: {text}", flush=True))
+        return publish_set(src_dir, self.library_dir, source, commit, self._iso(), log, label=label,
+                           skip_hidden=skip_hidden)
+
     def publish_official(self, commit=None, log=None):
         """The repo's library/ published to the shelf as the openfit source,
         at `commit` - HEAD's, read if not given: the working tree, which the
-        Admin keeps clean. publish_set()'s result; an OpError with the shelf
-        as it was, noted for the page until a publish succeeds."""
-        log = log or (lambda text: print(f"[admin] app library: {text}", flush=True))
+        Admin keeps clean. publish_source()'s result; an OpError with the
+        shelf as it was, noted for the page until a publish succeeds."""
         try:
             if commit is None:
                 commit = self.head()["commit"]
-            result = publish_set(os.path.join(self.repo, "library"), self.library_dir, OFFICIAL_SOURCE,
-                                 commit, self._iso(), log)
+            result = self.publish_source(OFFICIAL_SOURCE, os.path.join(self.repo, "library"), commit, log)
         except OpError as e:
             self.library_error = {"at": self._iso(), "text": e.message, "detail": e.detail}
             raise
@@ -2016,7 +2324,41 @@ class Admin:
         itself on first rollout, catches up after anything that moved the
         code without publishing, and an Admin update brings repo.yaml's name
         and the apps' to the index (the set itself, unchanged, isn't
-        rewritten). Whether it published; never raises."""
+        rewritten). Then each organisation repo's catch-up
+        (_catch_up_repos()). Whether the official library published; never
+        raises."""
+        published = self._publish_official_at_startup()
+        self._catch_up_repos()
+        return published
+
+    def _catch_up_repos(self):
+        """At startup: every published organisation repo whose shelf entry is
+        missing, or on another commit, published again from its clone - if
+        the clone is on the commit recorded - so a shelf made anew holds
+        every repo's apps again. Never raises."""
+        try:
+            reg = self.repos_registry()
+        except ValueError as e:
+            print(f"[admin] app library: the repos aren't caught up: {e}", flush=True)
+            return
+        index = read_shelf(self.library_dir)
+        for entry in reg["repos"]:
+            source, name = entry["source"], f"{entry['owner']}/{entry['repo']}"
+            entry_now = shelf_source(index, source) if source else None
+            if source is None or (entry_now and entry_now["commit"] == entry["commit"]):
+                continue
+            if self._org_rev(entry, "HEAD^{commit}") != entry["commit"]:
+                print(f"[admin] app library: {name} isn't on the shelf, and its clone isn't on the version it "
+                      "was published at: its next update publishes it", flush=True)
+                continue
+            try:
+                self.publish_source(source, self._clone_of(entry["slug"]), entry["commit"], label=name,
+                                    skip_hidden=True)
+                print(f"[admin] app library: published {name} again, as '{source}'", flush=True)
+            except OpError as e:
+                print(f"[admin] app library: {name}: {e.message} {e.detail}", flush=True)
+
+    def _publish_official_at_startup(self):
         try:
             head = self.head()
         except OpError as e:
@@ -2077,7 +2419,7 @@ class Admin:
         entry = shelf_source(index, OFFICIAL_SOURCE)
         commit = entry["commit"] if entry else None
         return {
-            "published_at": index.get("published_at") if entry else None,
+            "published_at": _published_at(index, entry),
             "commit": commit,
             "short": commit[:7] if commit else None,
             "apps": sorted(a for a in entry["apps"] if isinstance(a, str)) if entry else [],
@@ -2142,6 +2484,463 @@ class Admin:
                                               "The app library is as it was.")
         self.refresh_check()
         return self._finish(op, "ok", f"Updated the app library to {op['new']['short']}.")
+
+    # --- organisation repos (A6) ---------------------------------------------
+
+    def repos_registry(self):
+        return load_repos(self.data_dir)
+
+    def _save_repos(self, reg):
+        _write_json(self.repos_path, reg)
+
+    def _repo_folder(self, slug):
+        return os.path.join(self.data_dir, REPOS_DIR, slug)
+
+    def _clone_of(self, slug):
+        return os.path.join(self._repo_folder(slug), REPO_CLONE)
+
+    def _known_repo(self, slug):
+        """An organisation repo's entry, by the slug in a URL, or a 404."""
+        found = next((e for e in self.repos_registry()["repos"] if e["slug"] == slug), None)
+        if found is None:
+            raise Refused("There's no repository by that name here.", 404)
+        return found
+
+    @staticmethod
+    def _clear(path):
+        """A file, link or folder of the Admin's own, gone if it's there: a
+        link unlinked, never followed."""
+        if os.path.islink(path) or os.path.isfile(path):
+            os.remove(path)
+        elif os.path.isdir(path):
+            shutil.rmtree(path)
+
+    def org_git(self, entry, *args, timeout=None):
+        """git for an organisation repo, and only one of the commands
+        org_git_allowed() lets through: as the Admin's own user (root),
+        never as the server checkout's owner; in the repo's own clone (a
+        clone, in the folder it's made in), never the server's checkout;
+        and with its own GIT_SSH_COMMAND - its deploy key, GitHub's pinned
+        host keys, no prompt."""
+        slug = entry["slug"]
+        clone = self._clone_of(slug)
+        if not org_git_allowed(args, entry["url"], clone):
+            raise ValueError(f"a git command outside an organisation repo's lane: {args!r}")
+        cwd = self._repo_folder(slug) if args[0] == "clone" else clone
+        return self.runner.run(["git", *args], cwd=cwd, timeout=timeout,
+                               env={"GIT_SSH_COMMAND": ssh_command(self.data_dir, slug)})
+
+    def _org_rev(self, entry, ref):
+        """The full commit `ref` (HEAD^{commit} or @{upstream}^{commit}) is
+        in the repo's clone, or None: no such commit (an empty repo), or no
+        clone."""
+        if not os.path.isdir(self._clone_of(entry["slug"])):
+            return None
+        rc, out, _err = self.org_git(entry, "rev-parse", "--verify", "-q", ref)
+        commit = out.strip()
+        return commit if rc == 0 and _COMMIT.match(commit) else None
+
+    def _org_log(self, entry, old, new):
+        """The commits from `old` (None: the newest REPO_COMMITS) to `new`,
+        merges left out: [{sha, subject}], or [] if git can't say."""
+        span = ("--no-merges", "--format=%h%x09%s", f"{old}..{new}") if old else (
+            "-n", str(REPO_COMMITS), "--no-merges", "--format=%h%x09%s", new)
+        rc, out, _err = self.org_git(entry, "log", *span)
+        if rc != 0:
+            return []
+        commits = []
+        for line in out.splitlines():
+            sha, _, subject = line.partition("\t")
+            if sha:
+                commits.append({"sha": sha, "subject": subject})
+        return commits
+
+    def _repo_yaml_at(self, entry, commit):
+        """_read_yaml()'s answer for the repo's repo.yaml at `commit`, read
+        from git's own objects (a check never touches the clone's files):
+        only a regular file at its top - a link is refused, as a link in
+        the clone is - of at most MAX_YAML_BYTES. An OpError if git can't
+        read the commit."""
+        rc, out, err = self.org_git(entry, "cat-file", "-p", f"{commit}^{{tree}}")
+        if rc != 0:
+            raise OpError("Couldn't read the repo's files.", _tail(out, err))
+        for line in out.splitlines():
+            meta, tab, name = line.partition("\t")
+            parts = meta.split(" ")
+            if not tab or name != REPO_FILE or len(parts) != 3:
+                continue
+            mode, kind, oid = parts
+            if mode == "120000":
+                return None, "is a link"
+            if kind != "blob" or mode not in ("100644", "100755") or not _oid(oid):
+                return None, "isn't a regular file"
+            rc, out, err = self.org_git(entry, "cat-file", "-s", oid)
+            if rc != 0 or not out.strip().isdigit():
+                raise OpError("Couldn't read the repo's repo.yaml.", _tail(out, err))
+            if int(out.strip()) > MAX_YAML_BYTES:
+                return None, f"is over {MAX_YAML_BYTES >> 10} KB"
+            rc, out, err = self.org_git(entry, "cat-file", "blob", oid)
+            if rc != 0:
+                raise OpError("Couldn't read the repo's repo.yaml.", _tail(out, err))
+            return _parse_yaml(out.encode("utf-8"))
+        return None, "is missing"
+
+    def repo_checks(self):
+        """/data/repo_checks.json, what the checks, connects and updates last
+        found of each repo, by slug: {checked_at, head, commits, problem,
+        error} - the Admin's own record, for the page."""
+        raw = _read_json(self.repo_checks_path, {})
+        if not isinstance(raw, dict):
+            return {}
+        return {k: v for k, v in raw.items() if isinstance(k, str) and REPO_SLUG.match(k) and isinstance(v, dict)}
+
+    def _note_repo_check(self, slug, **fields):
+        checks = self.repo_checks()
+        checks[slug] = {**checks.get(slug, {}), **fields}
+        _write_json(self.repo_checks_path, checks)
+
+    def _drop_repo_check(self, slug):
+        checks = self.repo_checks()
+        if checks.pop(slug, None) is not None:
+            _write_json(self.repo_checks_path, checks)
+
+    def _public_key(self, slug):
+        """The repo's public deploy key, as ssh-keygen wrote it, if it reads
+        as one: never the private key, which the Admin never reads."""
+        try:
+            with open(os.path.join(self._repo_folder(slug), REPO_KEY + ".pub"), "rb", opener=_no_follow) as f:
+                text = f.read(1024).decode("ascii").strip()
+        except (OSError, UnicodeDecodeError):
+            return None
+        return text if PUBLIC_KEY.match(text) else None
+
+    def _server_name(self):
+        """The server's name for a deploy key's comment, so GitHub's list of
+        keys says which server each is: docker info's, made plain."""
+        name = (self.server() or {}).get("Name") or ""
+        return re.sub(r"[^A-Za-z0-9._-]", "-", name)[:63] or "server"
+
+    def add_repo(self, url):
+        """Add repository: the repo's address checked (400), its slug free
+        (409), then a key pair made for it alone and the repo saved as
+        pending - in the request, under the lock. {repo, public_key}: the
+        public key, to add on GitHub as a read-only deploy key. The private
+        key stays in /data/repos/<slug>/deploy_key, 0600: it's never read
+        back, returned or logged."""
+        parsed = parse_github(url)
+        if parsed is None:
+            raise Refused("That isn't a GitHub repository's address. Paste one like "
+                          "https://github.com/<owner>/<repo>.", 400)
+        owner, repo = parsed
+        slug = repo_slug(owner, repo)
+        self._take_lock()
+        try:
+            reg = self.repos_registry()
+            if any(e["slug"] == slug for e in reg["repos"]):
+                raise Refused(f"{owner}/{repo} is already added here.", 409)
+            folder = self._repo_folder(slug)
+            key = os.path.join(folder, REPO_KEY)
+            try:
+                # A folder left by an add that stopped part-way is the
+                # Admin's own, and holds no repo anyone's connected: made anew.
+                self._clear(folder)
+                os.makedirs(os.path.dirname(folder), mode=0o700, exist_ok=True)
+                os.mkdir(folder, 0o700)
+            except OSError as e:
+                raise OpError("Couldn't make the repo's folder.", str(e))
+            rc, _out, err = self.runner.run(
+                ["ssh-keygen", "-t", "ed25519", "-N", "", "-C", f"openfit-admin {self._server_name()} {owner}/{repo}",
+                 "-f", key], timeout=60)
+            public = None
+            if rc == 0:
+                try:
+                    os.chmod(key, 0o600)
+                    public = self._public_key(slug)
+                except OSError:
+                    public = None
+            if public is None:
+                shutil.rmtree(folder, ignore_errors=True)
+                raise OpError("Couldn't make a deploy key for the repo.", _tail("", err) if rc != 0 else "")
+            entry = {"slug": slug, "url": repo_ssh_url(owner, repo), "owner": owner, "repo": repo,
+                     "added_at": self._iso(), "state": "pending", "source": None, "commit": None}
+            reg["repos"].append(entry)
+            self._save_repos(reg)
+            self._drop_repo_check(slug)
+            print(f"[admin] added the repository {owner}/{repo}: its deploy key waits to be added on GitHub", flush=True)
+            return {"repo": self._repo_view(entry, None), "public_key": public}
+        finally:
+            self.lock.release()
+
+    def start_repo_connect(self, slug):
+        """Connect: a pending repo's clone, then its first publish, as an op
+        with a log; the refusals here, so one is a 404 or 409 with nothing
+        done."""
+        self._known_repo(slug)
+        self._take_lock()
+        try:
+            entry = self._known_repo(slug)
+            if entry["state"] != "pending":
+                raise Refused(f"{entry['owner']}/{entry['repo']} is connected already.", 409)
+            op = self._begin("repo_connect", repo={"slug": slug, "owner": entry["owner"], "repo": entry["repo"]})
+        except BaseException:
+            self.lock.release()
+            raise
+        self._spawn(op, self._repo_connect, slug)
+        return self.current_op()
+
+    def _clone(self, entry):
+        """The repo cloned afresh into its own folder: None if it worked, else
+        (what went wrong, git's words behind it), with no clone left."""
+        clone = self._clone_of(entry["slug"])
+        try:
+            self._clear(clone)  # one an earlier Connect left part-way
+        except OSError as e:
+            return "Couldn't clear the repo's folder.", str(e)
+        rc, out, err = self.org_git(entry, "clone", "--", entry["url"], clone, timeout=600)
+        if rc == 0:
+            return None
+        try:
+            self._clear(clone)
+        except OSError:
+            pass
+        if key_refused(out, err):
+            return KEY_REFUSED, _tail(out, err)
+        return f"Couldn't reach GitHub: {git_reason(out, err)}", _tail(out, err)
+
+    def _repo_connect(self, op, slug):
+        entry = self._known_repo(slug)
+        name = f"{entry['owner']}/{entry['repo']}"
+        self.say(op, f"Cloning {name} from GitHub, with its deploy key…")
+        failed = self._clone(entry)
+        if failed:
+            self.say(op, *failed)
+            text = failed[0]
+            return self._finish(op, "failed", text if text == KEY_REFUSED
+                                else f"{_sentence(text)} {name} is still waiting to connect.")
+        reg = self.repos_registry()
+        for e in reg["repos"]:
+            if e["slug"] == slug:
+                e["state"] = "connected"
+        self._save_repos(reg)
+        self.say(op, f"Connected to {name}.")
+        head = self._org_rev(entry, "HEAD^{commit}")
+        self._note_repo_check(slug, checked_at=self._iso(), head=head, commits=[], problem=None, error=None)
+        return self._publish_repo(op, slug, head)
+
+    def _publish_repo(self, op, slug, head, old=None, updating=False):
+        """A connected repo's clone, at `head`, published to the shelf as the
+        source its repo.yaml names - if that's one it can be (repo_source())
+        - and recorded. Connect's last step and Update's. An update that
+        can't publish puts the clone back on `old`: the shelf is untouched
+        either way."""
+        entry = self._known_repo(slug)
+        name = f"{entry['owner']}/{entry['repo']}"
+        clone = self._clone_of(slug)
+        if head is None:
+            data, why = None, "is missing: the repo has no commits yet"
+        else:
+            data, why = _read_yaml(os.path.join(clone, REPO_FILE))
+        source, problem = repo_source(data, why, slug, entry["source"], self.repos_registry())
+
+        def back():
+            if not updating:
+                return
+            if old:
+                self.say(op, "Putting the repo's files back as they were…")
+                rc, out, err = self.org_git(entry, "reset", "--hard", old)
+                if rc != 0:
+                    self.say(op, "Couldn't put the repo's files back.", _tail(out, err))
+            else:
+                self.say(op, "It had no commits before, so its files stay as they are.")
+
+        if problem:
+            self.say(op, problem["text"], problem["detail"] or "")
+            self._note_repo_check(slug, head=head, problem=problem)
+            back()
+            if updating:
+                return self._finish(op, "failed", f"{problem['text']} The app library is as it was.")
+            if problem["text"] == NOT_OPENFIT:
+                return self._finish(op, "ok", f"Connected {name}. It isn't an OpenFit repo yet: it needs a repo.yaml "
+                                              "at the top, so nothing was published.")
+            return self._finish(op, "failed", f"Connected {name}, but nothing was published: {problem['text']}")
+
+        self.say(op, f"Publishing its apps to the app library as '{source}'…")
+        try:
+            result = self.publish_source(source, clone, head, log=lambda text: self.say(op, text), label=name,
+                                         skip_hidden=True)
+        except OpError as e:
+            self.say(op, e.message, e.detail)
+            back()
+            if updating:
+                return self._finish(op, "failed", "The app library couldn't be updated, so the repo was put back. "
+                                                  "The app library is as it was.")
+            return self._finish(op, "failed", f"Connected {name}, but its apps couldn't be published. Check now, "
+                                              "then its Update available, tries again.")
+        reg = self.repos_registry()
+        for e in reg["repos"]:
+            if e["slug"] == slug:
+                e.update(source=source, commit=head)
+        self._save_repos(reg)
+        self._note_repo_check(slug, head=head, commits=[], problem=None)
+        n = len(result["apps"])
+        apps = f"{n} app{'' if n == 1 else 's'}"
+        if updating:
+            return self._finish(op, "ok", f"Updated {name} to {head[:7]}: {apps} in the app library, as '{source}'.")
+        return self._finish(op, "ok", f"Connected {name}, and published {apps} to the app library as '{source}'.")
+
+    def start_repo_update(self, slug):
+        """A connected repo's update, as the last check found it on GitHub:
+        the refusals here (404, 409), the rest in the background."""
+        self._known_repo(slug)
+        self._take_lock()
+        try:
+            entry = self._known_repo(slug)
+            name = f"{entry['owner']}/{entry['repo']}"
+            view = self._repo_view(entry, self.repo_checks().get(slug))
+            if entry["state"] != "connected":
+                raise Refused(f"{name} isn't connected yet: add its deploy key on GitHub, then Connect.", 409)
+            if view["behind"] and view["problem"]:
+                raise Refused(view["problem"]["text"], 409)
+            if not view["can_update"]:
+                raise Refused(f"There's no update for {name} to apply. Check for updates first.", 409)
+            op = self._begin("repo_update", repo={"slug": slug, "owner": entry["owner"], "repo": entry["repo"]})
+        except BaseException:
+            self.lock.release()
+            raise
+        self._spawn(op, self._repo_update, slug)
+        return self.current_op()
+
+    def _repo_update(self, op, slug):
+        """Merge what the last check fetched (a fast-forward, never anything
+        else), check its repo.yaml again, publish. No container is touched."""
+        entry = self._known_repo(slug)
+        self.say(op, "Noting the version the repo is on now…")
+        old = self._org_rev(entry, "HEAD^{commit}")
+        target = self._org_rev(entry, "@{upstream}^{commit}")
+        with self._op_lock:
+            op["old"] = {"commit": old, "short": old[:7]} if old else None
+            op["new"] = {"commit": target, "short": target[:7]} if target else None
+        if target is None:
+            self.say(op, "There's nothing on GitHub to update to.")
+            return self._finish(op, "failed", "Nothing was changed.")
+        self.say(op, "Adding the repo's new commits…")
+        rc, out, err = self.org_git(entry, "merge", "--ff-only", target)
+        if rc != 0:
+            self.say(op, "The new commits can't be added on top of the Admin's copy (not a fast-forward).",
+                     _tail(out, err))
+            return self._finish(op, "failed", "Nothing was changed.")
+        head = self._org_rev(entry, "HEAD^{commit}")
+        if head != target:
+            self.say(op, "The repo didn't end up on the version it was updated to.")
+            if old:
+                self.org_git(entry, "reset", "--hard", old)
+            return self._finish(op, "failed", "The app library is as it was.")
+        return self._publish_repo(op, slug, head, old=old, updating=True)
+
+    def remove_repo(self, slug):
+        """Remove: the repo's apps taken off the shelf (unpublish_source()),
+        then its folder - clone and key - deleted, then its entry, in the
+        request, under the lock. What users installed from it stays theirs.
+        A step that fails stops there, with the repo still listed."""
+        self._known_repo(slug)
+        self._take_lock()
+        try:
+            entry = self._known_repo(slug)
+            name = f"{entry['owner']}/{entry['repo']}"
+            if entry["source"]:
+                unpublish_source(self.library_dir, entry["source"], self._iso(),
+                                 lambda text: print(f"[admin] app library: {text}", flush=True))
+            try:
+                self._clear(self._repo_folder(slug))
+            except OSError as e:
+                raise OpError(f"{name}'s clone and key weren't deleted, so it's still listed. Try again.", str(e))
+            reg = self.repos_registry()
+            reg["repos"] = [e for e in reg["repos"] if e["slug"] != slug]
+            self._save_repos(reg)
+            self._drop_repo_check(slug)
+            print(f"[admin] removed the repository {name}", flush=True)
+        finally:
+            self.lock.release()
+
+    def _check_repos(self, now):
+        """A check's look at every connected repo: each fetched, and its
+        repo.yaml read again at what GitHub has. One that fails is marked,
+        and the others go on: never an exception."""
+        try:
+            reg = self.repos_registry()
+        except ValueError as e:
+            print(f"[admin] check: the repos aren't checked: {e}", flush=True)
+            return
+        for entry in reg["repos"]:
+            if entry["state"] != "connected":
+                continue
+            try:
+                self._check_repo(entry, now, reg)
+            except OpError as e:
+                self._note_repo_check(entry["slug"], error={"at": now, "text": e.message, "detail": e.detail})
+                print(f"[admin] check: {entry['owner']}/{entry['repo']}: {e.message}", flush=True)
+
+    def _check_repo(self, entry, now, reg):
+        slug, name = entry["slug"], f"{entry['owner']}/{entry['repo']}"
+        if self._org_rev(entry, "HEAD^{commit}") is None:
+            # An empty clone - connected before its first push - or a clone
+            # that's gone is cloned afresh: a fetch into an empty one can miss
+            # the branch GitHub makes its default.
+            failed = self._clone(entry)
+            if failed:
+                raise OpError(*failed)
+            head = self._org_rev(entry, "HEAD^{commit}")
+        else:
+            rc, out, err = self.org_git(entry, "fetch", "origin", timeout=300)
+            if rc != 0:
+                raise OpError(f"Couldn't reach GitHub: {git_reason(out, err)}", _tail(out, err))
+            head = self._org_rev(entry, "@{upstream}^{commit}")
+        commits, problem = [], None
+        if head is None:
+            problem = {"text": NOT_OPENFIT, "detail": "The repo has no commits on GitHub yet."}
+        else:
+            data, why = self._repo_yaml_at(entry, head)
+            _source, problem = repo_source(data, why, slug, entry["source"], reg)
+            if head != entry["commit"]:
+                commits = self._org_log(entry, entry["commit"], head)
+        self._note_repo_check(slug, checked_at=now, head=head, commits=commits, problem=problem, error=None)
+        behind = head is not None and head != entry["commit"]
+        print(f"[admin] check: {name}: " + ("up to date" if not behind else f"{len(commits)} new commit(s)")
+              + (f" - {problem['text']}" if problem else ""), flush=True)
+
+    def _repo_view(self, entry, check):
+        """One organisation repo as the page shows it: its entry, its state
+        in words (pending, connected, or not an OpenFit repo yet - or the
+        reason its repo.yaml was refused), and what the last check found:
+        whether GitHub is ahead of what's published, the commits that'd
+        bring, and whether a check couldn't reach it. The public key while
+        it's pending, to add on GitHub; never the private one."""
+        check = check or {}
+        head = check.get("head") if _oid(check.get("head")) else None
+        problem = check.get("problem") if isinstance(check.get("problem"), dict) else None
+        error = check.get("error") if isinstance(check.get("error"), dict) else None
+        commits = [c for c in check.get("commits") or [] if isinstance(c, dict)] if isinstance(
+            check.get("commits"), list) else []
+        connected = entry["state"] == "connected"
+        behind = connected and head is not None and head != entry["commit"]
+        if not connected:
+            status, message = "pending", "Waiting for its deploy key: add it on GitHub, then Connect."
+        elif problem:
+            status, message = ("not_openfit" if problem.get("text") == NOT_OPENFIT else "refused"), problem.get("text")
+        elif entry["source"] is None:
+            status, message = "connected", "Connected. Its apps aren't published yet: its Update available publishes them."
+        else:
+            status, message = "connected", f"Connected, and published as '{entry['source']}'."
+        return {
+            "slug": entry["slug"], "owner": entry["owner"], "repo": entry["repo"], "url": entry["url"],
+            "address": repo_address(entry["owner"], entry["repo"]), "added_at": entry["added_at"],
+            "state": entry["state"], "status": status, "message": message,
+            "detail": problem.get("detail") if problem else None, "problem": problem,
+            "public_key": None if connected else self._public_key(entry["slug"]),
+            "checked_at": check.get("checked_at"), "error": error,
+            "head": head[:7] if head else None, "behind": behind, "commits": commits if behind else [],
+            "can_update": behind and problem is None,
+        }
 
     # --- operations and their record ---------------------------------------
 
@@ -3131,20 +3930,31 @@ class Admin:
         }
 
     def repos(self, library, check):
-        """The shelf's sources, from its index.json, for the Repos panel and
-        the Repo tab: OpenFit first, then the rest by name. Each {source,
-        name, description, official, commit, short, published_at, apps:
-        [{id, name, description}]} (the apps by name, then id) - names
-        falling back to ids where the index has none - and for OpenFit,
-        whether its shelf matches the code, the last publish's failure, and
-        which update would bring its waiting app changes: "apps" (Update
-        apps), "openfit" (they come with Update OpenFit) or None. With
-        nothing published yet, OpenFit is listed all the same, empty."""
+        """The Repos panel's and the Repo tab's rows: the shelf's sources, from
+        its index.json, and the organisation repos, from repos.json - OpenFit
+        first, then the rest by name. Each {key, source, name, description,
+        official, commit, short, published_at, apps: [{id, name,
+        description}], current, error, update, repo} (the apps by name,
+        then id) - names falling back to ids where the index has none.
+
+        For OpenFit: whether its shelf matches the code, the last publish's
+        failure, and which update would bring its waiting app changes:
+        "apps" (Update apps), "openfit" (they come with Update OpenFit) or
+        None. With nothing published yet, OpenFit is listed all the same,
+        empty. An organisation repo's row is its source's, once it's
+        published (its name repo.yaml's), else one of its own named
+        owner/repo; `repo` is _repo_view()'s, and `update` "repo" when its
+        Update is on offer. `key` names the row: the source, or
+        repo:<slug> for an organisation repo's."""
         index = read_shelf(self.library_dir) or {"sources": {}}
-        published_at = index.get("published_at") if isinstance(index.get("published_at"), str) else None
 
         def text(value, most):
             return value.strip() if isinstance(value, str) and 0 < len(value.strip()) <= most else None
+
+        def blank(source, name):
+            return {"key": source, "source": source, "name": name, "description": None,
+                    "official": source == OFFICIAL_SOURCE, "commit": None, "short": None, "published_at": None,
+                    "apps": [], "current": None, "error": None, "update": None, "repo": None}
 
         found = []
         for source in index["sources"]:
@@ -3159,20 +3969,29 @@ class Admin:
                 apps.append({"id": app_id, "name": text(meta.get("name"), 200) or app_id,
                              "description": text(meta.get("description"), MAX_DESCRIPTION)})
             apps.sort(key=lambda a: (a["name"].casefold(), a["id"]))
-            found.append({"source": source, "name": text(entry.get("name"), MAX_REPO_NAME) or source,
+            found.append({**blank(source, text(entry.get("name"), MAX_REPO_NAME) or source),
                           "description": text(entry.get("description"), MAX_DESCRIPTION),
-                          "official": source == OFFICIAL_SOURCE, "commit": entry["commit"],
-                          "short": entry["commit"][:7], "published_at": published_at, "apps": apps,
-                          "current": None, "error": None, "update": None})
+                          "commit": entry["commit"], "short": entry["commit"][:7],
+                          "published_at": _published_at(index, entry), "apps": apps})
         if not any(r["official"] for r in found):
-            found.append({"source": OFFICIAL_SOURCE, "name": OFFICIAL_SOURCE, "description": None, "official": True,
-                          "commit": None, "short": None, "published_at": None, "apps": [],
-                          "current": None, "error": None, "update": None})
+            found.append(blank(OFFICIAL_SOURCE, OFFICIAL_SOURCE))
         official = next(r for r in found if r["official"])
         official.update(current=library["current"], error=library["error"],
                         update="apps" if update_apps_offered(check)
                         else "openfit" if update_offered(check) and _changed(check, "library") else None)
-        return sorted(found, key=lambda r: (not r["official"], r["name"].casefold(), r["source"]))
+        try:
+            reg = self.repos_registry()
+        except ValueError:
+            reg = {"repos": []}
+        checks = self.repo_checks()
+        for entry in reg["repos"]:
+            view = self._repo_view(entry, checks.get(entry["slug"]))
+            row = next((r for r in found if entry["source"] and r["source"] == entry["source"]), None)
+            if row is None:
+                row = blank(entry["source"], f"{entry['owner']}/{entry['repo']}")
+                found.append(row)
+            row.update(key=f"repo:{entry['slug']}", repo=view, update="repo" if view["can_update"] else None)
+        return sorted(found, key=lambda r: (not r["official"], r["name"].casefold(), r["key"]))
 
     @staticmethod
     def _backup_update(backup, ops):
@@ -3243,5 +4062,5 @@ class Admin:
             "repos": self.repos(library, check),
             # Every op the history keeps, newest first, each with its log.
             "activity": [{k: o.get(k) for k in ("id", "kind", "outcome", "summary", "started_at", "finished_at",
-                                                 "log", "user")} for o in reversed(ops)],
+                                                 "log", "user", "repo")} for o in reversed(ops)],
         }

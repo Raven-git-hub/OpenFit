@@ -164,6 +164,12 @@ def test_the_components_are_openfits_rules():
 
 def test_the_page_makes_no_external_request(logged_in):
     html = logged_in.get("/").get_data(as_text=True)
+    # The one address written in the page is Add repository's placeholder
+    # (A6), the shape of a repo's address to paste - text, never fetched.
+    placeholder = 'const GITHUB_ADDRESS = "https://github.com/<owner>/<repo>";'
+    assert html.count(placeholder) == 1 and html.count("GITHUB_ADDRESS") == 2
+    assert "input.placeholder = GITHUB_ADDRESS;" in html
+    html = html.replace(placeholder, "")
     for banned in ("http:", "https:", "<link", "@import", "url(", " src=", "{{", "{%"):
         assert banned not in html, banned
 
@@ -473,7 +479,7 @@ def test_repo_yaml_and_the_apps_names_reach_the_index(admin_env, capsys):
     env.admin.publish_official()
 
     entry = index(env)["sources"]["openfit"]
-    assert list(entry) == ["commit", "name", "description", "apps"]
+    assert list(entry) == ["commit", "name", "description", "apps", "published_at"]
     assert (entry["commit"], entry["name"], entry["description"]) == (
         commit, "OpenFit", "Official applications released by OpenFit.")
     shelf_dir = env.library / "openfit"
@@ -644,7 +650,8 @@ def test_the_activity_is_every_kept_op_newest_first_with_its_log(admin_env):
     activity = env.admin.status()["activity"]
     assert [o["id"] for o in activity] == [added["id"], first["id"]]
     assert activity[0]["log"] == added["log"] and activity[0]["user"] == {"name": "sam", "port": 8101}
-    assert set(activity[1]) == {"id", "kind", "outcome", "summary", "started_at", "finished_at", "log", "user"}
+    assert set(activity[1]) == {"id", "kind", "outcome", "summary", "started_at", "finished_at", "log", "user",
+                                "repo"}
 
 
 def test_each_backup_names_the_update_it_was_taken_by(admin_env):
@@ -829,8 +836,12 @@ function boot(stored, status) {
       fetches.push({ url, method: opts.method || 'GET', header: (opts.headers || {})['X-OpenFit-Admin'] || null, body: opts.body || null });
       const background = ['/api/update', '/api/undo', '/api/admin/update', '/api/admin/revert', '/api/library/update',
                           '/api/users'];
+      // A reply a test set for this url (page.replies[url] = {status, body}), else the server's usual.
+      const reply = (page.replies || {})[url];
+      if (reply) return { status: reply.status, ok: reply.status < 400, json: async () => JSON.parse(JSON.stringify(reply.body)) };
       const body = url === '/api/status' ? JSON.parse(JSON.stringify(page.status)) : url === '/api/op' ? { op: null } : { ok: true };
-      return { status: background.includes(url) ? 202 : 200, ok: true, json: async () => body };
+      const later = background.includes(url) || /^\/api\/repos\/[^/]+\/(connect|update)$/.test(url);
+      return { status: later ? 202 : 200, ok: true, json: async () => body };
     },
     setInterval: () => 1, clearInterval() {}, console,
   };

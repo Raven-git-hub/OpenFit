@@ -18,6 +18,7 @@ the Admin publishes one; nothing reads /data/apps or /library.
 
 import json
 import os
+import shutil
 from pathlib import Path
 
 import pytest
@@ -28,6 +29,7 @@ import shelf
 
 ROOT = Path(__file__).parent.parent
 LIBRARY = ROOT / "library"
+FRMS = ROOT / "tests" / "fixtures" / "apps" / "frms"
 COMMIT = "0123456789abcdef0123456789abcdef01234567"
 SIZE = "sizes: [{w: 1, h: 1}]\n"
 
@@ -70,14 +72,16 @@ def app(app_id, name=None, extra="", **files):
     }
 
 
-def publish(root, sources, listed=None):
+def publish(root, sources, listed=None, names=None):
     """A shelf at `root`, as the Admin's publish_set() leaves one: each
     source's apps in .sets/<source>-<commit12>/<app>/, the relative link
     <source> onto that set, and index.json listing them (or `listed`,
-    {source: [app names]}, when the index should say otherwise).
+    {source: [app names]}, when the index should say otherwise) - and
+    naming a source where `names`, {source: name}, says.
 
     sources: {source: {app: {file name: text or bytes}}}."""
     root.mkdir(exist_ok=True)
+    labels = names
     index = {"published_at": "2026-10-28T12:00:00Z", "sources": {}}
     for source, shelf_apps in sources.items():
         name = f"{source}-{COMMIT[:12]}"
@@ -88,6 +92,8 @@ def publish(root, sources, listed=None):
         (root / source).symlink_to(f".sets/{name}")
         names = listed[source] if listed and source in listed else sorted(shelf_apps)
         index["sources"][source] = {"commit": COMMIT, "apps": {a: {"sha256": "0" * 64} for a in names}}
+        if source in (labels or {}):
+            index["sources"][source]["name"] = labels[source]
     (root / "index.json").write_text(json.dumps(index, indent=2))
     return root
 
@@ -230,14 +236,15 @@ def test_summary_is_unchanged_by_the_new_fields(tmp_path):
 
 
 def test_frms_loads_with_its_new_fields(apps_dir):
-    frms = apps.load_app(str(LIBRARY / "frms"))
+    frms = apps.load_app(str(FRMS))
     assert frms.requires == 1 and frms.replaces == ["frms"]
     assert isinstance(frms.description, str) and 0 < len(frms.description) <= apps.MAX_DESCRIPTION
-    # Installed from the library, too: openfit.frms replaces frms.
-    files = {p.name: p.read_text(encoding="utf-8") for p in (LIBRARY / "frms").iterdir() if p.is_file()}
-    apps.install_library_app(apps_dir, "openfit", files)
+    # Installed from the aviation repo's library, too: openfitavi.frms replaces frms.
+    files = {p.name: p.read_text(encoding="utf-8") for p in FRMS.iterdir() if p.is_file()}
+    apps.install_library_app(apps_dir, "openfitavi", files)
     [installed] = apps.scan_apps(apps_dir)
-    assert (installed.id, installed.replaces, installed.description) == ("openfit.frms", ["frms"], frms.description)
+    assert (installed.id, installed.replaces, installed.description) == ("openfitavi.frms", ["frms"],
+                                                                         frms.description)
 
 
 # ---------- list_shelf ----------
@@ -280,7 +287,7 @@ def test_the_shelf_lists_each_app_as_browse_shows_it(tmp_path, conn, apps_dir):
     }})
 
     assert listed(root, apps_dir, conn) == {"available": True, "apps": [{
-        "id": "openfit.walk", "source": "openfit", "app": "walk", "name": "Walk",
+        "id": "openfit.walk", "source": "openfit", "source_name": "openfit", "app": "walk", "name": "Walk",
         "description": "Counts your steps.", "files": ["app.py", "app.yaml", "notes.txt"],
         "state": "available", "replaces_name": None,
     }]}
@@ -300,6 +307,19 @@ def test_the_shelf_is_sorted_by_name_then_id_across_sources(tmp_path, conn, apps
     ]
     # A name defaults to the app's own.
     assert result["apps"][-1]["source"] == "acme"
+
+
+@pytest.mark.parametrize("name, shown", [
+    ("OpenFit Aviation", "OpenFit Aviation"), ("  Padded  ", "Padded"), ("x" * 40, "x" * 40),
+    (None, "openfitavi"), ("", "openfitavi"), ("   ", "openfitavi"), ("x" * 41, "openfitavi"), (7, "openfitavi"),
+    (["OpenFit Aviation"], "openfitavi"),
+])
+def test_each_app_carries_its_sources_name_from_the_index(tmp_path, conn, apps_dir, name, shown):
+    root = publish(tmp_path / "library", {"openfitavi": {"frms": app("frms", "FRMS")}, "openfit": {"walk": app("walk")}},
+                   names={"openfitavi": name, "openfit": "OpenFit"})
+    result = {a["id"]: a["source_name"] for a in listed(root, apps_dir, conn)["apps"]}
+    assert result == {"openfitavi.frms": shown, "openfit.walk": "OpenFit"}
+    assert shelf.shelf_app(str(root), str(apps_dir), conn, "openfitavi", "frms")["source_name"] == shown
 
 
 def test_each_state_is_the_first_that_applies(tmp_path, conn, apps_dir):
@@ -561,17 +581,18 @@ def test_get_library_says_when_there_is_no_shelf(client, apps_dir, library):
 
 
 def test_get_library_lists_the_shelf(client, apps_dir, library):
-    publish(library, {"openfit": {"walk": app("walk", "Walk", "description: Steps.\n"), "box": app("box")}})
+    publish(library, {"openfit": {"walk": app("walk", "Walk", "description: Steps.\n"), "box": app("box")}},
+            names={"openfit": "OpenFit"})
     apps.install_library_app(apps_dir, "openfit", app("box"))
 
     resp = client.get("/api/library")
 
     assert resp.status_code == 200
     assert resp.get_json() == {"available": True, "apps": [
-        {"id": "openfit.box", "source": "openfit", "app": "box", "name": "box", "description": None,
-         "files": ["app.py", "app.yaml"], "state": "installed", "replaces_name": None},
-        {"id": "openfit.walk", "source": "openfit", "app": "walk", "name": "Walk", "description": "Steps.",
-         "files": ["app.py", "app.yaml"], "state": "available", "replaces_name": None},
+        {"id": "openfit.box", "source": "openfit", "source_name": "OpenFit", "app": "box", "name": "box",
+         "description": None, "files": ["app.py", "app.yaml"], "state": "installed", "replaces_name": None},
+        {"id": "openfit.walk", "source": "openfit", "source_name": "OpenFit", "app": "walk", "name": "Walk",
+         "description": "Steps.", "files": ["app.py", "app.yaml"], "state": "available", "replaces_name": None},
     ]}
 
 
@@ -702,34 +723,61 @@ def test_a_custom_app_of_the_same_bare_id_doesnt_block_the_library_install(clien
 # ---------- end to end: the Admin's own publish, then Browse ----------
 
 
-def test_frms_published_by_the_admin_is_browsed_and_installed_byte_for_byte(client, conn, apps_dir, library):
+def aviation_clone(tmp_path):
+    """The aviation repo's clone, as the Admin holds it: repo.yaml and FRMS
+    in a top-level frms/ folder (and its .git, never published)."""
+    clone = tmp_path / "clone"
+    (clone / ".git").mkdir(parents=True)
+    (clone / "repo.yaml").write_text("source: openfitavi\nname: OpenFit Aviation\n"
+                                     "description: Aviation applications for OpenFit.\n")
+    shutil.copytree(FRMS, clone / "frms")
+    return clone
+
+
+def publish_both(tmp_path, library):
+    """The Admin's own publish of both sources: the official library/ - empty
+    of apps since FRMS moved to the aviation repo - and the aviation repo's."""
     library.mkdir()
     admin_ops.publish_set(str(LIBRARY), str(library), "openfit", COMMIT, "2026-10-28T12:00:00Z", log=lambda m: None)
+    admin_ops.publish_set(str(aviation_clone(tmp_path)), str(library), "openfitavi", "b" * 40, "2026-10-28T12:00:00Z",
+                          log=lambda m: None, label="Raven-git-hub/openfit-aviation", skip_hidden=True)
+
+
+def test_the_official_library_publishes_empty_and_browse_lists_nothing_from_it(client, library):
+    library.mkdir()
+    admin_ops.publish_set(str(LIBRARY), str(library), "openfit", COMMIT, "2026-10-28T12:00:00Z", log=lambda m: None)
+    index = json.loads((library / "index.json").read_text())
+    assert (index["sources"]["openfit"]["name"], index["sources"]["openfit"]["apps"]) == ("OpenFit", {})
+    assert client.get("/api/library").get_json() == {"available": True, "apps": []}
+
+
+def test_frms_published_by_the_admin_from_the_aviation_repo_is_browsed_and_installed_byte_for_byte(
+        client, conn, apps_dir, library, tmp_path):
+    publish_both(tmp_path, library)
 
     [frms] = client.get("/api/library").get_json()["apps"]
-    assert (frms["id"], frms["name"], frms["state"]) == ("openfit.frms", "FRMS", "available")
-    assert frms["description"] == apps.load_app(str(LIBRARY / "frms")).description
-    published = sorted(p.name for p in (LIBRARY / "frms").iterdir() if p.is_file())
+    assert (frms["id"], frms["source"], frms["source_name"], frms["name"], frms["state"]) == (
+        "openfitavi.frms", "openfitavi", "OpenFit Aviation", "FRMS", "available")
+    assert frms["description"] == apps.load_app(str(FRMS)).description
+    published = sorted(p.name for p in FRMS.iterdir() if p.is_file())
     assert frms["files"] == published
-    shown = client.get("/api/library/openfit/frms").get_json()
+    shown = client.get("/api/library/openfitavi/frms").get_json()
     assert [f["name"] for f in shown["files"]][:2] == ["app.yaml", "app.py"]
 
-    assert client.post("/api/library/openfit/frms/install").status_code == 201
-    folder = apps_dir / "openfit.frms"
-    assert {p.name: p.read_bytes() for p in folder.iterdir()} == {
-        name: (LIBRARY / "frms" / name).read_bytes() for name in published
-    }
+    assert client.post("/api/library/openfitavi/frms/install").status_code == 201
+    folder = apps_dir / "openfitavi.frms"
+    assert {p.name: p.read_bytes() for p in folder.iterdir()} == {name: (FRMS / name).read_bytes() for name in published}
     assert client.get("/api/library").get_json()["apps"][0]["state"] == "installed"
+    assert [(a["id"], a["library"]) for a in client.get("/api/apps").get_json()] == [("openfitavi.frms", "openfitavi")]
 
 
-def test_frms_on_the_shelf_waits_for_b2_while_a_custom_frms_is_installed(client, apps_dir, library):
-    library.mkdir()
-    admin_ops.publish_set(str(LIBRARY), str(library), "openfit", COMMIT, "2026-10-28T12:00:00Z", log=lambda m: None)
+def test_frms_on_the_shelf_waits_for_b2_while_a_custom_frms_is_installed(client, apps_dir, library, tmp_path):
+    publish_both(tmp_path, library)
     write(apps_dir / "frms", {"app.yaml": "id: frms\nname: FRMS\n" + SIZE})
 
     [frms] = client.get("/api/library").get_json()["apps"]
-    assert (frms["state"], frms["replaces_name"]) == ("replaces_pending", "FRMS")
-    resp = client.post("/api/library/openfit/frms/install")
+    assert (frms["id"], frms["state"], frms["replaces_name"]) == ("openfitavi.frms", "replaces_pending", "FRMS")
+    resp = client.post("/api/library/openfitavi/frms/install")
     assert resp.status_code == 409
     assert resp.get_json()["error"] == "FRMS replaces your FRMS. Moving it across comes in a coming update."
     assert sorted(os.listdir(apps_dir)) == ["frms"]

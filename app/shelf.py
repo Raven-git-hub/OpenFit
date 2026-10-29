@@ -6,10 +6,14 @@ mounts read-only at /library (LIBRARY_DIR in main.py: $OPENFIT_LIBRARY,
 /library by default), laid out as:
 
     /library/index.json     {published_at, sources: {openfit: {commit,
-                             apps: {frms: {sha256}}}}}, written last
+                             name, apps: {walk: {sha256}}}}}, written last
     /library/openfit        a relative link onto the source's set,
                              .sets/openfit-<commit12>/, swapped in one step
-    /library/.sets/openfit-<commit12>/frms/app.yaml, app.py, ...
+    /library/.sets/openfit-<commit12>/walk/app.yaml, app.py, ...
+
+The official library is one source, openfit; each organisation repo the
+Admin added (A6) is another - openfitavi, its apps openfitavi.frms - laid
+out alike, its name (OpenFit Aviation) its repo.yaml's.
 
 Browse reads it: list_shelf() is what GET /api/library lists, and
 read_app_files() the files GET /api/library/<source>/<app> shows and
@@ -73,6 +77,9 @@ AVAILABLE = "available"
 # Why an app with a folder inside it is unsupported.
 HAS_FOLDERS = "It has folders inside it, which this OpenFit can't install yet."
 
+# The most of a source's name Browse shows (the Admin's MAX_REPO_NAME).
+MAX_SOURCE_NAME = 40
+
 
 def _log(message):
     print(f"[library] {message}")
@@ -113,11 +120,21 @@ def _index(root):
     return index
 
 
+def _source_name(entry, source):
+    """The source's name as Browse shows it: its index entry's (the name
+    the Admin read from its repo.yaml), trimmed, if that's text of 1 to
+    MAX_SOURCE_NAME characters - else the source's id."""
+    name = entry.get("name")
+    if isinstance(name, str) and 0 < len(name.strip()) <= MAX_SOURCE_NAME:
+        return name.strip()
+    return source
+
+
 def _source(root, index, source):
-    """(the source's folder, resolved, and the app names its index entry
-    lists), or None - logged - for a source that isn't one: not
-    LIBRARY_SOURCE's shape, no mapping of apps, or a folder that doesn't
-    resolve to one inside the shelf."""
+    """(the source's folder, resolved, the app names its index entry
+    lists, and its name - _source_name()), or None - logged - for a source
+    that isn't one: not LIBRARY_SOURCE's shape, no mapping of apps, or a
+    folder that doesn't resolve to one inside the shelf."""
     entry = index["sources"].get(source)
     if not LIBRARY_SOURCE.match(source) or not isinstance(entry, dict) or not isinstance(entry.get("apps"), dict):
         _log(f"skipping the source {source!r}: it isn't one the index lists as a source")
@@ -126,7 +143,7 @@ def _source(root, index, source):
     if folder is None:
         _log(f"skipping the source {source!r}: its folder isn't a folder inside the library")
         return None
-    return folder, entry["apps"]
+    return folder, entry["apps"], _source_name(entry, source)
 
 
 def _listing(folder):
@@ -177,11 +194,12 @@ def _manifest(folder, source, app):
     }
 
 
-def _record(source_folder, source, app):
-    """One app on the shelf, read - {id, source, app, name, description,
-    requires, replaces, files, folders, path} - or None, logged, for one
-    that isn't: a name not INSTALL_ID's, a folder that doesn't resolve to
-    one inside its source's, or an app.yaml that doesn't read or check."""
+def _record(source_folder, source, app, source_name):
+    """One app on the shelf, read - {id, source, source_name, app, name,
+    description, requires, replaces, files, folders, path} - or None,
+    logged, for one that isn't: a name not INSTALL_ID's, a folder that
+    doesn't resolve to one inside its source's, or an app.yaml that
+    doesn't read or check."""
     full = f"{source}.{app}"
     if not INSTALL_ID.match(app):
         _log(f"skipping {source}/{app!r}: it isn't an app's name")
@@ -199,7 +217,7 @@ def _record(source_folder, source, app):
     except OSError as e:
         _log(f"skipping {full}: can't list its files: {e.strerror or e}")
         return None
-    return {"id": full, "source": source, "app": app, **manifest,
+    return {"id": full, "source": source, "source_name": source_name, "app": app, **manifest,
             "files": files, "folders": folders, "path": folder}
 
 
@@ -213,8 +231,8 @@ def _shelf(library_dir):
     for source in sorted(index["sources"]):
         found = _source(root, index, source)
         if found:
-            folder, listed = found
-            records.extend(r for r in (_record(folder, source, app) for app in sorted(listed)) if r)
+            folder, listed, name = found
+            records.extend(r for r in (_record(folder, source, app, name) for app in sorted(listed)) if r)
     return True, records
 
 
@@ -228,7 +246,7 @@ def _find(library_dir, source, app):
     found = _source(root, index, source)
     if not found or app not in found[1]:
         return None
-    return _record(found[0], source, app)
+    return _record(found[0], source, app, found[2])
 
 
 def _has_rows(conn, source):
@@ -265,6 +283,7 @@ def _entry(record, apps_dir, conn):
     return {
         "id": record["id"],
         "source": record["source"],
+        "source_name": record["source_name"],
         "app": record["app"],
         "name": record["name"],
         "description": record["description"],
@@ -275,14 +294,16 @@ def _entry(record, apps_dir, conn):
 
 
 def list_shelf(library_dir, apps_dir, conn):
-    """What Browse lists: {available, apps: [{id, source, app, name,
-    description, files, state, replaces_name}]}.
+    """What Browse lists: {available, apps: [{id, source, source_name,
+    app, name, description, files, state, replaces_name}]}.
 
     available is false when the shelf isn't there - no folder, or no
     index.json that reads as the Admin writes it - and apps is then [].
     Every app the index lists that reads is there, sorted by name (case
-    folded), then id: id <source>.<app> (openfit.frms), name its
-    app.yaml's (the app's name when it says none), description its own
+    folded), then id: id <source>.<app> (openfitavi.frms), source_name
+    its source's (_source_name(): OpenFit Aviation, or its id where the
+    index names none), name its app.yaml's (the app's name when it says
+    none), description its own
     or None, files the regular files directly in its folder, and state
     the first that applies - installed, unsupported, needs_update,
     replaces_pending (replaces_name then the app it replaces: that one's

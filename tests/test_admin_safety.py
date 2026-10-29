@@ -9,7 +9,11 @@ read out, read-only, by the download helper in its one exact form;
 project, only to update itself or revert that - its image tagged only
 among openfit-admin:{local,prev,next}, its swap helper in an update's form
 or a revert's. Publishing the shelf runs no docker command at all.
-Argument lists, never a shell; git as the repo's owner, docker as root."""
+Argument lists, never a shell; git as the repo's owner, docker as root -
+but an organisation repo's git (A6): as root, in its own clone, only
+clone, fetch origin, rev-parse, log, merge --ff-only, reset --hard and
+cat-file, each with exactly its pinned GIT_SSH_COMMAND; and ssh-keygen in
+its one form, for a repo's deploy key."""
 
 import glob
 import io
@@ -58,6 +62,24 @@ def three_users(env):
 def apps_pending(env, message="New app"):
     env.repos.push({"library/caffeine/app.yaml": f"id: caffeine  # {message}\n"}, message)
     env.admin.check()
+
+
+AVIATION = {"repo.yaml": "source: openfitavi\nname: OpenFit Aviation\n", "frms/app.yaml": "id: frms\nname: FRMS\n"}
+AVI_URL = "https://github.com/Raven-git-hub/openfit-aviation"
+AVI_SLUG = "raven-git-hub__openfit-aviation"
+
+
+def repo_op(env, start):
+    start()
+    env.admin.wait(10)
+    return env.admin.current_op()
+
+
+def aviation_connected(env):
+    """The aviation repo on GitHub, added and connected."""
+    env.github.make("Raven-git-hub", "openfit-aviation", AVIATION)
+    env.admin.add_repo(AVI_URL)
+    assert repo_op(env, lambda: env.admin.start_repo_connect(AVI_SLUG))["outcome"] == "ok"
 
 
 def a_real_backup(env, name="20261027T120000Z-abcdef0-andy.tar.gz"):
@@ -352,6 +374,51 @@ def scenario_admin_build_fails(env):
     return {"admin": True}
 
 
+def scenario_repo_add(env):
+    env.admin.add_repo(AVI_URL)
+    env.admin.status()
+
+
+def scenario_repo_connect(env):
+    three_users(env)
+    aviation_connected(env)
+    env.admin.status()
+
+
+def scenario_repo_key_refused(env):
+    env.github.make("Raven-git-hub", "openfit-aviation", AVIATION)
+    env.admin.add_repo(AVI_URL)
+    env.fake.fail(lambda a: a[:2] == ["git", "clone"], rc=128, err="git@github.com: Permission denied (publickey).")
+    assert repo_op(env, lambda: env.admin.start_repo_connect(AVI_SLUG))["outcome"] == "failed"
+    env.admin.status()
+
+
+def scenario_repo_check_and_update(env):
+    three_users(env)
+    aviation_connected(env)
+    env.github.push("Raven-git-hub", "openfit-aviation", {"frms/notes.txt": "x\n"}, "Notes")
+    pending(env)  # an OpenFit change too, checked in the same check
+    assert repo_op(env, lambda: env.admin.start_repo_update(AVI_SLUG))["outcome"] == "ok"
+    env.admin.status()
+
+
+def scenario_repo_update_not_a_fast_forward(env):
+    aviation_connected(env)
+    work = env.github.tmp / "github-work" / "Raven-git-hub" / "openfit-aviation"
+    subprocess.run(["git", "commit", "-q", "--amend", "-m", "Rewritten"], cwd=work, check=True)
+    subprocess.run(["git", "push", "-qf", "origin", "HEAD:main"], cwd=work, check=True)
+    env.admin.check()
+    assert repo_op(env, lambda: env.admin.start_repo_update(AVI_SLUG))["outcome"] == "failed"
+
+
+def scenario_repo_remove(env):
+    seed_users(env, ("sam", 8101, "running"))
+    env.admin.publish_official()
+    aviation_connected(env)
+    env.admin.remove_repo(AVI_SLUG)
+    env.admin.status()
+
+
 SCENARIOS = [
     scenario_success,
     scenario_rollback,
@@ -387,7 +454,64 @@ SCENARIOS = [
     scenario_download_backup,
     scenario_download_kept,
     scenario_delete_backup,
+    scenario_repo_add,
+    scenario_repo_connect,
+    scenario_repo_key_refused,
+    scenario_repo_check_and_update,
+    scenario_repo_update_not_a_fast_forward,
+    scenario_repo_remove,
 ]
+
+REPO_SCENARIOS = (scenario_repo_connect, scenario_repo_check_and_update, scenario_repo_update_not_a_fast_forward,
+                  scenario_repo_remove)
+
+
+def _full(x):
+    return isinstance(x, str) and len(x) == 40 and all(c in "0123456789abcdef" for c in x)
+
+
+def org_git_in_lane(env, call):
+    """An organisation repo's git command, held to its lane, written out
+    here by hand rather than taken from the Admin: its own folder, as root,
+    exactly its pinned GIT_SSH_COMMAND, and only one of the commands it may
+    run, each in its one shape. The repo's slug."""
+    a, repos = call.args, str(env.data / "repos") + "/"
+    assert a[0] == "git" and (call.cwd or "").startswith(repos), call
+    slug = call.cwd[len(repos):].removesuffix("/repo")
+    assert admin_ops.REPO_SLUG.match(slug), call
+    folder, clone = repos + slug, repos + slug + "/repo"
+    assert call.as_owner is False, call
+    assert call.env == {"GIT_SSH_COMMAND": (
+        f"ssh -i {folder}/deploy_key -o IdentitiesOnly=yes -o UserKnownHostsFile=/app/github_known_hosts "
+        "-o StrictHostKeyChecking=yes -o BatchMode=yes -o ConnectTimeout=20")}, call
+    sub = a[1:]
+    if sub[0] == "clone":
+        owner, _, repo = slug.partition("__")
+        assert call.cwd == folder and sub[:2] == ["clone", "--"] and sub[3:] == [clone], call
+        assert sub[2].lower() == f"git@github.com:{owner}/{repo}.git" and len(sub) == 4, call
+        return slug
+    assert call.cwd == clone, call
+    assert (sub == ["fetch", "origin"]
+            or sub in (["rev-parse", "--verify", "-q", "HEAD^{commit}"], ["rev-parse", "--verify", "-q", "@{upstream}^{commit}"])
+            or (sub[:2] in (["merge", "--ff-only"], ["reset", "--hard"]) and len(sub) == 3 and _full(sub[2]))
+            or (sub[:2] == ["cat-file", "-p"] and len(sub) == 3 and sub[2].endswith("^{tree}") and _full(sub[2][:-7]))
+            or (sub[:2] in (["cat-file", "-s"], ["cat-file", "blob"]) and len(sub) == 3 and _full(sub[2]))
+            or (sub[:3] == ["log", "--no-merges", "--format=%h%x09%s"] and len(sub) == 4 and sub[3].count("..") == 1
+                and all(_full(x) for x in sub[3].split("..")))
+            or (sub[:5] == ["log", "-n", "20", "--no-merges", "--format=%h%x09%s"] and len(sub) == 6 and _full(sub[5]))
+            ), call
+    return slug
+
+
+def keygen_in_lane(env, call):
+    """ssh-keygen, only ever making a repo's deploy key, in its one form."""
+    a = call.args
+    assert call.as_owner is False and call.env is None and call.cwd is None, call
+    assert len(a) == 9 and a[:7] == ["ssh-keygen", "-t", "ed25519", "-N", "", "-C", a[6]], a
+    owner, _, repo = a[6].removeprefix("openfit-admin nas ").partition("/")
+    slug = admin_ops.repo_slug(owner, repo)
+    assert a[6] == f"openfit-admin nas {owner}/{repo}" and admin_ops.REPO_SLUG.match(slug), a
+    assert a[7:] == ["-f", str(env.data / "repos" / slug / "deploy_key")], a
 
 
 def known_names(env):
@@ -470,6 +594,13 @@ def assert_in_lane(env, allow):
     for call, (rc, out, _err) in zip(env.fake.calls, env.fake.results):
         a = call.args
         if a[0] == "git":
+            if call.env is not None:
+                org_git_in_lane(env, call)
+            else:  # the server's checkout's, as its owner, in it
+                assert call.as_owner is True and call.cwd == env.repos.repo, call
+            continue
+        if a[0] == "ssh-keygen":
+            keygen_in_lane(env, call)
             continue
         assert a[0] == "docker", a
         docker_calls += 1
@@ -588,7 +719,7 @@ def test_the_admins_image_is_tagged_only_among_its_three_tags(admin_env, scenari
 
 
 PUBLISHING = {"publish_set", "publish_official", "publish_at_startup", "publish_again", "_publish_step",
-              "_republish"}
+              "_republish", "publish_source", "unpublish_source", "_publish_repo", "_catch_up_repos"}
 
 
 @pytest.mark.parametrize("scenario", SCENARIOS, ids=lambda f: f.__name__.removeprefix("scenario_"))
@@ -600,17 +731,25 @@ def test_publishing_runs_no_docker_command(admin_env, scenario):
     # Where a scenario publishes, it really did: the check isn't vacuous.
     if scenario in (scenario_update_apps, scenario_update_publishes, scenario_publish_again):
         assert admin_ops.shelf_source(admin_ops.read_shelf(str(admin_env.library)), "openfit")
+    if scenario in REPO_SCENARIOS and scenario is not scenario_repo_remove:
+        assert admin_ops.shelf_source(admin_ops.read_shelf(str(admin_env.library)), "openfitavi")
 
 
 @pytest.mark.parametrize("scenario", SCENARIOS, ids=lambda f: f.__name__.removeprefix("scenario_"))
 def test_git_runs_as_the_owner_and_docker_as_root(admin_env, scenario):
     scenario(admin_env)
+    org = 0
     for call in admin_env.fake.calls:
-        if call.args[0] == "git":
+        if call.args[0] == "git" and call.env is None:
             assert call.as_owner is True, call
             assert call.cwd == admin_env.repos.repo
+        elif call.args[0] == "git":
+            # An organisation repo's: as root, in the Admin's own storage.
+            assert call.as_owner is False and call.cwd.startswith(str(admin_env.data / "repos") + "/"), call
+            org += 1
         else:
-            assert call.as_owner is False, call
+            assert call.as_owner is False and call.env is None, call
+    assert bool(org) == (scenario in REPO_SCENARIOS or scenario is scenario_repo_key_refused)
 
 
 # --- no shell ------------------------------------------------------------------
@@ -632,6 +771,17 @@ def test_the_runner_takes_only_a_list(tmp_path):
         with pytest.raises(TypeError):
             runner.run(bad)
     assert runner.run(["echo", "hi; echo there"]) == (0, "hi; echo there\n", "")
+
+
+def test_the_runner_adds_env_to_a_command_and_takes_only_strings(tmp_path):
+    runner = admin_ops.Runner(str(tmp_path))
+    rc, out, _err = runner.run(["sh", "-c", 'printf "%s|%s" "$GIT_SSH_COMMAND" "$GIT_TERMINAL_PROMPT"'],
+                               env={"GIT_SSH_COMMAND": "ssh -o BatchMode=yes"})
+    assert (rc, out) == (0, "ssh -o BatchMode=yes|0")
+    assert runner.run(["sh", "-c", 'printf "%s" "$GIT_SSH_COMMAND"'])[1] == os.environ.get("GIT_SSH_COMMAND", "")
+    for bad in ({"A": 1}, {1: "a"}, [("A", "b")], "A=b"):
+        with pytest.raises(TypeError):
+            runner.run(["true"], env=bad)
 
 
 def test_the_runner_never_raises_for_a_command(tmp_path):

@@ -1401,7 +1401,8 @@ watch's, and nothing is derived from it.
 
 ### The FRMS app
 
-The first app to file duties, committed in `library/frms/` and
+The first app to file duties, published from the aviation repo as
+`openfitavi.frms` (A6; its copy here `tests/fixtures/apps/frms/`) and
 run by `test_frms_app.py` (its parsing on its own, the module loaded by
 path as the host loads it) and `test_app_actions.py` (the round trip), against
 a synthetic roster, `tests/fixtures/rosters/sample.ics`. It was the Roster

@@ -202,7 +202,8 @@ built-in/default metrics themselves are never purgeable.
   `workout-log` app is the reference).
 - **Roster path:** done — two session kinds in core, `duties_rostered` and
   `duties_complete`, in a new `Roster` category (operational context, kept
-  per decision 1), and the `roster` app (now `frms`, `library/frms/`),
+  per decision 1), and the `roster` app (now `frms`, published from the
+  aviation repo as `openfitavi.frms`; its copy `tests/fixtures/apps/frms/`),
   which parses a roster's `.ics` itself (stdlib) and files it. Decided:
   - **Duty-ness is structural**, never a code allow-list: a timed `VEVENT` is a
     duty and is filed; an all-day one (`O`, `G`, `U`, `L`, any future code) is

@@ -1,6 +1,6 @@
-# The OpenFit Admin (A1, A2, A4, A5, U1, S1, S2): updates behind buttons, users, its own update and revert, the app shelf, setup links, the Admin Portal and downloads
+# The OpenFit Admin (A1, A2, A4, A5, A6, U1, S1, S2): updates behind buttons, users, its own update and revert, the app shelf, organisation repos, setup links, the Admin Portal and downloads
 
-_Built: A1, A2, A4 and A5, slices of the Admin in
+_Built: A1, A2, A4, A5 and A6, slices of the Admin in
 [distribution.md](distribution.md), U1's setup links (the user login,
 [auth.md](auth.md)), S1, the Admin Portal: the page in OpenFit's style, and
 S2: reverting the Admin, downloads without the password and deleting a
@@ -44,6 +44,12 @@ update and what it brought, and the shelf's sources and apps, named by
 `library/repo.yaml` and each app's `app.yaml`. Every route, operation,
 confirm and safety rule is as it was.
 
+A6 adds **organisation repos**: GitHub repos of apps other than OpenFit's
+own, each added with a read-only deploy key the Admin makes for it, cloned
+over SSH into the Admin's storage and published to the shelf under the
+source its `repo.yaml` declares, beside the official apps. FRMS moved to the
+first, `openfit-aviation`, and left the official library.
+
 S2 wires up the three places S1 left disabled. **Revert the Admin** takes
 it back to the version before its last update, through the same hand-over
 as the update, the other way round. **Download** hands over a backup, or a
@@ -57,13 +63,17 @@ user's `auth.json` and `.session_key` are never in a downloaded file.
   different versions.
 - Update OpenFit and update itself in one go: Update OpenFit pulls the
   Admin's new code, and Update the Admin is a second button.
-- Self-updating installed apps (B3); organisation repos (A6); `replaces`
-  moving an app's data (L3, built as B2) or host-version labels (L4). Browse,
-  installing an app from the shelf, is the user system's (B1).
+- Self-updating installed apps (B3); `replaces` moving an app's data (L3,
+  built as B2) or host-version labels (L4). Browse, installing an app from
+  the shelf, is the user system's (B1).
+- Organisation repos anywhere but GitHub, or over anything but SSH: no
+  HTTPS, no tokens. Show some users a repo's apps and not others: every app
+  on the shelf is every user's.
+- Fetch anything from GitHub but the repo itself and the organisation repos
+  added: pull request numbers are read from merge commit titles and linked,
+  never fetched.
 - Scheduled updates: an update runs now, or is found by the weekly check and
   left for a person.
-- Fetch anything from GitHub but the repo itself: pull request numbers are
-  read from merge commit titles and linked, never fetched.
 - The proxy and `.local` names. OpenFit and the Admin are reached at
   `IP:port`.
 - The backup file format. An Admin backup is a plain `tar.gz` of a user's
@@ -98,10 +108,11 @@ user's paths (its build context, its `.env`) the same inside and out, and
 the containers it recreates carry the same compose labels as ones started from
 the host.
 
-The Admin's container (`admin/Dockerfile`) is `python:3.12-slim` with git,
-the docker CLI (`docker:27.5.1-cli`) and the compose plugin
-(`docker/compose-bin:v2.32.4`), both copied from their pinned images. It runs
-as root, for the docker socket.
+The Admin's container (`admin/Dockerfile`) is `python:3.12-slim` with git
+and `openssh-client` (for organisation repos, A6), the docker CLI
+(`docker:27.5.1-cli`) and the compose plugin (`docker/compose-bin:v2.32.4`),
+both copied from their pinned images, and GitHub's host keys,
+`/app/github_known_hosts`. It runs as root, for the docker socket.
 
 ## Logging in
 
@@ -593,15 +604,20 @@ The left column:
   A row's name opens its **last update** popup. Under the rows: when the
   last check ran (and whether GitHub has new commits), **Check now**, and a
   failed check's error.
-- **Repos**: a row for each source on the shelf, OpenFit first, then the rest
-  by name, three rows high: its name (from `repo.yaml`), its version (the
-  published commit, short) and when it was last published. OpenFit's row
-  also offers **Update available** when Update apps is on offer (the update
-  popup for the apps, its Proceed the existing Update apps), **Comes with the
-  OpenFit update** when app changes are waiting but OpenFit changed too (the
-  User's update popup instead), and **Publish again** when the shelf is
-  behind the code, with why under the box. The name opens its **last
-  publish**: when, the commit, and the apps published.
+- **Repos**: a row for each source on the shelf and each organisation repo
+  (A6), OpenFit first, then the rest by name, three rows high: its name
+  (from `repo.yaml`; `owner/repo` for a repo not published yet), its
+  version (the published commit, short) and when it was last published.
+  OpenFit's row also offers **Update available** when Update apps is on
+  offer (the update popup for the apps, its Proceed the existing Update
+  apps), **Comes with the OpenFit update** when app changes are waiting but
+  OpenFit changed too (the User's update popup instead), and **Publish
+  again** when the shelf is behind the code, with why under the box. A
+  repo's row offers **Update available** when it's behind (its popup's
+  Proceed `repo_update`), and says "Couldn't reach GitHub" when its last
+  fetch failed, and its state when it isn't connected and published. The
+  name opens its **last publish**: when, the commit, and the apps
+  published (and, for a repo, where it's from).
 - **Activity log**: the running operation's log, live, at the top (polled
   every second, as before), then every operation the history keeps (20),
   newest first, each a row - what, when, an outcome pill - that opens to its
@@ -633,11 +649,15 @@ The **Users** tab:
   sha and date), `HEAD`'s subject, and the pull requests the last update
   that worked brought, as links. Read only.
 
-The **Repo** tab: **Add repository**, which opens a coming-soon popup
-(organisation repos are A6), then the sources, OpenFit first and the rest by
-name, each a row (name, version) that opens to its description in a small
-box, an Applications heading, and each app as a row of its own that opens to
-its description, or "No description."
+The **Repo** tab: **Add repository** (A6: the repo's address, then its
+deploy key, Copy key and the three steps, then Connect), then the sources,
+OpenFit first and the rest by name, each a row (name, and its version - or,
+for a repo not connected and published, its state) that opens to its
+description in a small box, an Applications heading, and each app as a row
+of its own that opens to its description, or "No description." An
+organisation repo's row opens first to its GitHub address (a link), state
+and why, source and last check, then **Connect** while it's pending - with
+**Show key**, its public key again - and **Remove**, behind its confirm.
 
 **The popups** are OpenFit's modal; Escape, a click outside or Close shuts
 one.
@@ -1011,18 +1031,27 @@ removes it.
   .sets/openfit-<commit12>/<app>/<files>
 ```
 
-Each source (`openfit` now, organisation repos in A6) is a relative symlink
-to an immutable published set. `index.json` says what's on the shelf:
+Each source (`openfit`, and each organisation repo's since A6) is a relative
+symlink to an immutable published set. `index.json` says what's on the shelf:
 
 ```json
-{"published_at": "2026-10-27T12:00:00Z",
+{"published_at": "2026-10-29T12:00:00Z",
  "sources": {"openfit": {"commit": "<40 hex>",
                          "name": "OpenFit",
                          "description": "Official applications released by OpenFit.",
-                         "apps": {"frms": {"sha256": "<fingerprint>",
-                                           "name": "FRMS",
-                                           "description": "Fatigue risk management for airline crew. ..."}}}}}
+                         "apps": {},
+                         "published_at": "2026-10-29T12:00:00Z"},
+             "openfitavi": {"commit": "<40 hex>",
+                            "name": "OpenFit Aviation",
+                            "description": "Aviation applications for OpenFit.",
+                            "apps": {"frms": {"sha256": "<fingerprint>",
+                                              "name": "FRMS",
+                                              "description": "Fatigue risk management for airline crew. ..."}},
+                            "published_at": "2026-10-29T12:00:00Z"}}}
 ```
+
+Each source's own `published_at` (A6) is when it was last published; the
+index's, when the index was last written, by any source's publish.
 
 The fingerprint is `admin_ops.fingerprint()` of the published app folder
 (each file's path and contents, dotfiles and caches left out). B1 and B3 read
@@ -1171,6 +1200,217 @@ at all.
 3. **Restart** each user to give them the mount. Nothing reads it until B1,
    so there's no rush.
 
+## Organisation repos (A6)
+
+Apps can come from repos other than OpenFit's own. Each is its own GitHub
+repo, private or not, owned by whoever made it: the first is
+`github.com/Raven-git-hub/openfit-aviation`, whose source is `openfitavi`.
+The Admin clones it into its own storage with a **deploy key** it makes for
+that repo alone, and publishes its apps to the shelf under the source the
+repo declares, beside OpenFit's: every user on the server sees them in
+Browse (`openfitavi.frms`, under "OpenFit Aviation"), and its updates work
+as the official repo's Update apps does.
+
+### What a repo looks like
+
+The same as `library/`: an app folder each at its top, by the rules of
+Publishing above (`[a-z0-9][a-z0-9-]*`, an `app.yaml`, at most 64 files and
+16 MB, 200 apps), and beside them a `repo.yaml`:
+
+```yaml
+source: openfitavi
+name: OpenFit Aviation
+description: Aviation applications for OpenFit.
+```
+
+- **`source`**, required: the prefix of every app's id (`openfitavi.frms`).
+  Lowercase letters and digits, starting with a letter (the user system's
+  `LIBRARY_SOURCE`); never `openfit`, OpenFit's own; never one another repo
+  on this server already is.
+- **`name`** (1 to 40 characters) and **`description`** (at most 300),
+  each trimmed: S1's rules (`repo_info()`), the source's id and no
+  description when they aren't that.
+
+Anything else at the top - a README, a licence, `.git`, `.github` - isn't an
+app and isn't published (dotfiles quietly; the rest logged). A repo without
+a valid `repo.yaml` - an empty repo included - can be added and connected,
+but isn't published: its row says "Connected, but not an OpenFit repo yet:
+it needs a repo.yaml at the top.", with why under it, and each check reads
+it again.
+
+### Adding a repo, and its deploy key
+
+**Add repository**, on the Repo tab, asks for the repo's GitHub address:
+`https://github.com/<owner>/<repo>` (with or without `.git` or a trailing
+`/`) or `git@github.com:<owner>/<repo>.git`. `owner` is
+`[A-Za-z0-9-]{1,39}`, `repo` `[A-Za-z0-9._-]{1,100}` and not `.` or `..`;
+github.com only, and no path, query or fragment: anything else is a 400.
+It's stored in its SSH form, `git@github.com:<owner>/<repo>.git`, under a
+**slug**, `<owner>__<repo>` lowercased (every character outside
+`[a-z0-9._-]` a `-`), which names its folder and its rows. The same repo
+twice, in any case, is a 409.
+
+Then, under the lock and in the request (`POST /api/repos {url}`), the Admin
+makes it a key pair, exactly:
+
+```
+ssh-keygen -t ed25519 -N "" -C "openfit-admin <server name> <owner>/<repo>" -f /data/repos/<slug>/deploy_key
+```
+
+(`<server name>` is `docker info`'s, so GitHub's list of deploy keys says
+which server each is). The folder is 0700, the private key 0600. The reply,
+and the popup, give the **public key** with **Copy key** and the three
+steps:
+
+1. Open the repo on GitHub, then Settings → Deploy keys → Add deploy key.
+2. Paste the key, give it a title, and leave "Allow write access" unticked.
+3. Come back and press Connect.
+
+The repo is saved as `pending` in `/data/repos.json`:
+
+```json
+{"repos": [{"slug": "raven-git-hub__openfit-aviation",
+            "url": "git@github.com:Raven-git-hub/openfit-aviation.git",
+            "owner": "Raven-git-hub", "repo": "openfit-aviation",
+            "added_at": "2026-10-29T12:00:00Z", "state": "pending",
+            "source": null, "commit": null}]}
+```
+
+Read strictly on every read, like `users.json` (`load_repos()`): exactly
+those keys, every one checked (the slug the owner's and repo's, the url
+their SSH form, `state` `pending` or `connected`, `source` and `commit`
+null together, and only once connected, no source twice); anything else
+stops the Admin starting. A pending repo shows its public key again behind
+**Show key**, so it can be copied again, and keeps it until it's removed, so
+nobody has to add a second one on GitHub.
+
+**Why a deploy key.** It's read-only (the Admin never pushes), it opens one
+repo and nothing else on GitHub, it's made on this server and never leaves
+it, and its owner can revoke it from the repo's settings at any time. No
+personal token, and nobody's GitHub account, is involved.
+
+**What the private key never does.** It's written by `ssh-keygen` and read
+only by `ssh`, through `GIT_SSH_COMMAND`'s `-i`. The Admin never opens it:
+no route returns it, it's in no reply, status, history, log or settings
+snapshot, and an Admin backup or download never holds it (they're of users'
+volumes). Remove deletes it.
+
+### Connect
+
+`POST /api/repos/<slug>/connect`, an operation of kind `repo_connect`, in
+the background and under the lock: `git clone -- <url> /data/repos/<slug>/repo`
+with the repo's SSH settings (below).
+
+- **GitHub turns the key down** (`Permission denied (publickey)`, or
+  `Repository not found` for a key it knows for another repo): "GitHub
+  didn't accept the key yet. Check it's added under the repo's Deploy keys,
+  then Connect again." The repo stays pending, no clone left, its key kept.
+- **GitHub out of reach**: "Couldn't reach GitHub: <git's words>", pending
+  too.
+- **Cloned**: the repo is `connected`. Its `repo.yaml` is read from the
+  clone, never through a link, and checked: if it names a source this repo
+  can be, the apps are published (below) and the source and the commit
+  recorded; else it's connected and not published, and its row says why -
+  not an OpenFit repo yet, or the source refused ("Its repo.yaml says it's
+  'openfit', which is OpenFit's own. Choose another source in it.").
+
+### Git over SSH, pinned
+
+`admin/Dockerfile` installs `openssh-client`, and `admin/github_known_hosts`
+- GitHub's three host keys (ed25519, ECDSA, RSA), as GitHub publishes them -
+is copied into the image as `/app/github_known_hosts`. Every git command for
+an organisation repo runs with exactly:
+
+```
+GIT_SSH_COMMAND="ssh -i /data/repos/<slug>/deploy_key -o IdentitiesOnly=yes -o UserKnownHostsFile=/app/github_known_hosts -o StrictHostKeyChecking=yes -o BatchMode=yes -o ConnectTimeout=20"
+```
+
+its own key and no other, GitHub's pinned keys and nothing else trusted (a
+host key that isn't one of them stops the connection), never a prompt.
+`ssh-keygen -lf admin/github_known_hosts` prints the fingerprints GitHub
+publishes on its "GitHub's SSH key fingerprints" page:
+
+```
+256 SHA256:+DiY3wvvV6TuJJhbpZisF/zLDA0zPMSvHdkr4UvCOqU github.com (ED25519)
+256 SHA256:p2QAMXNIC1TJYWeIOttrVc98/R1BUFWu3/LiyKgUfQM github.com (ECDSA)
+3072 SHA256:uNiVztksCsDhcc0u9e8BujQXVUpKZIDTMczCvj3tD2s github.com (RSA)
+```
+
+When GitHub changes a key, take the new lines from `https://api.github.com/meta`
+(`ssh_keys`, each prefixed `github.com `), check their fingerprints against
+that page, and update the file: it reaches the image with Update the Admin.
+`ssh_command()` builds it from fixed parts, the Admin's data folder and a
+checked slug only (git hands it to a shell). It runs as the Admin's own user,
+root, in the repo's own clone in the Admin's storage - never the server's
+checkout, never as its owner - and only one of these, each in its one shape
+(`org_git_allowed()`): `clone -- <its url> <its folder>`, `fetch origin`,
+`rev-parse --verify -q` of `HEAD^{commit}` or `@{upstream}^{commit}`, `log`
+between full commits, `merge --ff-only` and `reset --hard` of a full
+commit, and `cat-file` of a full commit's tree or an object by its full id.
+No HTTPS fallback and no tokens. A network that blocks port 22 to GitHub is a
+later fix: GitHub's `ssh.github.com:443` route.
+
+### Publishing a repo's apps
+
+`publish_source(source, src_dir, commit)` is A5's publisher for any source
+(`publish_official()` is `publish_source("openfit", <repo>/library, HEAD)`):
+the clone's apps copied into `.sets/<source>-<commit12>`, the link
+`/library/<source>` swapped onto it, `index.json` rewritten last with this
+source's entry changed and every other source's exactly as it was read -
+`{commit, name, description, apps, published_at}`, each source with its own
+`published_at`, when it was last published (an entry from before A6 has
+none, and the index's own stands for it). Publishing a repo never touches
+OpenFit's link, sets or entry, nor OpenFit's a repo's. The user system
+already reads every source in the index (B1), and lists each app's
+`source_name`, its source's `name` there.
+
+At the Admin's startup, after OpenFit's own catch-up, each published repo
+whose shelf entry is missing or on another commit is published again from
+its clone, if the clone is on the commit recorded: a shelf made anew holds
+every repo's apps again.
+
+### Checks and updates
+
+**Check now**, and the weekly check, also run `git fetch origin` for each
+connected repo, and read its `repo.yaml` again at the commit fetched
+(`git cat-file`: a regular file at the top only, never a link, at most 256
+KB). A repo is **behind** when `origin`'s head (its upstream) isn't the
+commit it was published at; its commits since are listed. What each check
+found is kept in `/data/repo_checks.json`. A fetch that fails marks that
+repo alone - "Couldn't reach GitHub: <reason>" - and never fails the check,
+nor the other repos; the official repo's own fetch failing doesn't stop the
+repos being checked either. A repo connected while empty is cloned afresh at
+each check (a fetch into an empty clone can miss the branch GitHub makes its
+default), so it catches up after its first push.
+
+The left column's **Repos** panel has a row per repo, OpenFit first and the
+rest by name, each with its version, when it was last published and, when
+it's behind, **Update available**. Its update popup's Proceed runs
+`repo_update` (`POST /api/repos/<slug>/update`, background, under the lock):
+`merge --ff-only` of what the check fetched, `repo.yaml` checked again,
+publish, and the new commit recorded. A step that fails - not a
+fast-forward, a `repo.yaml` that no longer passes, a publish that fails -
+puts the clone back (`reset --hard <old>`) and leaves the shelf untouched.
+No container is stopped, recreated or restarted: no docker command at all.
+
+**A repo whose `source` changes** in its `repo.yaml` is refused: "This repo
+now says it's '<new>', but it was added as '<old>'. Remove and add it again
+to change it." - at the check, which offers no update, and at the update,
+which publishes nothing. A changing prefix would cut installed apps off
+from their data (`app:openfitavi.frms` stays `openfitavi`'s).
+
+### Removing a repo
+
+**Remove**, on its row, asks first: "Its apps leave the app library. Users
+who installed them keep them, but they won't be updated. Remember to delete
+the deploy key on GitHub too." Then `POST /api/repos/<slug>/remove`, under
+the lock, in the request: its source off the shelf (`unpublish_source()`:
+its link removed, then its sets, then its `index.json` entry, last - every
+other source's exactly as it was), then `/data/repos/<slug>/` deleted - the
+clone and the key - then its `repos.json` entry. Installed copies in users'
+`/data/apps` aren't touched: the Admin never reaches into a user's volume.
+A step that fails stops there, with the repo still listed, to remove again.
+
 ## The safety rules
 
 The Admin holds the docker socket, so it has full control of the host. A
@@ -1244,6 +1484,14 @@ Tailscale sidecars and more), and the Admin must never touch any of them.
   with `HOME=/tmp` and no supplementary groups, so the files `git merge`
   writes stay owned by `docker` (your own `git pull` keeps working) and git's
   "dubious ownership" refusal never fires. Docker runs as root.
+- **An organisation repo's git in its own lane** (A6). As root, in its own
+  clone under `/data/repos/<slug>/`, never the server's checkout; always
+  with its pinned `GIT_SSH_COMMAND` (its key, GitHub's host keys,
+  `StrictHostKeyChecking=yes`, `BatchMode=yes`); only `clone`, `fetch
+  origin`, `rev-parse`, `log`, `merge --ff-only`, `reset --hard` and
+  `cat-file`, each in its one shape (`org_git()` refuses anything else,
+  running nothing). `ssh-keygen` only ever in its one form, making a repo's
+  key. A test holds every scenario to both, written out by hand.
 
 ## Where its data lives
 
@@ -1263,12 +1511,32 @@ compose file, because the backup helpers mount it by name), at `/data`:
 | `backups/` | `<UTC stamp>-<old sha>-<user>.tar.gz`, the newest 3 sets kept. Read-only on the page. |
 | `self-update/<stamp>/` | An Admin update's settings snapshot, or a revert's fresh one: the six files above it, each if present, for a rollback, a revert or its fallback to put back. The newest 3 kept, and always the one a revert is putting back. |
 | `self_update_result.json` | The update or revert helper's log while it runs, `{op_id, stamp, outcome, lines}`; deleted once an Admin (or, for an Admin from before reverts, the helper) has finished the operation from it. |
+| `repos.json` | The organisation repos added (A6), pending or connected, each its source and published commit once it has them (above). |
+| `repos/<slug>/` | A repo's deploy key pair (`deploy_key`, 0600, and `deploy_key.pub`) and its clone (`repo/`); the folder 0700, deleted by Remove. |
+| `repo_checks.json` | What the last check, connect or update found of each repo: GitHub's head, the commits since, a `repo.yaml` problem, a failed fetch. |
 
 Each user's own data is their volume: `openfit_tracker-data` for the primary,
 `openfit-<name>_tracker-data` for an added user. The app shelf is the volume
 `openfit-library` (A5), the Admin's `/library` and every user's, read-only.
 
 ## Try it
+
+For A6, on the server:
+
+1. Check now, Update OpenFit, then Update the Admin (the new Admin image has
+   `openssh-client` and GitHub's host keys). FRMS leaves the official
+   library: the Repo tab shows OpenFit with no apps, and Browse no FRMS for
+   now.
+2. Fill the aviation repo: clone `openfit-aviation`, copy
+   `tests/fixtures/apps/frms/` from OpenFit into a top-level `frms/`
+   folder, add the `repo.yaml` above, commit and push.
+3. In the Admin: Repo, **Add repository**, paste
+   `https://github.com/Raven-git-hub/openfit-aviation`, **Copy key**, add it
+   on GitHub as a deploy key (read-only), then **Connect**. The Activity log
+   says "Connected Raven-git-hub/openfit-aviation, and published 1 app to
+   the app library as 'openfitavi'."
+4. In OpenFit, Browse lists FRMS under "OpenFit Aviation", saying it
+   replaces your FRMS (until B2).
 
 For S2: Check now, Update OpenFit, then Update the Admin. Revert is on
 offer straight away, under Versions, in the Admin's last update: it takes the

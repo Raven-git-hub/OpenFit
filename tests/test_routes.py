@@ -219,12 +219,12 @@ def test_index_splits_applications_into_controls_and_a_list(client, monkeypatch)
     import main
 
     # What the list shows: the installed apps, as /api/apps returns them -
-    # the seven test apps.
+    # the eight test apps (FRMS among them since it left library/, A6).
     fixtures = os.path.join(os.path.dirname(__file__), "fixtures", "apps")
     monkeypatch.setitem(main.app.config, "APPS_DIR", fixtures)
     apps = client.get("/api/apps").get_json()
     assert [(a["id"], a["name"]) for a in apps] == [
-        ("caffeine", "Caffeine"), ("import", "Import weigh-ins"), ("mood", "Mood"),
+        ("caffeine", "Caffeine"), ("frms", "FRMS"), ("import", "Import weigh-ins"), ("mood", "Mood"),
         ("steps", "Steps"), ("steps-metres", "Distance (from steps)"), ("weight", "Weight"),
         ("workout-log", "Workout log"),
     ]
@@ -2651,7 +2651,7 @@ def test_a_library_apps_row_has_no_update_but_says_where_it_comes_from(client, l
 def test_a_library_apps_panel_id_never_meets_a_custom_apps(client, dupe_apps):
     # openfit.frms from the library, and a custom app whose id differs only
     # by the dot: openfit-frms.
-    frms = os.path.join(os.path.dirname(__file__), "..", "library", "frms")
+    frms = os.path.join(os.path.dirname(__file__), "fixtures", "apps", "frms")
     files = {}
     for name in sorted(os.listdir(frms)):
         if os.path.isfile(os.path.join(frms, name)):
@@ -2980,7 +2980,7 @@ def test_installing_onto_a_chosen_tab_moves_the_new_app_and_saves_once(client, t
 # what the server serves from a temp shelf laid out as the Admin's.
 
 BROWSE_PARTS = [
-    "$", "el", "home", "openModal", "expandable", "appPanelId", "LIBRARY_NAMES", "libraryName",
+    "$", "el", "home", "openModal", "expandable", "appPanelId", "libraryName",
     "SHELF_STATES", "SHELF_OFF", "openBrowse", "shelfRow", "shelfPanel",
     "INSTALL_ID", "CUSTOM_CODE", "fileNameProblem", "NO_ID", "yamlId", "manifestId", "updateId",
     "fileSlot", "slotFiles", "openAddApp", "placeNewAppOnTab",
@@ -3139,6 +3139,9 @@ def browse_shelf(tmp_path, monkeypatch):
                 path.write_text(text)
         (root / source).symlink_to(f".sets/{name}")
         index["sources"][source] = {"commit": SHELF_COMMIT, "apps": {a: {"sha256": "0" * 64} for a in shelf_apps}}
+    # OpenFit named as the Admin names it, from library/repo.yaml; acme with
+    # no name, so Browse falls back to its id.
+    index["sources"]["openfit"]["name"] = "OpenFit"
     (root / "index.json").write_text(json.dumps(index))
     apps_dir = tmp_path / "apps"
     for app_id, folder in (("openfit.added", "added"), ("old", None)):
@@ -3175,10 +3178,13 @@ def test_browse_replaces_coming_soon_and_only_reads(client):
     markup = re.search(r"el\('button','drow arow shelf-row',\n\s*'([^']*)'\);", row).group(1)
     assert "${" not in markup and "${" not in panel[: panel.index("p.id =")]
     assert "head.querySelector('.a-name').textContent = a.name || a.id;" in row
-    assert "head.querySelector('.shelf-src').textContent = libraryName(a.source);" in row
+    assert "head.querySelector('.shelf-src').textContent = libraryName(a);" in row
+    # The tag is the library's name the shelf gives (A6), never a list the page keeps.
+    assert "LIBRARY_NAMES" not in page
+    assert "const libraryName = a => a.source_name || a.source;" in page
     assert "p.querySelector('.shelf-desc').textContent = a.description || 'No description.';" in panel
     popup = _js_function(page, "openAddApp")
-    assert "<b>${esc(lib.name)}</b> from the ${esc(libraryName(lib.source))}" in popup
+    assert "<b>${esc(lib.name)}</b> from the ${esc(libraryName(lib))}" in popup
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
@@ -3189,8 +3195,8 @@ def test_browse_lists_the_shelf_in_order_with_each_apps_state(client, browse_she
     shown = r["shown"]
     assert shown["title"] == "Browse applications"
     assert shown["note"] is None and shown["closed"]
-    # By name, case folded, then id: each its library's tag, "OpenFit" for
-    # openfit and the source as written for another.
+    # By name, case folded, then id: each its library's tag, the name the
+    # shelf gives it - "OpenFit" for openfit - else the source as written.
     assert [(row["id"], row["name"], row["tag"]) for row in shown["rows"]] == [
         ("openfit.added", "Added", "OpenFit"), ("acme.tool", "alpha tool", "acme"),
         ("openfit.deep", "Deep", "OpenFit"), ("openfit.heir", "Heir", "OpenFit"),

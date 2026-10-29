@@ -379,15 +379,17 @@ app's files into the Add Application popup with the next free id and name
 (`steps` → `steps-2`, "Steps" → "Steps 2", then `-3`, …) for you to review
 and install as a separate app, with its own tile and settings. It's a fork:
 editing one app's files later doesn't change the other. An app installed from
-a library has an id of the form `<source>.<name>`, such as `openfit.frms`
+a library has an id of the form `<source>.<name>`, such as `openfitavi.frms`
 (the library names the source; the app's own `app.yaml` just says `frms`).
 It's read-only here: its row has no Update, only a note that it's updated by
 your admin, and Duplicate gives you a copy of your own to change (`frms-2`).
 
-**Browse**, beside Add Application, lists the apps in the library your admin
-publishes (FRMS, today): open one for its description and **Add
-Application**, which shows its files read-only in the install popup and
-installs them exactly as published, as `openfit.<name>`. An app it can't add
+**Browse**, beside Add Application, lists the apps in the libraries your admin
+publishes - OpenFit's own and any organisation repo's, each app tagged with
+its library's name (FRMS, from OpenFit Aviation, today): open one for its
+description and **Add Application**, which shows its files read-only in the
+install popup and installs them exactly as published, as `<source>.<name>`
+(`openfitavi.frms`). An app it can't add
 says why: already installed, it needs a newer OpenFit, it has folders inside
 it, or it replaces an app of yours whose data moving across comes in a coming
 update (FRMS, while your own `frms` is installed). If Browse says the library
@@ -476,7 +478,8 @@ Nothing is derived from a session, so no day is re-derived for it. The
 **Workout log** app (`tests/fixtures/apps/workout-log/`, a test app), which files a workout
 just finished from how many minutes it lasted, is the example.
 
-The **FRMS** app (`library/frms/`) puts the two together. It's
+The **FRMS** app (published from the aviation repo as `openfitavi.frms`; the
+copy here is `tests/fixtures/apps/frms/`) puts the two together. It's
 the whole FRMS suite as one app — one tile, 6 wide by 5 tall (its only size),
 and one `config.json` — drawn as four sub-panels, each like a tile of its own:
 its roster panel, the timeline and rails below, 2×2 at the bottom left, its
@@ -774,6 +777,8 @@ line never had:
   source's apps with their descriptions. An app-only change goes out with **Update apps**: no rebuild, nobody
   restarts. **Restart** a user to give them the shelf, which their OpenFit's
   Browse reads.
+- **Organisation repos**: apps from your own GitHub repos, beside OpenFit's
+  (below). Every user sees them in Browse, under the repo's name.
 
 It manages the OpenFit you already run, in place: the same compose project,
 the same `/data` volume and the same port 8080. Install it once from the
@@ -795,6 +800,29 @@ this one with the command its note shows,
 `docker compose -f admin/docker-compose.yml -p openfit-admin up -d --build`
 from the repo, once.)
 
+### Adding an organisation repo
+
+An organisation repo is a GitHub repo of apps laid out as `library/` is: one
+folder an app at its top, and beside them a `repo.yaml`:
+
+```yaml
+source: openfitavi              # the apps' prefix: openfitavi.frms
+name: OpenFit Aviation          # what Browse calls it
+description: Aviation applications for OpenFit.
+```
+
+`source` is lowercase letters and digits, starting with a letter, and never
+`openfit` or another repo's. In the Admin, **Repo**, then **Add repository**:
+paste the repo's address (`https://github.com/<owner>/<repo>`), and the Admin
+makes a deploy key for that repo on this server alone. **Copy key**, then on
+GitHub open the repo's Settings → Deploy keys → Add deploy key, paste it and
+leave "Allow write access" unticked. Back in the Admin, **Connect**: it clones
+the repo over SSH (GitHub's host keys pinned, no tokens) and publishes its apps
+to every user. Check now finds new commits on it, and **Update available**
+on its row publishes them, with nobody's OpenFit restarted. **Remove** takes
+its apps off the app library (installed copies stay); delete the deploy key
+on GitHub too. The Admin's server needs SSH (port 22) to github.com.
+
 It holds the Docker socket, so it has full control of the host. It only ever
 acts on its own users' compose projects and on helper containers it labels as
 its own, never on anything else the server runs, and it never runs a command
@@ -806,7 +834,7 @@ ports, to the internet; from away, use Tailscale. The design and every step, in 
 ## Architecture
 
 ```
-admin/                        The OpenFit Admin: users, updates, its own update, the app shelf (port 8090)
+admin/                        The OpenFit Admin: users, updates, its own update, the app shelf, organisation repos (port 8090)
 app/
   main.py                     Flask API + scheduler, loads plugins from plugins/
   auth.py                     The one account: password, setup links, sessions (/data/auth.json)
@@ -825,7 +853,7 @@ app/
   derived.py                  Picks the one derived value per metric per day
   crypto.py                   Encrypt/decrypt for stored device credentials
   migrations/                 Versioned .sql schema migrations + runner
-library/                      The official apps OpenFit publishes, FRMS today (outside the image)
+library/                      The official apps OpenFit publishes: repo.yaml, no apps today (outside the image)
 tests/                        pytest suite (temp DB, no network); its test apps in fixtures/apps/
 docs/architecture/            Design direction (read these first)
 ```
