@@ -700,6 +700,39 @@ def test_after_a_revert_update_the_admin_is_offered_again_and_revert_isnt(admin_
     assert env.admin._admin_base() == update["old"]["commit"]
 
 
+def test_an_update_an_admin_from_before_s2_started_after_a_revert_gets_its_versions_again(admin_env):
+    """The rollout: reverted to S1, whose Update the Admin notes as `old`
+    the version its update went to - it doesn't know a revert put it back.
+    The Admin that finishes the update notes it again."""
+    env = admin_env
+    first = updated(env)
+    handed(env)
+    assert revert(env) == "ok"
+    env.fake.helper = False
+    env.clock.advance(60)
+    env.admin = env.make()  # the previous Admin, finishing the revert
+    env.admin.start_admin_update()
+    env.admin.wait(10)
+    run = env.fake.commands()[-1]
+    stamp, op_id = run[-2], run[-1]
+    ops = json.loads((env.data / "history.json").read_text())
+    for o in ops:
+        if o["id"] == op_id:  # as S1 records it: no snapshot, and `old` the update before the revert's new
+            del o["snapshot"]
+            o["old"] = first["new"]
+    (env.data / "history.json").write_text(json.dumps(ops))
+    assert swap(env, stamp, op_id) == "ok"
+    env.fake.helper = False
+
+    again = env.make()
+
+    done = history_op(env, op_id)
+    assert done["outcome"] == "ok"
+    assert done["old"]["commit"] == first["old"]["commit"]  # the version the revert went back to
+    assert done["snapshot"] == stamp  # noted from the result, for a revert of this update
+    assert again.revert_offer()["old"] == first["old"]["short"]
+
+
 # --- the lane ----------------------------------------------------------------------------------
 
 

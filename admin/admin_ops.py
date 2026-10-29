@@ -1794,7 +1794,10 @@ class Admin:
         the helper has gone), the helper stopped part-way: failed."""
         outcome = result["outcome"] if result else "running"
         revert = op.get("kind") == "admin_revert"
-        if op.get("new") is None and not revert:  # started by an Admin from before S1, which didn't note it
+        if not revert and not op.get("snapshot"):
+            # Started by an Admin from before S2: one from before S1 noted no
+            # versions at all, and S1's `old` doesn't know a revert can have
+            # put the Admin on an older version. Noted again, as this one would.
             self._note_admin_range(op)
         with self._op_lock:
             op["log"].extend({"t": line["t"], "text": line["text"]} for line in (result or {}).get("lines", []))

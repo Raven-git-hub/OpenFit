@@ -333,6 +333,10 @@ pre.cmd{margin:6px 0 0;padding:10px 12px;background:var(--inset);border:1px soli
 .addrow{display:grid;grid-template-columns:minmax(0,2fr) minmax(0,1fr) auto;gap:12px;align-items:end;}
 .foot-line{display:flex;align-items:center;gap:10px;margin-top:12px;font-size:12.5px;color:var(--muted);}
 .foot-line .lead{margin-right:auto;}
+/* a download, without the password: its warning, then the link itself, as a button */
+.install-warn p{margin:0;}
+a.btn{display:inline-block;text-decoration:none;}
+a.btn.primary:hover{color:var(--accent-ink);}
 /* the sign-in and setup views: OpenFit's sign-in card */
 .gate{min-height:100vh;display:grid;place-items:center;padding:24px 16px;}
 .gate .card{width:min(380px,100%);padding:26px 24px 24px;}
