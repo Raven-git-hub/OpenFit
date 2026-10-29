@@ -483,11 +483,15 @@ def test_repo_yaml_and_the_apps_names_reach_the_index(admin_env, capsys):
     assert (entry["commit"], entry["name"], entry["description"]) == (
         commit, "OpenFit", "Official applications released by OpenFit.")
     shelf_dir = env.library / "openfit"
+    changes = {app: entry["apps"][app].pop("changes") for app in entry["apps"]}
     assert entry["apps"] == {
         "frms": {"sha256": admin_ops.fingerprint(str(shelf_dir / "frms")), "name": "FRMS",
                  "description": "Fatigue risk management for crew."},
         "steps": {"sha256": admin_ops.fingerprint(str(shelf_dir / "steps")), "name": None, "description": None},
     }
+    # And each app's change notes (B3): the commits touching its folder.
+    assert [c["subject"] for c in changes["frms"]] == ["Names"]
+    assert [c["subject"] for c in changes["steps"]] == ["Initial commit"]
     # repo.yaml is the source's, not an app: not on the shelf, and not "left out".
     assert sorted(os.listdir(shelf_dir)) == ["frms", "steps"]
     out = capsys.readouterr().out

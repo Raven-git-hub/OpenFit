@@ -19,6 +19,7 @@ import glob
 import io
 import json
 import os
+import re
 import subprocess
 import tarfile
 
@@ -499,6 +500,9 @@ def org_git_in_lane(env, call):
             or (sub[:3] == ["log", "--no-merges", "--format=%h%x09%s"] and len(sub) == 4 and sub[3].count("..") == 1
                 and all(_full(x) for x in sub[3].split("..")))
             or (sub[:5] == ["log", "-n", "20", "--no-merges", "--format=%h%x09%s"] and len(sub) == 6 and _full(sub[5]))
+            # an app folder's change notes (B3): one plain folder name, after --
+            or (sub[:5] == ["log", "-n", "10", "--no-merges", "--format=%H%x09%cI%x09%s"] and len(sub) == 8
+                and _full(sub[5]) and sub[6] == "--" and re.fullmatch(r"[a-z0-9][a-z0-9-]*", sub[7]))
             ), call
     return slug
 
