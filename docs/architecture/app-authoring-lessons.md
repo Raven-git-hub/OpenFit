@@ -270,7 +270,8 @@ What a declaration can't be yet, and why:
   `duties_complete`) is supported now: no declaration, just
   `ctx.write_session(kind, start, end, summary)` — write what exists. The
   reference apps are `tests/fixtures/apps/workout-log/` and, from a file,
-  `library/frms/`.
+  FRMS (`tests/fixtures/apps/frms/`, published from the aviation repo as
+  `openfitavi.frms`).
 - **Only your own.** Reading another app's custom metric isn't offered — read the
   canonical metrics and your own.
 - **Its data outlives the app.** Uninstall the app and its metrics drop out of

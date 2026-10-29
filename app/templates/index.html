@@ -2950,15 +2950,15 @@ h5 + .dnote{margin-top:0;}
      BROWSE - the app library
      The apps on the shelf the Admin publishes (GET /api/library), in
      the order it lists them, by name. A row is an Applications row
-     (expandable()): the app's name and its library's tag, opening onto
-     its description and Add Application - or, for one that can't be
-     added, why not. Add Application reads the app's files from the
+     (expandable()): the app's name and its library's tag - the name the
+     shelf gives it (source_name: OpenFit, OpenFit Aviation), else its
+     id - opening onto its description and Add Application - or, for one
+     that can't be added, why not. Add Application reads the app's files from the
      library and opens the Add popup on them in library mode: read-only,
      and installed by the library's own route, which reads the files
      from the shelf itself - the page never sends them.
      ========================================================= */
-  const LIBRARY_NAMES = {openfit:'OpenFit'};
-  const libraryName = source => LIBRARY_NAMES[source] || source;
+  const libraryName = a => a.source_name || a.source;
   /* Why an app on the shelf can't be added, by its state. */
   const SHELF_STATES = {
     installed:        () => 'Installed',
@@ -3005,7 +3005,7 @@ h5 + .dnote{margin-top:0;}
     const head = el('button','drow arow shelf-row',
       '<span class="chev" aria-hidden="true">›</span><span class="a-name"></span><span class="d-app shelf-src"></span>');
     head.querySelector('.a-name').textContent = a.name || a.id;
-    head.querySelector('.shelf-src').textContent = libraryName(a.source);
+    head.querySelector('.shelf-src').textContent = libraryName(a);
     return expandable(item, head, {
       open, id:a.id, panelId:appPanelId(a).replace('app-panel-', 'shelf-panel-'),
       panel:() => shelfPanel(a, closeBrowse),
@@ -3043,7 +3043,8 @@ h5 + .dnote{margin-top:0;}
       }
       closeBrowse();
       openAddApp(res.files, null, null,
-        {source:a.source, app:a.app, id:res.id || a.id, name:res.name || a.name || a.id});
+        {source:a.source, source_name:a.source_name, app:a.app, id:res.id || a.id,
+         name:res.name || a.name || a.id});
     };
     return p;
   }
@@ -3258,16 +3259,17 @@ h5 + .dnote{margin-top:0;}
      with its files: its id shown locked, and held to by Review; no tab
      to pick (it's placed already); and Review the confirm - "Update
      <name>?" - whose Update replaces the app's files with these. lib,
-     {source, app, id, name}, is library mode, from Browse: prefill the
-     library app's files, every one in a slot and read-only, no file to
-     add; Review's id lib.id, never read from the app.yaml; and Install
+     {source, source_name, app, id, name}, is library mode, from Browse:
+     prefill the library app's files, every one in a slot and read-only,
+     no file to add; Review's id lib.id, never read from the app.yaml;
+     the hint naming the library by source_name; and Install
      the library's install, which sends no files - the server reads them
      from the shelf. */
   function openAddApp(prefill, copyOf, update, lib){
     const given = Array.isArray(prefill) ? prefill : null;
     const updName = update ? update.name || update.id : '';
     const hint = lib
-      ? `<p class="hint">The files of <b>${esc(lib.name)}</b> from the ${esc(libraryName(lib.source))}
+      ? `<p class="hint">The files of <b>${esc(lib.name)}</b> from the ${esc(libraryName(lib))}
           library, as published. They're installed exactly as shown, and your admin keeps them up
           to date. To make your own changes, install it, then Duplicate it.</p>`
       : update

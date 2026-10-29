@@ -24,7 +24,6 @@ import pytest
 import apps
 from metrics import WEIGHT_KG
 
-LIBRARY = Path(__file__).parent.parent / "library"
 # The test apps, installed here from a library all the same: what's tested
 # is the id mechanics, not what the official library holds (FRMS alone).
 FIXTURE_APPS = Path(__file__).parent / "fixtures" / "apps"
@@ -48,7 +47,7 @@ def apps_dir(tmp_path, monkeypatch):
 def library_files(name):
     """A library app's files, as Browse will send them: each plain file
     directly in its folder, as text - exactly the bytes it holds."""
-    folder = LIBRARY / name if name == "frms" else FIXTURE_APPS / name
+    folder = FIXTURE_APPS / name
     return {p.name: p.read_bytes().decode("utf-8") for p in sorted(folder.iterdir()) if p.is_file()}
 
 
@@ -108,7 +107,7 @@ def test_a_library_install_files_the_app_under_its_source_byte_for_byte(apps_dir
     # Every file the library's own, byte for byte: the source is in the
     # folder's name alone, never written into a file.
     folder = apps_dir / "openfit.frms"
-    library = LIBRARY / "frms"
+    library = FIXTURE_APPS / "frms"
     assert sorted(p.name for p in folder.iterdir()) == sorted(p.name for p in library.iterdir() if p.is_file())
     for p in library.iterdir():
         if p.is_file():

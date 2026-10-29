@@ -355,8 +355,9 @@ own calls to its device API. Full direction:
 - `app/shelf.py` — the app shelf, read (B1): the apps the Admin publishes
   to the read-only `/library` (A5) — `LIBRARY_DIR`, `$OPENFIT_LIBRARY`,
   default `/library`, `app.config["LIBRARY_DIR"]` in tests — laid out as
-  `index.json` (`{published_at, sources: {source: {commit, apps: {app:
-  {sha256}}}}}`), a relative link `<source>` onto
+  `index.json` (`{published_at, sources: {source: {commit, name, apps: {app:
+  {sha256}}}}}`; `openfit` the official library, each organisation repo
+  another source, A6), a relative link `<source>` onto
   `.sets/<source>-<commit12>/`, and the app folders. Never written.
   `list_shelf(library_dir, apps_dir, conn)` → `{available, apps}`:
   `available` false (and `apps` []) with no folder or an `index.json` that
@@ -374,8 +375,12 @@ own calls to its device API. Full direction:
   (`_listing()`) the regular files directly in it (`scandir`,
   `follow_symlinks=False`: no link, dotfile, `.pyc` or name
   `filename_problem()` refuses), and whether it has a sub-folder (`__pycache__`
-  and dot-folders aside). Each `{id: "<source>.<app>", source, app, name,
-  description, files, state, replaces_name}`, by `name.casefold()` then id;
+  and dot-folders aside). Each `{id: "<source>.<app>", source, source_name,
+  app, name, description, files, state, replaces_name}`, by
+  `name.casefold()` then id; `source_name` the source's index entry's
+  `name`, trimmed, if text of 1–`MAX_SOURCE_NAME` 40 characters, else the
+  source's id (`_source_name()`: "OpenFit Aviation", what Browse's tag
+  shows, the page's `libraryName(a)`);
   `state` the first of `installed` (`app_present()`), `unsupported`
   (a sub-folder: `HAS_FOLDERS`, "It has folders inside it, which this
   OpenFit can't install yet."), `needs_update` (`requires > APP_LEVEL`),
@@ -696,7 +701,7 @@ own calls to its device API. Full direction:
   25 MB)."}`. Full contract:
   `docs/architecture/app-host.md`.
   The test apps are fixtures, in `tests/fixtures/apps/` (never official:
-  `library/` is FRMS alone). The two real apps, `steps` and `steps-metres`,
+  `library/` holds no app since FRMS moved to the aviation repo, A6). The two real apps, `steps` and `steps-metres`,
   are committed there (as deployed in `/data/apps`) and run against the
   host by `tests/test_app_host.py`: they're correct per the contract, so a
   failure there is fixed in the host, never by editing them. Their `app.py`
@@ -776,7 +781,9 @@ own calls to its device API. Full direction:
   "manual", "duration_minutes": minutes})`, `end` now
   (`datetime.now(timezone.utc)`) and `start` that many minutes before —
   each log its own session. And the first to file duties: `frms`
-  (`library/frms/`, the Roster app until it became FRMS; its
+  (`tests/fixtures/apps/frms/`, byte for byte what the aviation repo
+  publishes as `openfitavi.frms` - it left `library/` in A6 - the Roster
+  app until it became FRMS; its
   pure functions run by `tests/test_frms_app.py`, loaded by path as the
   host loads it, and the round trip by `tests/test_app_actions.py`,
   against the synthetic `tests/fixtures/rosters/sample.ics` — fake
@@ -1324,8 +1331,9 @@ own calls to its device API. Full direction:
   `shelfRow()`s in the server's order, each an `expandable()` row (its own
   `open` Set, `aria-expanded`/`aria-controls`, panel id `shelf-panel-…`
   from `appPanelId()`): the name and a library tag (`.shelf-src`,
-  `libraryName()`: `LIBRARY_NAMES` "OpenFit" for `openfit`, else the source
-  as written), both `textContent`; open, `shelfPanel()`: the description
+  `libraryName(a)`: the app's `source_name`, the shelf's name for its
+  library - "OpenFit", "OpenFit Aviation" - else its source as written),
+  both `textContent`; open, `shelfPanel()`: the description
   (or "No description.") and **Add Application** (`btn sm primary`) for
   `available`, else the state in words (`SHELF_STATES`: Installed;
   "Replaces your <replaces_name>: available in a coming update."; "Needs a
@@ -1892,23 +1900,29 @@ own calls to its device API. Full direction:
   folder); `/api/apps` failing → a Retry.
 - `library/` — the official app library: the apps OpenFit publishes,
   named by its `repo.yaml` (`name: OpenFit`, a `description`: the source's
-  name and blurb in the shelf's index, S1), currently FRMS alone (`frms`, its `app.yaml` with a `description` —
-  the owner's to edit — and `replaces: [frms]`); outside the image build
-  context (`docker-compose.yml` builds `./app`), never copied into the user
+  name and blurb in the shelf's index, S1), currently none: `repo.yaml`
+  alone, published as an empty set. FRMS left it in A6 for the aviation
+  repo (`github.com/Raven-git-hub/openfit-aviation`, an organisation repo,
+  source `openfitavi`: below), its copy `git mv`ed to
+  `tests/fixtures/apps/frms/` (its `app.yaml` with a `description` and
+  `replaces: [frms]`, unchanged). Outside the image build context
+  (`docker-compose.yml` builds `./app`), never copied into the user
   system, but published by the Admin to every user's shelf, where Browse
-  installs it from. One folder an app, named for its id (an app reaches
+  installs from. One folder an app, named for its id (an app reaches
   `/data/apps` only by being installed). `tests/test_library.py` holds it
   to that: the folder outside the build context, every folder its app's
   id (`load_app(folder).id`), every app installing through `install_app()`
-  from its files as text, and the library FRMS alone. The seven test apps
-  L1 put there (`caffeine`, `import`, `mood`, `steps`, `steps-metres`,
+  from its files as text, the library `repo.yaml` alone, and the FRMS
+  fixture byte-identical to what left (`FRMS_FINGERPRINT`). The seven test
+  apps L1 put there (`caffeine`, `import`, `mood`, `steps`, `steps-metres`,
   `weight`, `workout-log`) were never official: B1 moved them,
   byte-identical, to `tests/fixtures/apps/`. Not `apps/`, so it can't be
   confused with `app/`. The distribution design it starts is
   `docs/architecture/distribution.md`.
-- `admin/` — the OpenFit Admin (A1, A2, A4, A5, U1's setup links, S1's portal, S2, `docs/architecture/admin.md`): its own
-  image (`python:3.12-slim`, git, the docker CLI and compose plugin copied
-  from pinned images) and compose file (`docker compose -f
+- `admin/` — the OpenFit Admin (A1, A2, A4, A5, A6, U1's setup links, S1's portal, S2, `docs/architecture/admin.md`): its own
+  image (`python:3.12-slim`, git and `openssh-client`, the docker CLI and
+  compose plugin copied from pinned images, `github_known_hosts` -
+  GitHub's three host keys - at `/app/github_known_hosts`) and compose file (`docker compose -f
   admin/docker-compose.yml -p openfit-admin up -d --build`), port 8090, the
   docker socket, its volume `openfit-admin_admin-data` at `/data`, the app
   shelf's volume `openfit-library` at `/library` (A5, below), and the
@@ -2074,7 +2088,76 @@ own calls to its device API. Full direction:
   `description` ≤ 300, else the source id, logged) and each app's
   `app.yaml` (`app_info()`, null where it won't read) into `index.json`'s
   entries, and `publish_at_startup()` republishes an entry with no `name`
-  (an index from before S1; the set untouched). Modules prefixed
+  (an index from before S1; the set untouched). **Organisation repos**
+  (A6): GitHub repos of apps laid out as `library/` is, at their top - a
+  `repo.yaml` (`source`, `LIBRARY_SOURCE`'s shape, never `openfit` nor
+  another repo's; `name`, `description` S1's rules) and an app folder
+  each. `parse_github()` takes `https://github.com/<owner>/<repo>`
+  (optional `.git`, trailing `/`) or `git@github.com:<owner>/<repo>.git`,
+  `owner` `[A-Za-z0-9-]{1,39}`, `repo` `[A-Za-z0-9._-]{1,100}` (not
+  `.`/`..`), github.com only - else `add_repo()`'s 400; stored as the SSH
+  form under `repo_slug()` (`<owner>__<repo>` lowercased). `add_repo()`
+  (`POST /api/repos {url}`, in the request, under the lock; the same slug
+  409): `ssh-keygen -t ed25519 -N "" -C "openfit-admin <server name>
+  <owner>/<repo>" -f /data/repos/<slug>/deploy_key`, exactly (the server
+  name `docker info`'s), folder 0700, the key chmod 0600 and never read
+  back - the reply `{repo, public_key}`, the public key alone - and the
+  entry saved `pending` in `/data/repos.json` (`{repos: [{slug, url, owner,
+  repo, added_at, state, source, commit}]}`, `load_repos()` strict on every
+  read, a bad file stops the Admin starting). `start_repo_connect()`
+  (`POST /api/repos/<slug>/connect`, op `repo_connect`): `git clone -- <url>
+  <folder>/repo`; a key GitHub turns down (`Permission denied (publickey)`,
+  `Repository not found`) → `KEY_REFUSED`, pending, the key kept; else
+  `connected`, then `_publish_repo()`: the clone's `repo.yaml` (read
+  `O_NOFOLLOW`) through `repo_source()` - missing, not a mapping, no source
+  → `NOT_OPENFIT` ("Connected, but not an OpenFit repo yet: it needs a
+  repo.yaml at the top.", connected and not published); a source changed
+  from the one recorded, `openfit`, or another repo's → refused, nothing
+  published - else `publish_source()` and the source and commit recorded.
+  Every git command for a repo through `org_git()`: as root (never
+  `as_owner`), in its own clone (the clone in its folder), with exactly
+  `GIT_SSH_COMMAND` = `ssh_command()`: `ssh -i /data/repos/<slug>/deploy_key
+  -o IdentitiesOnly=yes -o UserKnownHostsFile=/app/github_known_hosts -o
+  StrictHostKeyChecking=yes -o BatchMode=yes -o ConnectTimeout=20` (a
+  checked slug and data folder only; `Runner.run(env=)` adds it), and only
+  `org_git_allowed()`'s: `clone -- <its url> <its folder>`, `fetch
+  origin`, `rev-parse --verify -q` of `HEAD^{commit}`/`@{upstream}^{commit}`,
+  `log` of full commits, `merge --ff-only`/`reset --hard` of a full commit,
+  `cat-file` of a full commit's tree or a full object id - anything else a
+  ValueError, unrun. `publish_source(source, src_dir, commit)` is
+  `publish_set()` for any source (`publish_official()` its `openfit` call;
+  an org repo's with `label` owner/repo and `skip_hidden`: `.git` quietly
+  left out); each index entry now `{commit, name, description, apps,
+  published_at}` (A6: each source its own, `_published_at()` falling back
+  to the index's), only its own entry, link and sets changed;
+  `unpublish_source()` its link, then its sets, then its entry, never
+  `openfit`'s. Check now and the weekly check (`_check()` →
+  `_check_repos()`, after the official part, even when that failed) `fetch
+  origin` each connected repo (an empty clone cloned afresh) and read its
+  `repo.yaml` at `@{upstream}` by `cat-file` (`_repo_yaml_at()`: a regular
+  file at the top, ≤ 256 KB) into `/data/repo_checks.json` (`{slug:
+  {checked_at, head, commits, problem, error}}`); a failed fetch is that
+  repo's `error`, "Couldn't reach GitHub: <reason>" (`git_reason()`),
+  never the check's. Behind when `head` isn't the recorded commit;
+  `start_repo_update()` (`POST /api/repos/<slug>/update`, op `repo_update`)
+  only then and with no problem: `merge --ff-only` of `@{upstream}`, then
+  `_publish_repo()`; a failure `reset --hard <old>`, the shelf untouched;
+  no docker at all. `remove_repo()` (`POST /api/repos/<slug>/remove`, in
+  the request): `unpublish_source()`, the folder (clone and key) deleted,
+  the entry and its check dropped; users' installed copies untouched.
+  `publish_at_startup()` then `_catch_up_repos()`: a published repo
+  missing from the shelf, or on another commit, published again from its
+  clone if that's on the recorded commit. `status()["repos"]` (`repos()`):
+  the shelf's sources and the repos, OpenFit first then by name, each row
+  `key` (the source, or `repo:<slug>`) and `repo` (`_repo_view()`: slug,
+  address, state, `status` pending/connected/not_openfit/refused, message,
+  detail, the public key while pending, checked_at, error, head, behind,
+  commits, can_update), `update` `"repo"` when its update is on offer; the
+  activity's ops carry `repo` `{slug, owner, repo}`. The page's Repo tab:
+  Add repository (the address, then `keyBlock()`: the public key, Copy key,
+  `KEY_STEPS`, then Connect), each repo's row its GitHub link, state,
+  Connect and Show key while pending, Remove behind `REMOVE_REPO`; the
+  Repos panel's row Update available → `openUpdate("repo", r)`. Modules prefixed
   `admin_` so they never clash with `app/`'s on the test path:
   `admin_ops.py` (every command through one `Runner`, argument lists, never a
   shell; git as the repo's owner; compose only `-p openfit` with the repo's
@@ -2089,7 +2172,11 @@ own calls to its device API. Full direction:
   setup/login needs a session, every non-GET JSON with `X-OpenFit-Admin: 1`)
   and `templates/index.html`. Nothing in `app/` knows it exists. Tests:
   `tests/test_admin_*.py` — real git in temp repos, docker through
-  conftest's `FakeRunner`.
+  conftest's `FakeRunner` (which also stands in for `ssh-keygen`), and
+  "GitHub" conftest's `GitHub`: bare repos the test's gitconfig makes
+  `git@github.com:<owner>/<repo>.git` (`url.insteadOf`), so an
+  organisation repo's own clone and fetch run as written, no network, no
+  ssh.
 - `tests/` — pytest, temp DB, no network. conftest points every test's
   `AUTH_PATH`/`SESSION_KEY_PATH` at `tmp_path` and resets `main._fails`
   (`auth_files`, autouse); the shared `client` is `signed_in()`: a known
@@ -3132,7 +3219,17 @@ same PR:
   app level, `APP_LEVEL` 1: skipped and refused above it) and `replaces`
   (parsed; the install refused while what it replaces, or its data, is
   here); and `library/` was corrected to FRMS alone, the other seven
-  apps moved to `tests/fixtures/apps/`. Then the user login landed (U1;
+  apps moved to `tests/fixtures/apps/`. Then organisation repos landed
+  (A6; `admin/`, `app/shelf.py`'s `source_name`, the page's Browse tag; no
+  migration): GitHub repos of apps beside the official library, each added
+  in the Admin's Repo tab with a read-only deploy key it makes for that
+  repo alone, cloned over SSH (GitHub's host keys pinned, no HTTPS, no
+  tokens) and published to the shelf under the source its `repo.yaml`
+  names; checked with Check now, updated by its own Update available (no
+  restarts), removed with its key; FRMS moved to the first,
+  `openfit-aviation` (`openfitavi`), leaving `library/` `repo.yaml` alone;
+  and Browse tags each app with its source's name (`source_name`, the
+  index's), `LIBRARY_NAMES` dropped. Then the user login landed (U1;
   no migration, `docs/architecture/auth.md`): one account per container,
   locked until a password is set through a one-time setup link (`python
   auth_cli.py setup-link`, which the Admin's Setup link runs in the user's
@@ -3151,8 +3248,10 @@ same PR:
   everything); and deleting a single backup. Restoring from a download
   comes with the backup file. Still to come, in order:
   B2 (`replaces`
-  moving the data, L3's rules) and self-updating installed apps (B3),
-  with L4, then organisation repos (A6); installing an app with folders
+  moving the data, L3's rules: the owner's `frms` straight to
+  `openfitavi.frms`) and self-updating installed apps (B3), with L4;
+  non-GitHub hosts, HTTPS or token access, and per-user repo visibility
+  are out; installing an app with folders
   inside it is out; scheduled updates
   parked; the `.local` names and
   the proxy deferred (users on `IP:port`). L3 as agreed: `replaces` (declared in the library copy's

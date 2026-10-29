@@ -931,8 +931,10 @@ def _shelf_name_problem(source, app_name):
 
 @app.route("/api/library", methods=["GET"])
 def list_library():
-    """The shelf, as Browse lists it: {available, apps: [{id, source, app,
-    name, description, files, state, replaces_name}]} (list_shelf()).
+    """The shelf, as Browse lists it: {available, apps: [{id, source,
+    source_name, app, name, description, files, state, replaces_name}]}
+    (list_shelf()) - source_name the library's name (OpenFit, OpenFit
+    Aviation), from the shelf's index, else its id.
 
     available is false - and apps [] - when there's no shelf mounted, or
     its index.json doesn't read. Each app's state is the first that

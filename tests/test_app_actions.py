@@ -47,7 +47,6 @@ from migrations import run_migrations
 
 REAL_APPS = Path(__file__).parent / "fixtures" / "apps"
 # FRMS, the one official app, is the library's own.
-LIBRARY = Path(__file__).parent.parent / "library"
 
 SIZE = "sizes: [{w: 1, h: 1}]\n"
 
@@ -1275,7 +1274,8 @@ def test_the_workout_log_app_has_one_action(client, conn, apps_dir):
 
 # ---------- the FRMS app: a roster's .ics, filed as duty sessions ----------
 #
-# Committed in library/frms/: one 6x4 tile whose roster
+# Committed in tests/fixtures/apps/frms/ (a copy of what the aviation
+# repo publishes as openfitavi.frms): one 6x4 tile whose roster
 # panel has a file picker for a duty roster's .ics, which the app parses
 # itself. Every timed event is a duty, filed as a session under app:frms
 # - duties_complete if it had ended when the roster was uploaded, else
@@ -1304,7 +1304,7 @@ def _roster_cell(spec):
 
 def install_frms(client):
     """Install the FRMS app through the Library, from its committed files."""
-    folder = LIBRARY / "frms"
+    folder = REAL_APPS / "frms"
     files = {name: (folder / name).read_text()
              for name in ("app.yaml", "app.py", "config.json", "flash-light.txt", "flash-dark.txt")}
     resp = client.post("/api/apps", json={"files": files})
@@ -1388,7 +1388,7 @@ def test_the_frms_tile_is_drawn_as_four_sub_panels(client, apps_dir):
     # sleep with stages its own ask, the roster's panel 2x2 bottom-left,
     # and the rest budget beside it, before any duty the same ask; under
     # them the flash, bottom right, its two images the files installed.
-    folder = LIBRARY / "frms"
+    folder = REAL_APPS / "frms"
     assert spec == {"type": "grid", "cols": 6, "rows": 5, "cells": [
         {"x": 0, "y": 0, "w": 3, "h": 2, "spec": {"type": "empty", "message": "Upload your roster .ics"}},
         {"x": 3, "y": 0, "w": 3, "h": 2, "spec": {"type": "empty",

@@ -4,7 +4,7 @@ a position, where the crew member is over time, day and night at home
 base, the body clock's WOCL and troughs, and the duties cut into
 day/night/WOCL pieces against the body clock.
 
-The app (library/frms/app.py) is loaded by path, as the host
+The app (tests/fixtures/apps/frms/app.py) is loaded by path, as the host
 loads it, and its module functions called directly with a config of the
 real shape - home base, timezone, cbt_min, each destination's lat and
 lon - built here: the fixture's config.json is synthetic and has no
@@ -26,7 +26,7 @@ import pytest
 
 import host
 
-FIXTURES = Path(__file__).parent.parent / "library"
+FIXTURES = Path(__file__).parent / "fixtures" / "apps"
 
 
 def load_frms_app():

@@ -21,6 +21,7 @@ clone standing in for the server's copy), and every docker command goes
 to FakeRunner, which records it and answers from a script.
 """
 
+import base64
 import contextlib
 import hashlib
 import io
@@ -181,7 +182,9 @@ def client(db_path):
 
 # --- the Admin -------------------------------------------------------------
 
-Call = namedtuple("Call", "args cwd as_owner")
+# env: the variables a command adds to its environment (an organisation
+# repo's GIT_SSH_COMMAND), or None.
+Call = namedtuple("Call", "args cwd as_owner env", defaults=(None,))
 
 # The containers the fake hands out to the primary (project openfit): the
 # one running before an update, then a new one each time compose brings it
@@ -270,7 +273,13 @@ class FakeRunner:
     `stream_rc` isn't 0, its detail `stream_err`.
 
     `frames` holds, for each call, the names of the functions it was made
-    through (innermost first), so a test can tell which code ran it."""
+    through (innermost first), so a test can tell which code ran it.
+
+    `ssh-keygen` makes a stand-in key pair where it's told (`-f`), the
+    private key world-readable - so the Admin's own 0600 is what's tested -
+    and each private key's text kept in `private_keys`, for a test to look
+    for anywhere it shouldn't be. git with an `env` runs for real too: the
+    test's gitconfig points git@github.com: at local bare repos (GitHub)."""
 
     def __init__(self, repo, backups_dir):
         import admin_ops
@@ -291,17 +300,19 @@ class FakeRunner:
         self.images = {"openfit-tracker:latest"}
         self.unhealthy = set()
         self.info = dict(DOCKER_INFO)
+        self.private_keys = []
 
-    def run(self, args, cwd=None, as_owner=False, timeout=None):
+    def run(self, args, cwd=None, as_owner=False, timeout=None, env=None):
         assert isinstance(args, list), f"a command must be a list, not {args!r}"
         assert all(isinstance(a, str) for a in args), args
-        self._record(args, cwd, as_owner, sys._getframe(1))
-        result = self._answer(args, cwd, as_owner, timeout)
+        assert env is None or (isinstance(env, dict) and all(isinstance(v, str) for v in env.values())), env
+        self._record(args, cwd, as_owner, sys._getframe(1), env)
+        result = self._answer(args, cwd, as_owner, timeout, env)
         self.results.append(result)
         return result
 
-    def _record(self, args, cwd, as_owner, frame):
-        self.calls.append(Call(list(args), cwd, as_owner))
+    def _record(self, args, cwd, as_owner, frame, env=None):
+        self.calls.append(Call(list(args), cwd, as_owner, dict(env) if env is not None else None))
         names = []
         while frame is not None:
             names.append(frame.f_code.co_name)
@@ -319,13 +330,29 @@ class FakeRunner:
         if self.stream_rc != 0:
             raise admin_ops.OpError(f"{args[0]} stopped with exit code {self.stream_rc}.", self.stream_err)
 
-    def _answer(self, args, cwd, as_owner, timeout):
+    def _answer(self, args, cwd, as_owner, timeout, env=None):
         for matches, result in self.rules:
             if matches(args):
                 return result(args) if callable(result) else result
         if args[0] == "git":
-            return self.real.run(args, cwd=cwd, as_owner=as_owner, timeout=timeout)
+            return self.real.run(args, cwd=cwd, as_owner=as_owner, timeout=timeout, env=env)
+        if args[0] == "ssh-keygen":
+            return self.keygen(args)
         return self.docker(args)
+
+    def keygen(self, args):
+        """A stand-in ed25519 key pair at `-f`, its comment `-C`'s."""
+        path, comment = args[args.index("-f") + 1], args[args.index("-C") + 1]
+        blob = b"\x00\x00\x00\x0bssh-ed25519\x00\x00\x00\x20" + os.urandom(32)
+        private = ("-----BEGIN OPENSSH PRIVATE KEY-----\n" + base64.b64encode(os.urandom(160)).decode()
+                   + "\n-----END OPENSSH PRIVATE KEY-----\n")
+        with open(path, "w") as f:
+            f.write(private)
+        os.chmod(path, 0o644)
+        with open(path + ".pub", "w") as f:
+            f.write(f"ssh-ed25519 {base64.b64encode(blob).decode()} {comment}\n")
+        self.private_keys.append(private)
+        return 0, f"Your identification has been saved in {path}\n", ""
 
     # A1's view: the primary's container, and how many it has had.
     @property
@@ -534,6 +561,51 @@ class GitRepos:
         return _git(where or self.repo, "status", "--porcelain")
 
 
+class GitHub:
+    """GitHub, standing in: bare repos under <tmp>/github/<owner>/<repo>.git,
+    which the test's gitconfig makes git@github.com:<owner>/<repo>.git (git's
+    url.insteadOf), so the Admin's own clone and fetch commands - with their
+    SSH command, which git never needs for a local path - run as written, no
+    network and no ssh. make() a repo, push() a commit to it."""
+
+    def __init__(self, tmp_path):
+        self.root = tmp_path / "github"
+        self.root.mkdir()
+        self.tmp = tmp_path
+
+    def make(self, owner, repo, files=None, message="First commit"):
+        """A repo on GitHub, with one commit of `files` (none: an empty repo)."""
+        bare = self.root / owner / f"{repo}.git"
+        bare.parent.mkdir(parents=True, exist_ok=True)
+        _git(str(self.root), "init", "-q", "--bare", "-b", "main", str(bare))
+        if files:
+            self.push(owner, repo, files, message)
+        return bare
+
+    def _work(self, owner, repo):
+        work = self.tmp / "github-work" / owner / repo
+        if not work.exists():
+            work.parent.mkdir(parents=True, exist_ok=True)
+            _git(str(work.parent), "clone", "-q", str(self.root / owner / f"{repo}.git"), str(work))
+            _git(str(work), "symbolic-ref", "HEAD", "refs/heads/main")
+        return work
+
+    def push(self, owner, repo, files, message, remove=()):
+        """A commit of `files` ({path: text}) - and `remove`d paths - pushed
+        to the repo's main. Its full sha."""
+        work = self._work(owner, repo)
+        for name, text in files.items():
+            path = work / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text)
+        for name in remove:
+            _git(str(work), "rm", "-rq", name)
+        _git(str(work), "add", "-A")
+        _git(str(work), "commit", "-q", "-m", message)
+        _git(str(work), "push", "-q", "origin", "HEAD:main")
+        return _git(str(work), "rev-parse", "HEAD")
+
+
 @pytest.fixture
 def admin_env(tmp_path, monkeypatch):
     """An Admin over temp repos, a FakeRunner and a FakeClock.
@@ -548,7 +620,9 @@ def admin_env(tmp_path, monkeypatch):
 
     gitconfig = tmp_path / "gitconfig"
     gitconfig.write_text("[user]\n\tname = Test\n\temail = test@example.com\n"
-                         "[commit]\n\tgpgsign = false\n")
+                         "[commit]\n\tgpgsign = false\n"
+                         "[init]\n\tdefaultBranch = main\n"
+                         f"[url \"{tmp_path / 'github'}/\"]\n\tinsteadOf = git@github.com:\n")
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(gitconfig))
     monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
     repos = GitRepos(tmp_path)
@@ -564,7 +638,8 @@ def admin_env(tmp_path, monkeypatch):
         return admin_ops.Admin(repos.repo, str(data), runner=fake, clock=clock,
                                sleep=clock.sleep, self_dir=str(running), library_dir=str(library))
 
-    env = SimpleNamespace(repos=repos, fake=fake, clock=clock, data=data, make=make, library=library)
+    env = SimpleNamespace(repos=repos, fake=fake, clock=clock, data=data, make=make, library=library,
+                          github=GitHub(tmp_path))
     env.admin = make()
     env.backups = data / "backups"
     return env

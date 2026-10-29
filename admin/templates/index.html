@@ -337,6 +337,13 @@ pre.cmd{margin:6px 0 0;padding:10px 12px;background:var(--inset);border:1px soli
 .install-warn p{margin:0;}
 a.btn{display:inline-block;text-decoration:none;}
 a.btn.primary:hover{color:var(--accent-ink);}
+/* an organisation repo's deploy key: the public key, to copy onto GitHub,
+   and the steps to add it there */
+textarea.key{resize:none;word-break:break-all;font-size:12px;line-height:1.5;}
+ol.steps{margin:0 0 14px;padding-left:20px;font-size:13.5px;color:var(--ink-2);}
+ol.steps li{padding:2px 0;}
+.keyrow{display:flex;align-items:center;gap:10px;margin-top:8px;}
+.keyrow .lead{margin-right:auto;}
 /* the sign-in and setup views: OpenFit's sign-in card */
 .gate{min-height:100vh;display:grid;place-items:center;padding:24px 16px;}
 .gate .card{width:min(380px,100%);padding:26px 24px 24px;}
@@ -478,7 +485,7 @@ a.btn.primary:hover{color:var(--accent-ink);}
         <section class="card" id="repoTabCard">
           <div class="card-title"><h3>Repositories</h3><button class="fold-btn" id="repoTabFold" type="button" aria-expanded="true" aria-controls="repoTabBody" aria-label="Fold Repositories"></button></div>
           <div class="card-body" id="repoTabBody">
-            <p class="hint">Where the apps on the app library come from: OpenFit's own, and in time your organisation's.</p>
+            <p class="hint">Where the apps on the app library come from: OpenFit's own, and your organisation's, each its own GitHub repo.</p>
             <div class="acts"><button class="btn" id="addRepoBtn" type="button" aria-haspopup="dialog">＋ Add repository</button></div>
             <div class="box" style="--rows:10;margin-top:14px" id="sourceRows"></div>
           </div>
@@ -526,13 +533,27 @@ const OUTCOMES = {
 };
 const KINDS = {
   update: "Update OpenFit", undo: "Undo last update", add_user: "Add user", admin_update: "Update the Admin",
-  update_apps: "Update apps", admin_revert: "Revert the Admin",
+  update_apps: "Update apps", admin_revert: "Revert the Admin", repo_connect: "Connect", repo_update: "Update",
 };
 // The Admin's own operations: while one runs, a request that fails is the Admin restarting.
 const SELF = ["admin_update", "admin_revert"];
 const STATES = {
   running: ["Running", "ok"], stopped: ["Stopped", "off"], missing: ["Not found", "bad"], unknown: ["Unknown", "wait"],
 };
+// An organisation repo's state, as its row says it.
+const REPO_STATES = {
+  pending: ["Pending", "wait"], connected: ["Connected", "ok"], not_openfit: ["Not an OpenFit repo yet", "wait"],
+  refused: ["Not published", "bad"],
+};
+const GITHUB_ADDRESS = "https://github.com/<owner>/<repo>";
+// How a deploy key is added on GitHub, said when it's made and again under Show key.
+const KEY_STEPS = [
+  "Open the repo on GitHub, then Settings → Deploy keys → Add deploy key.",
+  'Paste the key, give it a title, and leave "Allow write access" unticked.',
+  "Come back and press Connect.",
+];
+const REMOVE_REPO = "Its apps leave the app library. Users who installed them keep them, but they won't be updated. "
+  + "Remember to delete the deploy key on GitHub too.";
 const GROUP_NOTES = {
   app: "OpenFit itself: rebuilt by Update OpenFit, and every user moved onto it.",
   admin: "This Admin: pulled by Update OpenFit, then rebuilt by its own Update available, under Versions.",
@@ -544,6 +565,7 @@ const SENTENCES = {
   user: "This stops every user's OpenFit for about a minute and backs up everyone's data first.",
   apps: "Publishes the new apps to every user. Nobody's OpenFit restarts.",
   admin: "The Admin restarts on its new version. This page will be unavailable for up to a minute and reconnects by itself. If the new version doesn't start, the old one is put back.",
+  repo: "Publishes this repo's new apps to every user. Nobody's OpenFit restarts.",
 };
 const ROUTES = { user: "/api/update", admin: "/api/admin/update", apps: "/api/library/update" };
 const PRIMARY_NOTE = "This is the server's main OpenFit: new versions are built from it, so it can't be removed.";
@@ -563,7 +585,8 @@ let restarting = null;  // polls GET / while it does, and reloads once it answer
 let portTouched = false;  // Add user's port typed in: the suggestion stops replacing it
 let removing = null;  // the user whose Remove asks to be sure
 let watching = null;  // the running op's id, opened in the list once it's done
-const open = { users: new Set(), activity: new Set(), sources: new Set(), apps: new Set() };
+let removingRepo = null;  // the repo whose Remove asks to be sure
+const open = { users: new Set(), activity: new Set(), sources: new Set(), apps: new Set(), keys: new Set() };
 
 // --- small helpers ------------------------------------------------------
 
@@ -924,15 +947,17 @@ function checkGroups() {
   return ((S.check && S.check.groups) || []).map((g) => ({ ...g, note: GROUP_NOTES[g.key] }));
 }
 
-// The update popup, shared by User, Admin and the app library: what it
-// does, the changes it brings, then Proceed (the existing operation) or
-// Cancel.
-function openUpdate(kind) {
+// The update popup, shared by User, Admin, the app library and an
+// organisation repo (`r`, its row): what it does, the changes it brings,
+// then Proceed (the existing operation) or Cancel.
+function openUpdate(kind, r) {
   const titles = { user: "Update OpenFit", admin: "Update the Admin", apps: "Update apps" };
-  popup(titles[kind], (body) => {
+  popup(kind === "repo" ? `Update ${r.name}` : titles[kind], (body) => {
     body.append(el("p", SENTENCES[kind], "hint"));
     let ready = true;
-    if (kind === "admin") {
+    if (kind === "repo") {
+      body.append(changesBlock([{ title: r.name, commits: r.repo.commits || [], prs: [] }]));
+    } else if (kind === "admin") {
       const v = S.versions.admin;
       body.append(changesBlock([{ title: "Admin", ...v.pending }]));
       if (!v.can_self_update) {
@@ -946,15 +971,15 @@ function openUpdate(kind) {
       body.append(changesBlock(checkGroups()));
     }
     const msg = el("div", null, "form-msg");
-    const go = button("Proceed", "btn primary", (b) => proceed(kind, b, msg), !ready || busy());
+    const go = button("Proceed", "btn primary", (b) => proceed(kind, b, msg, r), !ready || busy());
     body.append(msg, actions(button("Cancel", "btn", closePopup), go));
   }, true);
 }
 
-async function proceed(kind, btn, msg) {
+async function proceed(kind, btn, msg, row) {
   btn.disabled = true;
   say(msg, "");
-  const r = await api(ROUTES[kind], {});
+  const r = await api(kind === "repo" ? `/api/repos/${encodeURIComponent(row.repo.slug)}/update` : ROUTES[kind], {});
   btn.disabled = false;
   if (r.status !== 202) {
     say(msg, r.data.error || "That didn't start.", "bad");
@@ -1066,11 +1091,14 @@ function downloadBlock(href) {
 function openPublish(r) {
   popup(`${r.name}: last publish`, (body) => {
     const apps = el("span", r.apps.length ? r.apps.map((a) => a.name).join(", ") : "No apps");
-    body.append(infoList(el("dl", null, "info"), [
+    const rows = [
       ["When", r.published_at ? when(r.published_at) : "Not published yet"],
       ["Commit", el("span", r.commit || "—", "mono")],
       ["Apps", apps],
-    ]));
+    ];
+    if (r.repo) rows.push(["From", linkTo(`${r.repo.owner}/${r.repo.repo}`, r.repo.address)]);
+    body.append(infoList(el("dl", null, "info"), rows));
+    if (r.repo && r.repo.status !== "connected") body.append(el("p", r.repo.message, "dnote"));
     if (r.official && r.error) {
       body.append(el("p", "The last publish failed: " + r.error.text + (r.error.detail ? "\n" + r.error.detail : ""), "install-warn"));
     }
@@ -1136,10 +1164,18 @@ function paintRepos(s, isBusy) {
     row.dataset.source = r.source;
     const name = button(r.name, "linkbtn", () => openPublish(r));
     name.setAttribute("aria-haspopup", "dialog");
+    if (r.repo) row.dataset.repo = r.repo.slug;
     const acts = el("span", null, "r-acts");
     if (r.update === "apps") acts.append(offer("Update available", () => openUpdate("apps"), isBusy));
     if (r.update === "openfit") acts.append(offer("Comes with the OpenFit update", () => openUpdate("user"), isBusy));
+    if (r.update === "repo") acts.append(offer("Update available", () => openUpdate("repo", r), isBusy));
     if (r.official && r.current === false) acts.append(button("Publish again", "btn sm", (b) => publishAgain(b), isBusy));
+    if (r.repo && r.repo.error) {
+      const p = pill("Couldn't reach GitHub", "bad");
+      p.title = r.repo.error.text;
+      acts.append(p);
+    }
+    if (r.repo && r.repo.status !== "connected") acts.append(repoPill(r.repo));
     const line = el("span", null, "r-line");
     line.append(name, el("span", r.short || "—", "ver"));
     row.append(line, el("span", r.published_at ? "Last published " + when(r.published_at) : "Not published yet", "r-sub"), acts);
@@ -1169,7 +1205,8 @@ async function publishAgain(btn) {
 }
 
 function opWhat(op) {
-  return (KINDS[op.kind] || op.kind) + (op.kind === "add_user" && op.user ? " " + op.user.name : "");
+  return (KINDS[op.kind] || op.kind) + (op.kind === "add_user" && op.user ? " " + op.user.name : "")
+    + (op.repo ? ` ${op.repo.owner}/${op.repo.repo}` : "");
 }
 
 function logLines(box, lines) {
@@ -1432,20 +1469,30 @@ function paintUserVersion(s) {
 
 // --- the Repo tab ---------------------------------------------------------------
 
-function paintSources(s) {
+function repoPill(repo) {
+  const [text, tone] = REPO_STATES[repo.status] || [repo.status || "", "off"];
+  return pill(text, tone);
+}
+
+// The Repo tab: OpenFit first, then the rest by name, each opening onto its
+// blurb and apps - and an organisation repo's address, state, Connect while
+// it's pending (and its key again, under Show key) and Remove.
+function paintSources(s, isBusy) {
   const rows = $("sourceRows");
   rows.replaceChildren();
   for (const r of s.repos) {
-    const head = rowHead("g-repo", el("span", r.name, "r-name"), el("span", r.short || "—", "ver"));
-    rows.append(expandable(open.sources, r.source, head, () => {
+    const head = rowHead("g-repo", el("span", r.name, "r-name"), r.repo && r.repo.status !== "connected"
+      ? repoPill(r.repo) : el("span", r.short || "—", "ver"));
+    rows.append(expandable(open.sources, r.key, head, () => {
       const panel = el("div", null, "dpanel one");
+      if (r.repo) panel.append(...repoBlock(r, isBusy));
       panel.append(el("div", r.description || "No description.", "infobox" + (r.description ? "" : " empty")),
         el("h5", "Applications", "subhead"));
       const list = el("div", null, "nested");
       if (!r.apps.length) list.append(el("div", "No apps published.", "dstate"));
       for (const a of r.apps) {
         const appHead = rowHead("g-repo", el("span", a.name, "r-name"), el("span", a.id, "ver"));
-        list.append(expandable(open.apps, r.source + "/" + a.id, appHead, () => {
+        list.append(expandable(open.apps, r.key + "/" + a.id, appHead, () => {
           const p = el("div", null, "dpanel one");
           p.append(el("div", a.description || "No description.", "infobox" + (a.description ? "" : " empty")));
           return p;
@@ -1455,6 +1502,134 @@ function paintSources(s) {
       return panel;
     }));
   }
+  if (removingRepo && !s.repos.some((r) => r.repo && r.repo.slug === removingRepo)) removingRepo = null;
+}
+
+// An organisation repo's part of its row: where it is, its state and why,
+// then its buttons.
+function repoBlock(r, isBusy) {
+  const repo = r.repo, path = `/api/repos/${encodeURIComponent(repo.slug)}/`;
+  const state = el("span");
+  state.append(repoPill(repo));
+  const rows = [["GitHub", linkTo(`${repo.owner}/${repo.repo}`, repo.address)], ["State", state],
+    ["Source", el("span", r.source || "—", "mono")], ["Last checked", when(repo.checked_at)]];
+  const out = [infoList(el("dl", null, "info"), rows)];
+  const said = el("p", repo.message + (repo.detail ? " " + repo.detail : ""), "dnote");
+  said.dataset.f = "state";
+  out.push(said);
+  if (repo.error) {
+    const err = el("p", repo.error.text, "dnote");
+    err.dataset.f = "error";
+    out.push(err);
+  }
+  const acts = el("div", null, "acts");
+  const msg = el("div", null, "form-msg");
+  if (repo.state === "pending") {
+    acts.append(button("Connect", "btn sm primary", (b) => connectRepo(repo, b, msg), isBusy));
+    const shown = open.keys.has(repo.slug);
+    const disclose = button(shown ? "Hide key" : "Show key", "btn sm", () => {
+      if (open.keys.has(repo.slug)) open.keys.delete(repo.slug); else open.keys.add(repo.slug);
+      paintSources(S, busy());
+    });
+    disclose.setAttribute("aria-expanded", shown ? "true" : "false");
+    acts.append(disclose);
+  }
+  const sure = el("div", null, "danger-panel");
+  sure.hidden = removingRepo !== repo.slug;
+  sure.dataset.f = "remove";
+  sure.append(el("h5", `Remove ${r.name}?`), el("p", REMOVE_REPO),
+    actions(button("Cancel", "btn", () => { removingRepo = null; sure.hidden = true; }),
+      button("Remove", "btn danger solid", async (b) => {
+        b.disabled = true;
+        const res = await api(path + "remove", {});
+        b.disabled = false;
+        if (res.status !== 200) return say(msg, errorText(res), "bad");
+        removingRepo = null;
+        open.keys.delete(repo.slug);
+        say($("reposMsg"), `Removed ${repo.owner}/${repo.repo}. Delete its deploy key on GitHub too.`);
+        await loadStatus();
+      }, isBusy)));
+  acts.append(button("Remove", "btn sm danger", () => { removingRepo = repo.slug; sure.hidden = false; }, isBusy));
+  out.push(acts);
+  if (repo.state === "pending" && open.keys.has(repo.slug)) out.push(keyBlock(repo, repo.public_key));
+  out.push(sure, msg);
+  return out;
+}
+
+// A deploy key, and how it's added on GitHub: the public key - the only
+// half the Admin ever shows - with Copy, and the three steps.
+function keyBlock(repo, key) {
+  const box = el("div");
+  box.dataset.f = "key";
+  box.append(el("p", `A deploy key for ${repo.owner}/${repo.repo}, made for it alone on this server. Add it on GitHub:`,
+    "hint"));
+  const steps = el("ol", null, "steps");
+  for (const step of KEY_STEPS) steps.append(el("li", step));
+  box.append(steps);
+  const field = el("textarea", null, "input mono key");
+  field.readOnly = true;
+  field.rows = 3;
+  field.value = key || "";
+  field.setAttribute("aria-label", "The public deploy key");
+  const copied = el("span", "", "lead form-msg info");
+  box.append(field, (() => {
+    const row = el("div", null, "keyrow");
+    row.append(copied, button("Copy key", "btn sm", () => copyText(field, copied)));
+    return row;
+  })());
+  return box;
+}
+
+// Connect: starts the clone (an operation, in the Activity log).
+async function connectRepo(repo, btn, msg) {
+  say(msg, "");
+  btn.disabled = true;
+  const r = await api(`/api/repos/${encodeURIComponent(repo.slug)}/connect`, {});
+  btn.disabled = false;
+  if (r.status !== 202) {
+    say(msg, r.data.error || "That didn't start.", "bad");
+    return false;
+  }
+  open.keys.delete(repo.slug);
+  await loadStatus();
+  return true;
+}
+
+// Add repository: the repo's GitHub address, then its new deploy key and
+// how to add it on GitHub, then Connect.
+function openAddRepo() {
+  popup("Add repository", (body) => {
+    body.append(el("p", "A GitHub repo of apps, laid out as OpenFit's library is: a repo.yaml at its top, "
+      + "and a folder for each app. Its apps reach every user's app library.", "hint"));
+    const field = el("div", null, "field");
+    const label = el("label", "The repo's address on GitHub");
+    const input = el("input", null, "input");
+    input.id = "repoUrl";
+    input.autocomplete = "off";
+    input.placeholder = GITHUB_ADDRESS;
+    label.htmlFor = "repoUrl";
+    field.append(label, input);
+    const msg = el("div", null, "form-msg");
+    const go = button("Add", "btn primary", async (b) => {
+      say(msg, "");
+      b.disabled = true;
+      const r = await api("/api/repos", { url: input.value });
+      b.disabled = false;
+      if (r.status !== 200) return say(msg, errorText(r), "bad");
+      await loadStatus();
+      showNewKey(body, r.data.repo, r.data.public_key);
+    }, busy());
+    body.append(field, msg, actions(button("Cancel", "btn", closePopup), go));
+    input.addEventListener("keydown", (ev) => { if (ev.key === "Enter") go.click(); });
+  });
+}
+
+function showNewKey(body, repo, key) {
+  $("popupTitle").textContent = `Add ${repo.owner}/${repo.repo}'s deploy key`;
+  body.replaceChildren(keyBlock(repo, key));
+  const msg = el("div", null, "form-msg");
+  body.append(msg, actions(button("Later", "btn", closePopup),
+    button("Connect", "btn primary", async (b) => { if (await connectRepo(repo, b, msg)) closePopup(); })));
 }
 
 // --- painting ---------------------------------------------------------------------
@@ -1470,7 +1645,7 @@ function paint(s) {
   paintAdd(s, isBusy);
   paintUserData(s);
   paintUserVersion(s);
-  paintSources(s);
+  paintSources(s, isBusy);
   selfUpdating = isSelf(s.op);
   if (isBusy) startPolling(); else stopPolling();
 }
@@ -1524,9 +1699,9 @@ $("addForm").addEventListener("submit", async (ev) => {
 });
 
 // The clipboard API needs HTTPS (or localhost), which the Admin on the LAN
-// isn't: there, the selected text is copied the old way.
-$("linkCopy").addEventListener("click", async () => {
-  const field = $("linkText");
+// isn't: there, the selected text is copied the old way. `said` says how
+// it went.
+async function copyText(field, said) {
   let ok = false;
   if (navigator.clipboard && window.isSecureContext) {
     try { await navigator.clipboard.writeText(field.value); ok = true; } catch (e) { ok = false; }
@@ -1535,8 +1710,9 @@ $("linkCopy").addEventListener("click", async () => {
     field.select();
     try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
   }
-  $("linkCopied").textContent = ok ? "Copied." : "Select the link and copy it.";
-});
+  said.textContent = ok ? "Copied." : "Select it and copy it.";
+}
+$("linkCopy").addEventListener("click", () => copyText($("linkText"), $("linkCopied")));
 $("linkClose").addEventListener("click", closeLink);
 
 $("popupBg").addEventListener("click", (ev) => { if (ev.target === $("popupBg")) closePopup(); });
@@ -1556,10 +1732,7 @@ for (const name of PANELS) {
   $(name + "Fold").innerHTML = ICONS.fold;
   $(name + "Fold").addEventListener("click", () => fold(name));
 }
-$("addRepoBtn").addEventListener("click", () => popup("Add repository", (body) => {
-  body.append(el("p", "Coming soon: your organisation's own repositories, with apps of their own beside OpenFit's.", "hint"),
-    actions(button("Close", "btn", closePopup)));
-}));
+$("addRepoBtn").addEventListener("click", openAddRepo);
 
 setTheme(curTheme());
 paintDate();

@@ -226,6 +226,35 @@ def create_app(admin, auth, secret_key):
     def api_publish_again():
         return done(admin.publish_again)
 
+    # Organisation repos (A6). Adding one answers with its public deploy
+    # key, to add on GitHub - never the private one, which no route returns.
+    @app.post("/api/repos")
+    def api_add_repo():
+        try:
+            return jsonify(ok=True, **admin.add_repo(body().get("url")))
+        except Refused as e:
+            return _fail(e.message, e.status)
+        except OpError as e:
+            return _fail(e.message, 502, detail=e.detail)
+
+    @app.post("/api/repos/<slug>/connect")
+    def api_connect_repo(slug):
+        try:
+            return jsonify(ok=True, op=admin.start_repo_connect(slug)), 202
+        except Refused as e:
+            return _fail(e.message, e.status)
+
+    @app.post("/api/repos/<slug>/update")
+    def api_update_repo(slug):
+        try:
+            return jsonify(ok=True, op=admin.start_repo_update(slug)), 202
+        except Refused as e:
+            return _fail(e.message, e.status)
+
+    @app.post("/api/repos/<slug>/remove")
+    def api_remove_repo(slug):
+        return done(lambda: admin.remove_repo(slug))
+
     return app
 
 
