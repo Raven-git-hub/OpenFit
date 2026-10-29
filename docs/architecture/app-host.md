@@ -1849,6 +1849,94 @@ reads them from the shelf, so the page's copy is never trusted. Success is
 any install's (the tab placement, then the list and Home re-read); a refusal
 shows the server's message.
 
+### Library apps follow the shelf
+
+A library app is read-only here (an Update is refused, 403), so its new
+versions come from the shelf alone - and every OpenFit that has it takes
+them up by itself, with no restart (B3, [distribution.md](distribution.md)):
+`sync_library_apps(apps_dir, library_dir, notes_path)` in `app/shelf.py`.
+
+**When.** At startup, in `serve()` after the migrations and before the
+scheduler, so an app is current before anything draws it; then every 60
+seconds (`LIBRARY_SYNC_SECONDS`), the scheduler's `library-sync` job, on a
+worker of its own so it never queues behind a source's sync. One run at a
+time. With no shelf mounted - no folder, or no `index.json` that reads -
+it does nothing at all, and never marks an app gone for it.
+
+**Spotting a new version.** The index gives each app's version as its
+`sha256`, the Admin's `fingerprint()` of the published folder.
+`shelf.fingerprint()` is that function reproduced exactly (a test computes
+both over the same folders, FRMS among them): every file's relative path and
+the sha256 of its bytes, in sorted order, dot-folders, `__pycache__`,
+dotfiles and `.pyc` left out. An install is the shelf's files byte for byte,
+and the `__pycache__` a load leaves is skipped, so an installed copy's
+fingerprint is the index's while it's current. A run reads the index once;
+for each installed app (one that loads) with a library id, it hashes the
+copy, and only for one that differs reads the shelf's files. A custom app
+is never looked at. (A copy that differs only by a file an install never
+takes - a name it refuses - is found to have the shelf's files already, and
+left alone without a note.)
+
+**Updating one**, under the install lock (`_write_lock`), in order:
+
+1. **It must be installable here**: its `requires` within `APP_LEVEL` (else
+   it's `waiting`: an app written for a newer OpenFit may mean something by
+   the rest, so that's checked first); its own id its bare name (`id:
+   frms`); no folders inside it; every file read as Browse reads one; then
+   `check_app()`. Else `failed`, with why.
+2. **The swap is an Update's**: `apps._replace_app()`, which `update_app()`
+   calls too, past its 403 for a library app - stage the files, load them
+   as the scanner would load them in the app's own folder (so a library
+   app's are held to its bare id there too), swap the folders, delete the
+   old. One that doesn't load is `failed`, the old copy running as before.
+   No route reaches `_replace_app()` but `update_app()`.
+3. **Its cached load is dropped**, so the next render runs the new code.
+
+Its data, its Home tiles and their config are never touched: no database
+work, no layout change. A version `waiting` or `failed` is never tried
+again - not even read - until the shelf has another (a different
+`sha256`). An app the index no longer lists, or whose source has left the
+shelf, is `removed`: left exactly as it is, no longer updated; back on the
+shelf with a new version, it updates again.
+
+**The record**, `/data/app_updates.json` (`APP_UPDATES_PATH`,
+`$OPENFIT_APP_UPDATES_PATH`): `{<app id>: {state, at, sha256, changes,
+reason}}`, each library app's latest event - `state` `updated`, `waiting`,
+`failed` or `removed`; `at` a UTC stamp; `sha256` the version it's about
+(`null` for removed); `changes` the change notes the index had for it at the
+update (the Admin's, below), `[]` otherwise; `reason` why it waits or
+failed. Written whole (a temp file, flushed, renamed over it) and read
+strictly (`read_notes()`): a file that isn't exactly that is taken as empty,
+logged once. A waiting, failed or removed note goes once the app is current
+again, and any app's once it's no longer on the volume, so one installed
+again starts afresh. Each event is one line in the log, never a file's
+contents: `[library] updated openfitavi.frms (a1b2c3d → e4f5a6b)`, the
+fingerprints before and after.
+
+**What changed.** Each app's entry in the index carries `changes`: the ten
+newest commits touching its folder, merges left out, newest first, `[{sha
+(12 hex), subject (≤ 200 characters), date (ISO 8601)}]`, the Admin's `git
+log` at publish ([admin.md](admin.md#change-notes-b3)). The user system
+takes the well-formed ones, at most ten; Browse ignores them.
+
+**The page.** `GET /api/apps` gives each library app `library_note: {state,
+at, changes, reason}` (its record entry less the `sha256`), or `null`; a
+custom app has no such key. On its row in the Applications list:
+
+- **updated**: an **Updated <date>** pill beside the row's head (a button of
+  its own, never inside the head), for 14 days after `at` (`UPDATED_DAYS`).
+  It opens **What's new in <name>**: each change's date and subject, or
+  "Updated from the library." when there are none. After 14 days the row
+  looks as any.
+- **waiting**: "An update is waiting for a newer OpenFit." under the name.
+- **failed**: "An update couldn't be installed: <reason>."
+- **removed**: "No longer in the app library, so it won't be updated."
+
+All of it set as text (`textContent`), never markup.
+
+Not in it: a user choosing when (the admin publishes, everyone follows),
+updating a custom app from anywhere, and scheduled updates.
+
 ## An app's row: reads, files, Refresh, Uninstall
 
 Each row of the Applications list expands, the same way a Your data row does
@@ -1977,7 +2065,9 @@ everything up to the swap leaves the app exactly as it was.
    as uninstall's must, or it's a 400 ("not an app id: ..."). A library app's
    (`openfit.frms`) is a 403, nothing touched: `'openfit.frms' is from the
    openfit library, so it's updated there, not here — Duplicate makes a copy
-   of your own to change`.
+   of your own to change`. It follows its library instead
+   ([above](#library-apps-follow-the-shelf)), through the same swap, steps 4
+   to 9 below: `_replace_app()`, which this calls past its own checks.
 2. **The files** are checked as an install's are: an `app.yaml` among them
    that parses to a mapping; every file name plain and every content text
    (`filename_problem()`), or a 400.
@@ -1999,8 +2089,8 @@ everything up to the swap leaves the app exactly as it was.
 6. **The files are staged** in a hidden `.update-<hex>` folder (the scanner
    skips dot-folders), written as an install's are (`_stage()`, which both
    use).
-7. **The staged folder must load** as the scanner would load it
-   (`load_app()`): the whole manifest (`name`, `reads`, `config`, `metrics`,
+7. **The staged folder must load** as the scanner would load it in the
+   app's own folder (`load_app()`, under that folder's name): the whole manifest (`name`, `reads`, `config`, `metrics`,
    which install leaves to the scanner), and `app.py` imported, with a
    callable `render` and, if it has one, `handle`. Unlike install, which runs
    nothing, an update imports the new code once here: a broken update would
@@ -2047,7 +2137,9 @@ again, or uninstall the app, to see or remove it.
   none), the schema a tile's settings form is built from; `metrics` the
   metrics it invents, in order, by short key (`range` `[low, high]` or null;
   `[]` if none); `files` names the plain files in the app's folder, sorted,
-  each one the file route serves.
+  each one the file route serves. A library app also has `library_note`,
+  `{state, at, changes, reason}` or `null`: what last happened as it followed
+  the shelf ([above](#library-apps-follow-the-shelf)).
 - `POST /api/apps` → installs an app from `{"files": {name: text}}`; `201
   {"ok": true, "id", "has_app_py"}`, or a refusal that writes nothing. See
   [Installing an app](#installing-an-app).

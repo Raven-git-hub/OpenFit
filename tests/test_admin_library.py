@@ -130,6 +130,12 @@ def git(env, *args):
     return Call(["git", *args], env.repos.repo, True)
 
 
+def notes(env, commit, *apps):
+    """The change notes' git log of each app, as a publish of the official
+    library at `commit` runs it (B3): as the owner, in the checkout."""
+    return [git(env, *admin_ops.change_notes_args(commit, f"library/{app}")) for app in apps]
+
+
 def run_op(env, start):
     start()
     env.admin.wait(10)
@@ -173,7 +179,18 @@ def test_a_publish_puts_a_set_behind_the_link_and_indexes_it(admin_env):
     # Each app's fingerprint, and its name and description from its app.yaml
     # (neither app has either); the source's from repo.yaml (none: its id);
     # and when this source was published (A6: each source has its own).
-    apps = {app: {"sha256": admin_ops.fingerprint(str(shelf / app)), "name": None, "description": None}
+    # And each app's change notes (B3): the commits touching its folder,
+    # newest first.
+    first = run(env.repos.repo, "git", "rev-parse", "HEAD~1")
+    dates = {c: run(env.repos.repo, "git", "log", "-1", "--format=%cI", c) for c in (commit, first)}
+
+    def note(c, subject):
+        return {"sha": c[:12], "subject": subject, "date": dates[c]}
+
+    changes = {"caffeine": [note(commit, "Two apps")],
+               "steps": [note(commit, "Two apps"), note(first, "Initial commit")]}
+    apps = {app: {"sha256": admin_ops.fingerprint(str(shelf / app)), "name": None, "description": None,
+                  "changes": changes[app]}
             for app in ("caffeine", "steps")}
     assert index(env) == {"published_at": "2026-10-27T12:00:00Z",
                           "sources": {"openfit": {"commit": commit, "name": "openfit", "description": None,
@@ -182,8 +199,8 @@ def test_a_publish_puts_a_set_behind_the_link_and_indexes_it(admin_env):
     assert apps["steps"]["sha256"] == admin_ops.fingerprint(str(repo / "steps"))
     assert list(index(env)["sources"]["openfit"]["apps"]) == ["caffeine", "steps"]
     assert result == {"commit": commit, "apps": apps, "changed": True}
-    # HEAD read, and nothing else run.
-    assert env.fake.commands() == [HEAD_LOG]
+    # HEAD read, then each app's change notes, and nothing else run.
+    assert env.fake.calls == [git(env, *HEAD_LOG[1:]), *notes(env, commit, "caffeine", "steps")]
 
 
 def test_a_publish_leaves_out_what_isnt_an_apps_file(admin_env, tmp_path, capsys):
@@ -385,6 +402,79 @@ def test_publishing_the_commit_before_again_rebuilds_its_set(admin_env):
     assert len(sets(env)) == 2 and not any(s.startswith(".") for s in sets(env))
 
 
+# --- change notes (B3) -----------------------------------------------------------
+
+
+def test_an_apps_change_notes_are_its_ten_newest_commits_merges_left_out(admin_env):
+    env = admin_env
+    long = "A subject past two hundred characters " + "x" * 220
+    for i in range(11):
+        env.repos.commit(f"Steps {i}", {"library/steps/app.py": f"x = {i}\n"})
+    env.repos.commit("Caffeine only", {"library/caffeine/app.yaml": "id: caffeine\n"})
+    env.repos.commit(long, {"library/steps/app.py": "x = 'long'\n"})
+    env.repos.merge_pr(7, [("Steps from a branch", {"library/steps/notes.txt": "branch\n"})])
+    run(env.repos.repo, "git", "pull", "-q", "--ff-only")
+    commit = head(env)
+
+    env.admin.publish_official()
+
+    steps = index(env)["sources"]["openfit"]["apps"]["steps"]["changes"]
+    # The newest ten touching library/steps, newest first: the merge left
+    # out (its branch's own commit kept), another app's commit too.
+    assert [c["subject"] for c in steps] == [
+        "Steps from a branch", long[:200], *[f"Steps {i}" for i in range(10, 2, -1)]]
+    assert len(steps[1]["subject"]) == admin_ops.MAX_SUBJECT == 200
+    log = run(env.repos.repo, "git", "log", "-n", "10", "--no-merges", "--format=%H %cI", commit, "--", "library/steps")
+    assert [(c["sha"], c["date"]) for c in steps] == [(sha[:12], date) for sha, date in
+                                                     (line.split(" ") for line in log.splitlines())]
+    assert all(set(c) == {"sha", "subject", "date"} for c in steps)
+    caffeine = index(env)["sources"]["openfit"]["apps"]["caffeine"]["changes"]
+    assert [c["subject"] for c in caffeine] == ["Caffeine only"]
+    # Exactly the brief's git log, as the checkout's owner, in it.
+    assert git(env, "log", "-n", "10", "--no-merges", "--format=%H%x09%cI%x09%s", commit, "--",
+               "library/steps") in env.fake.calls
+
+
+def test_a_git_log_that_fails_publishes_the_app_without_change_notes(admin_env, capsys):
+    env = admin_env
+    env.fake.fail(lambda a: a[:3] == ["git", "log", "-n"] and a[-1] == "library/steps", rc=128, err="fatal: bad")
+
+    result = env.admin.publish_official()
+
+    assert result["apps"]["steps"]["changes"] == []
+    entry = index(env)["sources"]["openfit"]
+    assert entry["commit"] == head(env) and entry["apps"]["steps"]["changes"] == []
+    assert entry["apps"]["steps"]["sha256"] == admin_ops.fingerprint(str(env.library / "openfit" / "steps"))
+    assert "Couldn't read library/steps's change notes, so it's published without them." in capsys.readouterr().out
+
+
+def test_change_notes_args_take_only_a_full_commit():
+    commit = "c" * 40
+    assert admin_ops.change_notes_args(commit, "library/frms") == [
+        "log", "-n", "10", "--no-merges", "--format=%H%x09%cI%x09%s", commit, "--", "library/frms"]
+    for bad in ("HEAD", "c" * 12, "C" * 40, "--all"):
+        with pytest.raises(ValueError):
+            admin_ops.change_notes_args(bad, "library/frms")
+
+
+def test_parse_changes_keeps_only_whole_lines_and_the_ten_newest():
+    full = [f"{i:040x}" for i in range(12)]
+    out = "\n".join([
+        f"{full[0]}\t2026-10-29T10:00:00+01:00\tThe newest\twith a tab",
+        "not a commit\t2026-10-29T10:00:00Z\tskipped",
+        f"{full[1][:12]}\t2026-10-29T10:00:00Z\ta short sha, skipped",
+        f"{full[2]}\tyesterday\ta date that isn't ISO, skipped",
+        f"{full[3]}\t2026-10-28T09:00:00Z\t",
+        *[f"{full[i]}\t2026-10-2{i % 10}T00:00:00Z\tOlder {i}" for i in range(4, 12)],
+    ])
+    changes = admin_ops.parse_changes(out)
+    assert changes[0] == {"sha": full[0][:12], "subject": "The newest\twith a tab", "date": "2026-10-29T10:00:00+01:00"}
+    assert changes[1] == {"sha": full[3][:12], "subject": "", "date": "2026-10-28T09:00:00Z"}
+    assert [c["subject"] for c in changes[2:]] == [f"Older {i}" for i in range(4, 12)]
+    assert len(changes) == 10
+    assert len(admin_ops.parse_changes("\n".join(f"{full[i]}\t2026-10-29T10:00:00Z\t{i}" for i in range(12)))) == 10
+
+
 def test_publishing_the_current_commit_again_never_rewrites_its_set(admin_env):
     env = admin_env
     env.admin.publish_official()
@@ -537,7 +627,8 @@ def test_a_publish_that_fails_in_an_update_leaves_it_ok_with_publish_again(logge
     env.fake.clear()
     r = logged_in.post("/api/library/publish", json={}, headers=H)
     assert r.status_code == 200 and r.get_json() == {"ok": True}
-    assert env.fake.commands() == [HEAD_LOG]  # HEAD read; no docker
+    # HEAD read, then each app's change notes; no docker
+    assert env.fake.calls == [git(env, *HEAD_LOG[1:]), *notes(env, head(env), "caffeine", "steps")]
     lib = logged_in.get("/api/status").get_json()["library"]
     assert lib["current"] is True and lib["error"] is None
     assert lib["commit"] == head(env) and lib["apps"] == ["caffeine", "steps"]
@@ -687,7 +778,9 @@ def test_update_apps_runs_in_the_exact_order_and_restarts_nobody(logged_in, admi
         git(env, *HEAD_LOG[1:]),
         # what really arrived
         git(env, "diff", "--name-only", old, "HEAD"),
-        # (publish: file work, nothing run) then the check brought up to date
+        # publish: file work, and each app's change notes read
+        *notes(env, new, "caffeine", "steps"),
+        # then the check brought up to date
         git(env, *HEAD_LOG[1:]),
         git(env, "rev-list", "--count", "HEAD..origin/main"),
         git(env, "diff", "--name-only", "HEAD", "origin/main"),

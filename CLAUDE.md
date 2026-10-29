@@ -23,8 +23,10 @@ own calls to its device API. Full direction:
 ## Layout
 - `app/main.py` — Flask API + APScheduler. `serve()` runs migrations, then the
   one-time derived backfill, then (with no password set) logs that the
-  OpenFit is locked and how to make a setup link, then the scheduler, then
-  the app; none of that may run on import (tests import it). **The guard**
+  OpenFit is locked and how to make a setup link, then one `library_sync()`
+  (the library apps catching up with the shelf, B3: `app/shelf.py`), then
+  the scheduler, then the app; none of that may run on import (tests
+  import it). **The guard**
   (U1, `docs/architecture/auth.md`): a `before_request`, `guard()`, gives
   every request that isn't a GET/HEAD/OPTIONS and doesn't carry `X-OpenFit:
   1` a 403 ("This request didn't come from OpenFit's page.") — login and
@@ -76,7 +78,12 @@ own calls to its device API. Full direction:
   worker (`ThreadPoolExecutor(1)`) and `misfire_grace_time=None`: jobs that
   come due together — two sources on the same cadence, started together,
   tick in step — queue and run in turn instead of racing for the lock and
-  all but one skipping, every tick.
+  all but one skipping, every tick. Beside them `library-sync`
+  (`LIBRARY_SYNC_JOB`), an `interval` job every `LIBRARY_SYNC_SECONDS`
+  (60) ticking `library_sync()` (`sync_library_apps()` over
+  `APPS_DIR`/`LIBRARY_DIR`/`APP_UPDATES_PATH`, logged, never raised) on
+  an executor of its own (`"library"`, `ThreadPoolExecutor(1)`), so it
+  never queues behind — nor skips beside — a source's sync.
 - `app/migrations/` — hand-rolled runner. Numbered `NNN_name.sql`, applied once,
   tracked in `schema_migrations`. New schema change = a new numbered migration;
   migrations must be additive and safe against a populated production DB.
@@ -312,12 +319,17 @@ own calls to its device API. Full direction:
   400 `"this updates '<id>', but the files are for '<other>' — an update
   keeps the app's id (Duplicate makes a copy under a new one)"`); every
   file name and content install's (`_check_files()`, shared). Then under
-  `_write_lock`: the app installed — loading, its folder the one
+  `_write_lock`, `_replace_app(apps_dir, app_id, files)` — internal, the
+  swap B3's sync shares (`shelf.sync_library_apps()`), no route reaching
+  it but through `update_app()`'s 403; the caller holds the lock: the
+  app installed — loading, its folder the one
   `find_app()` loaded it from, a direct child of `APPS_DIR` — else 404
   `"'<id>' isn't installed — use Add Application to install it"`;
   `check_app()`; the files staged in a hidden `.update-<hex>`
-  (`_stage()`), which must load as the scanner loads it (`_loads()`:
-  `load_app()` — the whole manifest, and `app.py` imported, unlike
+  (`_stage()`), which must load as the scanner loads it in the app's own
+  folder (`_loads()`: `load_app(staging, <its folder's name>)`, so a
+  library app's are held to its bare id — the whole manifest, and
+  `app.py` imported, unlike
   install, which runs nothing: a broken update would take down a working
   app) else 400 `"the update doesn't load, so '<id>' is unchanged:
   <why>"`, staging removed; then `_swap()`: the old folder renamed aside
@@ -396,6 +408,49 @@ own calls to its device API. Full direction:
   link swapped in since the listing refused, 404), ≤ `MAX_APP_FILES` 64 and
   `MAX_APP_BYTES` 16 MB (the Admin's own; 413), UTF-8 (else 415 naming the
   file), then `_check_files()`; `LibraryError` 404 for an app not on it.
+  **Library apps follow the shelf** (B3): `sync_library_apps(apps_dir,
+  library_dir, notes_path, now=None)`, at `serve()` and every 60s
+  (`library-sync`), one run at a time (`_running`); no shelf (no folder
+  or no `index.json` that reads) → nothing, never an app marked gone.
+  `fingerprint(folder)` is the Admin's `admin_ops.fingerprint()` to the
+  byte (a test holds them equal: sorted paths through sorted folders,
+  each path + `\0` + its bytes' sha256; dot-folders, `__pycache__`,
+  dotfiles, `.pyc` left out), so an installed copy (byte-identical, its
+  `__pycache__` skipped) whose own is the index's `sha256` is current. For
+  each app `scan_apps()` loads with a library id (`library_of()`; a
+  custom app never touched): not listed by the index (`_listed()`: no
+  source entry, or the app not in its `apps`) → `removed`, left as it
+  is; current → nothing (a `waiting`/`failed`/`removed` note dropped);
+  a version already noted (`updated`, `waiting`, `failed`: the same
+  `sha256`) → never tried again; else, under `_write_lock` (the app
+  found and hashed afresh), `_update_files()`: the folders as
+  `list_shelf()` finds them, its `app.yaml` read — `requires` first,
+  beyond `APP_LEVEL` → `waiting` (`_Waiting`, `level_problem()`'s
+  words), its own id its bare name, no sub-folder (`HAS_FOLDERS`),
+  every file read as `read_app_files()` reads one (`_read_files()`,
+  shared) — then `apps._replace_app()` (check_app, the load check, the
+  swap, the cache dropped); any `AppError`/`LibraryError` → `failed`
+  with why, the old copy as it was. Shelf files the same as the installed
+  copy's though the fingerprints differ (a file an install never takes)
+  → nothing, remembered in `_settled` (in memory) until either changes.
+  Something unforeseen is that app's `failed`, never the others'. The
+  update record, `/data/app_updates.json` (`APP_UPDATES_PATH`,
+  `$OPENFIT_APP_UPDATES_PATH`; conftest's in `tmp_path`): `{<library app
+  id>: {state, at, sha256, changes, reason}}`, each app's latest event —
+  `state` in `NOTE_STATES` (`updated`/`waiting`/`failed`/`removed`), `at`
+  a UTC stamp, `sha256` the version (null for removed), `changes` the
+  index entry's well-formed change notes at the update (≤ `MAX_CHANGES`
+  10 `{sha: 12 hex, subject ≤ 200, date ISO}`; `[]` otherwise), `reason`
+  (≤ `MAX_REASON` 500); written whole (`_write_notes()`: `mkstemp` beside
+  it, fsync, `os.replace`), read strictly (`read_notes()`: anything else
+  → `{}`, logged once per change of the file); an app no longer on the
+  volume (`app_present()`) loses its note. One log line an event, never
+  a file's contents: `[library] updated openfitavi.frms (<old fp7> →
+  <new fp7>)`, `… is waiting for a newer OpenFit: …`, `couldn't update
+  …: …`, `… is no longer in the app library, so it won't be updated`.
+  `library_note(note)` → `{state, at, changes, reason}` (less the
+  `sha256`), which `GET /api/apps` adds to each library app's summary
+  as `library_note` (null for none; a custom app has no such key).
   Routes (`app/main.py`): `GET /api/library` → `list_shelf()`; `GET
   /api/library/<source>/<app>` → `{id, name, files: [{name, text}]}`,
   `app.yaml`, `app.py`, then the rest by name; `POST
@@ -1269,8 +1324,20 @@ own calls to its device API. Full direction:
   the head a button, its click showing/hiding the panel, the chevron
   turning (`.open`), `aria-expanded`/`aria-controls` kept; the open ids in
   a Set (`state.open`, `appsList.open`) so a row stays open across a
-  refresh. An app row is a `.ditem.aitem`, its head a `.drow.arow`
-  (chevron · name); open, `appPanel()` is a `.dpanel.apanel` of three
+  refresh; `o.line`, if given, what the item holds in the head's place (a
+  line around it). An app row is a `.ditem.aitem`, its head a `.drow.arow`
+  (chevron · name). A library app's `library_note` (B3) shows on it: an
+  `updated` one, while `freshUpdate(note)` (under `UPDATED_DAYS` 14 after
+  `at`), as `updatedLine(a, head)` — a `.a-line` of the head and, beside
+  it (never inside the head), a `.pill.ok.a-upd` button "Updated <date>"
+  (`fmtStamp(at)`) opening `openWhatsNew(a)`: a `.modal` "What's new in
+  <name>", each change's date (`fmtStamp`) and subject, or "Updated from
+  the library." for none; a `waiting`/`failed`/`removed` one as
+  `noteSentence(note)` in a `.a-libnote` under the name — "An update is
+  waiting for a newer OpenFit.", "An update couldn't be installed:
+  <reason>." (no reason: without it), "No longer in the app library, so
+  it won't be updated." — all `textContent`, never markup; past 14 days,
+  or a custom app, the row as ever. Open, `appPanel()` is a `.dpanel.apanel` of three
   columns (one on a phone): **Reads** (the manifest's keys, `esc()`d, the
   metric's name on hover — a key the app invents by its declared label; none → a muted "No declared reads"), **Files**
   (each a button opening `openAppFile()`: a `.wide` modal reading
@@ -2031,7 +2098,8 @@ own calls to its device API. Full direction:
   through a link, dotfiles/`__pycache__`/`.pyc` left out) into
   `.sets/openfit-<commit12>`, swaps the relative link `openfit` onto it
   in one step, writes `index.json` (`{published_at, sources: {openfit:
-  {commit, apps: {app: {sha256: fingerprint()}}}}}`) last, keeps the
+  {commit, apps: {app: {sha256: fingerprint(), name, description,
+  changes}}}}}`) last, keeps the
   set before; a failure leaves the shelf as it was; file work only, no
   docker, every path checked inside `/library`. It runs at startup
   (`publish_at_startup()`, from `serve()`, when the index is missing or
@@ -2122,9 +2190,21 @@ own calls to its device API. Full direction:
   checked slug and data folder only; `Runner.run(env=)` adds it), and only
   `org_git_allowed()`'s: `clone -- <its url> <its folder>`, `fetch
   origin`, `rev-parse --verify -q` of `HEAD^{commit}`/`@{upstream}^{commit}`,
-  `log` of full commits, `merge --ff-only`/`reset --hard` of a full commit,
+  `log` of full commits, an app's change notes (B3: exactly
+  `change_notes_args(<full commit>, <app>)` — `log -n 10 --no-merges
+  --format=%H%x09%cI%x09%s <commit> -- <one _SHELF_APP name>`),
+  `merge --ff-only`/`reset --hard` of a full commit,
   `cat-file` of a full commit's tree or a full object id - anything else a
-  ValueError, unrun. `publish_source(source, src_dir, commit)` is
+  ValueError, unrun. **Change notes** (B3): each app's index entry
+  carries `changes` — `publish_set(..., changes=)`, a function of the
+  app's folder name (`_official_changes(commit)`: `self.git()` of
+  `change_notes_args(commit, "library/<app>")`, as the owner;
+  `_repo_changes(entry, commit)`: `org_git()` of `change_notes_args(commit,
+  "<app>")`), parsed by `parse_changes()` (≤ `CHANGE_NOTES` 10, newest
+  first, `{sha: 12 hex, subject ≤ MAX_SUBJECT 200, date: %cI}`, a line
+  not a full commit and ISO date left out); a `git log` that fails → `[]`
+  and "Couldn't read <label>/<app>'s change notes, so it's published
+  without them.", never a failed publish; no `changes` → `[]` for all. `publish_source(source, src_dir, commit)` is
   `publish_set()` for any source (`publish_official()` its `openfit` call;
   an org repo's with `label` owner/repo and `skip_hidden`: `.git` quietly
   left out); each index entry now `{commit, name, description, apps,
@@ -3246,10 +3326,20 @@ same PR:
   a removed user's kept data that never hold the password (a restore
   sets a new one through a setup link; the server's backups keep
   everything); and deleting a single backup. Restoring from a download
-  comes with the backup file. Still to come, in order:
-  B2 (`replaces`
-  moving the data, L3's rules: the owner's `frms` straight to
-  `openfitavi.frms`) and self-updating installed apps (B3), with L4;
+  comes with the backup file. Then B3 (no migration; `app/shelf.py`,
+  `app/apps.py`, `app/main.py`, the page, and `admin/`'s change notes):
+  installed library apps follow the shelf — `sync_library_apps()` at
+  startup and every minute, a new version (another fingerprint than the
+  installed copy's) swapped in through `_replace_app()` (the Update swap,
+  shared; `update_app()` keeps its 403), its data, tiles and config
+  untouched, each event in `/data/app_updates.json` and `GET /api/apps`'
+  `library_note` (an Updated pill for 14 days opening What's new, or the
+  note's sentence); a version waiting or failed never retried until the
+  shelf has another; the Admin's index entries carry each app's `changes`
+  (its ten newest non-merge commits), the org-repo allowlist the one new
+  `git log` form. B2 is parked: the owner reinstalled FRMS fresh from
+  Browse, so there's no data to move; `replaces` stays parsed and refused
+  until it's needed. Still to come, in order: L4;
   non-GitHub hosts, HTTPS or token access, and per-user repo visibility
   are out; installing an app with folders
   inside it is out; scheduled updates

@@ -68,13 +68,21 @@ def auth_files(tmp_path, monkeypatch):
     """Point the user system's account and session key at throwaway files
     for every test, and forget failed sign-ins: nothing can read or write
     /data/auth.json or /data/.session_key, and one test's wrong passwords
-    never count against another's."""
+    never count against another's. Likewise the library apps' update
+    record, /data/app_updates.json, what the sync has settled, and the
+    shelf - none, unless a test makes one."""
     import main
+    import shelf
 
-    files = SimpleNamespace(auth=tmp_path / "auth.json", key=tmp_path / ".session_key")
+    files = SimpleNamespace(auth=tmp_path / "auth.json", key=tmp_path / ".session_key",
+                            updates=tmp_path / "app_updates.json")
     monkeypatch.setitem(main.app.config, "AUTH_PATH", str(files.auth))
     monkeypatch.setitem(main.app.config, "SESSION_KEY_PATH", str(files.key))
+    monkeypatch.setitem(main.app.config, "APP_UPDATES_PATH", str(files.updates))
+    # No shelf unless a test publishes one: serve()'s library sync never reads /library.
+    monkeypatch.setitem(main.app.config, "LIBRARY_DIR", str(tmp_path / "no-library"))
     monkeypatch.setattr(main, "_fails", openfit_auth.Fails())
+    monkeypatch.setattr(shelf, "_settled", {})
     return files
 
 

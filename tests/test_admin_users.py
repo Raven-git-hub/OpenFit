@@ -618,6 +618,8 @@ def test_an_update_moves_everyone_together(admin_env):
         # the running ones health-checked
         ps("openfit"), health(C1),
         ps("openfit-sam"), health(sam(1)),
+        # the apps published (file work), each one's change notes read
+        git(env, *admin_ops.change_notes_args(env.repos.head(), "library/steps")),
         # the check brought up to date
         git(env, "log", "-1", "--format=%H%x09%h%x09%s", "HEAD"),
         git(env, "rev-list", "--count", "HEAD..origin/main"),
@@ -900,8 +902,10 @@ def test_a_restore_that_fails_mid_undo_stops_there(admin_env):
     failed = calls.index(restore("openfit-sam_tracker-data", names["sam"]))
     assert restore(VOLUME, names["andy"]) in calls[:failed]
     # No kim, no retag, no reset, nobody started: only HEAD read, to see the
-    # shelf still matches the code.
-    assert [c.args for c in calls[failed + 1:]] == [["git", "log", "-1", "--format=%H%x09%h%x09%s", "HEAD"]]
+    # shelf still matches the code, and its app's change notes, to see the
+    # index does.
+    assert [c.args for c in calls[failed + 1:]] == [["git", "log", "-1", "--format=%H%x09%h%x09%s", "HEAD"],
+                                                    ["git", *admin_ops.change_notes_args(new, "library/steps")]]
     assert undo["outcome"] == "failed"
     log = "\n".join(texts(undo))
     assert "sam's data couldn't be put back." in log

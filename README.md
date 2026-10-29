@@ -383,6 +383,15 @@ a library has an id of the form `<source>.<name>`, such as `openfitavi.frms`
 (the library names the source; the app's own `app.yaml` just says `frms`).
 It's read-only here: its row has no Update, only a note that it's updated by
 your admin, and Duplicate gives you a copy of your own to change (`frms-2`).
+It **updates itself**: when the admin publishes a new version, your OpenFit
+takes it up within a minute (and at every start), no restart - the files
+swapped in as an Update swaps them, the app's data, tiles and settings
+untouched - and its row shows **Updated** for two weeks; click it for
+**What's new**, the commits that changed it. A new version this OpenFit
+can't run waits ("An update is waiting for a newer OpenFit."), one that
+won't install or load is skipped, the old copy kept running ("An update
+couldn't be installed: …"), and an app taken out of the library stays as
+it is, no longer updated.
 
 **Browse**, beside Add Application, lists the apps in the libraries your admin
 publishes - OpenFit's own and any organisation repo's, each app tagged with
@@ -391,9 +400,10 @@ description and **Add Application**, which shows its files read-only in the
 install popup and installs them exactly as published, as `<source>.<name>`
 (`openfitavi.frms`). An app it can't add
 says why: already installed, it needs a newer OpenFit, it has folders inside
-it, or it replaces an app of yours whose data moving across comes in a coming
-update (FRMS, while your own `frms` is installed). If Browse says the library
-isn't connected, restart yourself from the Admin page.
+it, or it replaces an app of yours whose data isn't moved across (FRMS,
+while your own `frms`, or its data, is here: remove them and install it
+fresh). If Browse says the library isn't connected, restart yourself from
+the Admin page.
 
 To install one, copy its folder onto the volume, or use **＋ Add
 Application** on the Data tab: paste or upload its `app.yaml`, its `app.py`
@@ -822,6 +832,15 @@ to every user. Check now finds new commits on it, and **Update available**
 on its row publishes them, with nobody's OpenFit restarted. **Remove** takes
 its apps off the app library (installed copies stay); delete the deploy key
 on GitHub too. The Admin's server needs SSH (port 22) to github.com.
+
+**Developing an app** in an organisation repo is then:
+
+1. edit it and push to the repo (`openfit-aviation`, for FRMS);
+2. in the Admin, **Check now**, then **Update available** on the repo's row
+   (the official library's own apps go out with **Update apps**);
+3. within a minute the app updates itself in every OpenFit that has it
+   installed, its row saying **Updated**, with your commits under What's
+   new (the ten newest that touched its folder).
 
 It holds the Docker socket, so it has full control of the host. It only ever
 acts on its own users' compose projects and on helper containers it labels as

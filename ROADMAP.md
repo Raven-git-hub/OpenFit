@@ -209,11 +209,16 @@ the order was changed so the Admin comes first, in A-slices:
    own files, never the page's; the manifest gains `description`, `requires`
    (an app level, `APP_LEVEL` 1) and `replaces`, parsed, with an install
    refused while what it replaces is still here; and `library/` corrected to
-   FRMS alone, the other seven apps moved to `tests/fixtures/apps/`. Next: B2
-   (`replaces` moving the data), then B3 (self-updating installed apps).
+   FRMS alone, the other seven apps moved to `tests/fixtures/apps/`. **B3,
+   built:** installed library apps update themselves when the shelf has a
+   new version (at startup and every minute, no restart), their data and
+   tiles untouched, with an Updated note and What's new from the Admin's
+   change notes. B2 (`replaces` moving the data) is parked: FRMS was
+   reinstalled fresh from Browse, so there's nothing to move.
 6. Organisation repos (A6).
 
-Parked: scheduled updates (an update at a time the admin picks).
+Parked: scheduled updates (an update at a time the admin picks), and B2
+(`replaces` moving an older app's data, until one needs moving).
 
 The `.local` names and the proxy are deferred: users are on `IP:port` for now.
 

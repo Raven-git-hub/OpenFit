@@ -384,6 +384,17 @@ a.btn{display:inline-block;text-decoration:none;}
 .card.applist{padding:10px;}
 .arow{display:grid;grid-template-columns:16px minmax(0,1fr);align-items:center;column-gap:12px;}
 .a-name{display:block;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+/* a library app's latest event: a fresh update a pill beside the head,
+   opening What's new; a waiting, failed or removed one said under the name */
+.a-line{display:flex;align-items:center;gap:8px;}
+.a-line > .arow{flex:1;min-width:0;}
+.pill.a-upd{flex:none;margin-right:10px;border:none;}
+.pill.a-upd:hover{text-decoration:underline;}
+.a-libnote{grid-column:2;margin-top:2px;font-size:12.5px;color:var(--muted);overflow-wrap:anywhere;}
+.a-changes{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:8px;max-height:50vh;overflow-y:auto;}
+.a-change{display:grid;grid-template-columns:64px minmax(0,1fr);column-gap:12px;font-size:13.5px;}
+.a-chg-date{font-family:var(--font-mono);font-size:12.5px;color:var(--muted);}
+.a-chg-subj{overflow-wrap:anywhere;}
 .dpanel.apanel{grid-template-columns:repeat(3,minmax(0,1fr));}
 .akeys{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:4px;}
 .akey{font-family:var(--font-mono);font-size:12.5px;color:var(--ink-2);overflow-wrap:anywhere;}
@@ -1607,7 +1618,9 @@ h5 + .dnote{margin-top:0;}
      the panel and turns the chevron (.open). o.open is the Set of the ids
      open now, so a row repainted by a refresh comes back as it was;
      o.panel() builds the detail, with the id o.panelId; o.onClose, if
-     given, runs as the row shuts. */
+     given, runs as the row shuts; o.line, if given, is what the item
+     holds in the head's place: a line with the head in it and something
+     of its own beside it (a library app's Updated pill). */
   function expandable(item, head, o){
     const isOpen = () => o.open.has(o.id);
     const reflect = () => {
@@ -1627,7 +1640,7 @@ h5 + .dnote{margin-top:0;}
       }
       reflect();
     };
-    item.appendChild(head);
+    item.appendChild(o.line || head);
     if(isOpen()) item.appendChild(o.panel());
     reflect();
     return item;
@@ -2726,9 +2739,81 @@ h5 + .dnote{margin-top:0;}
     item.dataset.app = a.id;
     const head = el('button','drow arow',
       `<span class="chev" aria-hidden="true">›</span><span class="a-name">${esc(a.name || a.id)}</span>`);
+    // A library app's latest event as it followed its library: a fresh
+    // update an Updated pill beside the head, opening What's new; a
+    // waiting, failed or removed one its sentence under the name.
+    const note = a.library ? a.library_note : null;
+    const said = noteSentence(note);
+    if(said) head.appendChild(el('span','a-libnote')).textContent = said;
+    const line = !said && freshUpdate(note) ? updatedLine(a, head) : null;
     return expandable(item, head, {
-      open:appsList.open, id:a.id, panelId:appPanelId(a), panel:() => appPanel(a),
+      open:appsList.open, id:a.id, panelId:appPanelId(a), panel:() => appPanel(a), line,
     });
+  }
+
+  /* A library app's library_note (GET /api/apps): what last happened as
+     it followed its library - updated, waiting, failed or removed. An
+     update is news for UPDATED_DAYS after it; the rest are said as long
+     as they hold. */
+  const UPDATED_DAYS = 14;
+  function freshUpdate(note, now){
+    if(!note || note.state !== 'updated') return false;
+    const at = Date.parse(note.at);
+    return !isNaN(at) && (now == null ? Date.now() : now) - at < UPDATED_DAYS * DAY_MS;
+  }
+  function noteSentence(note){
+    if(!note) return null;
+    if(note.state === 'waiting') return 'An update is waiting for a newer OpenFit.';
+    if(note.state === 'removed') return 'No longer in the app library, so it won\'t be updated.';
+    if(note.state === 'failed'){
+      const why = String(note.reason || '').trim().replace(/[.\s]+$/, '');
+      return why ? `An update couldn't be installed: ${why}.` : 'An update couldn\'t be installed.';
+    }
+    return null;
+  }
+
+  /* A fresh update's line: the row's head, and beside it - a button of
+     its own, never inside the head - an Updated pill opening What's new. */
+  function updatedLine(a, head){
+    const line = el('div','a-line');
+    line.appendChild(head);
+    const pill = line.appendChild(el('button','pill ok a-upd'));
+    pill.type = 'button';
+    pill.setAttribute('aria-haspopup', 'dialog');
+    pill.textContent = 'Updated ' + fmtStamp(a.library_note.at);
+    pill.onclick = () => openWhatsNew(a);
+    return line;
+  }
+
+  /* What's new: the change notes the library had for the version an app
+     updated itself to - each its date and subject, as text - or, with
+     none, that it came from the library. */
+  function openWhatsNew(a){
+    const note = a.library_note || {};
+    const changes = Array.isArray(note.changes) ? note.changes : [];
+    const {box, close} = openModal(`
+      <h4></h4>
+      <p class="hint"></p>
+      <ul class="a-changes"></ul>
+      <div class="modal-actions">
+        <button class="btn sm" data-act="close" type="button">Close</button>
+      </div>`);
+    box.querySelector('h4').textContent = `What's new in ${a.name || a.id}`;
+    const hint = box.querySelector('.hint'), list = box.querySelector('.a-changes');
+    hint.textContent = `Updated ${fmtStamp(note.at)}, from the ${a.library} library.`;
+    if(changes.length){
+      changes.forEach(c => {
+        const li = list.appendChild(el('li','a-change'));
+        li.appendChild(el('span','a-chg-date')).textContent = fmtStamp(c.date);
+        li.appendChild(el('span','a-chg-subj')).textContent = c.subject;
+      });
+    }else{
+      list.remove();
+      hint.textContent = 'Updated from the library.';
+    }
+    const btn = box.querySelector('[data-act="close"]');
+    btn.onclick = close;
+    btn.focus();
   }
 
   /* An open row: Reads · Files · Writes, then the actions. */

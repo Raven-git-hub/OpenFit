@@ -314,9 +314,10 @@ def test_connect_clones_then_publishes_as_the_repos_source(admin_env):
     add(env)
     env.fake.clear()
     op = connect(env)
-    # Nothing on the server's checkout, nothing in docker: the clone and the shelf.
+    # Nothing on the server's checkout, nothing in docker: the clone and the
+    # shelf - and the app's change notes, from the clone (B3).
     assert [c.args[:2] for c in env.fake.calls] == [
-        ["git", "clone"], ["git", "rev-parse"]], env.fake.calls
+        ["git", "clone"], ["git", "rev-parse"], ["git", "log"]], env.fake.calls
 
     assert op["outcome"] == "ok", op["log"]
     assert op["summary"] == f"Connected {OWNER}/{REPO}, and published 1 app to the app library as 'openfitavi'."
@@ -330,10 +331,14 @@ def test_connect_clones_then_publishes_as_the_repos_source(admin_env):
     assert {p.name: p.read_bytes() for p in shelf_frms.iterdir()} == {
         p.name: p.read_bytes() for p in FRMS.iterdir() if p.is_file()}
     source = index(env)["sources"]["openfitavi"]
+    date = subprocess.run(["git", "log", "-1", "--format=%cI", head], cwd=env.data / "repos" / SLUG / "repo",
+                          capture_output=True, text=True, check=True).stdout.strip()
     assert source == {"commit": head, "name": "OpenFit Aviation", "description": "Aviation applications for OpenFit.",
                       "apps": {"frms": {"sha256": admin_ops.fingerprint(str(shelf_frms)), "name": "FRMS",
-                                        "description": source["apps"]["frms"]["description"]}},
+                                        "description": source["apps"]["frms"]["description"],
+                                        "changes": [{"sha": head[:12], "subject": "First commit", "date": date}]}},
                       "published_at": "2026-10-27T12:00:00Z"}
+    assert env.fake.calls[-1].args == ["git", *admin_ops.change_notes_args(head, "frms")]
     assert source["apps"]["frms"]["description"].startswith("Fatigue risk management for airline crew.")
     assert json.dumps(index(env)["sources"]["openfit"]) == official  # byte for byte
 
@@ -547,6 +552,92 @@ def test_any_other_git_command_for_a_repo_is_refused_unrun(admin_env, args):
     with pytest.raises(ValueError):
         env.admin.org_git(e, *args)
     assert env.fake.calls == []
+
+
+# An app folder's change notes (B3): exactly change_notes_args()' form -
+# ten, that format, a full commit, a literal --, one folder name.
+CHANGES = ["log", "-n", "10", "--no-merges", "--format=%H%x09%cI%x09%s", "a" * 40, "--", "frms"]
+
+
+def test_the_change_notes_log_is_the_one_new_form_a_repo_may_run(admin_env):
+    env = admin_env
+    aviation(env)
+    add(env)
+    e = entry(env)
+    clone = str(env.data / "repos" / SLUG / "repo")
+    assert admin_ops.org_git_allowed(CHANGES, e["url"], clone)
+    assert admin_ops.org_git_allowed(admin_ops.change_notes_args("b" * 40, "a-b-1"), e["url"], clone)
+    env.fake.clear()
+    env.admin.org_git(e, *CHANGES)
+    assert [c.args for c in env.fake.calls] == [["git", *CHANGES]]
+    assert org_git_in_lane(env, env.fake.calls[0]) == SLUG
+
+
+@pytest.mark.parametrize("args", [
+    CHANGES[:2] + ["11"] + CHANGES[3:],  # another count
+    CHANGES[:2] + ["20"] + CHANGES[3:],
+    CHANGES[:1] + CHANGES[3:],  # no count
+    CHANGES[:6] + CHANGES[7:],  # no --
+    CHANGES[:6] + ["frms"],
+    CHANGES + ["walk"],  # two paths
+    CHANGES[:7] + ["frms", "walk"],
+    CHANGES[:7] + ["frms/app.py"],  # not one plain name
+    CHANGES[:7] + ["../frms"],
+    CHANGES[:7] + ["-frms"],
+    CHANGES[:7] + [".git"],
+    CHANGES[:7] + ["Frms"],
+    CHANGES[:7] + [""],
+    CHANGES[:7] + ["frms\n"],
+    CHANGES[:5] + ["a" * 12] + CHANGES[6:],  # not a full commit
+    CHANGES[:5] + ["HEAD"] + CHANGES[6:],
+    CHANGES[:5] + ["--all"] + CHANGES[6:],
+    CHANGES[:4] + ["--format=%H%x09%s"] + CHANGES[5:],  # another format
+    CHANGES[:3] + ["--merges"] + CHANGES[4:],
+    CHANGES[:3] + CHANGES[4:],  # merges not left out
+    CHANGES[:5] + ["-p"] + CHANGES[5:],
+])
+def test_any_other_change_notes_log_is_refused_unrun(admin_env, args):
+    env = admin_env
+    aviation(env)
+    add(env)
+    e = entry(env)
+    env.fake.clear()
+    assert not admin_ops.org_git_allowed(args, e["url"], str(env.data / "repos" / SLUG / "repo"))
+    with pytest.raises(ValueError):
+        env.admin.org_git(e, *args)
+    assert env.fake.calls == []
+
+
+def test_a_repos_update_brings_its_apps_new_change_notes_to_the_index(admin_env):
+    env = admin_env
+    added_and_connected(env)
+    first = entry(env)["commit"]
+    env.github.push(OWNER, REPO, {"frms/notes.txt": "new\n"}, "Notes for FRMS")
+    env.github.push(OWNER, REPO, {"README.md": "hi\n"}, "A readme, not FRMS")
+    check(env)
+    assert update(env)["outcome"] == "ok"
+
+    new = entry(env)["commit"]
+    changes = index(env)["sources"]["openfitavi"]["apps"]["frms"]["changes"]
+    assert [(c["sha"], c["subject"]) for c in changes][1:] == [(first[:12], "First commit")]
+    assert changes[0]["subject"] == "Notes for FRMS" and changes[0]["sha"] != new[:12]
+    # Read from the clone, with the repo's key, in the one form allowed.
+    logs = [c for c in org_calls(env) if c.args[1] == "log" and c.args[-2:] == ["--", "frms"]]
+    assert [c.args for c in logs][-1] == ["git", *admin_ops.change_notes_args(new, "frms")]
+    for c in logs:
+        assert org_git_in_lane(env, c) == SLUG
+
+
+def test_a_repos_change_notes_that_cant_be_read_publish_it_without_them(admin_env):
+    env = admin_env
+    aviation(env)
+    add(env)
+    env.fake.fail(lambda a: a[:3] == ["git", "log", "-n"] and a[-2:] == ["--", "frms"], rc=128, err="fatal: bad")
+    op = connect(env)
+    assert op["outcome"] == "ok"
+    assert index(env)["sources"]["openfitavi"]["apps"]["frms"]["changes"] == []
+    assert f"Couldn't read {OWNER}/{REPO}/frms's change notes, so it's published without them." in [
+        line["text"] for line in op["log"]]
 
 
 # --- 5. publishing a source alone ---------------------------------------------------------------

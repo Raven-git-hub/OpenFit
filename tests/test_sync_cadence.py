@@ -328,10 +328,11 @@ class FakeScheduler:
 
 
 def intervals(scheduler):
-    """{job id: hours} for each per-plugin job, checking each is sync_one(<its plugin>)."""
+    """{job id: hours} for each per-plugin job, checking each is sync_one(<its plugin>).
+    library-sync - the library apps following the shelf - isn't one."""
     out = {}
     for job_id, job in scheduler.jobs.items():
-        if job["trigger"] != "interval":
+        if job["trigger"] != "interval" or job_id == main.LIBRARY_SYNC_JOB:
             continue
         assert job["func"] is main.sync_one
         assert job_id == f"sync:{job['args'][0]}"
@@ -382,8 +383,11 @@ def test_the_routes_work_without_a_scheduler(client, db_path):
 def test_a_fresh_install_starts_with_only_the_catch_up(start_scheduler):
     scheduler = start_scheduler()
 
+    # And the library apps following the shelf, which runs with no source
+    # connected (test_library_updates.py).
     assert list(scheduler.jobs.values()) == [
-        {"func": main.scheduled_sync, "trigger": "date", "args": []}
+        {"func": main.scheduled_sync, "trigger": "date", "args": []},
+        {"func": main.library_sync, "trigger": "interval", "args": [], "seconds": 60, "executor": "library"},
     ]
 
 

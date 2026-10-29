@@ -213,6 +213,15 @@ REPO_FILE = "repo.yaml"
 MAX_REPO_NAME = 40
 MAX_DESCRIPTION = 300
 MAX_YAML_BYTES = 256 * 1024
+# Each app's change notes, for the What's new a user system shows when an
+# installed copy updates itself (B3): the newest CHANGE_NOTES commits
+# touching its folder, merges left out, by exactly this git log
+# (change_notes_args()) - each {sha: its first 12 hex, subject: at most
+# MAX_SUBJECT characters, date: the committer's, ISO 8601}.
+CHANGE_NOTES = 10
+CHANGES_FORMAT = "--format=%H%x09%cI%x09%s"
+MAX_SUBJECT = 200
+_CHANGE_DATE = re.compile(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:Z|[+-]\d\d:\d\d)\Z")
 
 # Organisation repos (A6): another GitHub repo laid out as library/ is
 # (repo.yaml and an app folder each, at its top), cloned over SSH with a
@@ -823,9 +832,48 @@ def app_info(folder):
             "description": _blurb(data.get("description"))}
 
 
-def _app_entry(folder):
-    """An app's entry in the index: its fingerprint, name and description."""
-    return {"sha256": fingerprint(folder), **app_info(folder)}
+def change_notes_args(commit, path):
+    """git log's arguments, after `git`, for the change notes of the app
+    folder at `path` (library/<app> in the server's checkout, <app> in an
+    organisation repo's clone) as of `commit`, a full commit: the newest
+    CHANGE_NOTES, merges left out, as CHANGES_FORMAT - the path after a
+    literal --."""
+    if not _COMMIT.match(commit):
+        raise ValueError(f"not a full commit: {commit!r}")
+    return ["log", "-n", str(CHANGE_NOTES), "--no-merges", CHANGES_FORMAT, commit, "--", path]
+
+
+def parse_changes(out):
+    """change_notes_args()' output as the index keeps it: [{sha, subject,
+    date}], newest first, at most CHANGE_NOTES - sha the commit's first 12
+    hex, subject cut to MAX_SUBJECT characters. A line that isn't a full
+    commit, an ISO date and a subject is left out."""
+    changes = []
+    for line in out.splitlines():
+        parts = line.split("\t", 2)
+        if len(parts) != 3 or not _COMMIT.match(parts[0]) or not _CHANGE_DATE.match(parts[1]):
+            continue
+        changes.append({"sha": parts[0][:12], "subject": parts[2][:MAX_SUBJECT], "date": parts[1]})
+    return changes[:CHANGE_NOTES]
+
+
+def _change_notes(changes, app, log, label):
+    """An app's change notes, from `changes` - publish_set()'s, a function
+    of the app's folder name giving them, or None where git couldn't say -
+    else []: a publish never fails for them, and one without is logged."""
+    if changes is None:
+        return []
+    notes = changes(app)
+    if notes is None:
+        log(f"Couldn't read {label}/{app}'s change notes, so it's published without them.")
+        return []
+    return notes
+
+
+def _app_entry(folder, changes=()):
+    """An app's entry in the index: its fingerprint, name and description,
+    and its change notes."""
+    return {"sha256": fingerprint(folder), **app_info(folder), "changes": list(changes)}
 
 
 def read_shelf(library_dir):
@@ -918,14 +966,18 @@ def _same_entry(old, entry):
     return isinstance(old, dict) and {k: v for k, v in old.items() if k != "published_at"} == entry
 
 
-def publish_set(src, library_dir, source, commit, now, log=print, label="library", skip_hidden=False):
+def publish_set(src, library_dir, source, commit, now, log=print, label="library", skip_hidden=False,
+                changes=None):
     """Publish the app folders in `src` (the repo's library/, or an
     organisation repo's clone) to the shelf at `library_dir`, as `source`
-    at `commit`. -> {commit, apps: {app: {sha256, name, description}},
-    changed}. The source's entry in the index also carries the name and
-    description of `src`'s repo.yaml (repo_info()), each app's its own
-    app.yaml's (app_info()), and when this source was last published.
-    `label` and `skip_hidden` are _collect_apps()'s.
+    at `commit`. -> {commit, apps: {app: {sha256, name, description,
+    changes}}, changed}. The source's entry in the index also carries the
+    name and description of `src`'s repo.yaml (repo_info()), each app's
+    its own app.yaml's (app_info()) and its change notes - `changes(app)`,
+    the Admin's git log of its folder (None: git couldn't say, so [] and a
+    log line; no `changes` at all: [] for every app) - and when this
+    source was last published. `label` and `skip_hidden` are
+    _collect_apps()'s.
 
     The apps are copied into a new set, .sets/<source>-<commit12>, made
     whole under a hidden name first; then the link <source> is swapped
@@ -951,7 +1003,7 @@ def publish_set(src, library_dir, source, commit, now, log=print, label="library
     index = read_shelf(root)
     try:
         if before == f"{SHELF_SETS}/{name}" and os.path.isdir(final) and not os.path.islink(final):
-            apps = {app: _app_entry(os.path.join(final, app))
+            apps = {app: _app_entry(os.path.join(final, app), _change_notes(changes, app, log, label))
                     for app in sorted(os.listdir(final)) if _SHELF_APP.match(app)}
             entry = {"commit": commit, **repo_info(src, source, log, label), "apps": apps}
             if _same_entry(shelf_source(index, source), entry):
@@ -987,7 +1039,8 @@ def publish_set(src, library_dir, source, commit, now, log=print, label="library
                 if copied > MAX_APP_BYTES:
                     raise OSError(f"library/{app} grew past {MAX_APP_BYTES >> 20} MB while it was copied")
         # Read from the copies just made, never the repo's: what's indexed is what's published.
-        published = {app: _app_entry(os.path.join(tmp, app)) for app, _files in apps}
+        published = {app: _app_entry(os.path.join(tmp, app), _change_notes(changes, app, log, label))
+                     for app, _files in apps}
         if os.path.lexists(final):
             aside = os.path.join(sets, f".old-{name}-{secrets.token_hex(4)}")
             os.rename(_inside(root, final), _inside(root, aside))
@@ -1157,10 +1210,12 @@ def _oid(x):
 def org_git_allowed(args, url, dest):
     """Whether `args` (after `git`) is one of the commands an organisation
     repo's git may be: clone (of its own address, into its own folder),
-    fetch origin, rev-parse of HEAD or its upstream, log, merge --ff-only
-    and reset --hard of a full commit, and cat-file of a full commit's
-    tree or an object by its full id. Nothing else, so nothing but those
-    ever runs with a repo's key."""
+    fetch origin, rev-parse of HEAD or its upstream, log (of a span, the
+    newest of a commit, or an app folder's change notes as of a full
+    commit: change_notes_args(), the folder one name after a literal --),
+    merge --ff-only and reset --hard of a full commit, and cat-file of a
+    full commit's tree or an object by its full id. Nothing else, so
+    nothing but those ever runs with a repo's key."""
     a = list(args)
     if a[:2] == ["clone", "--"]:
         return a[2:] == [url, dest]
@@ -1179,6 +1234,8 @@ def org_git_allowed(args, url, dest):
         return bool(sep) and _oid(old) and _oid(new)
     if a[:5] == ["log", "-n", str(REPO_COMMITS), "--no-merges", "--format=%h%x09%s"] and len(a) == 6:
         return _oid(a[5])
+    if a[:5] == ["log", "-n", str(CHANGE_NOTES), "--no-merges", CHANGES_FORMAT] and len(a) == 8:
+        return _oid(a[5]) and a[6] == "--" and bool(_SHELF_APP.match(a[7]))
     return False
 
 
@@ -2292,15 +2349,33 @@ class Admin:
 
     # --- the app shelf ------------------------------------------------------
 
-    def publish_source(self, source, src_dir, commit, log=None, label="library", skip_hidden=False):
+    def publish_source(self, source, src_dir, commit, log=None, label="library", skip_hidden=False, changes=None):
         """The app folders in `src_dir` published to the shelf as `source`, at
         `commit` - the official library or an organisation repo's clone,
         alike (publish_set()): its link, its sets and its entry in the
-        index, and no other source's. publish_set()'s result; an OpError
-        with the shelf as it was."""
+        index, and no other source's, each app's change notes `changes`'s.
+        publish_set()'s result; an OpError with the shelf as it was."""
         log = log or (lambda text: print(f"[admin] app library: {text}", flush=True))
         return publish_set(src_dir, self.library_dir, source, commit, self._iso(), log, label=label,
-                           skip_hidden=skip_hidden)
+                           skip_hidden=skip_hidden, changes=changes)
+
+    def _official_changes(self, commit):
+        """publish_set()'s `changes` for the official library at `commit`:
+        each app's change notes, git log of library/<app> in the server's
+        checkout, as its owner - None where git fails."""
+        def changes(app):
+            rc, out, _err = self.git(*change_notes_args(commit, f"library/{app}"))
+            return parse_changes(out) if rc == 0 else None
+        return changes
+
+    def _repo_changes(self, entry, commit):
+        """publish_set()'s `changes` for an organisation repo's clone at
+        `commit`: each app's change notes, git log of <app> through
+        org_git() - None where git fails."""
+        def changes(app):
+            rc, out, _err = self.org_git(entry, *change_notes_args(commit, app))
+            return parse_changes(out) if rc == 0 else None
+        return changes
 
     def publish_official(self, commit=None, log=None):
         """The repo's library/ published to the shelf as the openfit source,
@@ -2310,7 +2385,8 @@ class Admin:
         try:
             if commit is None:
                 commit = self.head()["commit"]
-            result = self.publish_source(OFFICIAL_SOURCE, os.path.join(self.repo, "library"), commit, log)
+            result = self.publish_source(OFFICIAL_SOURCE, os.path.join(self.repo, "library"), commit, log,
+                                         changes=self._official_changes(commit))
         except OpError as e:
             self.library_error = {"at": self._iso(), "text": e.message, "detail": e.detail}
             raise
@@ -2353,7 +2429,7 @@ class Admin:
                 continue
             try:
                 self.publish_source(source, self._clone_of(entry["slug"]), entry["commit"], label=name,
-                                    skip_hidden=True)
+                                    skip_hidden=True, changes=self._repo_changes(entry, entry["commit"]))
                 print(f"[admin] app library: published {name} again, as '{source}'", flush=True)
             except OpError as e:
                 print(f"[admin] app library: {name}: {e.message} {e.detail}", flush=True)
@@ -2767,7 +2843,7 @@ class Admin:
         self.say(op, f"Publishing its apps to the app library as '{source}'…")
         try:
             result = self.publish_source(source, clone, head, log=lambda text: self.say(op, text), label=name,
-                                         skip_hidden=True)
+                                         skip_hidden=True, changes=self._repo_changes(entry, head))
         except OpError as e:
             self.say(op, e.message, e.detail)
             back()

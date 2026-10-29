@@ -9,9 +9,10 @@ and organisation repos (A6, all five [admin.md](admin.md)), Browse (B1),
 the user system installing from the shelf, the user login (U1,
 [auth.md](auth.md)): one account per user container, set through setup
 links from the Admin, the Admin Portal (S1, [admin.md](admin.md)): the
-Admin's page in OpenFit's style, and S2: reverting the Admin, downloads
-without the password and deleting a backup. Everything else here is
-designed, not yet in the code._
+Admin's page in OpenFit's style, S2: reverting the Admin, downloads
+without the password and deleting a backup, and B3: installed library
+apps updating themselves when the shelf has a new version. B2 is parked
+(below). Everything else here is designed, not yet in the code._
 
 OpenFit is splitting into three layers: the repo, an **Admin** container that
 manages user containers on a server, and the **user system** (today's `app/`).
@@ -24,8 +25,9 @@ set through a setup link (U1), and an Admin that adds users, updates them
 all together (A1, A2), updates itself and reverts that (A4, S2), makes
 their setup links (U1), publishes the official apps to a read-only shelf
 every user mounts (A5) - and each organisation repo's beside them (A6) -
-which a user browses and installs from (B1), and hands over a backup or a
-removed user's data without its password (S2), and nothing more.
+which a user browses and installs from (B1) and whose new versions each
+installed library app takes up by itself (B3), and hands over a backup or
+a removed user's data without its password (S2), and nothing more.
 
 ## Layers
 
@@ -199,9 +201,12 @@ repo's key alone, no prompt; no HTTPS and no tokens.
 `repo.yaml` alone, and publishes an empty set; the copy the tests run
 against is `tests/fixtures/apps/frms/`, byte-identical. In the aviation
 repo, FRMS is `openfitavi.frms` - its `app.yaml` unchanged, `replaces:
-[frms]` and all - so B2 moves the owner's data once, from their own `frms`
-straight to `openfitavi.frms` (it never went through `openfit.frms`). Until
-B2, Browse says it replaces their FRMS, and won't install it.
+[frms]` and all. B2 would have moved the owner's data from their own
+`frms` to `openfitavi.frms`, but it's parked: the owner removed their
+`frms` and its data and installed FRMS fresh from Browse, so there's
+nothing to move. `replaces` stays parsed and refused while what it
+replaces, or its data, is here - Browse says so and won't install it -
+until a move is needed.
 
 ## Apps
 
@@ -224,11 +229,12 @@ B2, Browse says it replaces their FRMS, and won't install it.
   user system's `APP_LEVEL` (1), raised when apps gain something an older
   OpenFit lacks. An app needing more doesn't load, won't install, and shows in
   Browse as needing a newer OpenFit. L4's host-version labels build on it.
-- **Library apps are the Admin's to update.** The Admin pushes a library
-  app's updates. A user can't edit a library app (Duplicate gives them a
-  custom copy to change), and sees an "updated, what changed" note when one
-  is updated. The read-only half is built (L2, below); the push and the note
-  are the Admin's, to come.
+- **Library apps are the Admin's to update.** The Admin publishes a library
+  app's updates, and every installed copy takes them up by itself. A user
+  can't edit a library app (Duplicate gives them a custom copy to change),
+  and sees an "updated, what changed" note when one is updated. The
+  read-only half is built (L2, below), the following and the note too
+  (B3, below).
 - **A user's custom apps are theirs.** They never leave the user's
   container, and the Admin never sees them.
 
@@ -324,11 +330,56 @@ The user system reads the shelf (`app/shelf.py`, at `/library`, or
   `source_name`, its source's name from the shelf's index (OpenFit,
   OpenFit Aviation; else the source's id), which Browse's tag shows.
 
-### `replaces` (L3, agreed; the move is B2)
+### Library apps follow the shelf (B3, built)
+
+A library app is read-only in a user's OpenFit, so the shelf is the only
+place a new version can come from - and every OpenFit that has it takes
+it up by itself, with no restart. For an app developer that's the whole
+flow: push to the app's repo, **Check now** in the Admin and the repo's
+**Update available** (**Update apps** for the official library's), and
+within a minute every installed copy is the new one
+([app-host.md](app-host.md#library-apps-follow-the-shelf)).
+
+- **Spotting a new version.** The index gives each app's fingerprint (the
+  Admin's `fingerprint()`, its `sha256`), and an install is the shelf's
+  files byte for byte, so the user system's own `fingerprint()` - the
+  Admin's, reproduced exactly, a test holding the two to the byte -
+  of the installed folder is the index's while it's current (the
+  `__pycache__` a load leaves is skipped by both). One that differs is out
+  of date.
+- **When.** `sync_library_apps()`, at the user system's startup and then
+  every 60 seconds (the `library-sync` scheduler job, on a worker of its
+  own). No shelf mounted, nothing to do: no app is ever marked gone for it.
+  A run with nothing to do reads the index and each installed library
+  app's own files, to hash them.
+- **Updating one.** Only a version this OpenFit can install - its
+  `requires` within the app level, its own id its bare name, no folders
+  inside it, `check_app()` - and that loads, staged, as the scanner would
+  load it in place; then the same swap an Update makes (`_replace_app()`,
+  which `update_app()` shares, keeping its 403 for a library app), its
+  cached load dropped so the next render runs the new code. Its data,
+  Home tiles and their config are never touched. A custom app never is.
+- **The record** (`/data/app_updates.json`): each library app's latest
+  event, `updated` (with the change notes the index had), `waiting` (it
+  needs a newer OpenFit), `failed` (why) or `removed` (it, or its source,
+  left the shelf - the copy stays, no longer updated). A version waiting or
+  failed is never tried again: only another one is. `GET /api/apps` gives
+  each library app its `library_note`; the Applications card shows an
+  **Updated** pill for 14 days, opening What's new, or the note's sentence.
+- **What changed** comes from the Admin: each app's index entry carries
+  `changes`, the ten newest commits touching its folder, merges left out
+  ([admin.md](admin.md#change-notes-b3)).
+
+Out of B3: a user choosing when (the admin publishes, everyone follows),
+updating custom apps from anywhere, and scheduled updates.
+
+### `replaces` (L3, agreed; the move is B2, parked)
 
 B1 parses `replaces` (a list of at most 5 app ids, none twice, never the
-library app's own) and refuses the install while one is pending. B2 moves the
-data, by these rules.
+library app's own) and refuses the install while one is pending. B2 would
+move the data, by these rules - parked, since the one app it was for, the
+owner's `frms`, was removed and FRMS installed fresh (above): `replaces`
+stays parsed and refused until a move is needed.
 
 How a library app takes over an older app's id and data, such as the owner's
 custom `frms` becoming `openfitavi.frms`:
@@ -417,9 +468,11 @@ a second real person gets a container. Re-ordered 2026-10-27, after A1:
    labels (L4). The serving is built: **A5, the app shelf** (above), ahead of
    the user login. **Browse (B1)** is built: listing the shelf and installing
    from it, with `replaces` parsed and the app level (`requires`) checked.
-   Still the user system's, to come: B2, `replaces` moving an older app's data
-   across (L3's rules), and B3, self-updating installed apps; then L4. The
-   library groundwork built before, L1 (corrected in B1) and L2, stands.
+   **B3** is built: installed library apps follow the shelf, updating
+   themselves, with a note of what changed. B2, `replaces` moving an older
+   app's data across (L3's rules), is parked (nothing to move); L4 is still
+   to come. The library groundwork built before, L1 (corrected in B1) and
+   L2, stands.
 6. **The Admin Portal**: S1 (built), the page in OpenFit's style, with
    the reads behind its panels; S2 (built): reverting the Admin,
    downloading backups and kept data without the password, deleting single
@@ -428,14 +481,16 @@ a second real person gets a container. Re-ordered 2026-10-27, after A1:
 7. **Organisation repos** (A6, built): each a source of its own on the
    shelf, its name and blurb from its own `repo.yaml`, cloned over SSH with
    a read-only deploy key the Admin makes for it; FRMS moved to the first,
-   `openfit-aviation`. Next: B2, moving the owner's `frms` data straight to
-   `openfitavi.frms`.
+   `openfit-aviation`, and since B3 it updates itself from there.
 
 ### Parked
 
 - **Scheduled updates**: an update at a time the admin picks, alongside "now"
   and the automatic check (which only ever finds an update, never applies
   one).
+- **B2, `replaces` moving data**: the owner reinstalled FRMS fresh from
+  Browse, so there's no old data to move. `replaces` stays parsed and
+  refused until it's needed, then L3's rules (above) apply.
 
 The proxy and the mDNS announcer are deferred: users are on `IP:port` until
 then. The backup file (export, passphrase, restore) is designed above and not

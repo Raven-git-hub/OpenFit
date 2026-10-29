@@ -130,6 +130,8 @@ def test_an_update_runs_in_the_exact_order(admin_env):
         # 8. health, on the container compose made
         docker(*PS[1:]),
         docker("exec", C1, "python", "-c", admin_ops.HEALTH_CODE),
+        # 9. the apps published (file work), each one's change notes read
+        git(env, *admin_ops.change_notes_args(env.repos.head(), "library/steps")),
         # the check brought up to date, no fetch
         git(env, *HEAD_LOG[1:]),
         git(env, "rev-list", "--count", "HEAD..origin/main"),
