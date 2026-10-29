@@ -3,277 +3,706 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>OpenFit Admin</title>
+<title>OpenFit Admin Portal</title>
 <style>
-  :root {
-    --bg: #f5f6f8; --surface: #ffffff; --ink: #1d2330; --muted: #667085;
-    --border: #dde1e8; --accent: #3b5bdb; --accent-ink: #ffffff;
-    --good: #2f9e61; --warn: #c27c0e; --crit: #d0453f; --inset: #eef0f4;
-    --font: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    color-scheme: light dark;
+/* ============================================================
+   THE ADMIN PORTAL, IN OPENFIT'S STYLE
+   The three token blocks below are copied from OpenFit's own page
+   (app/templates/index.html, its CUSTOMISE OPENFIT HERE block): the
+   bare :root block is the LIGHT theme, the two after it the DARK
+   theme (the OS's, then the theme chip's). Only the tokens the Admin
+   uses are here, each with OpenFit's value in every block it has one;
+   tests/test_admin_portal.py fails when they drift - recopy them from
+   OpenFit then. No web fonts and no external requests: the font
+   stacks name the design's fonts first, used where installed.
+   ============================================================ */
+:root{
+  color-scheme:light;
+  --bg:#eef1f0;
+  --surface:#ffffff;
+  --surface-2:#e9edec;
+  --inset:#f4f6f5;
+  --border:#d5dcda;
+  --border-strong:#c2cbc9;
+  --ink:#141c1b;
+  --ink-2:#3c4746;
+  --muted:#697472;
+  --accent:#0e9c8b;
+  --accent-ink:#ffffff;
+  --accent-soft:#d4efeb;
+  --good:#2f9e5b;
+  --warn:#c08a1a;
+  --crit:#c94f4a;
+  --radius:14px;
+  --radius-sm:9px;
+  --shadow:0 1px 2px rgba(20,28,27,.06), 0 8px 24px rgba(20,28,27,.05);
+  --font-display:'Archivo', system-ui, sans-serif;
+  --font-body:'IBM Plex Sans', system-ui, sans-serif;
+  --font-mono:'IBM Plex Mono', ui-monospace, monospace;
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    color-scheme:dark;
+    --bg:#0e1316;
+    --surface:#161d21;
+    --surface-2:#1d262b;
+    --inset:#121a1e;
+    --border:#2a343a;
+    --border-strong:#39454c;
+    --ink:#e9eeef;
+    --ink-2:#b3bec2;
+    --muted:#7f8c92;
+    --accent:#31d3bf;
+    --accent-ink:#052420;
+    --accent-soft:#123832;
+    --good:#46c06e;
+    --warn:#e0a83a;
+    --crit:#ea6a63;
+    --shadow:0 1px 2px rgba(0,0,0,.3), 0 10px 30px rgba(0,0,0,.35);
   }
-  @media (prefers-color-scheme: dark) {
-    :root {
-      --bg: #12151c; --surface: #1b1f29; --ink: #e6e9ef; --muted: #9aa3b5;
-      --border: #2c3240; --accent: #7c95ff; --accent-ink: #10131a;
-      --good: #5cc98d; --warn: #e8b04f; --crit: #f07a74; --inset: #232836;
-    }
-  }
-  * { box-sizing: border-box; }
-  body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.5 var(--font); }
-  main { max-width: 860px; margin: 0 auto; padding: 24px 16px 48px; }
-  header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 18px; }
-  h1 { font-size: 20px; margin: 0; }
-  h2 { font-size: 16px; margin: 0 0 10px; }
-  h3 { font-size: 14px; margin: 14px 0 6px; }
-  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 16px 18px; margin-bottom: 16px; }
-  .muted { color: var(--muted); }
-  .mono, code, pre { font-family: var(--mono); font-size: 13px; }
-  pre { background: var(--inset); border-radius: 6px; padding: 10px 12px; white-space: pre-wrap; word-break: break-word; margin: 8px 0; }
-  .row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
-  .grow { flex: 1 1 auto; }
-  button { font: inherit; border: 1px solid var(--border); background: var(--surface); color: var(--ink); border-radius: 7px; padding: 6px 14px; cursor: pointer; }
-  button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
-  button.danger { border-color: var(--crit); color: var(--crit); }
-  button:disabled { opacity: .55; cursor: default; }
-  input { font: inherit; padding: 7px 10px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface); color: var(--ink); width: 100%; }
-  label { display: block; font-size: 13px; color: var(--muted); margin: 10px 0 4px; }
-  .pill { display: inline-block; font-size: 12px; padding: 1px 9px; border-radius: 999px; border: 1px solid currentColor; }
-  .pill.good { color: var(--good); } .pill.warn { color: var(--warn); } .pill.crit { color: var(--crit); } .pill.muted { color: var(--muted); }
-  .msg { min-height: 1.5em; font-size: 14px; margin-top: 8px; }
-  .msg.err { color: var(--crit); }
-  .msg:empty { min-height: 0; margin: 0; }
-  .confirm { border: 1px solid var(--warn); border-radius: 8px; padding: 10px 12px; margin-top: 10px; }
-  .group { border-top: 1px solid var(--border); padding-top: 8px; margin-top: 8px; }
-  .group:first-of-type { border-top: 0; }
-  ul.commits { list-style: none; padding: 0; margin: 4px 0; }
-  ul.commits li { padding: 2px 0; }
-  ul.commits .mono { color: var(--muted); margin-right: 8px; }
-  .prs a { margin-right: 8px; }
-  a { color: var(--accent); }
-  table { width: 100%; border-collapse: collapse; font-size: 14px; }
-  td, th { text-align: left; padding: 4px 6px; border-bottom: 1px solid var(--border); }
-  th { color: var(--muted); font-weight: 500; }
-  .log { max-height: 320px; overflow-y: auto; }
-  .log div { padding: 1px 0; white-space: pre-wrap; word-break: break-word; }
-  .log .t { color: var(--muted); font-family: var(--mono); font-size: 12px; margin-right: 8px; }
-  .narrow { max-width: 380px; margin: 60px auto; }
-  td { overflow-wrap: anywhere; }
-  .users td { vertical-align: middle; }
-  td.actions { text-align: right; white-space: nowrap; }
-  @media (max-width: 560px) {
-    /* A user a block: name and state, the address, then the buttons. */
-    .users tr { display: grid; grid-template-columns: 1fr auto; gap: 4px 8px; padding: 8px 0; border-bottom: 1px solid var(--border); }
-    .users td { border: 0; padding: 0 6px; }
-    .users td:nth-child(2) { grid-column: 1 / -1; grid-row: 2; }
-    .users td:nth-child(3) { grid-column: 2; grid-row: 1; text-align: right; }
-    .users td.actions { grid-column: 1 / -1; grid-row: 3; text-align: left; }
-  }
-  td.actions button + button { margin-left: 6px; }
-  form.add { align-items: flex-end; }
-  form.add .name { flex: 2 1 160px; }
-  form.add .port { flex: 1 1 100px; }
-  form.add label { margin-top: 0; }
-  .msg.pre { white-space: pre-wrap; }
-  .small, pre.small { font-size: 12px; }
-  .banner { border-color: var(--warn); }
-  .hint { display: block; font-size: 12px; color: var(--warn); margin-top: 2px; }
-  ul.apps { list-style: none; padding: 0; margin: 8px 0 0; display: flex; flex-wrap: wrap; gap: 6px; }
-  ul.apps li { font-family: var(--mono); font-size: 13px; background: var(--inset); border-radius: 6px; padding: 1px 8px; }
-  dialog.card { width: min(520px, calc(100% - 32px)); color: var(--ink); padding: 18px 20px; }
-  dialog::backdrop { background: rgba(0, 0, 0, .45); }
-  dialog input { font-family: var(--mono); font-size: 13px; }
-  [hidden] { display: none !important; }
+}
+:root[data-theme="dark"]{
+  color-scheme:dark;
+  --bg:#0e1316;
+  --surface:#161d21;
+  --surface-2:#1d262b;
+  --inset:#121a1e;
+  --border:#2a343a;
+  --border-strong:#39454c;
+  --ink:#e9eeef;
+  --ink-2:#b3bec2;
+  --muted:#7f8c92;
+  --accent:#31d3bf;
+  --accent-ink:#052420;
+  --accent-soft:#123832;
+  --good:#46c06e;
+  --warn:#e0a83a;
+  --crit:#ea6a63;
+  --shadow:0 1px 2px rgba(0,0,0,.3), 0 10px 30px rgba(0,0,0,.35);
+}
+
+/* ---------- OpenFit's own components, as its page has them ---------- */
+*{box-sizing:border-box;}
+html,body{margin:0;}
+body{
+  background:var(--bg);
+  color:var(--ink);
+  font-family:var(--font-body);
+  -webkit-font-smoothing:antialiased;
+  font-size:15px;
+  line-height:1.45;
+}
+button{font-family:inherit;cursor:pointer;}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:4px;}
+[hidden]{display:none !important;}
+
+.topbar{
+  display:flex;align-items:flex-start;justify-content:space-between;gap:16px;
+  padding:20px 30px 0;
+}
+.brand{display:flex;align-items:center;gap:11px;}
+.brand-mark{
+  width:32px;height:32px;border-radius:8px;flex:none;
+  background:
+    radial-gradient(circle at 50% 50%, var(--accent) 0 4px, transparent 5px),
+    conic-gradient(from -90deg, var(--accent) 0 72%, var(--border-strong) 72% 100%);
+  -webkit-mask:radial-gradient(circle at 50% 50%, transparent 6px, #000 7px);
+          mask:radial-gradient(circle at 50% 50%, transparent 6px, #000 7px);
+}
+.brand-name{font-family:var(--font-display);font-weight:800;letter-spacing:.5px;font-size:23px;}
+.brand-name b{color:var(--accent);}
+
+.status-stack{display:flex;flex-direction:column;align-items:flex-end;gap:8px;}
+.datepill{
+  background:var(--surface);border:1px solid var(--border);border-radius:22px;
+  padding:7px 15px;box-shadow:var(--shadow);
+  font-family:var(--font-display);font-weight:700;font-size:13px;color:var(--ink);
+}
+.bar-btns{display:flex;gap:8px;}
+.bar-btn{
+  border:1px solid var(--border);border-radius:20px;background:var(--surface);
+  color:var(--muted);font-size:11.5px;font-family:var(--font-mono);padding:6px 13px;
+}
+.bar-btn:hover{border-color:var(--accent);color:var(--accent);}
+
+.tabstrip{
+  display:flex;gap:8px;align-items:flex-end;
+  padding:18px 30px 0;margin-top:8px;
+  border-bottom:1px solid var(--border);overflow-x:auto;scrollbar-width:none;
+}
+.tabstrip::-webkit-scrollbar{display:none;}
+.tab{
+  border:none;background:var(--surface-2);color:var(--ink-2);
+  font-family:var(--font-display);font-weight:700;font-size:13.5px;letter-spacing:.3px;
+  padding:11px 30px;transform:skewX(-14deg);border-radius:7px 7px 0 0;
+  white-space:nowrap;position:relative;top:1px;transition:background .12s,color .12s;
+}
+.tab>span{display:inline-block;transform:skewX(14deg);}
+.tab:hover{background:var(--surface);color:var(--ink);}
+.tab.active{background:var(--accent);color:var(--accent-ink);}
+
+.btn{
+  border:1px solid var(--border-strong);background:var(--surface);color:var(--ink);
+  border-radius:var(--radius-sm);padding:9px 14px;font-weight:600;font-size:13.5px;
+}
+.btn:hover{border-color:var(--accent);color:var(--accent);}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-ink);}
+.btn.primary:hover{filter:brightness(1.05);color:var(--accent-ink);}
+.btn.danger{border-color:var(--crit);color:var(--crit);}
+.btn.danger:hover{border-color:var(--crit);color:var(--crit);background:color-mix(in srgb,var(--crit) 10%,var(--surface));}
+.btn.danger.solid{background:var(--crit);color:var(--surface);}
+.btn.danger.solid:hover{background:var(--crit);color:var(--surface);filter:brightness(1.05);}
+.btn.sm{padding:6px 10px;font-size:12.5px;}
+.btn:disabled{opacity:.5;cursor:not-allowed;}
+.btn:disabled:hover{border-color:var(--border-strong);color:var(--ink);filter:none;}
+.field{display:flex;flex-direction:column;gap:5px;}
+.field[hidden]{display:none;}
+.field label{font-size:11.5px;text-transform:uppercase;letter-spacing:.8px;color:var(--muted);font-weight:600;}
+.input, select.input{
+  background:var(--inset);border:1px solid var(--border);color:var(--ink);
+  border-radius:var(--radius-sm);padding:10px 11px;font-size:14px;font-family:var(--font-body);width:100%;
+}
+.input:focus{border-color:var(--accent);outline:none;}
+.form-msg{font-size:12px;font-family:var(--font-mono);margin-top:8px;min-height:16px;}
+.form-msg.ok{color:var(--good);}
+.form-msg.bad{color:var(--crit);}
+.form-msg.info{color:var(--muted);}
+
+.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow);padding:20px;}
+.card h3{font-family:var(--font-display);font-weight:700;font-size:17px;margin:0 0 3px;}
+.card .hint{color:var(--muted);font-size:13px;margin:0 0 16px;}
+.card-title{display:flex;align-items:center;gap:9px;margin:0 0 3px;}
+.card .card-title h3{margin:0;}
+/* OpenFit's round button after a card's title (its voice button), here
+   the panel's collapse button: its triangle points down while the panel
+   is open, right while it's folded */
+.fold-btn{
+  width:24px;height:24px;flex:none;padding:0;border-radius:50%;display:grid;place-items:center;
+  border:1px solid var(--border-strong);background:var(--surface);color:var(--muted);
+}
+.fold-btn:hover{border-color:var(--accent);color:var(--accent);}
+.fold-btn:focus-visible{border-radius:50%;}
+.fold-btn svg{width:10px;height:10px;fill:currentColor;transition:transform .15s;}
+.fold-btn[aria-expanded="true"] svg{transform:rotate(90deg);}
+
+.pill{font-size:11px;font-weight:600;padding:4px 9px;border-radius:20px;font-family:var(--font-mono);white-space:nowrap;}
+.pill.ok{color:var(--good);background:color-mix(in srgb,var(--good) 14%,transparent);}
+.pill.wait{color:var(--warn);background:color-mix(in srgb,var(--warn) 14%,transparent);}
+.pill.primary{color:var(--accent);background:var(--accent-soft);letter-spacing:.6px;}
+
+.ditem{border-bottom:1px solid var(--border);}
+.ditem:last-child{border-bottom:none;}
+.drow{
+  width:100%;border:none;background:none;color:var(--ink);text-align:left;
+  padding:11px 10px;border-radius:var(--radius-sm);font-size:14px;
+}
+.drow:hover{background:var(--inset);}
+.ditem .chev{color:var(--muted);display:inline-block;transition:transform .15s;}
+.ditem.open .chev{transform:rotate(90deg);}
+/* (the Admin's rows nest: a row's own chevron, not its parent's, says whether it's open) */
+.ditem:not(.open) > .drow > .chev{transform:none;}
+.dpanel{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:18px 32px;padding:6px 10px 18px 38px;}
+.dpanel h5{margin:0 0 8px;font-size:10.5px;text-transform:uppercase;letter-spacing:.8px;color:var(--muted);font-weight:600;}
+.dnote{font-size:12.5px;color:var(--muted);margin:10px 0 0;max-width:340px;}
+.dstate{padding:28px 10px 22px;text-align:center;color:var(--muted);font-size:13.5px;}
+
+.modal-bg{position:fixed;inset:0;z-index:80;background:color-mix(in srgb,var(--ink) 45%,transparent);display:grid;place-items:center;padding:20px;}
+.modal{background:var(--surface);border:1px solid var(--border-strong);border-radius:var(--radius);box-shadow:var(--shadow);padding:20px;width:min(420px,100%);max-height:88vh;overflow:auto;}
+.modal h4{font-family:var(--font-display);font-weight:700;font-size:16px;margin:0 0 3px;}
+.modal .hint{color:var(--muted);font-size:13px;margin:0 0 16px;}
+.modal .field{margin-bottom:12px;}
+.modal h4 + .field{margin-top:16px;}
+.modal-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:16px;}
+.modal-actions .lead{margin-right:auto;}
+.modal-actions.settings-foot{align-items:center;border-top:1px solid var(--border);padding-top:14px;}
+.modal-actions.settings-foot .hint{margin:0;}
+.modal.wide{width:min(640px,100%);}
+.info{display:grid;grid-template-columns:auto minmax(0,1fr);margin:14px 0 0;}
+.info dt, .info dd{display:flex;align-items:center;padding:10px 0;border-bottom:1px solid var(--border);}
+.info dt{font-size:11.5px;text-transform:uppercase;letter-spacing:.8px;color:var(--muted);font-weight:600;padding-right:18px;}
+.info dd{justify-content:flex-end;gap:10px;margin:0;text-align:right;font-size:13.5px;overflow-wrap:anywhere;}
+.info dt:last-of-type, .info dd:last-of-type{border-bottom:none;}
+.danger-panel{
+  border:1px solid color-mix(in srgb,var(--crit) 45%,var(--border));border-radius:var(--radius-sm);
+  background:color-mix(in srgb,var(--crit) 7%,var(--surface));padding:14px;
+}
+.danger-panel h5{font-family:var(--font-display);font-weight:700;font-size:14px;color:var(--crit);margin:0 0 4px;}
+.danger-panel p{font-size:13px;color:var(--ink-2);margin:0;}
+.danger-panel .modal-actions{margin-top:12px;}
+.danger-panel:first-child{margin-top:12px;}
+.install-warn{
+  border:1px solid color-mix(in srgb,var(--warn) 45%,var(--border));border-radius:var(--radius-sm);
+  background:color-mix(in srgb,var(--warn) 9%,var(--surface));padding:10px 12px;font-size:13px;color:var(--ink-2);margin:0;
+}
+
+/* ---------- the Admin's own ----------
+   Desktop only: under the portal's min-width the page scrolls sideways.
+   The header is OpenFit's, with ADMIN PORTAL after the brand; under it
+   two columns - the four persistent panels on the left (about 40%), the
+   Users and Repo tabs on the right (about 60%). */
+.app{min-width:1180px;min-height:100vh;}
+.portal-name{
+  font-family:var(--font-display);font-weight:700;font-size:13px;letter-spacing:3.5px;text-transform:uppercase;
+  color:var(--ink-2);margin-left:5px;padding-left:15px;border-left:1px solid var(--border-strong);line-height:24px;
+}
+.portal{display:grid;grid-template-columns:minmax(0,2fr) minmax(0,3fr);gap:22px;align-items:start;padding:24px 30px 60px;max-width:1720px;}
+.col{display:flex;flex-direction:column;gap:18px;min-width:0;}
+/* the tab strip inside the right column, its line under the tabs alone */
+.col .tabstrip{padding:0 0 0 14px;margin:0;}
+.tab-panel{display:flex;flex-direction:column;gap:18px;}
+.banner{margin:16px 30px 0;border-color:color-mix(in srgb,var(--warn) 45%,var(--border));}
+.banner p{margin:0;font-size:13.5px;color:var(--ink-2);}
+.card.folded .card-body{display:none;}
+.card-body{margin-top:12px;}
+.card .hint.foot{margin:10px 0 0;}
+#reposNote, #usersMsg, #reposMsg{white-space:pre-wrap;}
+/* a panel's lists: rows of a fixed height in a box that shows exactly
+   --rows of them, and scrolls past that */
+.box{--row:44px;max-height:calc(var(--rows) * var(--row));overflow-y:auto;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--surface);}
+.box .drow, .box .lrow{min-height:43px;}
+.box .ditem:last-child, .box .lrow:last-child{border-bottom:none;}
+.lrow{display:grid;align-items:center;column-gap:12px;padding:0 10px;border-bottom:1px solid var(--border);font-size:14px;}
+.drow.g{display:grid;align-items:center;column-gap:12px;}
+.g-user{grid-template-columns:16px minmax(0,1fr) auto;}
+.g-op{grid-template-columns:16px minmax(0,1fr) auto auto;}
+.g-data{grid-template-columns:16px minmax(0,1fr) auto 76px;}
+.g-repo{grid-template-columns:16px minmax(0,1fr) auto;}
+.g-ver{grid-template-columns:52px 128px minmax(0,1fr) auto;}
+/* a repo: its name and version over when it was published, its offer at
+   the end - two lines, so a long offer never squeezes the name */
+.box.tall{--row:58px;}
+.lrow.g-shelf{grid-template-columns:minmax(0,1fr) auto;grid-template-rows:auto auto;row-gap:1px;padding-top:8px;padding-bottom:8px;min-height:57px;}
+.g-shelf .r-line{display:flex;align-items:baseline;gap:10px;min-width:0;}
+.g-shelf .r-acts{grid-column:2;grid-row:1 / span 2;}
+.r-name{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.r-sub{font-size:12.5px;color:var(--muted);white-space:nowrap;}
+.r-num{font-family:var(--font-mono);font-size:12.5px;color:var(--ink-2);white-space:nowrap;text-align:right;}
+.ver{font-family:var(--font-mono);font-size:12.5px;color:var(--ink-2);white-space:nowrap;}
+.ver.older{color:var(--warn);}
+.r-acts{display:flex;align-items:center;justify-content:flex-end;gap:6px;}
+.muted{color:var(--muted);}
+.mono, code{font-family:var(--font-mono);font-size:12.5px;}
+/* a name that opens a popup */
+.linkbtn{border:none;background:none;padding:0;color:var(--ink);font:inherit;font-weight:600;text-align:left;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.linkbtn{text-decoration:underline dotted var(--border-strong);text-underline-offset:4px;}
+.linkbtn:hover{color:var(--accent);text-decoration:underline;}
+.card .form-msg:empty{display:none;}
+/* Update available: an accent pill that's a button */
+.pill-btn{border:none;cursor:pointer;}
+.pill-btn:hover{background:var(--accent);color:var(--accent-ink);}
+.pill-btn:disabled{opacity:.5;cursor:not-allowed;}
+.pill-btn:disabled:hover{color:var(--accent);background:var(--accent-soft);}
+.pill.bad{color:var(--crit);background:color-mix(in srgb,var(--crit) 14%,transparent);}
+.pill.off{color:var(--muted);background:color-mix(in srgb,var(--muted) 14%,transparent);}
+.warn-ico{width:14px;height:14px;fill:var(--crit);display:block;}
+.box-ico{width:13px;height:13px;fill:var(--muted);display:block;}
+/* an expanded row: its details, then its buttons */
+.dpanel.one{grid-template-columns:minmax(0,1fr);gap:12px;padding:4px 10px 16px 38px;}
+.dpanel .info{margin:0;}
+.acts{display:flex;flex-wrap:wrap;align-items:center;gap:8px;}
+.acts .lead{margin-right:auto;}
+.infobox{border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--inset);padding:10px 12px;font-size:13px;color:var(--ink-2);}
+.infobox.empty{color:var(--muted);}
+.subhead{margin:4px 0 0;font-size:10.5px;text-transform:uppercase;letter-spacing:.8px;color:var(--muted);font-weight:600;}
+.modal .subhead{margin:16px 0 4px;}
+.nested{border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--surface);}
+.nested .dpanel.one{padding-left:36px;}
+/* the activity log: the running operation live, then the past ones */
+.live{border:1px solid color-mix(in srgb,var(--warn) 45%,var(--border));border-radius:var(--radius-sm);
+  background:color-mix(in srgb,var(--warn) 7%,var(--surface));padding:10px 12px;margin-bottom:12px;}
+.live-head{display:flex;align-items:center;gap:10px;font-weight:600;font-size:14px;}
+.live-head .lead{margin-right:auto;}
+.log{max-height:220px;overflow-y:auto;margin-top:6px;font-size:13px;}
+.dpanel .log{max-height:none;margin:0;}
+.log div{padding:1px 0;white-space:pre-wrap;word-break:break-word;}
+.log .t{color:var(--muted);font-family:var(--font-mono);font-size:11.5px;margin-right:8px;}
+/* the changes an update brings, grouped as a check reports them */
+.group{border-top:1px solid var(--border);padding:10px 0 2px;}
+.group:first-child{border-top:none;padding-top:2px;}
+.group-head{display:flex;align-items:center;gap:10px;font-weight:600;font-size:13.5px;}
+.group-head .lead{margin-right:auto;}
+.group .dnote{margin:2px 0 0;max-width:none;}
+ul.commits{list-style:none;padding:0;margin:6px 0 0;font-size:13px;}
+ul.commits li{padding:2px 0;}
+ul.commits .mono{color:var(--muted);margin-right:8px;}
+.prs{display:flex;flex-wrap:wrap;gap:4px 10px;margin-top:4px;font-family:var(--font-mono);font-size:12.5px;}
+a{color:var(--accent);}
+pre.cmd{margin:6px 0 0;padding:10px 12px;background:var(--inset);border:1px solid var(--border);border-radius:var(--radius-sm);
+  font-family:var(--font-mono);font-size:12px;white-space:pre-wrap;word-break:break-all;}
+.addrow{display:grid;grid-template-columns:minmax(0,2fr) minmax(0,1fr) auto;gap:12px;align-items:end;}
+.foot-line{display:flex;align-items:center;gap:10px;margin-top:12px;font-size:12.5px;color:var(--muted);}
+.foot-line .lead{margin-right:auto;}
+.soon{font-size:12px;color:var(--muted);font-family:var(--font-mono);}
+/* the sign-in and setup views: OpenFit's sign-in card */
+.gate{min-height:100vh;display:grid;place-items:center;padding:24px 16px;}
+.gate .card{width:min(380px,100%);padding:26px 24px 24px;}
+.gate .brand{margin-bottom:20px;flex-wrap:wrap;}
+.gate h1{font-family:var(--font-display);font-weight:700;font-size:17px;margin:0 0 6px;}
+.gate p{margin:0 0 14px;color:var(--muted);font-size:14px;}
+.gate .field{margin-bottom:12px;}
+.gate .btn{width:100%;margin-top:4px;}
+.gate code{font-size:12px;}
 </style>
 </head>
 <body data-state="{{ state }}">
-<main>
-  <section id="setupView" class="card narrow" hidden>
-    <h2>Set up the OpenFit Admin</h2>
-    <p class="muted">The setup code is in the Admin's log on the server:
-      <code>docker logs openfit-admin-admin-1</code></p>
+
+<div class="gate" id="setupView" hidden>
+  <main class="card">
+    <div class="brand"><div class="brand-mark"></div><div class="brand-name">Open<b>Fit</b></div><div class="portal-name">Admin Portal</div></div>
+    <h1>Set up the Admin</h1>
+    <p>The setup code is in the Admin's log on the server: <code>docker logs openfit-admin-admin-1</code></p>
     <form id="setupForm">
-      <label for="setupCode">Setup code</label>
-      <input id="setupCode" autocomplete="off" required>
-      <label for="setupPassword">Choose a password (at least 12 characters)</label>
-      <input id="setupPassword" type="password" autocomplete="new-password" minlength="12" required>
-      <div class="row" style="margin-top:14px"><button class="primary" type="submit">Set password</button></div>
-      <div class="msg err" id="setupMsg"></div>
+      <div class="field"><label for="setupCode">Setup code</label><input class="input" id="setupCode" autocomplete="off" required></div>
+      <div class="field"><label for="setupPassword">Choose a password (at least 12 characters)</label>
+        <input class="input" id="setupPassword" type="password" autocomplete="new-password" minlength="12" required></div>
+      <button class="btn primary" type="submit">Set password</button>
+      <div class="form-msg bad" id="setupMsg" role="alert"></div>
     </form>
-  </section>
+  </main>
+</div>
 
-  <section id="loginView" class="card narrow" hidden>
-    <h2>OpenFit Admin</h2>
+<div class="gate" id="loginView" hidden>
+  <main class="card">
+    <div class="brand"><div class="brand-mark"></div><div class="brand-name">Open<b>Fit</b></div><div class="portal-name">Admin Portal</div></div>
+    <h1>Log in</h1>
     <form id="loginForm">
-      <label for="loginPassword">Password</label>
-      <input id="loginPassword" type="password" autocomplete="current-password" required>
-      <div class="row" style="margin-top:14px"><button class="primary" type="submit">Log in</button></div>
-      <div class="msg err" id="loginMsg"></div>
+      <div class="field"><label for="loginPassword">Password</label>
+        <input class="input" id="loginPassword" type="password" autocomplete="current-password" required></div>
+      <button class="btn primary" type="submit">Log in</button>
+      <div class="form-msg bad" id="loginMsg" role="alert"></div>
     </form>
+  </main>
+</div>
+
+<div class="app" id="appView" hidden>
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-mark"></div>
+      <div class="brand-name">Open<b>Fit</b></div>
+      <div class="portal-name">Admin Portal</div>
+    </div>
+    <div class="status-stack">
+      <div class="datepill" id="today"></div>
+      <div class="bar-btns">
+        <button class="bar-btn" id="settingsBtn" type="button" aria-haspopup="dialog">settings</button>
+        <button class="bar-btn" id="themeToggle" type="button">theme <span id="themeState">auto</span></button>
+      </div>
+    </div>
+  </header>
+
+  <section class="card banner" id="restartBanner" hidden>
+    <p><strong>The Admin is restarting…</strong> <span class="muted">This page reconnects by itself.</span></p>
   </section>
 
-  <div id="appView" hidden>
-    <header>
-      <h1>OpenFit Admin</h1>
-      <button id="logoutBtn" type="button">Log out</button>
-    </header>
-
-    <section class="card banner" id="restartBanner" hidden>
-      <strong>The Admin is restarting…</strong>
-      <span class="muted">This page reconnects by itself.</span>
-    </section>
-
-    <section class="card" id="usersCard">
-      <h2>Users</h2>
-      <div class="muted" id="ofVersion"></div>
-      <table class="users"><tbody id="userRows"></tbody></table>
-      <div class="confirm" id="removeSure" hidden>
-        <p><strong id="removeWho"></strong> Their OpenFit is removed. Their data is kept until you delete it.</p>
-        <div class="row"><button type="button" data-cancel-user>Cancel</button><button class="danger" type="button" id="removeGo">Remove</button></div>
-      </div>
-      <div class="msg pre" id="usersMsg"></div>
-
-      <h3>Add user</h3>
-      <form id="addForm" class="row add">
-        <div class="name"><label for="addName">Name</label><input id="addName" autocomplete="off" maxlength="20" required></div>
-        <div class="port"><label for="addPort">Port</label><input id="addPort" type="number" min="1024" max="65535" required></div>
-        <button class="primary" type="submit" id="addBtn">Add</button>
-      </form>
-      <p class="muted">1 to 20 lowercase letters and digits. They get an OpenFit of their own on that port, with its own
-        storage, on the version everyone is on.</p>
-
-      <div id="keptBox" hidden>
-        <h3>Kept data</h3>
-        <p class="muted">Removed users' data, kept until you delete it.</p>
-        <table><tbody id="keptRows"></tbody></table>
-        <div class="confirm" id="deleteSure" hidden>
-          <p id="deleteText"></p>
-          <label for="deleteName">Type their name to delete it</label>
-          <input id="deleteName" autocomplete="off">
-          <div class="row" style="margin-top:10px"><button type="button" data-cancel-user>Cancel</button><button class="danger" type="button" id="deleteGo" disabled>Delete data</button></div>
+  <div class="portal">
+    <!-- Left: the four persistent panels, always shown -->
+    <aside class="col" id="leftCol" aria-label="The server">
+      <section class="card" id="systemCard">
+        <div class="card-title"><h3>System information</h3><button class="fold-btn" id="systemFold" type="button" aria-expanded="true" aria-controls="systemBody" aria-label="Fold System information"></button></div>
+        <div class="card-body" id="systemBody"><dl class="info" id="systemInfo"></dl></div>
+      </section>
+      <section class="card" id="versionsCard">
+        <div class="card-title"><h3>Versions</h3><button class="fold-btn" id="versionsFold" type="button" aria-expanded="true" aria-controls="versionsBody" aria-label="Fold Versions"></button></div>
+        <div class="card-body" id="versionsBody">
+          <div class="box" style="--rows:2" id="versionRows"></div>
+          <div class="foot-line"><span class="lead" id="checkedAt"></span><button class="btn sm" id="checkBtn" type="button">Check now</button></div>
+          <div class="form-msg bad" id="checkErr"></div>
+          <div class="form-msg" id="versionsMsg"></div>
         </div>
-      </div>
-    </section>
+      </section>
+      <section class="card" id="reposCard">
+        <div class="card-title"><h3>Repos</h3><button class="fold-btn" id="reposFold" type="button" aria-expanded="true" aria-controls="reposBody" aria-label="Fold Repos"></button></div>
+        <div class="card-body" id="reposBody">
+          <div class="box tall" style="--rows:3" id="repoRows"></div>
+          <p class="dnote" id="reposNote" hidden></p>
+          <div class="form-msg" id="reposMsg"></div>
+        </div>
+      </section>
+      <section class="card" id="activityCard">
+        <div class="card-title"><h3>Activity log</h3><button class="fold-btn" id="activityFold" type="button" aria-expanded="true" aria-controls="activityBody" aria-label="Fold Activity log"></button></div>
+        <div class="card-body" id="activityBody">
+          <div class="live" id="live" hidden>
+            <div class="live-head" id="liveHead"></div>
+            <div class="log" id="liveLog"></div>
+          </div>
+          <div class="box" style="--rows:8" id="activityRows"></div>
+        </div>
+      </section>
+    </aside>
 
-    <dialog class="card" id="linkDialog" aria-labelledby="linkTitle">
-      <h2 id="linkTitle">Setup link</h2>
-      <p id="linkFor"></p>
-      <input id="linkText" readonly aria-label="The setup link">
-      <div class="row" style="margin-top:12px">
-        <button class="primary" type="button" id="linkCopy">Copy</button>
-        <span class="grow muted" id="linkCopied"></span>
-        <button type="button" id="linkClose">Close</button>
-      </div>
-    </dialog>
+    <!-- Right: the tabs, Users (the default) and Repo -->
+    <div class="col" id="rightCol">
+      <nav class="tabstrip" aria-label="Tabs">
+        <button class="tab active" id="tab-users" data-tab="users" type="button" aria-current="page"><span>Users</span></button>
+        <button class="tab" id="tab-repo" data-tab="repo" type="button"><span>Repo</span></button>
+      </nav>
 
-    <section class="card" id="updatesCard">
-      <h2>Updates</h2>
-      <div class="row">
-        <span class="grow muted" id="checkedAt"></span>
-        <button id="checkBtn" type="button">Check now</button>
+      <div class="tab-panel" id="panel-users" data-panel="users">
+        <section class="card" id="usersCard">
+          <div class="card-title"><h3>Users</h3><button class="fold-btn" id="usersFold" type="button" aria-expanded="true" aria-controls="usersBody" aria-label="Fold Users"></button></div>
+          <div class="card-body" id="usersBody">
+            <div class="box" style="--rows:10" id="userRows"></div>
+            <div class="form-msg" id="usersMsg"></div>
+          </div>
+        </section>
+        <section class="card" id="addCard">
+          <div class="card-title"><h3>Add user</h3><button class="fold-btn" id="addFold" type="button" aria-expanded="true" aria-controls="addBody" aria-label="Fold Add user"></button></div>
+          <div class="card-body" id="addBody">
+            <form id="addForm" class="addrow">
+              <div class="field"><label for="addName">Name</label><input class="input" id="addName" autocomplete="off" maxlength="20" required></div>
+              <div class="field"><label for="addPort">Port</label><input class="input" id="addPort" type="number" min="1024" max="65535" required></div>
+              <button class="btn primary" type="submit" id="addBtn">Add user</button>
+            </form>
+            <p class="hint foot">1 to 20 lowercase letters and digits. Their own OpenFit on that port, with its own storage, on everyone's version.</p>
+            <div class="form-msg" id="addMsg"></div>
+          </div>
+        </section>
+        <section class="card" id="dataCard">
+          <div class="card-title"><h3>User data</h3><button class="fold-btn" id="dataFold" type="button" aria-expanded="true" aria-controls="dataBody" aria-label="Fold User data"></button></div>
+          <div class="card-body" id="dataBody">
+            <p class="hint">Backups taken before each update (the newest three updates' are kept), and removed users' data, kept until you delete it.</p>
+            <div class="box" style="--rows:10" id="dataRows"></div>
+          </div>
+        </section>
+        <section class="card" id="userVersionCard">
+          <div class="card-title"><h3>User version info</h3><button class="fold-btn" id="userVersionFold" type="button" aria-expanded="true" aria-controls="userVersionBody" aria-label="Fold User version info"></button></div>
+          <div class="card-body" id="userVersionBody"><dl class="info" id="userVersionInfo"></dl></div>
+        </section>
       </div>
-      <div class="msg err" id="checkErr"></div>
-      <div id="summary"></div>
-      <div id="groups"></div>
-      <div class="row" style="margin-top:12px">
-        <button class="primary" id="updateBtn" type="button" hidden>Update OpenFit</button>
-        <button class="danger" id="undoBtn" type="button" hidden>Undo last update</button>
-      </div>
-      <div class="confirm" id="updateSure" hidden>
-        <p>This stops every user's OpenFit for about a minute and backs up everyone's data first.</p>
-        <div class="row"><button type="button" data-cancel>Cancel</button><button class="primary" type="button" id="updateGo">Update OpenFit</button></div>
-      </div>
-      <div class="confirm" id="undoSure" hidden>
-        <p id="undoText"></p>
-        <div class="row"><button type="button" data-cancel>Cancel</button><button class="danger" type="button" id="undoGo">Undo last update</button></div>
-      </div>
-      <div class="msg" id="updatesMsg"></div>
-    </section>
 
-    <section class="card" id="libraryCard">
-      <h2>App library</h2>
-      <p class="muted">The apps every user can install, published from OpenFit's library. New apps reach everyone
-        without a restart.</p>
-      <div class="muted" id="libWhen"></div>
-      <div class="confirm" id="libStale" hidden>
-        <p><strong>The app library couldn't be updated.</strong> <span id="libWhy"></span></p>
-        <pre class="small" id="libDetail" hidden></pre>
-        <div class="row"><button type="button" id="publishBtn">Publish again</button></div>
+      <div class="tab-panel" id="panel-repo" data-panel="repo" hidden>
+        <section class="card" id="repoTabCard">
+          <div class="card-title"><h3>Repositories</h3><button class="fold-btn" id="repoTabFold" type="button" aria-expanded="true" aria-controls="repoTabBody" aria-label="Fold Repositories"></button></div>
+          <div class="card-body" id="repoTabBody">
+            <p class="hint">Where the apps on the app library come from: OpenFit's own, and in time your organisation's.</p>
+            <div class="acts"><button class="btn" id="addRepoBtn" type="button" aria-haspopup="dialog">＋ Add repository</button></div>
+            <div class="box" style="--rows:10;margin-top:14px" id="sourceRows"></div>
+          </div>
+        </section>
       </div>
-      <ul class="apps" id="libApps"></ul>
-      <div class="row" id="libActs" style="margin-top:12px" hidden>
-        <button class="primary" id="appsBtn" type="button">Update apps</button>
-      </div>
-      <div class="confirm" id="appsSure" hidden>
-        <p>Publishes the new apps to every user. Nobody's OpenFit restarts.</p>
-        <div class="row"><button type="button" id="appsCancel">Cancel</button><button class="primary" type="button" id="appsGo">Update apps</button></div>
-      </div>
-      <div class="msg pre" id="libMsg"></div>
-    </section>
-
-    <section class="card" id="adminNote" hidden>
-      <h2>An Admin update is available</h2>
-      <p id="adminWhat"></p>
-      <ul class="commits" id="adminCommits"></ul>
-      <div class="row" id="adminActs" hidden>
-        <button class="primary" id="adminBtn" type="button">Update the Admin</button>
-      </div>
-      <div class="confirm" id="adminSure" hidden>
-        <p>The Admin restarts on its new version. This page will be unavailable for up to a minute and reconnects by
-          itself. If the new version doesn't start, the old one is put back.</p>
-        <div class="row"><button type="button" id="adminCancel">Cancel</button><button class="primary" type="button" id="adminGo">Update the Admin</button></div>
-      </div>
-      <div class="msg" id="adminMsg"></div>
-      <div id="adminManual" hidden>
-        <p class="muted small">If the button doesn't work, run this on the server instead. OpenFit keeps running meanwhile.</p>
-        <pre class="small" id="adminCmd"></pre>
-      </div>
-    </section>
-
-    <section class="card">
-      <h2>Activity</h2>
-      <div id="opHead" class="row"></div>
-      <div class="log" id="opLog"></div>
-      <h3>Recent</h3>
-      <table><tbody id="historyRows"></tbody></table>
-    </section>
-
-    <section class="card">
-      <h2>Backups</h2>
-      <p class="muted">Taken before each update, one for each user; the newest three updates' are kept.</p>
-      <table>
-        <thead><tr><th>User</th><th>Name</th><th>Size</th><th>Taken</th></tr></thead>
-        <tbody id="backupRows"></tbody>
-      </table>
-    </section>
+    </div>
   </div>
-</main>
+</div>
+
+<!-- The one popup, filled by popup(): settings, an update, a last update or
+     publish, a backup or kept data, and the coming-soon stub -->
+<div class="modal-bg" id="popupBg" hidden>
+  <div class="modal" id="popup" role="dialog" aria-modal="true" aria-labelledby="popupTitle">
+    <h4 id="popupTitle"></h4>
+    <div id="popupBody"></div>
+  </div>
+</div>
+
+<!-- A setup link: shown here once, kept nowhere, emptied as it closes -->
+<div class="modal-bg" id="linkDialog" hidden>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="linkTitle">
+    <h4 id="linkTitle">Setup link</h4>
+    <p class="hint" id="linkFor"></p>
+    <input class="input mono" id="linkText" readonly aria-label="The setup link">
+    <div class="modal-actions">
+      <span class="lead form-msg info" id="linkCopied"></span>
+      <button class="btn" type="button" id="linkClose">Close</button>
+      <button class="btn primary" type="button" id="linkCopy">Copy</button>
+    </div>
+  </div>
+</div>
+
 <script>
 "use strict";
 const $ = (id) => document.getElementById(id);
+
+// This browser's own choices, and nothing else: the theme and the tab.
+const STORE = { theme: "openfit-admin-theme", tab: "openfit-admin-tab" };
+const TABS = ["users", "repo"];
+const PANELS = ["system", "versions", "repos", "activity", "users", "add", "data", "userVersion", "repoTab"];
 const OUTCOMES = {
-  running: ["Running", "warn"], ok: ["Done", "good"], failed: ["Failed", "crit"],
-  rolled_back: ["Rolled back", "warn"], interrupted: ["Interrupted", "crit"],
+  running: ["Running", "wait"], ok: ["Done", "ok"], failed: ["Failed", "bad"],
+  rolled_back: ["Rolled back", "wait"], interrupted: ["Interrupted", "bad"],
+};
+const KINDS = {
+  update: "Update OpenFit", undo: "Undo last update", add_user: "Add user", admin_update: "Update the Admin",
+  update_apps: "Update apps",
+};
+const STATES = {
+  running: ["Running", "ok"], stopped: ["Stopped", "off"], missing: ["Not found", "bad"], unknown: ["Unknown", "wait"],
 };
 const GROUP_NOTES = {
   app: "OpenFit itself: rebuilt by Update OpenFit, and every user moved onto it.",
-  admin: "This Admin: pulled by Update OpenFit, then rebuilt by Update the Admin (below).",
-  library: "The app library: no rebuild needed. On its own, Update apps (below) publishes it to every user, with no restarts.",
+  admin: "This Admin: pulled by Update OpenFit, then rebuilt by its own Update available, under Versions.",
+  library: "The app library: no rebuild needed. On its own, its Update available, under Repos, publishes it to every user, with no restarts.",
   other: "Docs, tests and the rest.",
 };
-const KINDS = {
-  update: "Update", undo: "Undo", add_user: "Add user", admin_update: "Update the Admin", update_apps: "Update apps",
+// What each update does, said in its popup before Proceed.
+const SENTENCES = {
+  user: "This stops every user's OpenFit for about a minute and backs up everyone's data first.",
+  apps: "Publishes the new apps to every user. Nobody's OpenFit restarts.",
+  admin: "The Admin restarts on its new version. This page will be unavailable for up to a minute and reconnects by itself. If the new version doesn't start, the old one is put back.",
 };
-const STATES = {
-  running: ["Running", "good"], stopped: ["Stopped", "muted"], missing: ["Not found", "crit"], unknown: ["Unknown", "warn"],
+const ROUTES = { user: "/api/update", admin: "/api/admin/update", apps: "/api/library/update" };
+const PRIMARY_NOTE = "This is the server's main OpenFit: new versions are built from it, so it can't be removed.";
+const NEXT_UPDATE = "Coming in the next update.";
+const ICONS = {
+  fold: '<svg viewBox="0 0 10 10" aria-hidden="true"><path d="M3 1.8 8.4 5 3 8.2z"/></svg>',
+  warn: '<svg class="warn-ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1.2 15.4 14H.6zM7.2 6v4.2h1.6V6zm0 5.4V13h1.6v-1.6z"/></svg>',
+  backup: '<svg class="box-ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M1.5 2h13v3.5h-13zM2.5 6.5h11V14h-11zM6 8v1.4h4V8z"/></svg>',
 };
+
+let S = null;  // the last status read
 let polling = null;
 let selfUpdating = false;  // an Admin update is running: a request that fails is the Admin restarting
 let restarting = null;  // polls GET / while it does, and reloads once it answers
-let removing = null;  // the user Remove asks about
-let deleting = null;  // the removed user Delete data asks about
 let portTouched = false;  // Add user's port typed in: the suggestion stops replacing it
+let removing = null;  // the user whose Remove asks to be sure
+let watching = null;  // the running op's id, opened in the list once it's done
+const open = { users: new Set(), activity: new Set(), sources: new Set(), apps: new Set() };
+
+// --- small helpers ------------------------------------------------------
+
+function el(tag, text, cls) {
+  const e = document.createElement(tag);
+  if (text !== undefined && text !== null) e.textContent = text;
+  if (cls) e.className = cls;
+  return e;
+}
+
+function button(text, cls, onClick, disabled) {
+  const b = el("button", text, cls);
+  b.type = "button";
+  b.disabled = !!disabled;
+  b.addEventListener("click", () => onClick(b));
+  return b;
+}
+
+function stored(key) {
+  try { return localStorage.getItem(key); } catch (e) { return null; }
+}
+
+function store(key, value) {
+  try {
+    if (value === null) localStorage.removeItem(key); else localStorage.setItem(key, value);
+  } catch (e) { /* private window: this browser just won't remember */ }
+}
+
+function when(iso) {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  return isNaN(d) ? iso : d.toLocaleString("en-GB", { day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" });
+}
+
+// A date, its year only when it isn't this one.
+function day(iso) {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  if (isNaN(d)) return iso;
+  const opts = { day: "numeric", month: "short" };
+  if (d.getFullYear() !== new Date().getFullYear()) opts.year = "numeric";
+  return d.toLocaleDateString("en-GB", opts);
+}
+
+function size(n) {
+  if (typeof n !== "number") return "—";
+  if (n >= 1 << 30) return (n / (1 << 30)).toFixed(1) + " GB";
+  if (n >= 1 << 20) return (n / (1 << 20)).toFixed(1) + " MB";
+  if (n >= 1 << 10) return Math.round(n / (1 << 10)) + " KB";
+  return n + " B";
+}
+
+function plural(n, word) {
+  return `${n} ${word}${n === 1 ? "" : "s"}`;
+}
+
+function pill(text, tone) {
+  return el("span", text, "pill " + tone);
+}
+
+function outcomePill(outcome) {
+  const [text, tone] = OUTCOMES[outcome] || [outcome || "", "off"];
+  return pill(text, tone);
+}
+
+function statePill(state) {
+  const [text, tone] = STATES[state] || [state || "", "off"];
+  return pill(text, tone);
+}
+
+// The accent pill that offers an update: Update available, and its kin.
+function offer(text, onClick, disabled) {
+  return button(text, "pill primary pill-btn", onClick, disabled);
+}
+
+function linkTo(text, href) {
+  const a = el("a", text);
+  a.href = href;
+  a.target = "_blank";
+  a.rel = "noopener noreferrer";
+  return a;
+}
+
+function icon(name) {
+  const span = el("span");
+  span.innerHTML = ICONS[name];  // a fixed icon, never data
+  return span;
+}
+
+// A label / value list, OpenFit's .info: [label, value (text or a node)].
+function infoList(dl, rows) {
+  dl.replaceChildren();
+  for (const [label, value] of rows) {
+    const dd = el("dd");
+    dd.append(value);
+    dl.append(el("dt", label), dd);
+  }
+  return dl;
+}
+
+function say(msg, text, tone) {
+  msg.className = "form-msg" + (tone ? " " + tone : "");
+  msg.textContent = text || "";
+}
+
+function errorText(r) {
+  return (r.data.error || "That didn't work.") + (r.data.detail ? "\n" + r.data.detail : "");
+}
+
+// A row that opens and closes, as OpenFit's Your data rows do: the head a
+// button (chevron first), the panel built afresh each time it opens, and
+// the open ones remembered across a repaint.
+function expandable(set, id, head, panel) {
+  const item = el("div", null, "ditem");
+  item.dataset.id = id;
+  head.type = "button";
+  const reflect = () => {
+    item.classList.toggle("open", set.has(id));
+    head.setAttribute("aria-expanded", set.has(id) ? "true" : "false");
+  };
+  head.addEventListener("click", () => {
+    if (set.has(id)) {
+      set.delete(id);
+      if (item.lastChild !== head) item.lastChild.remove();
+    } else {
+      set.add(id);
+      item.append(panel());
+    }
+    reflect();
+  });
+  item.append(head);
+  if (set.has(id)) item.append(panel());
+  reflect();
+  return item;
+}
+
+function rowHead(cls, ...cells) {
+  const head = el("button", null, "drow g " + cls);
+  head.append(el("span", "›", "chev"), ...cells);
+  return head;
+}
+
+function emptyBox(box, text) {
+  box.replaceChildren(el("div", text, "dstate"));
+}
+
+// --- requests -----------------------------------------------------------
 
 // Every request carries the header the server checks, and a body as JSON.
 async function api(path, data) {
@@ -299,267 +728,14 @@ function show(view) {
   $("loginView").hidden = view !== "login";
   $("appView").hidden = view !== "app";
   if (view === "app") loadStatus();
-  if (view !== "app") stopPolling();
-}
-
-function when(iso) {
-  if (!iso) return "";
-  const d = new Date(iso);
-  return isNaN(d) ? iso : d.toLocaleString();
-}
-
-function size(n) {
-  if (n >= 1 << 20) return (n / (1 << 20)).toFixed(1) + " MB";
-  if (n >= 1 << 10) return Math.round(n / (1 << 10)) + " KB";
-  return n + " B";
-}
-
-function el(tag, text, cls) {
-  const e = document.createElement(tag);
-  if (text !== undefined && text !== null) e.textContent = text;
-  if (cls) e.className = cls;
-  return e;
-}
-
-function emptyRow(text, span) {
-  const tr = el("tr"), td = el("td", text, "muted");
-  td.colSpan = span;
-  tr.append(td);
-  return tr;
-}
-
-function pill(outcome) {
-  const [text, tone] = OUTCOMES[outcome] || [outcome || "", "muted"];
-  return el("span", text, "pill " + tone);
-}
-
-function commitList(ul, commits) {
-  ul.replaceChildren();
-  for (const c of commits) {
-    const li = el("li");
-    li.append(el("span", c.sha, "mono"), el("span", c.subject));
-    ul.append(li);
-  }
-}
-
-function paintGroups(check) {
-  const box = $("groups");
-  box.replaceChildren();
-  if (!check || !check.groups) return;
-  for (const g of check.groups) {
-    const div = el("div", null, "group");
-    const head = el("div", null, "row");
-    head.append(el("strong", g.title, "grow"));
-    const n = g.commits.length;
-    head.append(el("span", n ? `${n} change${n === 1 ? "" : "s"}` : (g.files.length ? `${g.files.length} file${g.files.length === 1 ? "" : "s"}` : "No changes"), "muted"));
-    div.append(head, el("div", GROUP_NOTES[g.key] || "", "muted"));
-    if (n) {
-      const ul = el("ul", null, "commits");
-      commitList(ul, g.commits);
-      div.append(ul);
-    }
-    if (g.prs.length) {
-      const prs = el("div", null, "prs");
-      for (const pr of g.prs) {
-        const a = el("a", "#" + pr.number);
-        a.href = pr.url;
-        a.target = "_blank";
-        a.rel = "noopener noreferrer";
-        prs.append(a);
-      }
-      div.append(prs);
-    }
-    box.append(div);
-  }
-}
-
-function paintOp(op) {
-  const head = $("opHead"), log = $("opLog");
-  head.replaceChildren();
-  log.replaceChildren();
-  if (!op) {
-    head.append(el("span", "Nothing has run yet.", "muted"));
-    return;
-  }
-  const what = op.kind === "undo" ? "Undo last update"
-    : op.kind === "add_user" ? `Add user ${op.user ? op.user.name : ""}`
-    : op.kind === "admin_update" ? "Update the Admin"
-    : op.kind === "update_apps" ? "Update apps" : "Update OpenFit";
-  head.append(el("strong", what, "grow"), pill(op.outcome));
-  for (const line of op.log || []) {
-    const div = el("div");
-    div.append(el("span", new Date(line.t).toLocaleTimeString(), "t"), el("span", line.text));
-    log.append(div);
-  }
-  log.scrollTop = log.scrollHeight;
-}
-
-function button(text, cls, onClick, disabled) {
-  const b = el("button", text, cls);
-  b.type = "button";
-  b.disabled = disabled;
-  b.addEventListener("click", () => onClick(b));
-  return b;
-}
-
-function paintUsers(s, busy) {
-  const of = s.openfit;
-  $("ofVersion").textContent = of.version
-    ? `Everyone is on version ${of.version.sha}: ${of.version.subject}` : "Version unknown";
-  const rows = $("userRows");
-  rows.replaceChildren();
-  for (const u of s.users) {
-    const who = el("td");
-    who.append(el("strong", u.name));
-    if (u.primary) who.append(" ", el("span", "you", "pill muted"));
-    const url = `${location.protocol}//${location.hostname}:${u.port}`;
-    const a = el("a", url);
-    a.href = url;
-    a.target = "_blank";
-    a.rel = "noopener noreferrer";
-    const link = el("td");
-    link.append(a);
-    const [text, tone] = STATES[u.state] || [u.state, "muted"];
-    const state = el("td");
-    state.append(el("span", text, "pill " + tone));
-    // A container from before the app library: it gets the mount when it's next made anew.
-    if (!u.library && (u.state === "running" || u.state === "stopped")) {
-      state.append(el("span", "Restart to see the app library", "hint"));
-    }
-    const acts = el("td", null, "actions");
-    const running = u.state === "running";
-    const verb = running ? "stop" : "start";
-    const path = `/api/users/${encodeURIComponent(u.name)}/`;
-    acts.append(button(running ? "Stop" : "Start", "", (b) => userAction(
-      path + verb, b, {}, running ? "Stopping…" : "Starting…"), busy));
-    acts.append(button("Restart", "", (b) => userAction(path + "restart", b, {}, "Restarting…"), busy));
-    acts.append(button("Setup link", "", (b) => makeLink(u.name, b), busy || !running));
-    if (!u.primary) acts.append(button("Remove", "danger", () => askRemove(u.name), busy));
-    const tr = el("tr");
-    tr.append(who, link, state, acts);
-    rows.append(tr);
-  }
-  if (removing && !s.users.some((u) => u.name === removing)) closeConfirms();
-  if (!portTouched) $("addPort").value = s.next_port === null ? "" : s.next_port;
-  $("addBtn").disabled = busy;
-
-  const kept = $("keptRows");
-  kept.replaceChildren();
-  $("keptBox").hidden = !s.removed.length;
-  for (const r of s.removed) {
-    const acts = el("td", null, "actions");
-    acts.append(button("Delete data", "danger", () => askDelete(r.name), busy));
-    const tr = el("tr");
-    tr.append(el("td", r.name), el("td", "Removed " + when(r.removed_at), "muted"), acts);
-    kept.append(tr);
-  }
-  if (deleting && !s.removed.some((r) => r.name === deleting)) closeConfirms();
-  $("removeGo").disabled = busy;
-  $("deleteGo").disabled = busy || $("deleteName").value !== deleting;
-}
-
-function paintLibrary(s, busy) {
-  const lib = s.library;
-  $("libWhen").textContent = lib.published_at
-    ? `Published ${when(lib.published_at)}, from version ${lib.short}.` : "Not published yet.";
-  const apps = $("libApps");
-  apps.replaceChildren();
-  for (const name of lib.apps) apps.append(el("li", name));
-  if (lib.published_at && !lib.apps.length) apps.append(el("li", "No apps"));
-  // Behind the code: a publish failed (or never ran). Publish again tries once more.
-  $("libStale").hidden = lib.current !== false;
-  $("libWhy").textContent = lib.short
-    ? `It's still on version ${lib.short}, not the version OpenFit is on.` : "Nothing is published yet.";
-  const why = lib.error
-    ? [lib.error.text.startsWith("The app library couldn't be updated") ? "" : lib.error.text, lib.error.detail]
-    : [];
-  $("libDetail").textContent = why.filter(Boolean).join("\n");
-  $("libDetail").hidden = !$("libDetail").textContent;
-  $("publishBtn").disabled = busy;
-  $("libActs").hidden = !s.update_apps_available;
-  $("appsBtn").disabled = busy;
-  $("appsGo").disabled = busy;
-  if (!s.update_apps_available) $("appsSure").hidden = true;
-}
-
-function paint(s) {
-  const running = s.op && s.op.outcome === "running";
-  paintUsers(s, running);
-
-  const check = s.check;
-  $("checkedAt").textContent = check && check.checked_at ? "Last checked " + when(check.checked_at) : "Not checked yet";
-  $("checkErr").textContent = check && check.error
-    ? `The check at ${when(check.error.at)} failed: ${check.error.text}` : "";
-  const summary = $("summary");
-  summary.replaceChildren();
-  if (check && check.behind !== undefined) {
-    summary.append(el("p", check.behind
-      ? `${check.behind} new commit${check.behind === 1 ? "" : "s"} on GitHub.`
-      : "OpenFit is up to date."));
-  }
-  if (s.update_apps_available) {
-    summary.append(el("p", "Only the app library changed: Update apps, on the App library card, publishes it.", "muted"));
-  }
-  paintGroups(check);
-  paintLibrary(s, running);
-
-  $("updateBtn").hidden = !s.update_available;
-  $("updateBtn").disabled = running;
-  $("undoBtn").hidden = !s.undo;
-  $("undoBtn").disabled = running;
-  $("checkBtn").disabled = running;
-  if (s.undo) {
-    $("undoText").textContent = `This puts back version ${s.undo.old.short} and everyone's data as it was before `
-      + "the update, and stops every user's OpenFit for about a minute. Anything recorded since the update is lost, "
-      + "for every user.";
-  }
-  if (!s.update_available) $("updateSure").hidden = true;
-  if (!s.undo) $("undoSure").hidden = true;
-
-  const au = s.admin_update;
-  $("adminNote").hidden = !au.available;
-  if (au.available) {
-    $("adminWhat").textContent = au.can_self_update
-      ? "Its new files are already on the server."
-      : "Update OpenFit first: it brings the Admin's new code with it.";
-    commitList($("adminCommits"), au.commits);
-    $("adminActs").hidden = !au.can_self_update;
-    $("adminBtn").disabled = running;
-    $("adminGo").disabled = running;
-    $("adminManual").hidden = !au.can_self_update;
-    $("adminCmd").textContent = au.command;
-  }
-  if (!au.can_self_update) $("adminSure").hidden = true;
-  selfUpdating = !!(s.op && s.op.kind === "admin_update" && s.op.outcome === "running");
-
-  paintOp(s.op);
-  const rows = $("historyRows");
-  rows.replaceChildren();
-  for (const o of s.history) {
-    const tr = el("tr");
-    const td = el("td");
-    td.append(pill(o.outcome));
-    tr.append(el("td", when(o.started_at)), el("td", KINDS[o.kind] || o.kind), td, el("td", o.summary));
-    rows.append(tr);
-  }
-  if (!s.history.length) rows.append(emptyRow("Nothing yet.", 4));
-  const backups = $("backupRows");
-  backups.replaceChildren();
-  for (const b of s.backups) {
-    const tr = el("tr");
-    tr.append(el("td", b.user), el("td", b.name, "mono"), el("td", size(b.size)), el("td", when(b.created)));
-    backups.append(tr);
-  }
-  if (!s.backups.length) backups.append(emptyRow("No backups yet.", 4));
-
-  if (running) startPolling(); else stopPolling();
+  if (view !== "app") { stopPolling(); closePopup(); }
 }
 
 async function loadStatus() {
   const r = await api("/api/status");
   if (r.status === 200) paint(r.data);
   else if (r.status === 0 && selfUpdating) watchRestart();
-  else if (r.status !== 401) $("updatesMsg").textContent = r.data.error || "Couldn't read the Admin's status.";
+  else if (r.status !== 401) say($("versionsMsg"), r.data.error || "Couldn't read the Admin's status.", "bad");
 }
 
 function startPolling() {
@@ -568,9 +744,10 @@ function startPolling() {
     const r = await api("/api/op");
     if (r.status === 0 && selfUpdating) return watchRestart();
     if (r.status !== 200) return;
-    selfUpdating = !!(r.data.op && r.data.op.kind === "admin_update" && r.data.op.outcome === "running");
-    paintOp(r.data.op);
-    if (!r.data.op || r.data.op.outcome !== "running") {
+    const op = r.data.op;
+    selfUpdating = !!(op && op.kind === "admin_update" && op.outcome === "running");
+    paintLive(op && op.outcome === "running" ? op : null);
+    if (!op || op.outcome !== "running") {
       stopPolling();
       loadStatus();
     }
@@ -603,21 +780,634 @@ function watchRestart() {
   }, 2000);
 }
 
-async function start(path, btn) {
-  const msg = $("updatesMsg");
-  msg.className = "msg";
-  msg.textContent = "";
-  btn.disabled = true;
-  const r = await api(path, {});
-  btn.disabled = false;
-  $("updateSure").hidden = true;
-  $("undoSure").hidden = true;
-  if (r.status !== 202) {
-    msg.className = "msg err";
-    msg.textContent = r.data.error || "That didn't start.";
-  }
-  loadStatus();
+// --- the header ---------------------------------------------------------
+
+// The theme chip, as OpenFit's: auto (the OS's), light, dark, in turn.
+function curTheme() {
+  const t = stored(STORE.theme);
+  return t === "light" || t === "dark" ? t : "auto";
 }
+
+function setTheme(t) {
+  if (t === "auto") {
+    document.documentElement.removeAttribute("data-theme");
+    store(STORE.theme, null);
+  } else {
+    document.documentElement.setAttribute("data-theme", t);
+    store(STORE.theme, t);
+  }
+  $("themeState").textContent = curTheme();
+}
+
+function paintDate() {
+  $("today").textContent = new Date().toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short" });
+}
+
+function openSettings() {
+  popup("Settings", (body) => {
+    body.append(el("p", "The Admin has one setting for now: logging this browser out.", "hint"));
+    const foot = el("div", null, "modal-actions settings-foot");
+    foot.append(el("p", "Logged in on this browser.", "hint lead"),
+      button("Close", "btn", closePopup),
+      button("Log out", "btn danger", async (b) => {
+        b.disabled = true;
+        await api("/api/logout", {});
+        closePopup();
+        show("login");
+      }));
+    body.append(foot);
+  });
+}
+
+// --- the tabs -----------------------------------------------------------
+
+function showTab(name, remember) {
+  if (!TABS.includes(name)) name = "users";
+  for (const t of TABS) {
+    const on = t === name;
+    $("tab-" + t).classList.toggle("active", on);
+    if (on) $("tab-" + t).setAttribute("aria-current", "page"); else $("tab-" + t).removeAttribute("aria-current");
+    $("panel-" + t).hidden = !on;
+  }
+  if (remember) store(STORE.tab, name);
+}
+
+function fold(name) {
+  const card = $(name + "Card"), btn = $(name + "Fold");
+  const folded = !card.classList.contains("folded");
+  card.classList.toggle("folded", folded);
+  btn.setAttribute("aria-expanded", folded ? "false" : "true");
+  btn.setAttribute("aria-label", btn.getAttribute("aria-label").replace(/^(Fold|Open) /, folded ? "Open " : "Fold "));
+}
+
+// --- the popup ----------------------------------------------------------
+
+// One popup at a time, OpenFit's modal: a title, then what `build` puts in.
+// Escape, a click outside it or Close shuts it.
+function popup(title, build, wide) {
+  $("popupTitle").textContent = title;
+  $("popup").classList.toggle("wide", !!wide);
+  const body = $("popupBody");
+  body.replaceChildren();
+  build(body);
+  $("popupBg").hidden = false;
+  const first = body.getElementsByTagName("button")[0];
+  if (first) first.focus();
+}
+
+function closePopup() {
+  $("popupBg").hidden = true;
+  $("popupBody").replaceChildren();
+}
+
+function actions(...buttons) {
+  const row = el("div", null, "modal-actions");
+  row.append(...buttons);
+  return row;
+}
+
+// Where S2's buttons wait, disabled: said once, beside them.
+function soon() {
+  return el("span", NEXT_UPDATE, "soon");
+}
+
+// The changes an update brings: each group a check reports (only those with
+// a change), its commits and its pull requests' links.
+function changesBlock(groups) {
+  const box = el("div");
+  const shown = groups.filter((g) => (g.commits && g.commits.length) || (g.files && g.files.length) || (g.prs && g.prs.length));
+  if (!shown.length) {
+    box.append(el("p", "No commits to list.", "dnote"));
+    return box;
+  }
+  for (const g of shown) {
+    const div = el("div", null, "group");
+    const head = el("div", null, "group-head");
+    const n = (g.commits || []).length;
+    head.append(el("span", g.title, "lead"),
+      el("span", n ? plural(n, "change") : plural((g.files || []).length, "file"), "r-sub"));
+    div.append(head);
+    if (g.note) div.append(el("p", g.note, "dnote"));
+    div.append(commitList(g.commits || [], g.prs || []));
+    box.append(div);
+  }
+  return box;
+}
+
+function commitList(commits, prs) {
+  const frag = el("div");
+  if (commits.length) {
+    const ul = el("ul", null, "commits");
+    for (const c of commits) {
+      const li = el("li");
+      li.append(el("span", c.sha, "mono"), el("span", c.subject));
+      ul.append(li);
+    }
+    frag.append(ul);
+  }
+  if (prs.length) {
+    const div = el("div", null, "prs");
+    for (const pr of prs) div.append(linkTo("#" + pr.number, pr.url));
+    frag.append(div);
+  }
+  return frag;
+}
+
+function checkGroups() {
+  return ((S.check && S.check.groups) || []).map((g) => ({ ...g, note: GROUP_NOTES[g.key] }));
+}
+
+// The update popup, shared by User, Admin and the app library: what it
+// does, the changes it brings, then Proceed (the existing operation) or
+// Cancel.
+function openUpdate(kind) {
+  const titles = { user: "Update OpenFit", admin: "Update the Admin", apps: "Update apps" };
+  popup(titles[kind], (body) => {
+    body.append(el("p", SENTENCES[kind], "hint"));
+    let ready = true;
+    if (kind === "admin") {
+      const v = S.versions.admin;
+      body.append(changesBlock([{ title: "Admin", ...v.pending }]));
+      if (!v.can_self_update) {
+        ready = false;
+        body.append(el("p", "Update OpenFit first: it brings the Admin's new code with it.", "install-warn"));
+      } else {
+        body.append(el("p", "If Proceed doesn't work, run this on the server instead. OpenFit keeps running meanwhile.", "dnote"),
+          el("pre", v.command, "cmd"));
+      }
+    } else {
+      body.append(changesBlock(checkGroups()));
+    }
+    const msg = el("div", null, "form-msg");
+    const go = button("Proceed", "btn primary", (b) => proceed(kind, b, msg), !ready || busy());
+    body.append(msg, actions(button("Cancel", "btn", closePopup), go));
+  }, true);
+}
+
+async function proceed(kind, btn, msg) {
+  btn.disabled = true;
+  say(msg, "");
+  const r = await api(ROUTES[kind], {});
+  btn.disabled = false;
+  if (r.status !== 202) {
+    say(msg, r.data.error || "That didn't start.", "bad");
+    return;
+  }
+  if (kind === "admin") selfUpdating = true;
+  closePopup();
+  await loadStatus();
+}
+
+// The last update of the users' OpenFit or of the Admin: when, how it
+// went, and what it brought; the users' Undo when it's on offer.
+function openLastUpdate(kind) {
+  const v = S.versions[kind], op = v.last;
+  popup(kind === "admin" ? "The Admin's last update" : "OpenFit's last update", (body) => {
+    if (!op) {
+      body.append(el("p", kind === "admin" ? "The Admin hasn't updated itself here yet." : "No update has run yet.", "hint"));
+    } else {
+      const dl = el("dl", null, "info");
+      const rows = [["When", when(op.finished_at || op.started_at)], ["Outcome", outcomePill(op.outcome)]];
+      if (op.old || op.new) rows.push(["Versions", `${op.old || "?"} → ${op.new || "?"}`]);
+      if (op.undone_at) rows.push(["Undone", when(op.undone_at)]);
+      body.append(infoList(dl, rows));
+      if (op.summary) body.append(el("p", op.summary, "dnote"));
+      body.append(el("h5", "What it brought", "subhead"));
+      body.append(op.changes ? changesBlock([{ title: kind === "admin" ? "Admin" : "OpenFit", ...op.changes }])
+        : el("p", "The changes it brought aren't recorded.", "dnote"));
+    }
+    const msg = el("div", null, "form-msg");
+    body.append(msg);
+    if (kind === "admin") {
+      const revert = button("Revert the Admin", "btn", () => {}, true);
+      revert.dataset.next = "s2";
+      body.append(soonLead(actions(soon(), revert, button("Close", "btn", closePopup))));
+    } else {
+      const sure = el("div", null, "danger-panel");
+      sure.hidden = true;
+      const undoable = S.undo && op && S.undo.id === op.id;
+      if (undoable) {
+        sure.append(el("h5", "Undo last update?"),
+          el("p", `This puts back version ${S.undo.old.short} and everyone's data as it was before the update, `
+            + "and stops every user's OpenFit for about a minute. Anything recorded since the update is lost, "
+            + "for every user."),
+          actions(button("Cancel", "btn", () => { sure.hidden = true; }),
+            button("Undo last update", "btn danger solid", async (b) => {
+              b.disabled = true;
+              const r = await api("/api/undo", {});
+              b.disabled = false;
+              if (r.status !== 202) return say(msg, r.data.error || "That didn't start.", "bad");
+              closePopup();
+              await loadStatus();
+            }, busy())));
+      }
+      const row = actions(button("Close", "btn", closePopup));
+      if (undoable) row.prepend(button("Undo", "btn danger lead", () => { sure.hidden = false; }, busy()));
+      body.append(row, sure);
+    }
+  }, true);
+}
+
+// A source's last publish to the app library: when, from which commit,
+// and the apps it holds.
+function openPublish(r) {
+  popup(`${r.name}: last publish`, (body) => {
+    const apps = el("span", r.apps.length ? r.apps.map((a) => a.name).join(", ") : "No apps");
+    body.append(infoList(el("dl", null, "info"), [
+      ["When", r.published_at ? when(r.published_at) : "Not published yet"],
+      ["Commit", el("span", r.commit || "—", "mono")],
+      ["Apps", apps],
+    ]));
+    if (r.official && r.error) {
+      body.append(el("p", "The last publish failed: " + r.error.text + (r.error.detail ? "\n" + r.error.detail : ""), "install-warn"));
+    }
+    body.append(actions(button("Close", "btn", closePopup)));
+  }, true);
+}
+
+function busy() {
+  return !!(S && S.op && S.op.outcome === "running");
+}
+
+// --- the left column ------------------------------------------------------
+
+function paintSystem(s) {
+  const sys = s.system, srv = sys.server || {};
+  const u = sys.users;
+  const counts = [`${u.running} running`, `${u.stopped} stopped`].concat(u.missing ? [`${u.missing} not found`] : []);
+  const cpu = [srv.NCPU != null ? plural(srv.NCPU, "CPU") : null, srv.MemTotal != null ? size(srv.MemTotal) + " memory" : null]
+    .filter(Boolean).join(" · ");
+  const n = s.backups.length;
+  infoList($("systemInfo"), [
+    ["Server", srv.Name || "—"],
+    ["Docker", srv.ServerVersion || "—"],
+    ["CPU and memory", cpu || "—"],
+    ["Disk free", size(sys.disk_free)],
+    ["Backups", n ? `${size(sys.backups_bytes)} in ${plural(n, "backup")}` : "None yet"],
+    ["Users", counts.join(" · ")],
+    ["Admin up since", when(sys.admin_up_since)],
+  ]);
+}
+
+function paintVersions(s, isBusy) {
+  const rows = $("versionRows");
+  rows.replaceChildren();
+  for (const [kind, label] of [["admin", "Admin"], ["user", "User"]]) {
+    const v = s.versions[kind];
+    const row = el("div", null, "lrow g-ver");
+    row.dataset.kind = kind;
+    const name = button(label, "linkbtn", () => openLastUpdate(kind));
+    name.setAttribute("aria-haspopup", "dialog");
+    const ver = kind === "admin" && v.older
+      ? el("span", "older", "ver older")
+      : el("span", v.short ? `${v.short} · ${day(v.date)}` : "—", "ver");
+    if (kind === "admin" && v.older) ver.title = "The Admin running is older than the repo's admin/: its update is on offer.";
+    const acts = el("span", null, "r-acts");
+    if (v.update_available) acts.append(offer("Update available", () => openUpdate(kind), isBusy));
+    row.append(name, ver, el("span", "Last updated " + (v.last_updated ? day(v.last_updated) : "—"), "r-sub"), acts);
+    rows.append(row);
+  }
+  const check = s.check;
+  const behind = check && check.behind !== undefined
+    ? (check.behind ? ` · ${plural(check.behind, "new commit")} on GitHub` : " · up to date") : "";
+  $("checkedAt").textContent = (check && check.checked_at ? "Last checked " + when(check.checked_at) : "Not checked yet") + behind;
+  $("checkErr").textContent = check && check.error ? `The check at ${when(check.error.at)} failed: ${check.error.text}` : "";
+  $("checkBtn").disabled = isBusy;
+}
+
+function paintRepos(s, isBusy) {
+  const rows = $("repoRows");
+  rows.replaceChildren();
+  for (const r of s.repos) {
+    const row = el("div", null, "lrow g-shelf");
+    row.dataset.source = r.source;
+    const name = button(r.name, "linkbtn", () => openPublish(r));
+    name.setAttribute("aria-haspopup", "dialog");
+    const acts = el("span", null, "r-acts");
+    if (r.update === "apps") acts.append(offer("Update available", () => openUpdate("apps"), isBusy));
+    if (r.update === "openfit") acts.append(offer("Comes with the OpenFit update", () => openUpdate("user"), isBusy));
+    if (r.official && r.current === false) acts.append(button("Publish again", "btn sm", (b) => publishAgain(b), isBusy));
+    const line = el("span", null, "r-line");
+    line.append(name, el("span", r.short || "—", "ver"));
+    row.append(line, el("span", r.published_at ? "Last published " + when(r.published_at) : "Not published yet", "r-sub"), acts);
+    rows.append(row);
+  }
+  // Behind the code: a publish failed (or never ran). Publish again tries once more.
+  const lib = s.library, note = $("reposNote");
+  note.hidden = lib.current !== false;
+  if (lib.current === false) {
+    const why = lib.error && !lib.error.text.startsWith("The app library couldn't be updated") ? " " + lib.error.text : "";
+    note.textContent = (lib.short ? `The app library couldn't be updated: it's still on version ${lib.short}, not the version OpenFit is on.`
+      : "The app library isn't published yet.") + why + (lib.error && lib.error.detail ? "\n" + lib.error.detail : "");
+  }
+}
+
+async function publishAgain(btn) {
+  const msg = $("reposMsg");
+  say(msg, "");
+  btn.disabled = true;
+  btn.textContent = "Publishing…";
+  const r = await api("/api/library/publish", {});
+  btn.disabled = false;
+  btn.textContent = "Publish again";
+  if (r.status === 200) say(msg, "Published the app library.", "ok");
+  else say(msg, errorText(r), "bad");
+  await loadStatus();
+}
+
+function opWhat(op) {
+  return (KINDS[op.kind] || op.kind) + (op.kind === "add_user" && op.user ? " " + op.user.name : "");
+}
+
+function logLines(box, lines) {
+  box.replaceChildren();
+  for (const line of lines || []) {
+    const div = el("div");
+    div.append(el("span", new Date(line.t).toLocaleTimeString("en-GB"), "t"), el("span", line.text));
+    box.append(div);
+  }
+  return box;
+}
+
+// The running operation, live at the top of the activity log.
+function paintLive(op) {
+  $("live").hidden = !op;
+  if (!op) return;
+  watching = op.id;
+  const head = $("liveHead");
+  head.replaceChildren(el("span", opWhat(op), "lead"), outcomePill(op.outcome));
+  const log = logLines($("liveLog"), op.log);
+  log.scrollTop = log.scrollHeight;
+}
+
+function paintActivity(s) {
+  const running = s.op && s.op.outcome === "running" ? s.op : null;
+  paintLive(running);
+  if (!running && watching) {
+    open.activity.add(watching);  // just finished while watched: its log stays in view
+    watching = null;
+  }
+  const rows = $("activityRows");
+  rows.replaceChildren();
+  const past = s.activity.filter((o) => !running || o.id !== running.id);
+  if (!past.length) return emptyBox(rows, "Nothing has run yet.");
+  for (const op of past) {
+    const head = rowHead("g-op", el("span", opWhat(op), "r-name"), el("span", when(op.started_at), "r-sub"), outcomePill(op.outcome));
+    rows.append(expandable(open.activity, op.id, head, () => {
+      const panel = el("div", null, "dpanel one");
+      if (op.summary) panel.append(el("p", op.summary, "dnote"));
+      panel.append(logLines(el("div", null, "log"), op.log));
+      return panel;
+    }));
+  }
+}
+
+// --- the Users tab ----------------------------------------------------------
+
+function paintUsers(s, isBusy) {
+  const rows = $("userRows");
+  rows.replaceChildren();
+  const users = s.users.slice().sort((a, b) => a.name.localeCompare(b.name));
+  for (const u of users) {
+    const head = rowHead("g-user", el("span", u.name, "r-name"), statePill(u.state));
+    rows.append(expandable(open.users, u.name, head, () => userPanel(u, isBusy)));
+  }
+  if (removing && !s.users.some((u) => u.name === removing)) removing = null;
+}
+
+function userPanel(u, isBusy) {
+  const panel = el("div", null, "dpanel one");
+  const url = `${location.protocol}//${location.hostname}:${u.port}`;
+  const status = el("span");
+  status.append(statePill(u.state));
+  // A container from before the app library: it gets the mount when it's next made anew.
+  if (!u.library && (u.state === "running" || u.state === "stopped")) {
+    status.append(" ", pill("Restart to see the app library", "wait"));
+  }
+  panel.append(infoList(el("dl", null, "info"), [["Address", linkTo(url, url)], ["Status", status]]));
+
+  const running = u.state === "running";
+  const path = `/api/users/${encodeURIComponent(u.name)}/`;
+  const acts = el("div", null, "acts");
+  acts.append(button(running ? "Stop" : "Start", "btn sm", (b) => userAction(path + (running ? "stop" : "start"), b, {},
+    running ? "Stopping…" : "Starting…"), isBusy));
+  acts.append(button("Restart", "btn sm", (b) => userAction(path + "restart", b, {}, "Restarting…"), isBusy));
+  acts.append(button("Setup link", "btn sm", (b) => makeLink(u.name, b), isBusy || !running));
+  panel.append(acts);
+  if (u.primary) {
+    panel.append(el("p", PRIMARY_NOTE, "dnote"));
+    return panel;
+  }
+  const sure = el("div", null, "danger-panel");
+  sure.hidden = removing !== u.name;
+  sure.append(el("h5", `Remove ${u.name}?`), el("p", "Their OpenFit is removed. Their data is kept until you delete it."),
+    actions(button("Cancel", "btn", () => { removing = null; sure.hidden = true; }),
+      button("Remove", "btn danger solid", async (b) => {
+        if (await userAction(path + "remove", b, {}, "Removing…")) {
+          removing = null;
+          say($("usersMsg"), `Removed ${u.name}. Their data is kept, under User data.`);
+        }
+      }, isBusy)));
+  acts.append(button("Remove", "btn sm danger", () => { removing = u.name; sure.hidden = false; }, isBusy));
+  panel.append(sure);
+  return panel;
+}
+
+// A user action that runs in the request: the button held, then the
+// status read again. A failure shows the error, and the output behind it.
+async function userAction(path, btn, body, busyText) {
+  const msg = $("usersMsg");
+  say(msg, "");
+  const text = btn.textContent;
+  btn.disabled = true;
+  if (busyText) btn.textContent = busyText;
+  const r = await api(path, body);
+  btn.disabled = false;
+  btn.textContent = text;
+  if (r.status !== 200) say(msg, errorText(r), "bad");
+  await loadStatus();
+  return r.status === 200;
+}
+
+// A setup link for a user's OpenFit: their own container makes it, and it
+// comes back here once - shown in the dialog, kept nowhere, gone when the
+// dialog closes. It sets their password the first time, and resets it.
+async function makeLink(name, btn) {
+  const msg = $("usersMsg");
+  say(msg, "");
+  const text = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "Making…";
+  const r = await api(`/api/users/${encodeURIComponent(name)}/setup-link`, {});
+  btn.disabled = false;
+  btn.textContent = text;
+  if (r.status !== 200) {
+    say(msg, errorText(r), "bad");
+    return;
+  }
+  $("linkFor").textContent = `Send this to ${name}. It works once, for 24 hours. A new link replaces this one.`;
+  $("linkText").value = r.data.link;
+  $("linkCopied").textContent = "";
+  $("linkDialog").hidden = false;
+  $("linkText").select();
+}
+
+function closeLink() {
+  $("linkDialog").hidden = true;
+  $("linkText").value = "";
+  $("linkCopied").textContent = "";
+}
+
+function paintAdd(s, isBusy) {
+  if (!portTouched) $("addPort").value = s.next_port === null ? "" : s.next_port;
+  $("addBtn").disabled = isBusy;
+}
+
+// Backups and removed users' kept data, in one list, newest first.
+function paintUserData(s) {
+  const rows = $("dataRows");
+  rows.replaceChildren();
+  const items = s.backups.map((b) => ({ kind: "backup", at: b.created, b }))
+    .concat(s.removed.map((r) => ({ kind: "kept", at: r.removed_at, r })))
+    .sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : 0));
+  if (!items.length) return emptyBox(rows, "No backups or kept data yet.");
+  for (const item of items) {
+    const row = el("button", null, "drow g g-data");
+    row.type = "button";
+    row.setAttribute("aria-haspopup", "dialog");
+    if (item.kind === "kept") {
+      row.dataset.kind = "kept";
+      row.append(icon("warn"), el("span", item.r.name, "r-name"), el("span", "Removed " + day(item.r.removed_at), "r-sub"), el("span", ""));
+      row.addEventListener("click", () => openKept(item.r));
+    } else {
+      row.dataset.kind = "backup";
+      row.append(icon("backup"), el("span", item.b.user, "r-name"), el("span", day(item.b.created), "r-sub"), el("span", size(item.b.size), "r-num"));
+      row.addEventListener("click", () => openBackup(item.b));
+    }
+    rows.append(row);
+  }
+}
+
+function openBackup(b) {
+  popup(`${b.user}'s backup`, (body) => {
+    const u = b.update;
+    const update = u ? `${KINDS.update}, ${when(u.started_at)}: ${u.old || "?"} → ${u.new || "?"}`
+      : "An update from " + (b.name.split("-")[1] || "?");
+    body.append(infoList(el("dl", null, "info"), [
+      ["User", b.user], ["Update", update], ["Date", when(b.created)], ["Size", size(b.size)],
+      ["File", el("span", b.name, "mono")],
+    ]));
+    const down = button("Download", "btn", () => {}, true), del = button("Delete", "btn danger", () => {}, true);
+    down.dataset.next = "s2";
+    del.dataset.next = "s2";
+    body.append(soonLead(actions(soon(), down, del, button("Close", "btn", closePopup))));
+  }, true);
+}
+
+// A popup's foot whose first item, the S2 note, keeps to the left.
+function soonLead(row) {
+  row.firstChild.className += " lead";
+  return row;
+}
+
+// Kept data: Delete data, once their name is typed exactly (the server
+// checks it again).
+function openKept(r) {
+  popup(`${r.name}'s kept data`, (body) => {
+    body.append(infoList(el("dl", null, "info"), [["User", r.name], ["Removed", when(r.removed_at)]]));
+    const panel = el("div", null, "danger-panel");
+    panel.style.marginTop = "14px";
+    const field = el("div", null, "field");
+    const label = el("label", "Type their name to delete it");
+    const input = el("input", null, "input");
+    input.id = "deleteName";
+    input.autocomplete = "off";
+    label.htmlFor = "deleteName";
+    field.append(label, input);
+    field.style.marginTop = "10px";
+    const msg = el("div", null, "form-msg");
+    const go = button("Delete data", "btn danger solid", async (b) => {
+      if (input.value !== r.name) return;
+      b.disabled = true;
+      const res = await api(`/api/removed/${encodeURIComponent(r.name)}/delete-data`, { confirm: input.value });
+      if (res.status !== 200) {
+        b.disabled = false;
+        return say(msg, errorText(res), "bad");
+      }
+      closePopup();
+      say($("usersMsg"), `Deleted ${r.name}'s data.`);
+      await loadStatus();
+    }, true);
+    input.addEventListener("input", () => { go.disabled = input.value !== r.name || busy(); });
+    panel.append(el("h5", "Delete data?"),
+      el("p", `This deletes everything ${r.name}'s OpenFit stored, for good. Their backups stay until they're pruned.`),
+      field, actions(go));
+    const down = button("Download", "btn", () => {}, true);
+    down.dataset.next = "s2";
+    body.append(panel, msg, soonLead(actions(soon(), down, button("Close", "btn", closePopup))));
+  }, true);
+}
+
+function paintUserVersion(s) {
+  const v = s.versions.user, cur = v.current;
+  const prs = el("span");
+  if (!cur) prs.textContent = "No update recorded yet";
+  else if (!cur.changes) prs.textContent = "Not recorded";
+  else if (!cur.changes.prs.length) prs.textContent = "None";
+  else for (const pr of cur.changes.prs) prs.append(linkTo("#" + pr.number, pr.url), " ");
+  infoList($("userVersionInfo"), [
+    ["Version", el("span", v.short ? `${v.short} · ${day(v.date)}` : "—", "mono")],
+    ["Latest change", v.subject || "—"],
+    ["In the last update", prs],
+  ]);
+}
+
+// --- the Repo tab ---------------------------------------------------------------
+
+function paintSources(s) {
+  const rows = $("sourceRows");
+  rows.replaceChildren();
+  for (const r of s.repos) {
+    const head = rowHead("g-repo", el("span", r.name, "r-name"), el("span", r.short || "—", "ver"));
+    rows.append(expandable(open.sources, r.source, head, () => {
+      const panel = el("div", null, "dpanel one");
+      panel.append(el("div", r.description || "No description.", "infobox" + (r.description ? "" : " empty")),
+        el("h5", "Applications", "subhead"));
+      const list = el("div", null, "nested");
+      if (!r.apps.length) list.append(el("div", "No apps published.", "dstate"));
+      for (const a of r.apps) {
+        const appHead = rowHead("g-repo", el("span", a.name, "r-name"), el("span", a.id, "ver"));
+        list.append(expandable(open.apps, r.source + "/" + a.id, appHead, () => {
+          const p = el("div", null, "dpanel one");
+          p.append(el("div", a.description || "No description.", "infobox" + (a.description ? "" : " empty")));
+          return p;
+        }));
+      }
+      panel.append(list);
+      return panel;
+    }));
+  }
+}
+
+// --- painting ---------------------------------------------------------------------
+
+function paint(s) {
+  S = s;
+  const isBusy = busy();
+  paintSystem(s);
+  paintVersions(s, isBusy);
+  paintRepos(s, isBusy);
+  paintActivity(s);
+  paintUsers(s, isBusy);
+  paintAdd(s, isBusy);
+  paintUserData(s);
+  paintUserVersion(s);
+  paintSources(s);
+  selfUpdating = !!(s.op && s.op.kind === "admin_update" && s.op.outcome === "running");
+  if (isBusy) startPolling(); else stopPolling();
+}
+
+// --- wiring ---------------------------------------------------------------------
 
 $("setupForm").addEventListener("submit", async (ev) => {
   ev.preventDefault();
@@ -634,11 +1424,6 @@ $("loginForm").addEventListener("submit", async (ev) => {
   else $("loginMsg").textContent = r.data.error || "That didn't work.";
 });
 
-$("logoutBtn").addEventListener("click", async () => {
-  await api("/api/logout", {});
-  show("login");
-});
-
 $("checkBtn").addEventListener("click", async () => {
   const btn = $("checkBtn");
   btn.disabled = true;
@@ -646,56 +1431,29 @@ $("checkBtn").addEventListener("click", async () => {
   const r = await api("/api/check", {});
   btn.disabled = false;
   btn.textContent = "Check now";
-  const msg = $("updatesMsg");
-  msg.className = r.status === 200 ? "msg" : "msg err";
-  msg.textContent = r.status === 200 ? "" : (r.data.error || "The check didn't run.");
-  loadStatus();
+  say($("versionsMsg"), r.status === 200 ? "" : (r.data.error || "The check didn't run."), r.status === 200 ? "" : "bad");
+  await loadStatus();
 });
 
-// A user action that runs in the request: the button held, then the
-// status read again. A failure shows the error, and the output behind it.
-async function userAction(path, btn, body, busyText) {
-  const msg = $("usersMsg");
-  msg.className = "msg pre";
-  msg.textContent = "";
-  const text = btn.textContent;
-  btn.disabled = true;
-  if (busyText) btn.textContent = busyText;
-  const r = await api(path, body);
-  btn.disabled = false;
-  btn.textContent = text;
-  if (r.status !== 200) {
-    msg.className = "msg pre err";
-    msg.textContent = (r.data.error || "That didn't work.") + (r.data.detail ? "\n" + r.data.detail : "");
+$("addPort").addEventListener("input", () => { portTouched = true; });
+
+$("addForm").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  const msg = $("addMsg");
+  say(msg, "");
+  const raw = $("addPort").value, port = Number(raw);
+  $("addBtn").disabled = true;
+  const r = await api("/api/users", { name: $("addName").value, port: raw !== "" && Number.isInteger(port) ? port : raw });
+  $("addBtn").disabled = false;
+  if (r.status === 202) {
+    $("addName").value = "";
+    portTouched = false;
+    say(msg, "Adding… its progress is in the Activity log.");
+  } else {
+    say(msg, r.data.error || "That didn't start.", "bad");
   }
   await loadStatus();
-  return r.status === 200;
-}
-
-// A setup link for a user's OpenFit: their own container makes it, and it
-// comes back here once - shown in the dialog, kept nowhere, gone when the
-// dialog closes. It sets their password the first time, and resets it.
-async function makeLink(name, btn) {
-  const msg = $("usersMsg");
-  msg.className = "msg pre";
-  msg.textContent = "";
-  const text = btn.textContent;
-  btn.disabled = true;
-  btn.textContent = "Making…";
-  const r = await api(`/api/users/${encodeURIComponent(name)}/setup-link`, {});
-  btn.disabled = false;
-  btn.textContent = text;
-  if (r.status !== 200) {
-    msg.className = "msg pre err";
-    msg.textContent = (r.data.error || "That didn't work.") + (r.data.detail ? "\n" + r.data.detail : "");
-    return;
-  }
-  $("linkFor").textContent = `Send this to ${name}. It works once, for 24 hours. A new link replaces this one.`;
-  $("linkText").value = r.data.link;
-  $("linkCopied").textContent = "";
-  $("linkDialog").showModal();
-  $("linkText").select();
-}
+});
 
 // The clipboard API needs HTTPS (or localhost), which the Admin on the LAN
 // isn't: there, the selected text is copied the old way.
@@ -711,147 +1469,33 @@ $("linkCopy").addEventListener("click", async () => {
   }
   $("linkCopied").textContent = ok ? "Copied." : "Select the link and copy it.";
 });
-$("linkClose").addEventListener("click", () => $("linkDialog").close());
-$("linkDialog").addEventListener("close", () => { $("linkText").value = ""; $("linkCopied").textContent = ""; });
+$("linkClose").addEventListener("click", closeLink);
 
-function closeConfirms() {
-  removing = null;
-  deleting = null;
-  $("removeSure").hidden = true;
-  $("deleteSure").hidden = true;
-  $("deleteName").value = "";
+$("popupBg").addEventListener("click", (ev) => { if (ev.target === $("popupBg")) closePopup(); });
+$("linkDialog").addEventListener("click", (ev) => { if (ev.target === $("linkDialog")) closeLink(); });
+document.addEventListener("keydown", (ev) => {
+  if (ev.key !== "Escape") return;
+  if (!$("linkDialog").hidden) closeLink(); else if (!$("popupBg").hidden) closePopup();
+});
+
+$("settingsBtn").addEventListener("click", openSettings);
+$("themeToggle").addEventListener("click", () => {
+  const order = ["auto", "light", "dark"];
+  setTheme(order[(order.indexOf(curTheme()) + 1) % order.length]);
+});
+for (const t of TABS) $("tab-" + t).addEventListener("click", () => showTab(t, true));
+for (const name of PANELS) {
+  $(name + "Fold").innerHTML = ICONS.fold;
+  $(name + "Fold").addEventListener("click", () => fold(name));
 }
+$("addRepoBtn").addEventListener("click", () => popup("Add repository", (body) => {
+  body.append(el("p", "Coming soon: your organisation's own repositories, with apps of their own beside OpenFit's.", "hint"),
+    actions(button("Close", "btn", closePopup)));
+}));
 
-function askRemove(name) {
-  closeConfirms();
-  removing = name;
-  $("removeWho").textContent = `Remove ${name}?`;
-  $("removeSure").hidden = false;
-}
-
-function askDelete(name) {
-  closeConfirms();
-  deleting = name;
-  $("deleteText").textContent = `This deletes everything ${name}'s OpenFit stored, for good. `
-    + "Their backups stay until they're pruned.";
-  $("deleteGo").disabled = true;
-  $("deleteSure").hidden = false;
-  $("deleteName").focus();
-}
-
-for (const b of document.querySelectorAll("[data-cancel-user]")) b.addEventListener("click", closeConfirms);
-
-$("removeGo").addEventListener("click", async () => {
-  const name = removing;
-  if (name && await userAction(`/api/users/${encodeURIComponent(name)}/remove`, $("removeGo"), {}, "Removing…")) {
-    closeConfirms();
-    $("usersMsg").textContent = `Removed ${name}. Their data is kept, below.`;
-  }
-});
-
-// Delete data only works once their name is typed exactly; the server
-// checks it again.
-$("deleteName").addEventListener("input", () => {
-  $("deleteGo").disabled = !deleting || $("deleteName").value !== deleting;
-});
-
-$("deleteGo").addEventListener("click", async () => {
-  const name = deleting, typed = $("deleteName").value;
-  if (!name || typed !== name) return;
-  if (await userAction(`/api/removed/${encodeURIComponent(name)}/delete-data`, $("deleteGo"), { confirm: typed }, "Deleting…")) {
-    closeConfirms();
-    $("usersMsg").textContent = `Deleted ${name}'s data.`;
-  }
-});
-
-$("addPort").addEventListener("input", () => { portTouched = true; });
-
-$("addForm").addEventListener("submit", async (ev) => {
-  ev.preventDefault();
-  const msg = $("usersMsg");
-  msg.className = "msg pre";
-  msg.textContent = "";
-  const raw = $("addPort").value, port = Number(raw);
-  $("addBtn").disabled = true;
-  const r = await api("/api/users", { name: $("addName").value, port: raw !== "" && Number.isInteger(port) ? port : raw });
-  $("addBtn").disabled = false;
-  if (r.status === 202) {
-    $("addName").value = "";
-    portTouched = false;
-    msg.textContent = "Adding… its progress is under Activity.";
-  } else {
-    msg.className = "msg pre err";
-    msg.textContent = r.data.error || "That didn't start.";
-  }
-  loadStatus();
-});
-
-$("updateBtn").addEventListener("click", () => { $("undoSure").hidden = true; $("updateSure").hidden = false; });
-$("undoBtn").addEventListener("click", () => { $("updateSure").hidden = true; $("undoSure").hidden = false; });
-for (const b of document.querySelectorAll("[data-cancel]")) {
-  b.addEventListener("click", () => { $("updateSure").hidden = true; $("undoSure").hidden = true; });
-}
-$("updateGo").addEventListener("click", () => start("/api/update", $("updateGo")));
-
-$("adminBtn").addEventListener("click", () => { $("adminSure").hidden = false; });
-$("adminCancel").addEventListener("click", () => { $("adminSure").hidden = true; });
-$("adminGo").addEventListener("click", async () => {
-  const btn = $("adminGo"), msg = $("adminMsg");
-  msg.className = "msg";
-  msg.textContent = "";
-  btn.disabled = true;
-  const r = await api("/api/admin/update", {});
-  btn.disabled = false;
-  $("adminSure").hidden = true;
-  if (r.status === 202) {
-    selfUpdating = true;
-    msg.textContent = "Updating the Admin… its progress is under Activity.";
-  } else {
-    msg.className = "msg err";
-    msg.textContent = r.data.error || "That didn't start.";
-  }
-  loadStatus();
-});
-$("undoGo").addEventListener("click", () => start("/api/undo", $("undoGo")));
-
-$("appsBtn").addEventListener("click", () => { $("appsSure").hidden = false; });
-$("appsCancel").addEventListener("click", () => { $("appsSure").hidden = true; });
-$("appsGo").addEventListener("click", async () => {
-  const btn = $("appsGo"), msg = $("libMsg");
-  msg.className = "msg pre";
-  msg.textContent = "";
-  btn.disabled = true;
-  const r = await api("/api/library/update", {});
-  btn.disabled = false;
-  $("appsSure").hidden = true;
-  if (r.status === 202) {
-    msg.textContent = "Updating the apps… its progress is under Activity.";
-  } else {
-    msg.className = "msg pre err";
-    msg.textContent = r.data.error || "That didn't start.";
-  }
-  loadStatus();
-});
-
-// Publish again runs in the request: a short wait, then the card read again.
-$("publishBtn").addEventListener("click", async () => {
-  const btn = $("publishBtn"), msg = $("libMsg");
-  msg.className = "msg pre";
-  msg.textContent = "";
-  btn.disabled = true;
-  btn.textContent = "Publishing…";
-  const r = await api("/api/library/publish", {});
-  btn.disabled = false;
-  btn.textContent = "Publish again";
-  if (r.status === 200) {
-    msg.textContent = "Published the app library.";
-  } else {
-    msg.className = "msg pre err";
-    msg.textContent = (r.data.error || "That didn't work.") + (r.data.detail ? "\n" + r.data.detail : "");
-  }
-  loadStatus();
-});
-
+setTheme(curTheme());
+paintDate();
+showTab(stored(STORE.tab) || "users", false);
 show(document.body.dataset.state || "login");
 </script>
 </body>

@@ -21,8 +21,10 @@ commands it execs are the health check and the user system's own
 `python auth_cli.py setup-link`, for a setup link - the Admin's own
 helper containers (labelled openfit.admin.helper=true, always --rm), the
 user system's image, and the kept volume of a user removed from
-users.json, when its deletion is confirmed. Nothing else on the server is
-listed, inspected, stopped or removed.
+users.json, when its deletion is confirmed. Beside those, `docker info`,
+with one fixed format, for the System panel: of all it says, only the
+server's name, Docker version, CPUs and memory are kept. Nothing else on
+the server is listed, inspected, stopped or removed.
 
 The Admin's own project, openfit-admin, is touched only to update the
 Admin itself, and only through admin_compose(): the running Admin builds
@@ -44,6 +46,7 @@ the files it writes stay the owner's and git never refuses the repo as
 someone else's. Docker runs as root, for the socket.
 """
 
+import errno
 import hashlib
 import json
 import os
@@ -57,6 +60,8 @@ import time
 from datetime import datetime, timezone
 from typing import NamedTuple
 from urllib.parse import urlsplit
+
+import yaml
 
 DEFAULT_SETTINGS = {
     "user": "andy",
@@ -178,6 +183,20 @@ _SHELF_APP = re.compile(r"[a-z0-9][a-z0-9-]*\Z")  # a library app's folder
 MAX_APP_FILES = 64
 MAX_APP_BYTES = 16 * 1024 * 1024
 MAX_APPS = 200
+# library/repo.yaml: the source's name and blurb, for the index. Each app's
+# name and description are read from its own app.yaml, as the user system
+# reads them (its MAX_DESCRIPTION, its MAX_MANIFEST_BYTES).
+REPO_FILE = "repo.yaml"
+MAX_REPO_NAME = 40
+MAX_DESCRIPTION = 300
+MAX_YAML_BYTES = 256 * 1024
+
+# The System information panel's view of the server: `docker info` with
+# exactly this format, at most once a DOCKER_INFO_EVERY seconds, of which
+# only SERVER_FIELDS are kept - never the host's container counts or names.
+DOCKER_INFO_ARGS = ("info", "--format", "{{json .}}")
+DOCKER_INFO_EVERY = 60
+SERVER_FIELDS = ("Name", "ServerVersion", "NCPU", "MemTotal")
 
 CHECK_EVERY = 7 * 24 * 3600  # an automatic check, a week after the last
 TICK_EVERY = 3600  # how often the background thread looks
@@ -498,6 +517,31 @@ def iso(ts):
     return datetime.fromtimestamp(ts, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def _commit_of(rev):
+    """A recorded version's full commit ({commit, short, subject}, as
+    head() gives), if it's one, else None."""
+    commit = rev.get("commit") if isinstance(rev, dict) else None
+    return commit if isinstance(commit, str) and _COMMIT.match(commit) else None
+
+
+def server_fields(raw):
+    """What the Admin keeps of `docker info`'s JSON: SERVER_FIELDS and
+    nothing else - Name and ServerVersion as short text, NCPU and MemTotal
+    as whole numbers, each None where Docker gave something else - or None
+    if it isn't a JSON object."""
+    if not isinstance(raw, dict):
+        return None
+
+    def text(value, most):
+        return value if isinstance(value, str) and 0 < len(value) <= most and value.isprintable() else None
+
+    def count(value):
+        return value if type(value) is int and value >= 0 else None
+
+    return {"Name": text(raw.get("Name"), 255), "ServerVersion": text(raw.get("ServerVersion"), 64),
+            "NCPU": count(raw.get("NCPU")), "MemTotal": count(raw.get("MemTotal"))}
+
+
 # --- the app shelf -------------------------------------------------------------
 
 
@@ -578,6 +622,8 @@ def _collect_apps(src, log):
     with os.scandir(src) as it:
         entries = sorted(it, key=lambda e: e.name)
     for entry in entries:
+        if entry.name == REPO_FILE:
+            continue  # the source's own name and blurb: repo_info() reads it
         if not _SHELF_APP.match(entry.name) or not entry.is_dir(follow_symlinks=False):
             log(f"Leaving out library/{entry.name}: it isn't an app folder.")
         elif len(apps) >= MAX_APPS:
@@ -590,10 +636,82 @@ def _collect_apps(src, log):
     return apps
 
 
+def _read_yaml(path):
+    """A small YAML file's mapping, read never through a link: (mapping,
+    None), or (None, why not) - the why a phrase after the file's name."""
+    try:
+        with open(path, "rb", opener=_no_follow) as f:
+            if not stat.S_ISREG(os.fstat(f.fileno()).st_mode):
+                return None, "isn't a regular file"
+            raw = f.read(MAX_YAML_BYTES + 1)
+    except FileNotFoundError:
+        return None, "is missing"
+    except IsADirectoryError:
+        return None, "isn't a regular file"
+    except OSError as e:
+        if e.errno == errno.ELOOP:  # O_NOFOLLOW, on a link
+            return None, "is a link"
+        return None, f"won't open ({e.strerror or e})"
+    if len(raw) > MAX_YAML_BYTES:
+        return None, f"is over {MAX_YAML_BYTES >> 10} KB"
+    try:
+        data = yaml.safe_load(raw.decode("utf-8"))
+    except (UnicodeDecodeError, yaml.YAMLError):
+        return None, "doesn't parse"
+    if not isinstance(data, dict):
+        return None, "isn't a mapping"
+    return data, None
+
+
+def _blurb(value):
+    """A description as the index keeps one: text of at most
+    MAX_DESCRIPTION characters once trimmed, else None (blank too)."""
+    if isinstance(value, str) and 0 < len(value.strip()) <= MAX_DESCRIPTION:
+        return value.strip()
+    return None
+
+
+def repo_info(src, source, log):
+    """The source's name and description, from library/repo.yaml: {name,
+    description}. `name` text of 1 to MAX_REPO_NAME characters and
+    `description` (optional) at most MAX_DESCRIPTION, each trimmed; a file
+    that's missing or isn't that is the source id and no description,
+    logged."""
+    data, why = _read_yaml(os.path.join(src, REPO_FILE))
+    if data is not None:
+        name, description = data.get("name"), data.get("description")
+        if not isinstance(name, str) or not 0 < len(name.strip()) <= MAX_REPO_NAME:
+            why = f"has no name of 1 to {MAX_REPO_NAME} characters"
+        elif description is not None and not (isinstance(description, str)
+                                               and len(description.strip()) <= MAX_DESCRIPTION):
+            why = f"has a description that isn't text of at most {MAX_DESCRIPTION} characters"
+        else:
+            return {"name": name.strip(), "description": _blurb(description)}
+    log(f"library/{REPO_FILE} {why}, so the app library is named {source!r}, with no description.")
+    return {"name": source, "description": None}
+
+
+def app_info(folder):
+    """A published app's name and description, from its app.yaml: each
+    None where it's absent, isn't text (a description over MAX_DESCRIPTION
+    characters too), or the file doesn't parse - the app is published all
+    the same."""
+    data = _read_yaml(os.path.join(folder, "app.yaml"))[0] or {}
+    name = data.get("name")
+    return {"name": name.strip() if isinstance(name, str) and name.strip() else None,
+            "description": _blurb(data.get("description"))}
+
+
+def _app_entry(folder):
+    """An app's entry in the index: its fingerprint, name and description."""
+    return {"sha256": fingerprint(folder), **app_info(folder)}
+
+
 def read_shelf(library_dir):
     """/library/index.json as published - {published_at, sources: {source:
-    {commit, apps: {app: {sha256}}}}} - or None if there's none, or it
-    doesn't read."""
+    {commit, name, description, apps: {app: {sha256, name, description}}}}}
+    (an index from before S1 has no names or descriptions) - or None if
+    there's none, or it doesn't read."""
     raw = _read_json(os.path.join(library_dir, SHELF_INDEX), None)
     if not isinstance(raw, dict) or not isinstance(raw.get("sources"), dict):
         return None
@@ -641,11 +759,11 @@ def _point(root, source, target):
         raise
 
 
-def _write_index(root, index, source, commit, apps, now):
+def _write_index(root, index, source, entry, now):
     """index.json with `source`'s entry, any other source's kept: a temp
     file, then renamed over it."""
     sources = dict(index["sources"]) if index else {}
-    sources[source] = {"commit": commit, "apps": apps}
+    sources[source] = entry
     path = os.path.join(root, SHELF_INDEX)
     tmp = f"{path}.tmp"
     _inside(root, path)
@@ -660,7 +778,9 @@ def _write_index(root, index, source, commit, apps, now):
 def publish_set(src, library_dir, source, commit, now, log=print):
     """Publish the app folders in `src` (the repo's library/) to the shelf
     at `library_dir`, as `source` at `commit`. -> {commit, apps: {app:
-    {sha256}}, changed}.
+    {sha256, name, description}}, changed}. The source's entry in the
+    index also carries the name and description of `src`'s repo.yaml
+    (repo_info()), and each app's its own app.yaml's (app_info()).
 
     The apps are copied into a new set, .sets/<source>-<commit12>, made
     whole under a hidden name first; then the link <source> is swapped
@@ -686,13 +806,15 @@ def publish_set(src, library_dir, source, commit, now, log=print):
     index = read_shelf(root)
     try:
         if before == f"{SHELF_SETS}/{name}" and os.path.isdir(final) and not os.path.islink(final):
-            apps = {app: {"sha256": fingerprint(os.path.join(final, app))}
+            apps = {app: _app_entry(os.path.join(final, app))
                     for app in sorted(os.listdir(final)) if _SHELF_APP.match(app)}
-            if shelf_source(index, source) == {"commit": commit, "apps": apps}:
+            entry = {"commit": commit, **repo_info(src, source, log), "apps": apps}
+            if shelf_source(index, source) == entry:
                 return {"commit": commit, "apps": apps, "changed": False}
-            _write_index(root, index, source, commit, apps, now)
+            _write_index(root, index, source, entry, now)
             return {"commit": commit, "apps": apps, "changed": True}
         apps = _collect_apps(src, log)
+        repo = repo_info(src, source, log)
         _inside(root, sets)
         if os.path.islink(sets) or (os.path.lexists(sets) and not os.path.isdir(sets)):
             raise OSError(f"{SHELF_SETS} isn't a folder")
@@ -719,7 +841,8 @@ def publish_set(src, library_dir, source, commit, now, log=print):
                 copied += _copy_file(os.path.join(src, app, *parts), _inside(root, dst))
                 if copied > MAX_APP_BYTES:
                     raise OSError(f"library/{app} grew past {MAX_APP_BYTES >> 20} MB while it was copied")
-        published = {app: {"sha256": fingerprint(os.path.join(tmp, app))} for app, _files in apps}
+        # Read from the copies just made, never the repo's: what's indexed is what's published.
+        published = {app: _app_entry(os.path.join(tmp, app)) for app, _files in apps}
         if os.path.lexists(final):
             aside = os.path.join(sets, f".old-{name}-{secrets.token_hex(4)}")
             os.rename(_inside(root, final), _inside(root, aside))
@@ -727,7 +850,7 @@ def publish_set(src, library_dir, source, commit, now, log=print):
         placed = True
         _point(root, source, f"{SHELF_SETS}/{name}")
         swapped = True
-        _write_index(root, index, source, commit, published, now)
+        _write_index(root, index, source, {"commit": commit, **repo, "apps": published}, now)
     except (OSError, OpError) as e:
         # Back as it was: the link on the set it was on, the new set gone, a
         # set moved aside back in its place.
@@ -915,6 +1038,9 @@ class Admin:
         self.op = None
         self.thread = None
         self._awaiting = None  # an Admin update the helper has: (op, "handover" or "startup")
+        self.started_at = self._iso()  # this Admin process's start, for the System panel
+        self._server = None  # (when, server_fields()) of the last `docker info`
+        self._ranges = {}  # (old, new, folder) -> the commits and PRs between: fixed once read
         os.makedirs(self.backups_dir, exist_ok=True)
         self.registry()  # a bad users.json stops the Admin starting
         self._mark_interrupted(keep=self._pick_up_swap())
@@ -1025,6 +1151,19 @@ class Admin:
         if not _COMMIT.match(commit):
             raise OpError("Couldn't read the current version.", out)
         return {"commit": commit, "short": short, "subject": subject}
+
+    def _commit_info(self, rev, *paths):
+        """{commit, short, date, subject} of `rev` (the newest commit at or
+        before it touching `paths`, if any are given) - date the committer's,
+        ISO 8601 - or None for no such commit. An OpError if git fails."""
+        out = self._git_out("log", "-1", "--format=%H%x09%h%x09%cI%x09%s", rev, "--", *paths,
+                            what="read a version")
+        if not out.strip():
+            return None
+        commit, short, date, subject = (out.strip().split("\t", 3) + ["", "", ""])[:4]
+        if not _COMMIT.match(commit):
+            raise OpError("Couldn't read a version.", out)
+        return {"commit": commit, "short": short, "date": date, "subject": subject}
 
     def dirty_files(self):
         rc, out, err = self.git("status", "--porcelain")
@@ -1271,6 +1410,7 @@ class Admin:
         helper - which runs the image this Admin is running now, kept as
         openfit-admin:prev, never the new one."""
         try:
+            self._note_admin_range(op)
             self.say(op, "Finding the Admin's own container…")
             me = find_admin(self.runner)
             if me is None:
@@ -1324,6 +1464,43 @@ class Admin:
         with self._settle_lock:
             self._awaiting = (op, "handover")
         return HANDED_OVER
+
+    def _admin_base(self, before=None):
+        """The commit the running Admin was built from, as far as the history
+        says, or None: the `new` of the last ok Admin update, else the `old`
+        of the first ok OpenFit update after it (the one that pulled the
+        Admin's new code), else - none since - None. Only the ops before the
+        one with id `before` count."""
+        base, since = None, None
+        for o in self.history():
+            if before is not None and o.get("id") == before:
+                break
+            if o.get("outcome") != "ok":
+                continue
+            if o.get("kind") == "admin_update" and _commit_of(o.get("new")):
+                base, since = _commit_of(o["new"]), None
+            elif o.get("kind") == "update" and since is None and _commit_of(o.get("old")):
+                since = _commit_of(o["old"])
+        return since or base
+
+    def _note_admin_range(self, op):
+        """An Admin update's own record of what it brings: `new` HEAD (the
+        code it builds), `old` the code the running Admin was built from
+        (_admin_base()), for the Versions panel's last update. Either is
+        None where git can't say; the update goes ahead regardless."""
+        try:
+            new = self.head()
+        except OpError:
+            return
+        base = self._admin_base(before=op["id"])
+        old = None
+        if base:
+            try:
+                old = self._commit_info(base)
+            except OpError:
+                old = None
+        with self._op_lock:
+            op["new"], op["old"] = new, old
 
     def _snapshot(self, stamp):
         """The Admin's settings files, each if present, copied into
@@ -1412,6 +1589,8 @@ class Admin:
         removed. With no outcome (no result, or one still "running" when
         the helper has gone), the helper stopped part-way: failed."""
         outcome = result["outcome"] if result else "running"
+        if op.get("new") is None:  # started by an Admin from before S1, which didn't note it
+            self._note_admin_range(op)
         with self._op_lock:
             op["log"].extend({"t": line["t"], "text": line["text"]} for line in (result or {}).get("lines", []))
         if outcome == "ok":
@@ -1461,22 +1640,21 @@ class Admin:
         self.library_error = None
         return result
 
-    def shelf_commit(self):
-        """The commit the shelf's openfit apps were published from, or None."""
-        entry = shelf_source(read_shelf(self.library_dir), OFFICIAL_SOURCE)
-        return entry["commit"] if entry else None
-
     def publish_at_startup(self):
         """serve()'s, before the server starts: publish if the shelf's index is
-        missing, or its openfit commit isn't HEAD's - so the shelf appears by
-        itself on first rollout, and catches up after anything that moved the
-        code without publishing. Whether it published; never raises."""
+        missing, its openfit commit isn't HEAD's, or its entry has no name
+        (published by an Admin from before S1) - so the shelf appears by
+        itself on first rollout, catches up after anything that moved the
+        code without publishing, and an Admin update brings repo.yaml's name
+        and the apps' to the index (the set itself, unchanged, isn't
+        rewritten). Whether it published; never raises."""
         try:
             head = self.head()
         except OpError as e:
             print(f"[admin] app library: {e.message} {e.detail}", flush=True)
             return False
-        if self.shelf_commit() == head["commit"]:
+        entry = shelf_source(read_shelf(self.library_dir), OFFICIAL_SOURCE)
+        if entry and entry["commit"] == head["commit"] and "name" in entry:
             return False
         print(f"[admin] app library: publishing {head['short']}…", flush=True)
         try:
@@ -1522,10 +1700,10 @@ class Admin:
         self._publish_step(op, commit, putting_back=True)
 
     def library_status(self, head):
-        """The page's App library card: when the shelf was published and from
-        which commit, its apps by folder name, whether it matches the code
-        (None when the code's version can't be read) and the last publish's
-        failure."""
+        """The app library's state, for the Repos panel: when the shelf was
+        published and from which commit, its apps by folder name, whether it
+        matches the code (None when the code's version can't be read) and
+        the last publish's failure."""
         index = read_shelf(self.library_dir)
         entry = shelf_source(index, OFFICIAL_SOURCE)
         commit = entry["commit"] if entry else None
@@ -1881,8 +2059,8 @@ class Admin:
             # The apps the new code brings. A failure here doesn't undo the
             # update: the shelf stays as it was, and Publish again retries.
             if not self._publish_step(op, op["new"]["commit"]):
-                self.say(op, "The update itself is done. Use Publish again, on the App library card, to try the "
-                         "app library again.")
+                self.say(op, "The update itself is done. Use Publish again, under Repos, to try the app library "
+                         "again.")
             self.prune_backups()
             self.refresh_check()
             return self._finish(op, "ok", f"Updated OpenFit to {op['new']['short']}: {op['new']['subject']}")
@@ -2342,6 +2520,199 @@ class Admin:
 
     # --- the page's view ----------------------------------------------------
 
+    def server(self):
+        """server_fields() of `docker info`, run with exactly
+        DOCKER_INFO_ARGS at most once a DOCKER_INFO_EVERY seconds (its answer,
+        or None if Docker didn't give one, kept meanwhile)."""
+        now = self.clock()
+        cached = self._server
+        if cached is not None and 0 <= now - cached[0] < DOCKER_INFO_EVERY:
+            return cached[1]
+        rc, out, _err = self.docker(*DOCKER_INFO_ARGS, timeout=30)
+        try:
+            server = server_fields(json.loads(out)) if rc == 0 else None
+        except ValueError:
+            server = None
+        self._server = (now, server)
+        return server
+
+    def system(self, users, views, backups):
+        """The System information panel: the server (server()), the free
+        space where the Admin keeps its data and backups, the backups' total
+        size, how many of the Admin's users are running, stopped or not
+        found, and when this Admin started."""
+        try:
+            st = os.statvfs(self.data_dir)
+            disk_free = st.f_bavail * st.f_frsize
+        except OSError:
+            disk_free = None
+        counts = {"running": 0, "stopped": 0, "missing": 0}
+        for u in users:
+            state = self.plain_state(views[u.name][0])
+            counts[state if state in counts else "missing"] += 1
+        return {"server": self.server(), "disk_free": disk_free,
+                "backups_bytes": sum(b["size"] for b in backups), "users": counts,
+                "admin_up_since": self.started_at}
+
+    def _range(self, old, new, folder=None):
+        """The commits from `old` to `new` (full commits; touching `folder`,
+        if given) - {commits: [{sha, subject}], prs: [{number, url}]}, as a
+        check lists them, merges left out and the pull requests read from
+        their titles - or None if git can't say. Kept once read: a range
+        between two commits never changes."""
+        if not (isinstance(old, str) and _COMMIT.match(old) and isinstance(new, str) and _COMMIT.match(new)):
+            return None
+        key = (old, new, folder)
+        if key in self._ranges:
+            return self._ranges[key]
+        span = f"{old}..{new}"
+        paths = ("--", folder) if folder else ()
+        try:
+            commits = self._log("--no-merges", "--format=%h%x09%s", span, *paths)
+            prs = []
+            for merge in self._log("--merges", "--format=%H%x09%s", span):
+                number = PR_TITLE.match(merge["subject"])
+                if not number or not _COMMIT.match(merge["sha"]):
+                    continue
+                if folder:
+                    brought = self._git_out("diff", "--name-only", f"{merge['sha']}^1", merge["sha"],
+                                            what="read a pull request's files").split()
+                    if not any(p.startswith(folder) for p in brought):
+                        continue
+                prs.append({"number": int(number.group(1)), "url": PR_URL.format(number.group(1))})
+        except OpError:
+            return None
+        self._ranges[key] = {"commits": commits, "prs": prs}
+        return self._ranges[key]
+
+    def _op_view(self, op, ops, folder=None):
+        """An update's record for the Versions panel: when, its outcome, the
+        versions it went between and the commits it brought (_range(), of
+        `folder` if given), and when it was undone, if it was."""
+        if not op:
+            return None
+        old, new = _commit_of(op.get("old")), _commit_of(op.get("new"))
+        undone = next((o.get("finished_at") for o in ops if o.get("kind") == "undo"
+                       and o.get("undoes") == op.get("id") and o.get("outcome") == "ok"), None)
+        return {
+            **{k: op.get(k) for k in ("id", "kind", "outcome", "summary", "started_at", "finished_at")},
+            "old": old[:7] if old else None,
+            "new": new[:7] if new else None,
+            "changes": self._range(old, new, folder) if old and new else None,
+            "undone_at": undone,
+        }
+
+    def versions(self, head, check, au, ops):
+        """The Versions panel: what the users and the Admin are on, when each
+        was last updated (the newest ok op of its kind), whether an update is
+        on offer, and the last update of each.
+
+        The User version is HEAD; the Admin's the newest commit touching
+        admin/ at or before HEAD - unless the running Admin's code isn't the
+        repo's admin/ (au["pulled"]), when it's older than that, and said
+        so. The Admin's `pending` are the changes its update would bring:
+        those pulled since the code it was built from (_admin_base()), and
+        any still on GitHub."""
+        def newest(kind, ok=False):
+            return next((o for o in reversed(ops) if o.get("kind") == kind
+                         and (not ok or o.get("outcome") == "ok")), None)
+
+        try:
+            user = self._commit_info("HEAD") if head else None
+            admin = self._commit_info("HEAD", "admin/") if head else None
+        except OpError:
+            user = admin = None
+        updated, admin_updated = newest("update", ok=True), newest("admin_update", ok=True)
+        last = newest("update")
+        group = next((g for g in (check or {}).get("groups", []) if g["key"] == "admin"), None)
+        pending = {"commits": [], "prs": []}
+        base = self._admin_base() if au["pulled"] and head else None
+        pulled = self._range(base, head["commit"], "admin/") if base else None
+        for part in (pulled, group):
+            if part:
+                pending["commits"] += part["commits"]
+                pending["prs"] += [pr for pr in part["prs"] if pr not in pending["prs"]]
+        return {
+            "user": {
+                **(user or {"commit": None, "short": None, "date": None, "subject": None}),
+                "last_updated": updated.get("finished_at") if updated else None,
+                "update_available": update_offered(check),
+                "last": self._op_view(last, ops),
+                # What everyone is running now came with the last update that worked.
+                "current": self._op_view(updated, ops),
+            },
+            "admin": {
+                **(admin or {"commit": None, "short": None, "date": None, "subject": None}),
+                "older": au["pulled"],
+                "last_updated": admin_updated.get("finished_at") if admin_updated else None,
+                "update_available": au["available"],
+                "can_self_update": au["can_self_update"],
+                "command": au["command"],
+                "pending": pending,
+                "last": self._op_view(newest("admin_update"), ops, "admin/"),
+            },
+        }
+
+    def repos(self, library, check):
+        """The shelf's sources, from its index.json, for the Repos panel and
+        the Repo tab: OpenFit first, then the rest by name. Each {source,
+        name, description, official, commit, short, published_at, apps:
+        [{id, name, description}]} (the apps by name, then id) - names
+        falling back to ids where the index has none - and for OpenFit,
+        whether its shelf matches the code, the last publish's failure, and
+        which update would bring its waiting app changes: "apps" (Update
+        apps), "openfit" (they come with Update OpenFit) or None. With
+        nothing published yet, OpenFit is listed all the same, empty."""
+        index = read_shelf(self.library_dir) or {"sources": {}}
+        published_at = index.get("published_at") if isinstance(index.get("published_at"), str) else None
+
+        def text(value, most):
+            return value.strip() if isinstance(value, str) and 0 < len(value.strip()) <= most else None
+
+        found = []
+        for source in index["sources"]:
+            entry = shelf_source(index, source)
+            if entry is None or not isinstance(source, str) or not _SHELF_SOURCE.match(source):
+                continue
+            apps = []
+            for app_id, meta in entry["apps"].items():
+                if not isinstance(app_id, str) or not _SHELF_APP.match(app_id):
+                    continue
+                meta = meta if isinstance(meta, dict) else {}
+                apps.append({"id": app_id, "name": text(meta.get("name"), 200) or app_id,
+                             "description": text(meta.get("description"), MAX_DESCRIPTION)})
+            apps.sort(key=lambda a: (a["name"].casefold(), a["id"]))
+            found.append({"source": source, "name": text(entry.get("name"), MAX_REPO_NAME) or source,
+                          "description": text(entry.get("description"), MAX_DESCRIPTION),
+                          "official": source == OFFICIAL_SOURCE, "commit": entry["commit"],
+                          "short": entry["commit"][:7], "published_at": published_at, "apps": apps,
+                          "current": None, "error": None, "update": None})
+        if not any(r["official"] for r in found):
+            found.append({"source": OFFICIAL_SOURCE, "name": OFFICIAL_SOURCE, "description": None, "official": True,
+                          "commit": None, "short": None, "published_at": None, "apps": [],
+                          "current": None, "error": None, "update": None})
+        official = next(r for r in found if r["official"])
+        official.update(current=library["current"], error=library["error"],
+                        update="apps" if update_apps_offered(check)
+                        else "openfit" if update_offered(check) and _changed(check, "library") else None)
+        return sorted(found, key=lambda r: (not r["official"], r["name"].casefold(), r["source"]))
+
+    @staticmethod
+    def _backup_update(backup, ops):
+        """The update a backup was taken by, from the history: {id, old, new,
+        started_at, outcome} (old and new short), or None once it's gone
+        from the history."""
+        for o in ops:
+            if o.get("kind") != "update":
+                continue
+            records = o.get("users") if isinstance(o.get("users"), list) else []
+            if o.get("backup") == backup["name"] or any(
+                    isinstance(r, dict) and r.get("backup") == backup["name"] for r in records):
+                old, new = _commit_of(o.get("old")), _commit_of(o.get("new"))
+                return {"id": o.get("id"), "old": old[:7] if old else None, "new": new[:7] if new else None,
+                        "started_at": o.get("started_at"), "outcome": o.get("outcome")}
+        return None
+
     def status(self):
         self._settle()
         s = self.settings
@@ -2355,8 +2726,14 @@ class Admin:
         raw = views[users[0].name][0]
         check = self.last_check()
         undo = self.undo_candidate(head) if head else None
+        ops = self.history()
         recent = [{k: o.get(k) for k in ("id", "kind", "outcome", "summary", "started_at", "finished_at")}
-                  for o in reversed(self.history()[-5:])]
+                  for o in reversed(ops[-5:])]
+        backups = self.list_backups()
+        for b in backups:
+            b["update"] = self._backup_update(b, ops)
+        au = self.admin_update(check)
+        library = self.library_status(head)
         return {
             "openfit": {
                 "user": s["user"],
@@ -2373,10 +2750,17 @@ class Admin:
             "check": check,
             "update_available": update_offered(check),
             "update_apps_available": update_apps_offered(check),
-            "library": self.library_status(head),
+            "library": library,
             "undo": {"id": undo["id"], "old": undo["old"], "new": undo["new"]} if undo else None,
-            "admin_update": self.admin_update(check),
+            "admin_update": au,
             "op": self.current_op(),
             "history": recent,
-            "backups": self.list_backups(),
+            "backups": backups,
+            # The portal's (S1): the left column's panels, and the Repo tab.
+            "system": self.system(users, views, backups),
+            "versions": self.versions(head, check, au, ops),
+            "repos": self.repos(library, check),
+            # Every op the history keeps, newest first, each with its log.
+            "activity": [{k: o.get(k) for k in ("id", "kind", "outcome", "summary", "started_at", "finished_at",
+                                                 "log", "user")} for o in reversed(ops)],
         }

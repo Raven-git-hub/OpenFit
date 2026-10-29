@@ -194,6 +194,19 @@ HELPER_ID = "5a" * 32
 # What a user's auth_cli.py prints for a setup link, in the fake.
 SETUP_TOKEN = "Tk_" + "a1B2-" * 8
 SETUP_EXPIRES = "2026-10-28T12:00:00Z"
+# What `docker info --format '{{json .}}'` says, in the fake: the four
+# fields the Admin keeps, among the many it never shows or stores - the
+# host's container counts and names, its images, its plugins.
+DOCKER_INFO = {
+    "ID": "6c1f2a7e-host-id", "Containers": 23, "ContainersRunning": 19, "ContainersPaused": 0,
+    "ContainersStopped": 4, "Images": 41, "Driver": "overlay2", "Name": "nas", "ServerVersion": "27.5.1",
+    "NCPU": 8, "MemTotal": 33402789888, "OperatingSystem": "Debian GNU/Linux 12 (bookworm)",
+    "KernelVersion": "6.1.0-28-amd64", "DockerRootDir": "/var/lib/docker", "Labels": ["owner=andy"],
+    "Plugins": {"Volume": ["local"], "Network": ["bridge", "host"]},
+    "Swarm": {"LocalNodeState": "inactive", "NodeAddr": "192.168.1.10"},
+    "RegistryConfig": {"IndexConfigs": {"docker.io": {"Name": "docker.io"}}},
+    "Warnings": ["a warning naming a container: openfit-sam-tracker-1"],
+}
 
 
 def container_id(project, n):
@@ -234,7 +247,7 @@ class FakeRunner:
     appears when it's brought up, goes with down -v or volume rm. `helper`
     is whether the Admin's update helper, openfit-admin-swap, is there:
     `docker run -d` makes it. A setup link's exec in a user's container
-    prints SETUP_TOKEN.
+    prints SETUP_TOKEN. `docker info` prints `info` as JSON (DOCKER_INFO).
 
     `frames` holds, for each call, the names of the functions it was made
     through (innermost first), so a test can tell which code ran it."""
@@ -254,6 +267,7 @@ class FakeRunner:
         self.volumes = {VOLUME, LIBRARY_VOLUME}
         self.images = {"openfit-tracker:latest"}
         self.unhealthy = set()
+        self.info = dict(DOCKER_INFO)
 
     def run(self, args, cwd=None, as_owner=False, timeout=None):
         assert isinstance(args, list), f"a command must be a list, not {args!r}"
@@ -299,6 +313,8 @@ class FakeRunner:
 
     def docker(self, args):
         sub = args[1]
+        if sub == "info":
+            return 0, json.dumps(self.info) + "\n", ""
         if sub == "ps" and "name=^openfit-admin-swap$" in args:
             return 0, (HELPER_ID + "\n" if self.helper else ""), ""
         if sub == "ps":

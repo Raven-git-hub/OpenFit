@@ -94,6 +94,16 @@ def pulled(env):
     env.fake.clear()
 
 
+def notes(env):
+    """The two reads an Admin update starts with, noting what it brings for
+    the Versions panel: HEAD (the code it builds), then the commit the
+    running Admin was built from - here the old of the update that pulled
+    its new code. git, as the owner; nothing changed."""
+    base = next(o for o in env.admin.history() if o["kind"] == "update")["old"]["commit"]
+    return [Call(["git", "log", "-1", "--format=%H%x09%h%x09%s", "HEAD"], env.repos.repo, True),
+            Call(["git", "log", "-1", "--format=%H%x09%h%x09%cI%x09%s", base, "--"], env.repos.repo, True)]
+
+
 def hand_over(env):
     """Update the Admin, up to the hand-over: its op, and the commands run.
     Read from memory, so nothing more is run."""
@@ -232,6 +242,8 @@ def test_the_admin_runs_its_steps_in_the_exact_order(admin_env):
     op, calls = hand_over(env)
 
     assert calls == [
+        # 0. what it brings, noted (two git reads)
+        *notes(env),
         # 1. its own container, by its labels, and that container's image
         ADMIN_PS,
         docker("inspect", "--type", "container", admin_cid(0)),
@@ -343,7 +355,8 @@ def test_an_existing_helper_is_a_refusal(admin_env):
     env.admin.start_admin_update()
     env.admin.wait(10)
 
-    assert env.fake.calls == [ADMIN_PS, docker("inspect", "--type", "container", admin_cid(0)), HELPER_PS]
+    assert env.fake.calls == [*notes(env), ADMIN_PS, docker("inspect", "--type", "container", admin_cid(0)),
+                              HELPER_PS]
     op = env.admin.current_op()
     assert op["outcome"] == "failed"
     assert op["summary"] == "An Admin update is already under way. Nothing was changed."
@@ -359,7 +372,7 @@ def test_no_admin_container_fails_with_nothing_changed(admin_env):
     env.admin.start_admin_update()
     env.admin.wait(10)
 
-    assert env.fake.calls == [ADMIN_PS]
+    assert env.fake.calls == [*notes(env), ADMIN_PS]
     op = env.admin.current_op()
     assert op["outcome"] == "failed" and op["summary"] == "Nothing was changed."
     assert "The Admin's own container wasn't found" in op["log"][-2]["text"]
@@ -375,7 +388,7 @@ def test_two_admin_containers_fail_with_nothing_changed(admin_env):
     env.admin.start_admin_update()
     env.admin.wait(10)
 
-    assert env.fake.calls == [ADMIN_PS]
+    assert env.fake.calls == [*notes(env), ADMIN_PS]
     assert env.admin.current_op()["outcome"] == "failed"
 
 
@@ -780,9 +793,10 @@ def test_update_the_admin_needs_a_session_and_the_header(admin_client, logged_in
 
 
 def test_the_page_offers_the_button_with_its_confirm(logged_in):
+    # The portal's update popup (S1), opened from the Admin's Update available.
     page = logged_in.get("/").get_data(as_text=True)
-    assert 'id="adminBtn"' in page and "Update the Admin" in page
-    assert ("The Admin restarts on its new version. This page will be unavailable for up to a minute and reconnects by\n"
-            "          itself. If the new version doesn't start, the old one is put back.") in page
-    assert "/api/admin/update" in page
+    assert 'admin: "Update the Admin"' in page and 'admin: "/api/admin/update"' in page
+    assert ("The Admin restarts on its new version. This page will be unavailable for up to a minute and reconnects by "
+            "itself. If the new version doesn't start, the old one is put back.") in page
+    assert "Update OpenFit first: it brings the Admin's new code with it." in page
     assert "The Admin is restarting…" in page

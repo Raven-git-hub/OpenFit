@@ -170,9 +170,13 @@ def test_a_publish_puts_a_set_behind_the_link_and_indexes_it(admin_env):
         for name in files_in(repo / app):
             assert (shelf / app / name).read_bytes() == (repo / app / name).read_bytes()
     assert files_in(shelf / "steps") == ["app.py", "app.yaml", "assets/note.txt"]
-    apps = {app: {"sha256": admin_ops.fingerprint(str(shelf / app))} for app in ("caffeine", "steps")}
+    # Each app's fingerprint, and its name and description from its app.yaml
+    # (neither app has either); the source's from repo.yaml (none: its id).
+    apps = {app: {"sha256": admin_ops.fingerprint(str(shelf / app)), "name": None, "description": None}
+            for app in ("caffeine", "steps")}
     assert index(env) == {"published_at": "2026-10-27T12:00:00Z",
-                          "sources": {"openfit": {"commit": commit, "apps": apps}}}
+                          "sources": {"openfit": {"commit": commit, "name": "openfit", "description": None,
+                                                  "apps": apps}}}
     # The fingerprint of the published folder is the repo folder's too.
     assert apps["steps"]["sha256"] == admin_ops.fingerprint(str(repo / "steps"))
     assert list(index(env)["sources"]["openfit"]["apps"]) == ["caffeine", "steps"]
@@ -255,7 +259,8 @@ def test_a_repo_with_no_library_folder_publishes_an_empty_set(admin_env):
     run(env.repos.repo, "git", "rm", "-rq", "library")
     run(env.repos.repo, "git", "commit", "-qm", "No library")
     env.admin.publish_official()
-    assert index(env)["sources"]["openfit"] == {"commit": head(env), "apps": {}}
+    assert index(env)["sources"]["openfit"] == {"commit": head(env), "name": "openfit", "description": None,
+                                                "apps": {}}
     assert os.listdir(env.library / "openfit") == []
 
 
@@ -522,8 +527,7 @@ def test_a_publish_that_fails_in_an_update_leaves_it_ok_with_publish_again(logge
     assert op["summary"].startswith("Updated OpenFit to")
     log = texts(op)
     assert "The app library couldn't be updated. It's as it was.\nNo space left on device" in log
-    assert ("The update itself is done. Use Publish again, on the App library card, to try the app library "
-            "again.") in log
+    assert "The update itself is done. Use Publish again, under Repos, to try the app library again." in log
     lib = logged_in.get("/api/status").get_json()["library"]
     assert lib["current"] is False and lib["commit"] == old
     assert lib["error"]["detail"] == "No space left on device"
@@ -1060,8 +1064,9 @@ def test_an_app_folder_name_is_plain(name):
 
 
 def test_the_page_has_the_app_library_card_and_restart(logged_in):
+    # The portal's Repos panel (S1) holds what the App library card did.
     html = logged_in.get("/").get_data(as_text=True)
-    for text in ("App library", "Update apps", "Publishes the new apps to every user. Nobody's OpenFit restarts.",
+    for text in ("Repos", "Update apps", "Publishes the new apps to every user. Nobody's OpenFit restarts.",
                  "The app library couldn't be updated", "Publish again", "Restart",
                  "Restart to see the app library", "/api/library/update", "/api/library/publish"):
         assert text in html, text

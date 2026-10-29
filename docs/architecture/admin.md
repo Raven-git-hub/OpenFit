@@ -1,9 +1,9 @@
-# The OpenFit Admin (A1, A2, A4, A5, U1): updates behind buttons, users, its own update, the app shelf and setup links
+# The OpenFit Admin (A1, A2, A4, A5, U1, S1): updates behind buttons, users, its own update, the app shelf, setup links and the Admin Portal
 
 _Built: A1, A2, A4 and A5, slices of the Admin in
-[distribution.md](distribution.md), and U1's setup links (the user login,
-[auth.md](auth.md)). The code is `admin/`; the tests are
-`tests/test_admin_*.py`._
+[distribution.md](distribution.md), U1's setup links (the user login,
+[auth.md](auth.md)) and S1, the Admin Portal: the page in OpenFit's style.
+The code is `admin/`; the tests are `tests/test_admin_*.py`._
 
 Until A1, OpenFit was updated by SSHing to the docker host and running:
 
@@ -33,6 +33,16 @@ out with **Update apps**: no rebuild and no restarts. Each user gets the
 mount at their next recreate, and **Restart** does that on its own. The user
 system's Browse (B1) reads `/library` and installs from it.
 
+S1 is the **Admin Portal**: the page redrawn in OpenFit's own style (its
+tokens and components, copied, and held to OpenFit's by a test), as a
+header, a left column of four panels that are always there (system
+information, versions, repos and the activity log) and two tabs on the
+right (Users and Repo), with the few reads behind them: the server's
+name, Docker version, CPUs and memory, the free disk, each version's last
+update and what it brought, and the shelf's sources and apps, named by
+`library/repo.yaml` and each app's `app.yaml`. Every route, operation,
+confirm and safety rule is as it was.
+
 ## What the Admin doesn't do yet
 
 - Rename a user, or change a user's port after it's added. Users on
@@ -50,6 +60,11 @@ system's Browse (B1) reads `/library` and installs from it.
   `IP:port`.
 - The backup file format. An Admin backup is a plain `tar.gz` of a user's
   `/data` volume.
+- Revert the Admin, download a backup or a removed user's kept data, or
+  delete one backup (S2, next): the portal shows each, disabled, "Coming in
+  the next update."
+- A phone layout: the portal is for a desktop browser, and scrolls sideways
+  under 1180px.
 
 ## Install
 
@@ -367,9 +382,9 @@ runs in a background thread, in this order:
    everyone: "Updated, didn't come up, rolled back."
 7. **Publish the apps** (A5) from the new `HEAD` to the shelf. A publish
    that fails doesn't undo the update: the shelf stays as it was, the log
-   says so ("The update itself is done. Use Publish again, on the App
-   library card, …"), and the page's App library card shows "The app library
-   couldn't be updated" with **Publish again**. Then backups are pruned to
+   says so ("The update itself is done. Use Publish again, under Repos,
+   …"), and the portal's Repos panel shows "The app library couldn't be
+   updated" with **Publish again** on OpenFit's row. Then backups are pruned to
    the newest 3 sets, the check is refreshed, "ok".
 
 **Backing out.** If anyone doesn't stop, or any backup fails, the update is
@@ -440,34 +455,170 @@ after a successful update the newest 3 sets are kept and every file of an
 older set is deleted. A removed user's backups stay until their set is
 pruned.
 
-## The page
+## The page: the Admin Portal (S1)
 
-- **Users**: the version everyone is on, then a row per user: name ("you"
-  beside the primary), `http://<host>:<port>` as a link, state (Running,
-  Stopped, Not found), with "Restart to see the app library" under it for a
-  container without the shelf's mount, Start or Stop, Restart, and Remove
-  (not for the primary, with its confirm). **Add user**: a name, a port prefilled with the suggestion,
-  and Add; the progress shows under Activity. **Kept data**: each removed
-  user with Delete data, which asks for their name.
-- **Updates**: the check, Update OpenFit and Undo last update, as above; with
-  only the app library changed, a line pointing to Update apps.
-- **App library** (A5): when the shelf was published and from which version,
-  the apps on it by folder name, **Update apps** when it's offered (with its
-  confirm), and, when the shelf isn't on the version OpenFit is on (a publish
-  failed), "The app library couldn't be updated", why, and **Publish again**.
-- **An Admin update is available**: only when there is one, with Update the
-  Admin when it can run (below).
-- **Activity**: the running or last operation's log, and the last few.
-- **Backups**: each with its user, name, size and when.
+`admin/templates/index.html`: one self-contained page, no external requests
+and no web fonts, for a desktop browser (a `min-width` of 1180px, scrolling
+sideways below it). Every name, log line and summary is set as text, never
+markup.
 
-`GET /api/status` carries `users: [{name, port, primary, state, library}]`
-(state `running`, `stopped` or `missing`; `unknown` if Docker didn't answer;
-`library` whether its container has `openfit-library` mounted at `/library`,
-read from `docker inspect`), `removed: [{name, removed_at}]`, `next_port`,
-`update_apps_available` and `library: {published_at, commit, short, apps,
-current, error}`, beside A1's fields. Every
-state-changing call goes through the page's `fetch` wrapper (the CSRF header)
-and needs a session.
+**OpenFit's look, copied.** The theme tokens are OpenFit's own, copied from
+`app/templates/index.html`'s three token blocks: the light `:root`, the dark
+one under `@media (prefers-color-scheme:dark)` for
+`:root:not([data-theme="light"])`, and `:root[data-theme="dark"]`. Only the
+tokens the Admin uses are there, each with OpenFit's value in every block
+OpenFit gives it one, and the font stacks are OpenFit's. A drift test
+(`tests/test_admin_portal.py`) parses both pages' blocks and fails when any
+Admin token's value differs from OpenFit's in any block: when OpenFit's
+colours change, recopy them. The components are OpenFit's rules, copied: the
+brand, the date pill and the mono chips under it, the skewed tabs, cards with
+a title and a round button after it (OpenFit's voice button, its triangle
+here the panel's fold), the buttons, the pills, Your data's expandable rows,
+the modal, the label and value list and the danger panel.
+
+**The header** is OpenFit's: the brand mark and `OpenFit`, then ADMIN
+PORTAL in the display font, in letter-spaced caps; on the right the date
+pill and under it two chips. **settings** opens a small popup holding **Log
+out**, the only setting for now. **theme** steps auto, light, dark, as
+OpenFit's does: the same states and the same `data-theme` attribute, stored
+in this browser as `openfit-admin-theme`.
+
+**Two columns** under it: on the left, about 40%, four panels that are always
+there; on the right, about 60%, a tab strip with **Users** (the default) and
+**Repo**, the choice stored in this browser as `openfit-admin-tab`. Those two
+keys are all the page stores. Each panel folds with the button after its
+title, for the page's life. Lists sit in scroll boxes whose rows have a
+fixed height, each box showing exactly that many rows before it scrolls (a
+shorter list, a shorter box).
+
+The left column:
+
+- **System information**: Server (Docker's name for the host), Docker (its
+  version), CPU and memory, Disk free (`os.statvfs` of the Admin's `/data`,
+  where the backups are kept), Backups (their total size, and how many),
+  Users ("2 running · 1 stopped", and how many aren't found, if any) and
+  Admin up since (when this Admin process started). The first three come
+  from `docker info --format '{{json .}}'`, run at most once a minute (its
+  answer, or a failure, is kept for the minute): of all it says, the Admin
+  keeps only `Name`, `ServerVersion`, `NCPU` and `MemTotal`
+  (`server_fields()`: printable text up to a length, and whole numbers, else
+  null). It deliberately leaves the rest out, never showing or storing it:
+  how many containers and images the host has, their names, the host's id,
+  network, plugins, labels and warnings. The Admin keeps to its own users,
+  and doesn't report on what else the server runs.
+- **Versions**: a row for the **Admin** and one for the **User** (every
+  user's OpenFit), each its version, when it was last updated and **Update
+  available** when there's one. The User's version is `HEAD`'s short sha and
+  date. The Admin's is the short sha of the newest commit touching `admin/`
+  at or before `HEAD` (`git log -1 -- admin/`) - unless the running Admin's
+  code isn't the repo's `admin/` (the fingerprint the Admin update already
+  compares), when it's shown as **older**, and its update is on offer. Last
+  updated is the `finished_at` of the newest successful operation of its
+  kind (`update`, `admin_update`), else "—". Update available is an accent
+  pill, shown for the User when Update OpenFit is offered and for the Admin
+  when `admin_update()` says one is available; it opens the update popup.
+  A row's name opens its **last update** popup. Under the rows: when the
+  last check ran (and whether GitHub has new commits), **Check now**, and a
+  failed check's error.
+- **Repos**: a row for each source on the shelf, OpenFit first, then the rest
+  by name, three rows high: its name (from `repo.yaml`), its version (the
+  published commit, short) and when it was last published. OpenFit's row
+  also offers **Update available** when Update apps is on offer (the update
+  popup for the apps, its Proceed the existing Update apps), **Comes with the
+  OpenFit update** when app changes are waiting but OpenFit changed too (the
+  User's update popup instead), and **Publish again** when the shelf is
+  behind the code, with why under the box. The name opens its **last
+  publish**: when, the commit, and the apps published.
+- **Activity log**: the running operation's log, live, at the top (polled
+  every second, as before), then every operation the history keeps (20),
+  newest first, each a row - what, when, an outcome pill - that opens to its
+  summary and log, in a box about eight rows high. An operation watched to
+  its end opens by itself.
+
+The **Users** tab:
+
+- **Users**: alphabetical by name, ten rows high, each its name and state
+  (Running, Stopped, Not found); open, its address
+  (`http://<host>:<port>`, a link), its state with "Restart to see the app
+  library" beside it for a container without the shelf's mount, and **Stop**
+  or **Start**, **Restart**, **Setup link** and **Remove** (with its
+  confirm). The primary has no Remove; in its place: "This is the server's
+  main OpenFit: new versions are built from it, so it can't be removed."
+- **Add user**: one row - Name, Port (the suggestion prefilled, editable)
+  and Add user - with the hint under it.
+- **User data**: the backups and the removed users' kept data, newest first,
+  ten rows high. A backup is its user, date and size; kept data a red warning
+  triangle, the user and "Removed <date>". A row opens a popup: a backup's
+  details - its user, the update it belongs to (read from the history, else
+  the old version in its name), date, size and file - with **Download** and
+  **Delete** shown disabled; kept data's **Delete data**, behind typing
+  their name, with **Download** disabled. Both say "Coming in the next
+  update." (S2).
+- **User version info**: what every user is running - the version (short
+  sha and date), `HEAD`'s subject, and the pull requests the last update
+  that worked brought, as links. Read only.
+
+The **Repo** tab: **Add repository**, which opens a coming-soon popup
+(organisation repos are A6), then the sources, OpenFit first and the rest by
+name, each a row (name, version) that opens to its description in a small
+box, an Applications heading, and each app as a row of its own that opens to
+its description, or "No description."
+
+**The popups** are OpenFit's modal; Escape, a click outside or Close shuts
+one.
+
+- **The update popup**, shared by the User, the Admin and the app library:
+  what will happen, in a sentence (the confirm each had: "This stops every
+  user's OpenFit for about a minute and backs up everyone's data first.",
+  the Admin's restart, "Publishes the new apps to every user. Nobody's
+  OpenFit restarts."), the changes grouped as a check reports them, with
+  commit subjects and pull request links (for the Admin, the changes its
+  update brings: those pulled since the code it was built from, and any
+  still on GitHub), then **Proceed** and **Cancel**. Proceed starts the
+  existing operation (`POST /api/update`, `/api/admin/update` or
+  `/api/library/update`), and the activity log shows it live. While the
+  Admin's new code isn't pulled yet it says "Update OpenFit first", with
+  Proceed off; otherwise it also shows the same update by hand.
+- **The last update popup**: when, the outcome, the versions it went
+  between, when it was undone if it was, and the commits it brought - `git
+  log --no-merges --format=%h%x09%s <old>..<new>` over the operation's
+  recorded commits (the Admin's limited to `admin/`), the pull requests read
+  from the merges in the range, as a check reads them. The User's offers
+  **Undo** while Undo is on offer, with its warning; the Admin's shows
+  **Revert the Admin**, disabled, "Coming in the next update."
+- **The setup link**, as before: shown once, kept nowhere, the field
+  emptied as it closes.
+
+An Admin update now records its range as an update does: `new`, the `HEAD`
+it builds, and `old`, the code the running Admin was built from
+(`_admin_base()`: the `new` of the last successful Admin update, else the
+`old` of the first successful OpenFit update after it, the one that pulled
+the Admin's new code). An Admin update an older Admin started (the S1
+rollout's own) is given them when the new Admin finishes it.
+
+`GET /api/status` keeps every field it had and adds:
+
+- `system`: `{server: {Name, ServerVersion, NCPU, MemTotal} | null,
+  disk_free, backups_bytes, users: {running, stopped, missing},
+  admin_up_since}`.
+- `versions`: `{user: {commit, short, date, subject, last_updated,
+  update_available, last, current}, admin: {commit, short, date, subject,
+  older, last_updated, update_available, can_self_update, command, pending:
+  {commits, prs}, last}}`; `last` the newest operation of the kind and
+  `current` the newest successful update, each `{id, kind, outcome, summary,
+  started_at, finished_at, old, new, changes: {commits, prs} | null,
+  undone_at}`. A range between two commits never changes, so it's read once.
+- `repos`: `[{source, name, description, official, commit, short,
+  published_at, apps: [{id, name, description}], current, error, update}]`,
+  from the shelf's `index.json`; `current`, `error` and `update` (`"apps"`,
+  `"openfit"` or null) OpenFit's alone.
+- `activity`: every operation in the history, newest first, each `{id,
+  kind, outcome, summary, started_at, finished_at, log, user}`.
+- each of `backups` gains `update`: `{id, old, new, started_at, outcome}` of
+  the update that took it, or null once that's gone from the history.
+
+Every state-changing call still goes through the page's one `fetch` wrapper
+(the `X-OpenFit-Admin` header) and needs a session.
 
 ## Updating the Admin itself (A4)
 
@@ -491,16 +642,17 @@ repo's `admin/`, dotfiles and caches left out. `GET /api/status`'s
 `admin_update` is `{available, pulled, commits, command, can_self_update}`:
 
 - **Pulled**, and nothing more for the Admin waiting on GitHub
-  (`can_self_update`): the note "An Admin update is available" says its new
-  files are already on the server and shows **Update the Admin**. The command
-  to run by hand stays under it, smaller, as a fallback:
+  (`can_self_update`): the Admin's row under Versions shows **Update
+  available** (its version "older"), and its update popup's **Proceed** runs
+  it. The command to run by hand stays in the popup, smaller, as a fallback:
 
   ```
   cd ~/containers/openfit && docker compose -f admin/docker-compose.yml -p openfit-admin up -d --build
   ```
 
-- **Admin commits on GitHub not pulled yet**: the note lists them and says
-  "Update OpenFit first: it brings the Admin's new code with it." No button.
+- **Admin commits on GitHub not pulled yet**: the popup lists them and says
+  "Update OpenFit first: it brings the Admin's new code with it.", with
+  Proceed off.
   This holds even when some Admin changes are already pulled: Update OpenFit,
   then one Admin update.
 
@@ -612,12 +764,13 @@ the lock.
 
 ### The page
 
-Update the Admin asks first: "The Admin restarts on its new version. This
-page will be unavailable for up to a minute and reconnects by itself. If the
-new version doesn't start, the old one is put back." Then the page shows the
-operation's log. When its requests start failing, it shows "The Admin is
-restarting…" and polls `GET /` every 2 seconds; once that answers, it
-reloads, and the finished operation appears in Activity. The login session
+Update the Admin asks first, in its update popup: "The Admin restarts on its
+new version. This page will be unavailable for up to a minute and reconnects
+by itself. If the new version doesn't start, the old one is put back." Then
+the activity log shows the operation live. When its requests start failing,
+the page shows "The Admin is restarting…" and polls `GET /` every 2 seconds;
+once that answers, it reloads, and the finished operation appears in the
+activity log. The login session
 survives, because `secret_key` is unchanged; if a rollback put back an older
 `auth.json`, the page simply shows the login.
 
@@ -625,7 +778,7 @@ survives, because `secret_key` is unchanged; if a rollback put back an older
 
 The Admin running before A4 has no `admin_swap.py` in its image, and the
 helper always runs the current image. So A4 itself is installed the old way,
-once: **Update OpenFit**, then run the command the note shows on the server.
+once: **Update OpenFit**, then run the command its note showed on the server.
 From then on, Admin updates are the button.
 
 ### If the helper dies part-way
@@ -676,12 +829,37 @@ to an immutable published set. `index.json` says what's on the shelf:
 ```json
 {"published_at": "2026-10-27T12:00:00Z",
  "sources": {"openfit": {"commit": "<40 hex>",
-                         "apps": {"steps": {"sha256": "<fingerprint>"}}}}}
+                         "name": "OpenFit",
+                         "description": "Official applications released by OpenFit.",
+                         "apps": {"frms": {"sha256": "<fingerprint>",
+                                           "name": "FRMS",
+                                           "description": "Fatigue risk management for airline crew. ..."}}}}}
 ```
 
 The fingerprint is `admin_ops.fingerprint()` of the published app folder
 (each file's path and contents, dotfiles and caches left out). B1 and B3 read
 the index. Publishing one source keeps any other source's entry as it is.
+
+A source's `name` and `description` (S1) come from `library/repo.yaml`:
+
+```yaml
+name: OpenFit
+description: Official applications released by OpenFit.
+```
+
+`name` text of 1 to 40 characters and `description` (optional) at most 300,
+each trimmed (`repo_info()`). A file that's missing, a link, not YAML, not a
+mapping, or not that, is the source's id and no description, and the publish
+says why in its log. `repo.yaml` isn't an app: it isn't copied to the shelf.
+Each app's `name` and `description` are its own `app.yaml`'s, read from the
+published copy (`app_info()`): a non-blank name, and a description of at most
+300 characters (the user system's rule), each trimmed; anything else, or an
+`app.yaml` that doesn't parse, is null, and the app is published all the
+same. The fingerprints don't change. The user system's shelf reader takes
+only the keys it knows, so the richer index reads as before. An index an
+Admin from before S1 wrote has no names; the Admin's startup publishes again
+when the shelf's `openfit` entry has none, rewriting only `index.json` (the
+set itself, unchanged, isn't).
 
 ### Publishing
 
@@ -843,8 +1021,11 @@ Tailscale sidecars and more), and the Admin must never touch any of them.
   `openfit-library`, before anything that recreates a user; and `docker volume rm
   openfit-<name>_tracker-data`, for a name in `removed`, under Delete data's
   confirm. The tags it sets are `openfit-tracker:prev` and
-  `openfit-tracker:latest`. Nothing else is listed, inspected, stopped or
-  removed; the Admin doesn't list other containers, even to find free ports.
+  `openfit-tracker:latest`. Beside those, the System information panel's
+  `docker info --format '{{json .}}'` (that format exactly; at most once a
+  minute), of which only the server's name, Docker version, CPUs and memory
+  are kept. Nothing else is listed, inspected, stopped or removed; the Admin
+  doesn't list other containers, even to find free ports.
 - **Data deleted in two places only.** `down -v` only in a failed add, on a
   volume that add made; `docker volume rm` only in Delete data. Remove is
   always a plain `down`. The shelf's volume is never removed: the users'
@@ -893,6 +1074,15 @@ Each user's own data is their volume: `openfit_tracker-data` for the primary,
 
 ## Try it
 
+For S1, the portal: Check now shows changes to the Admin, the App library and
+Other. Update OpenFit (the User's Update available): it pulls the new code
+and builds, and the Admin it runs on, still the old one, publishes the shelf
+as it always has. Then Update the Admin (its Update available, under
+Versions); after the page reconnects it's the portal, and its startup
+publishes the shelf's index again with `repo.yaml`'s name and blurb and the
+apps' names (no new set). The Repo tab shows OpenFit, "Official applications
+released by OpenFit.", and FRMS with its description.
+
 Setup links (U1), once Update OpenFit and then Update the Admin have run:
 every OpenFit shows "locked". Press **Setup link** on your row, open the
 link, set a password and you're signed in. Press it again and open the new
@@ -901,15 +1091,15 @@ out. A stopped user's button is greyed out (the route says 409).
 
 On the server, once the Admin is rebuilt with A2: open the Admin, add a test
 user (say `test`, on the suggested port), open their address and see a fresh
-OpenFit, then Remove them, and Delete data under Kept data by typing `test`.
+OpenFit, then Remove them, and Delete data under User data by typing `test`.
 
 For A4: install it the old way once (Update OpenFit, then the command the
 note shows). The next time an Update OpenFit brings Admin changes, the note
 shows **Update the Admin**: the page goes away for under a minute, comes
 back by itself, and Activity reads "The Admin updated itself to `<sha>`."
 
-For A5: Update OpenFit, then Update the Admin. The App library card shows
-the shelf published from the version OpenFit is on, with its apps. Restart a
-user, and the "Restart to see the app library" hint beside them goes. The
-next app-only change on GitHub shows **Update apps** in place of Update
-OpenFit, and nobody's OpenFit restarts.
+For A5: Update OpenFit, then Update the Admin. The App library card (S1's
+Repos panel) shows the shelf published from the version OpenFit is on, with
+its apps. Restart a user, and the "Restart to see the app library" hint
+beside them goes. The next app-only change on GitHub shows **Update apps**
+in place of Update OpenFit, and nobody's OpenFit restarts.

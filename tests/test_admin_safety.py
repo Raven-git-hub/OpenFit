@@ -3,8 +3,9 @@ own compose files (the primary's exactly the repo's and the Admin's
 override, in that order); their labelled containers, where it execs only
 the health check and a setup link's `python auth_cli.py setup-link`; its own --rm
 helpers; the user system's image; the app shelf's volume, only ever
-looked at; a removed user's kept volume, only on a confirmed delete; and
-its own project, only to update itself. Publishing the shelf runs no
+looked at; a removed user's kept volume, only on a confirmed delete;
+`docker info`, with one format, for the System panel; and its own
+project, only to update itself. Publishing the shelf runs no
 docker command at all. Argument lists, never a shell; git as the repo's
 owner, docker as root."""
 
@@ -420,6 +421,9 @@ def assert_in_lane(env, allow):
             assert "openfit-admin:local" in a, a
         elif sub == "image":
             assert a == ["docker", "image", "inspect", "--format", "{{.Id}}", "openfit-tracker:latest"], a
+        elif sub == "info":
+            # The System panel's look at the server: this format, exactly.
+            assert a == ["docker", "info", "--format", "{{json .}}"], a
         elif sub == "volume" and a[2] == "inspect":
             looked_at = {f"openfit-{n}_tracker-data" for n in names} | {"openfit-library"}
             assert a[3:5] == ["--format", "{{.Name}}"] and a[5] in looked_at, a
