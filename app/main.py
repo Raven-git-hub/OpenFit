@@ -41,7 +41,16 @@ from apps import (
     update_app,
 )
 from crypto import encrypt
-from shelf import list_shelf, read_app_files, refusal, shelf_app
+from shelf import (
+    LIBRARY_SYNC_SECONDS,
+    library_note,
+    list_shelf,
+    read_app_files,
+    read_notes,
+    refusal,
+    shelf_app,
+    sync_library_apps,
+)
 from home_layout import LayoutError, load_layout, parse_layout, save_layout
 from derived import (
     backfill_derived,
@@ -78,6 +87,9 @@ AUDIO_DIR = os.getenv("AUDIO_DIR", "/app/audio")
 APPS_DIR = os.getenv("APPS_DIR", "/data/apps")
 # The app shelf the Admin publishes, mounted read-only (shelf.py).
 LIBRARY_DIR = os.getenv("OPENFIT_LIBRARY", "/library")
+# What last happened to each installed library app as it followed the
+# shelf (shelf.sync_library_apps()): the update record, on the data volume.
+APP_UPDATES_PATH = os.getenv("OPENFIT_APP_UPDATES_PATH", "/data/app_updates.json")
 SYNC_INTERVAL_HOURS = int(os.getenv("SYNC_INTERVAL_HOURS", "6"))
 # The most a request may carry: a tile's file input sends its file in
 # one, and nothing else comes near it - an app's install is a few small
@@ -94,6 +106,7 @@ app.config["DB_PATH"] = DB_PATH
 app.config["AUDIO_DIR"] = AUDIO_DIR
 app.config["APPS_DIR"] = APPS_DIR
 app.config["LIBRARY_DIR"] = LIBRARY_DIR
+app.config["APP_UPDATES_PATH"] = APP_UPDATES_PATH
 # Flask turns a body over it away with a 413 before reading any of it.
 app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD_BYTES
 # Who may use this OpenFit (auth.py): its one account's file and the
@@ -841,9 +854,17 @@ def list_apps():
     plain files in the app's folder, each one GET /api/app/<id>/file
     serves. library is the library a library app was installed from -
     openfit for openfit.frms: read-only, so its row offers no Update -
-    and null for a custom app.
+    and null for a custom app. A library app also has library_note, what
+    last happened to it as it followed the shelf
+    (shelf.sync_library_apps()): {state, at, changes: [{sha, subject,
+    date}], reason} - state updated, waiting, failed or removed - from
+    the update record, or null for nothing yet. A custom app has none.
     """
-    return jsonify([a.summary() for a in scan_apps(app.config["APPS_DIR"])])
+    listed = [a.summary() for a in scan_apps(app.config["APPS_DIR"])]
+    if any(a["library"] for a in listed):
+        notes = read_notes(app.config["APP_UPDATES_PATH"])
+        listed = [{**a, "library_note": library_note(notes.get(a["id"]))} if a["library"] else a for a in listed]
+    return jsonify(listed)
 
 
 @app.route("/api/apps", methods=["POST"])
@@ -2410,7 +2431,9 @@ def effective_cadence(conn, plugin_id):
 # sync_one() at that plugin's effective cadence, plus a one-off
 # scheduled_sync() of every plugin at startup. Connecting a source adds
 # its job (_store_account()), changing its cadence moves it (PUT
-# .../cadence) and removing it drops it (disconnect_connector()).
+# .../cadence) and removing it drops it (disconnect_connector()). Beside
+# them, library-sync: the installed library apps following the shelf,
+# every LIBRARY_SYNC_SECONDS, on a worker of its own.
 #
 # The running scheduler, once serve() has started it. None until then -
 # and always in the tests, which import main without starting one - so
@@ -2473,8 +2496,23 @@ def remove_plugin_job(plugin_id):
         pass
 
 
+LIBRARY_SYNC_JOB = "library-sync"
+
+
+def library_sync():
+    """The installed library apps brought in line with the shelf
+    (shelf.sync_library_apps()): at startup, then every
+    LIBRARY_SYNC_SECONDS. Logged, never raised: a failure must not take
+    the job down."""
+    try:
+        sync_library_apps(app.config["APPS_DIR"], app.config["LIBRARY_DIR"], app.config["APP_UPDATES_PATH"])
+    except Exception as e:
+        print(f"[library] the apps couldn't follow the app library: {type(e).__name__}: {e}")
+
+
 def start_scheduler():
-    """Start the background sync jobs: the startup catch-up, then a job per plugin.
+    """Start the background jobs: the startup catch-up, then a job per
+    plugin, and library-sync, the library apps following the shelf.
 
     Called from serve() only - importing main.py (as the tests do) must
     not start a scheduler or fire off syncs.
@@ -2487,10 +2525,14 @@ def start_scheduler():
         # race for _sync_lock and all but one skip, every tick. Queued, a
         # job can start late, so it must never be dropped as missed: no
         # misfire cutoff (APScheduler's default is one second).
-        executors={"default": ThreadPoolExecutor(1)},
+        # library-sync has a worker of its own, so a minute's tick never
+        # queues behind a source's sync - nor skips, warned, while one runs.
+        executors={"default": ThreadPoolExecutor(1), "library": ThreadPoolExecutor(1)},
         job_defaults={"misfire_grace_time": None},
     )
     scheduler.add_job(scheduled_sync, "date")  # run once shortly after startup
+    scheduler.add_job(library_sync, "interval", seconds=LIBRARY_SYNC_SECONDS, id=LIBRARY_SYNC_JOB,
+                      executor="library", replace_existing=True)
     conn = get_conn()
     try:
         for plugin in PLUGINS.values():
@@ -2509,6 +2551,8 @@ def serve():
     if not auth.password_set(app.config["AUTH_PATH"]):
         print("[auth] No password yet, so this OpenFit is locked. Make a setup link with the Admin's "
               "Setup link button, or: docker exec <container> python auth_cli.py setup-link", flush=True)
+    # The library apps catch up with the shelf before anything draws them.
+    library_sync()
     start_scheduler()
     app.run(host="0.0.0.0", port=80)
 

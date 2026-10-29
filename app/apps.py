@@ -43,7 +43,9 @@ says only the bare name (id: frms) and its files stay the library's own,
 byte for byte. A dot in an id always means installed from a library -
 install_library_app() is the one way to make one - and such an app is
 read-only here: update_app() refuses it (403); Duplicate makes a copy of
-one's own, under a bare id.
+one's own, under a bare id. It follows its library instead: when the
+shelf has a new version, shelf.sync_library_apps() swaps it in through
+_replace_app(), the swap update_app() makes.
 
 This is the one way the host finds an app: the Home tab's routes use it
 now, and the Library reuses it. install_app() is the one way one is
@@ -456,8 +458,11 @@ def _metrics(raw):
     return metrics
 
 
-def _manifest(folder):
-    """The folder's manifest, checked and with defaults filled in."""
+def _manifest(folder, name=None):
+    """The folder's manifest, checked and with defaults filled in, as it
+    loads in a folder called `name` - its own name unless given: an
+    update's staged files are checked under the name of the folder they
+    replace (_loads())."""
     try:
         with open(os.path.join(folder, MANIFEST), encoding="utf-8") as f:
             raw = yaml.safe_load(f)
@@ -481,7 +486,7 @@ def _manifest(folder):
     # its id, and its own app.yaml says the bare name (frms), or nothing.
     # The source lives in the folder's name alone, so the files are the
     # library's own, byte for byte.
-    basename = os.path.basename(folder)
+    basename = name or os.path.basename(folder)
     if LIBRARY_APP_ID.match(basename):
         bare = basename.split(".", 1)[1]
         own = raw.get("id", bare)
@@ -550,9 +555,10 @@ def _entry_points(folder, app_id):
     return render, handle
 
 
-def load_app(folder):
-    """The app in `folder`, or AppError saying why it doesn't load."""
-    manifest = _manifest(folder)
+def load_app(folder, name=None):
+    """The app in `folder`, or AppError saying why it doesn't load - as
+    it loads in a folder called `name`, if given (_manifest())."""
+    manifest = _manifest(folder, name)
     render, handle = _entry_points(folder, manifest["id"])
     return InstalledApp(path=folder, render=render, handle=handle, **manifest)
 
@@ -1099,11 +1105,13 @@ def _update_id(manifest, app_id):
     return new_id
 
 
-def _loads(staging, app_id):
-    """Whether the staged files load as the scanner would load them, else
-    InstallError: the app is left on its old files."""
+def _loads(staging, folder, app_id):
+    """Whether the staged files load as the scanner would load them in
+    `folder`, the app's own - under its name, so a library app's are
+    held to its bare id - else InstallError: the app is left on its old
+    files."""
     try:
-        load_app(staging)
+        load_app(staging, os.path.basename(folder))
     except AppError as e:
         raise InstallError(f"the update doesn't load, so '{app_id}' is unchanged: {e}") from None
 
@@ -1141,17 +1149,17 @@ def update_app(apps_dir, app_id, files):
     copy of one's own to change; app.yaml must be among the files
     and parse, with an id - this app's own, not another's; every file
     name and content must pass install's containment checks. Then, one
-    at a time with installs and uninstalls (_write_lock): the app must be
-    installed - loading - and its folder is the one the scanner loaded it
-    from; check_app(); the files are written to a hidden staging folder,
-    which must load as the scanner would load it (load_app(): the whole
-    manifest, and app.py imported - unlike install, which runs nothing,
-    because a broken update would take down an app that works); then the
-    swap (_swap()): the old folder aside, the new one in, each an atomic
-    rename. The app's cached load is dropped, so the next scan loads the
-    new files, and only then is the old folder deleted - a link unlinked,
-    its target never touched; a delete that fails leaves it hidden, and
-    logged.
+    at a time with installs and uninstalls (_write_lock), _replace_app():
+    the app must be installed - loading - and its folder is the one the
+    scanner loaded it from; check_app(); the files are written to a
+    hidden staging folder, which must load as the scanner would load it
+    (load_app(): the whole manifest, and app.py imported - unlike
+    install, which runs nothing, because a broken update would take down
+    an app that works); then the swap (_swap()): the old folder aside,
+    the new one in, each an atomic rename. The app's cached load is
+    dropped, so the next scan loads the new files, and only then is the
+    old folder deleted - a link unlinked, its target never touched; a
+    delete that fails leaves it hidden, and logged.
 
     A replace, not a merge: the folder afterwards holds exactly `files`,
     so a file left out is gone. No database work: what the app wrote,
@@ -1183,28 +1191,59 @@ def update_app(apps_dir, app_id, files):
     _update_id(manifest, app_id)
     _check_files(files)
 
-    apps_dir = os.path.abspath(apps_dir)
     with _write_lock:
-        installed = find_app(apps_dir, app_id)
-        folder = installed.path if installed else None
-        # The scanner only loads a direct child of the apps folder; this
-        # is the last word, in case that ever changes.
-        if folder is None or os.path.dirname(folder) != apps_dir:
-            raise InstallError(f"'{app_id}' isn't installed — use Add Application to install it", 404)
-        check_app(manifest, dict(files))
-        try:
-            staging = _stage(apps_dir, files, "update")
-        except OSError as e:
-            raise InstallError(f"couldn't write the app's files: {e.strerror or e}", 500) from None
-        try:
-            _loads(staging, app_id)
-            old = _swap(folder, staging)
-        except BaseException:
-            shutil.rmtree(staging, ignore_errors=True)
-            raise
-        # The new files are loaded afresh, never from the old ones' cache.
-        with _loaded_lock:
-            _loaded.pop(folder, None)
+        _replace_app(apps_dir, app_id, files)
+    _log(f"updated {app_id}: {', '.join(sorted(files))}")
+    return {"id": app_id, "has_app_py": MODULE in files}
+
+
+def _replace_app(apps_dir, app_id, files):
+    """Swap the installed app's files for `files`, {name: text}, in its
+    own folder: the heart of an update, shared by update_app() - the one
+    a person asks for, which first refuses a library app (403) - and a
+    library app following its shelf (shelf.sync_library_apps()), the one
+    way a library app's files change. Internal: no route reaches it but
+    through update_app().
+
+    The caller holds _write_lock and has checked `files`' names and
+    contents (_check_files()) and that app.yaml parses with the app's
+    own id (a library app's, its bare name). Here: the app must be installed - loading - and its folder
+    is the one the scanner loaded it from, a direct child of the apps
+    folder; check_app(); the files are staged in a hidden folder, which
+    must load as the scanner would load it in the app's folder
+    (_loads(): the whole manifest, and app.py imported); then _swap(),
+    the old folder aside and the new one in, each an atomic rename. The
+    app's cached load is dropped, so the next scan - the next render -
+    loads the new files, and the old folder is deleted: a link
+    unlinked, its target never touched; a delete that fails leaves it
+    hidden, logged. No database work.
+
+    InstallError, the app on its old files: 404 if it isn't installed,
+    400 for files check_app() refuses or that don't load, 500 if they
+    can't be written or swapped in.
+    """
+    apps_dir = os.path.abspath(apps_dir)
+    manifest = _manifest_to_install(files)
+    installed = find_app(apps_dir, app_id)
+    folder = installed.path if installed else None
+    # The scanner only loads a direct child of the apps folder; this
+    # is the last word, in case that ever changes.
+    if folder is None or os.path.dirname(folder) != apps_dir:
+        raise InstallError(f"'{app_id}' isn't installed — use Add Application to install it", 404)
+    check_app(manifest, dict(files))
+    try:
+        staging = _stage(apps_dir, files, "update")
+    except OSError as e:
+        raise InstallError(f"couldn't write the app's files: {e.strerror or e}", 500) from None
+    try:
+        _loads(staging, folder, app_id)
+        old = _swap(folder, staging)
+    except BaseException:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
+    # The new files are loaded afresh, never from the old ones' cache.
+    with _loaded_lock:
+        _loaded.pop(folder, None)
 
     try:
         if os.path.islink(old):
@@ -1214,5 +1253,3 @@ def update_app(apps_dir, app_id, files):
     except OSError as e:
         # Updated all the same: what's left is hidden from the scanner.
         _log(f"updated {app_id}, but couldn't delete {old}: {e.strerror or e}")
-    _log(f"updated {app_id}: {', '.join(sorted(files))}")
-    return {"id": app_id, "has_app_py": MODULE in files}
