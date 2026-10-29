@@ -352,6 +352,36 @@ def test_the_last_update_lists_the_commits_its_range_brought(admin_env):
     assert not any(".." in arg for call in env.fake.commands() for arg in call)
 
 
+# The commit guard (the S1 review's gap): a range is only ever read between
+# two full commits, so nothing a record holds - a flag, a rev, a short sha,
+# not text at all - reaches git.
+BAD_COMMITS = ["--all", "HEAD~1", "abc", "a" * 39, "A" * 40, "a" * 40 + "\n", "", None, 123, ["a" * 40],
+               {"commit": "a" * 40}]
+
+
+@pytest.mark.parametrize("bad", BAD_COMMITS, ids=repr)
+def test_range_reads_only_between_two_full_commits(admin_env, bad):
+    env = admin_env
+    good = env.repos.head()
+    env.fake.clear()
+    for old, new in ((bad, good), (good, bad), (bad, bad)):
+        assert env.admin._range(old, new) is None
+        assert env.admin._range(old, new, "admin/") is None
+    assert env.fake.calls == []  # no git command run
+    assert env.admin._range(good, good) == {"commits": [], "prs": []}  # and two real ones are read
+
+
+@pytest.mark.parametrize("bad", [b for b in BAD_COMMITS if not isinstance(b, dict)], ids=repr)
+def test_an_op_record_with_a_version_that_isnt_a_commit_lists_no_changes(admin_env, bad):
+    env = admin_env
+    good = {"commit": env.repos.head(), "short": "x", "subject": "x"}
+    env.fake.clear()
+    for old, new in ((bad, good), (good, bad), ({"commit": bad}, good), (good, {"commit": bad})):
+        op = {"id": "20261027T120000Z-update", "kind": "update", "outcome": "ok", "old": old, "new": new}
+        assert env.admin._op_view(op, [op])["changes"] is None
+    assert env.fake.calls == []
+
+
 def test_an_undone_update_says_when(admin_env):
     env = admin_env
     env.repos.push({"app/main.py": "print('2')\n"}, "Two")
@@ -797,7 +827,8 @@ function boot(stored, status) {
     fetch: async (url, opts) => {
       opts = opts || {};
       fetches.push({ url, method: opts.method || 'GET', header: (opts.headers || {})['X-OpenFit-Admin'] || null, body: opts.body || null });
-      const background = ['/api/update', '/api/undo', '/api/admin/update', '/api/library/update', '/api/users'];
+      const background = ['/api/update', '/api/undo', '/api/admin/update', '/api/admin/revert', '/api/library/update',
+                          '/api/users'];
       const body = url === '/api/status' ? JSON.parse(JSON.stringify(page.status)) : url === '/api/op' ? { op: null } : { ok: true };
       return { status: background.includes(url) ? 202 : 200, ok: true, json: async () => body };
     },
@@ -889,33 +920,48 @@ def test_the_users_list_is_alphabetical_and_the_primary_cant_be_removed(logged_i
 
 
 @needs_node
-def test_user_data_mixes_backups_and_kept_data_and_s2_is_disabled(logged_in, admin_env):
+def test_user_data_mixes_backups_and_kept_data_with_their_downloads(logged_in, admin_env):
     status = portal_status(admin_env)
+    andy = next(b for b in status["backups"] if b["user"] == "andy")
+    andy["undo_relies"] = True  # the Undo on offer would put it back
     out = run_page(logged_in, status, r"""
       const b = boot({});
       await settle();
       const rows = b.byId('dataRows').children;
       out.rows = rows.map(r => [r.dataset.kind, r.textContent, html(r).includes('warn-ico')]);
-      rows.find(r => r.dataset.kind === 'backup').click();
       const body = b.byId('popupBody');
-      out.backup = { open: open(b), text: body.textContent,
-                     s2: find(body, n => n.dataset.next === 's2').map(n => [n.textContent, n.disabled]) };
-      buttons(body, 'Close')[0].click();
+      const part = f => find(body, n => n.dataset.f === f)[0];
+      const shown = () => find(body, n => n.tagName === 'BUTTON').map(n => [n.textContent, n.disabled]);
+      rows.find(r => r.dataset.kind === 'backup').click();
+      out.backup = { open: open(b), text: body.textContent, buttons: shown(),
+                     hidden: [part('download').hidden, part('delete').hidden] };
+      buttons(body, 'Download')[0].click();
+      const link = find(part('download'), n => n.tagName === 'A')[0];
+      out.backup.download = { shown: !part('download').hidden, text: part('download').textContent, href: link.href,
+                              attr: link.getAttribute('download'), label: link.textContent, cls: link.className };
+      buttons(body, 'Delete')[0].click();
+      out.backup.del = { shown: !part('delete').hidden, downloadHidden: part('download').hidden,
+                         text: part('delete').textContent };
+      buttons(part('delete'), 'Delete backup')[0].click();
+      await settle();
+      out.backup.posts = posts(b);
+      out.backup.closed = !open(b);
+      out.backup.msg = b.byId('usersMsg').textContent;
       rows.find(r => r.dataset.kind === 'kept').click();
       const go = buttons(body, 'Delete data')[0];
-      out.kept = { text: body.textContent, before: go.disabled,
-                   s2: find(body, n => n.dataset.next === 's2').map(n => [n.textContent, n.disabled]) };
+      out.kept = { text: body.textContent, before: go.disabled, buttons: shown() };
+      buttons(body, 'Download')[0].click();
+      const keptLink = find(part('download'), n => n.tagName === 'A')[0];
+      out.kept.download = { shown: !part('download').hidden, text: part('download').textContent, href: keptLink.href };
       const field = find(body, n => n.tagName === 'INPUT')[0];
       field.value = 'ki'; field.fire('input');
       out.kept.partly = go.disabled;
       field.value = 'kim'; field.fire('input');
       out.kept.typed = go.disabled;
+      const before = posts(b).length;
       go.click();
       await settle();
-      out.kept.posts = posts(b);
-      b.byId('versionRows').children.find(r => r.dataset.kind === 'admin').children[0].click();
-      out.revert = find(body, n => n.dataset.next === 's2').map(n => [n.textContent, n.disabled]);
-      out.revertNote = body.textContent.includes('Coming in the next update.');
+      out.kept.posts = posts(b).slice(before);
     """)
     kinds = [r[0] for r in out["rows"]]
     assert kinds == ["kept", "backup", "backup", "backup"]  # kim removed after the update's backups: newest first
@@ -923,14 +969,130 @@ def test_user_data_mixes_backups_and_kept_data_and_s2_is_disabled(logged_in, adm
     assert kept[1].startswith("kim") and "Removed" in kept[1] and kept[2] is True  # the red triangle
     assert [r[1].split(" ")[0][:3] for r in backups] == ["and", "kim", "sam"]
     assert all(r[2] is False and r[1].endswith(" B") for r in backups)
-    assert out["backup"]["open"] is True
-    assert out["backup"]["s2"] == [["Download", True], ["Delete", True]]
-    assert "Coming in the next update." in out["backup"]["text"] and "Update OpenFit" in out["backup"]["text"]
-    assert out["kept"]["s2"] == [["Download", True]]
-    assert "This deletes everything kim's OpenFit stored, for good." in out["kept"]["text"]
-    assert (out["kept"]["before"], out["kept"]["partly"], out["kept"]["typed"]) == (True, True, False)
-    assert out["kept"]["posts"] == [["/api/removed/kim/delete-data", "1", '{"confirm":"kim"}']]
-    assert out["revert"] == [["Revert the Admin", True]] and out["revertNote"] is True
+
+    warning = ("This file holds everything in that OpenFit except its password: its data, apps and device logins. "
+               "Keep it somewhere safe. Whoever restores it sets a new password with a setup link.")
+    backup = out["backup"]
+    assert backup["open"] is True and "Update OpenFit" in backup["text"]
+    assert ["Download", False] in backup["buttons"] and ["Delete", False] in backup["buttons"]
+    assert backup["hidden"] == [True, True]  # the warning and the confirm wait for their button
+    assert backup["download"]["shown"] is True and warning in backup["download"]["text"]
+    assert backup["download"]["href"] == f"/api/backups/{andy['name']}/download"
+    assert backup["download"]["attr"] == "" and backup["download"]["label"] == "Download without the password"
+    assert "btn" in backup["download"]["cls"].split()
+    assert backup["del"]["shown"] is True and backup["del"]["downloadHidden"] is True
+    assert backup["del"]["text"].startswith("Delete this backup?")
+    assert f"This deletes {andy['name']} from the server, for good." in backup["del"]["text"]
+    assert "Undo for that update will no longer be offered." in backup["del"]["text"]
+    assert backup["posts"] == [[f"/api/backups/{andy['name']}/delete", "1", "{}"]]
+    assert backup["closed"] is True and backup["msg"] == f"Deleted the backup {andy['name']}."
+
+    kept = out["kept"]
+    assert "This deletes everything kim's OpenFit stored, for good." in kept["text"]
+    assert ["Download", False] in kept["buttons"]
+    assert kept["download"]["shown"] is True and warning in kept["download"]["text"]
+    assert kept["download"]["href"] == "/api/removed/kim/download"
+    assert (kept["before"], kept["partly"], kept["typed"]) == (True, True, False)
+    assert kept["posts"] == [["/api/removed/kim/delete-data", "1", '{"confirm":"kim"}']]
+
+
+@needs_node
+def test_a_backup_undo_doesnt_rely_on_doesnt_warn_about_undo(logged_in, admin_env):
+    status = portal_status(admin_env)
+    assert not any(b["undo_relies"] for b in status["backups"])
+    out = run_page(logged_in, status, r"""
+      const b = boot({});
+      await settle();
+      b.byId('dataRows').children.find(r => r.dataset.kind === 'backup').click();
+      const body = b.byId('popupBody');
+      buttons(body, 'Delete')[0].click();
+      out.text = find(body, n => n.dataset.f === 'delete')[0].textContent;
+    """)
+    assert "This deletes" in out["text"] and "Undo" not in out["text"]
+
+
+@needs_node
+def test_while_something_runs_the_downloads_deletes_and_revert_are_off(logged_in, admin_env):
+    status = portal_status(admin_env)
+    status["op"] = {"id": "20261027T150000Z-update", "kind": "update", "outcome": "running", "summary": "",
+                    "started_at": "2026-10-27T15:00:00Z", "finished_at": None, "user": None, "log": []}
+    status["admin_revert"] = {"offered": True, "reason": None, "update": "x", "old": "abc1234"}
+    out = run_page(logged_in, status, r"""
+      const b = boot({});
+      await settle();
+      const body = b.byId('popupBody');
+      const off = labels => labels.map(l => buttons(body, l).map(n => n.disabled));
+      const rows = b.byId('dataRows').children;
+      rows.find(r => r.dataset.kind === 'backup').click();
+      out.backup = off(['Download', 'Delete']);
+      rows.find(r => r.dataset.kind === 'kept').click();
+      out.kept = off(['Download']);
+      b.byId('versionRows').children.find(r => r.dataset.kind === 'admin').children[0].click();
+      out.revert = off(['Revert the Admin']);
+      out.why = find(body, n => (n.className || '').includes('revert-why')).map(n => n.textContent);
+    """)
+    assert out["backup"] == [[True], [True]] and out["kept"] == [[True]]
+    assert out["revert"] == [[True]]
+    assert out["why"] == ["Something else is running. Wait for it to finish, then try again."]
+
+
+@needs_node
+def test_revert_the_admin_when_its_offered_confirms_then_starts(logged_in, admin_env):
+    status = portal_status(admin_env)
+    status["admin_revert"] = {"offered": True, "reason": None, "update": "20261027T120000Z-admin_update",
+                              "old": "abc1234"}
+    out = run_page(logged_in, status, r"""
+      const b = boot({});
+      await settle();
+      b.byId('versionRows').children.find(r => r.dataset.kind === 'admin').children[0].click();
+      const body = b.byId('popupBody');
+      const sure = find(body, n => n.dataset.f === 'revert')[0];
+      const revert = buttons(body, 'Revert the Admin')[0];
+      out.before = { disabled: revert.disabled, hidden: sure.hidden,
+                     why: find(body, n => (n.className || '').includes('revert-why')).length };
+      revert.click();
+      out.sure = { hidden: sure.hidden, text: sure.textContent };
+      const before = posts(b).length;
+      buttons(sure, 'Revert')[0].click();
+      await settle();
+      out.posts = posts(b).slice(before);
+      out.closed = !open(b);
+    """)
+    assert out["before"] == {"disabled": False, "hidden": True, "why": 0}
+    assert out["sure"]["hidden"] is False
+    assert out["sure"]["text"] == (
+        "Revert the Admin?The Admin goes back to abc1234 and its settings as they were at that update. OpenFit and "
+        "your users aren't touched. The page reconnects by itself.CancelRevert")
+    assert out["posts"] == [["/api/admin/revert", "1", "{}"]]
+    assert out["closed"] is True
+
+
+@needs_node
+def test_revert_the_admin_not_offered_is_off_with_its_reason(logged_in, admin_env):
+    status = portal_status(admin_env)
+    assert status["admin_revert"]["offered"] is False  # the Admin's update pulled, not run
+    out = run_page(logged_in, status, r"""
+      const b = boot({});
+      await settle();
+      b.byId('versionRows').children.find(r => r.dataset.kind === 'admin').children[0].click();
+      const body = b.byId('popupBody');
+      out.revert = buttons(body, 'Revert the Admin').map(n => n.disabled);
+      out.why = find(body, n => (n.className || '').includes('revert-why')).map(n => n.textContent);
+      buttons(body, 'Revert the Admin')[0].click();
+      out.sure = find(body, n => n.dataset.f === 'revert')[0].hidden;
+    """)
+    assert out["revert"] == [True]
+    assert out["why"] == ["The Admin hasn't updated itself here yet, so there's no earlier version to go back to."]
+    assert out["sure"] is True
+
+
+def test_nothing_on_the_page_is_coming_in_the_next_update_any_more(logged_in):
+    page = logged_in.get("/").get_data(as_text=True)
+    assert "Coming in the next update" not in page and "next update" not in page.lower()
+    assert "data-next" not in page and "dataset.next" not in page and "soonLead" not in page
+    # The Admin's own two operations both reconnect the page, and are named in the activity log.
+    assert 'const SELF = ["admin_update", "admin_revert"];' in page
+    assert 'admin_revert: "Revert the Admin"' in page
 
 
 @needs_node

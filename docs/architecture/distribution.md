@@ -7,8 +7,9 @@ with updates moving everyone together (A2), the Admin's self-update (A4) and
 the app shelf (A5, all four [admin.md](admin.md)), Browse (B1), the user
 system installing from the shelf, the user login (U1,
 [auth.md](auth.md)): one account per user container, set through setup
-links from the Admin, and the Admin Portal (S1, [admin.md](admin.md)): the
-Admin's page in OpenFit's style. S2 is next; everything else here is
+links from the Admin, the Admin Portal (S1, [admin.md](admin.md)): the
+Admin's page in OpenFit's style, and S2: reverting the Admin, downloads
+without the password and deleting a backup. Everything else here is
 designed, not yet in the code._
 
 OpenFit is splitting into three layers: the repo, an **Admin** container that
@@ -19,9 +20,11 @@ records how the three fit together, so each slice is built against one design
 rather than its own guess. Until a slice lands, the code is as `CLAUDE.md`
 describes it: one account per user container, signed in with a password
 set through a setup link (U1), and an Admin that adds users, updates them
-all together (A1, A2), updates itself (A4), makes their setup links (U1)
-and publishes the official apps to a read-only shelf every user mounts
-(A5), which a user browses and installs from (B1), and nothing more.
+all together (A1, A2), updates itself and reverts that (A4, S2), makes
+their setup links (U1), publishes the official apps to a read-only shelf
+every user mounts (A5), which a user browses and installs from (B1), and
+hands over a backup or a removed user's data without its password (S2),
+and nothing more.
 
 ## Layers
 
@@ -111,7 +114,7 @@ project goes through one function and is one of two (`build admin`, `up -d
 --no-build --force-recreate admin`); no user's project is touched. A4
 itself is installed with the manual command one last time.
 
-### The Admin Portal (S1, built; S2 next)
+### The Admin Portal (S1 and S2, built)
 
 The Admin's page, redrawn in OpenFit's style: OpenFit's theme tokens and
 components, copied and held to OpenFit's by a drift test, under OpenFit's
@@ -128,8 +131,16 @@ everyone runs) and **Repo** (each source and its apps, with their
 descriptions). The library's `repo.yaml` names a source on the shelf, and
 `index.json` gains each source's and app's name and description. A
 re-layout and a few reads: every route, operation and safety rule is as it
-was. **S2**, next, wires up the places S1 leaves disabled: reverting the
-Admin, downloading backups and kept data, and deleting a single backup.
+was. **S2** (built) wires up the places S1 left disabled. **Revert the
+Admin** takes it back to the version before its last update: offered only
+while that update's settings snapshot and `openfit-admin:prev` are still
+there, the users are the ones it had and the Admin isn't on `:prev`
+already; the same hand-over as its update, the other way round (a helper
+on the image running now, `:next` and a fresh snapshot to fall back on),
+putting back only `admin.json` and `users.json`, so the password, sessions
+and activity are kept. **Download** a backup or a removed user's kept
+data, never with the password in it (below). **Delete** one backup, which
+takes Undo away if Undo needed it.
 
 ### The app shelf (A5, built)
 
@@ -314,6 +325,15 @@ custom `frms` becoming `openfit.frms`:
   the backup taken before an update, and creating a user from a file.
 - **A restore always creates a new user, with a new password.** The backup
   never carries a login.
+- **A downloaded backup never carries a password** (S2, built). Whatever the
+  Admin hands over - a backup, a removed user's kept data - leaves out the
+  user's OpenFit password (`auth.json`) and its sessions' key
+  (`.session_key`); restoring always means a new password through a setup
+  link. That's the rule above, applied now to the Admin's plain `tar.gz`
+  archives: the data, the apps and the device logins are in the file (and
+  the page says so before the download), the login isn't. The backups the
+  Admin keeps on the server, which Undo puts back, are untouched and still
+  hold everything, so an Undo never locks anyone out.
 
 ### Reaching a container
 
@@ -357,8 +377,10 @@ a second real person gets a container. Re-ordered 2026-10-27, after A1:
    across (L3's rules), and B3, self-updating installed apps; then L4. The
    library groundwork built before, L1 (corrected in B1) and L2, stands.
 6. **The Admin Portal**: S1 (built), the page in OpenFit's style, with
-   the reads behind its panels; **S2 next**: reverting the Admin,
-   downloading backups and kept data, deleting single backups.
+   the reads behind its panels; S2 (built): reverting the Admin,
+   downloading backups and kept data without the password, deleting single
+   backups. Restoring from a downloaded file comes with the backup file and
+   restore-on-add-user, below.
 7. **Organisation repos** (A6): each a source of its own on the shelf, its
    name and blurb from its own `repo.yaml`.
 
@@ -371,4 +393,5 @@ a second real person gets a container. Re-ordered 2026-10-27, after A1:
 The proxy and the mDNS announcer are deferred: users are on `IP:port` until
 then. The backup file (export, passphrase, restore) is designed above and not
 yet placed in this order; the Admin's update backups are plain `tar.gz`
-archives of each user's `/data` volume, not that format.
+archives of each user's `/data` volume, not that format, and a download of
+one (S2) is the same archive less the password's two files.

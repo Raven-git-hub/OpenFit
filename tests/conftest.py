@@ -21,7 +21,9 @@ clone standing in for the server's copy), and every docker command goes
 to FakeRunner, which records it and answers from a script.
 """
 
+import contextlib
 import hashlib
+import io
 import json
 import os
 import shutil
@@ -191,6 +193,12 @@ LIBRARY_VOLUME = "openfit-library"
 # The Admin's own: the image its container runs, and the update helper's id.
 ADMIN_IMAGE_ID = "sha256:" + "ad" * 32
 HELPER_ID = "5a" * 32
+
+
+def built_admin_image(n):
+    """The image the fake's nth build of the Admin makes (from 1)."""
+    return "sha256:" + hashlib.sha256(f"admin build {n}".encode()).hexdigest()
+
 # What a user's auth_cli.py prints for a setup link, in the fake.
 SETUP_TOKEN = "Tk_" + "a1B2-" * 8
 SETUP_EXPIRES = "2026-10-28T12:00:00Z"
@@ -249,6 +257,18 @@ class FakeRunner:
     `docker run -d` makes it. A setup link's exec in a user's container
     prints SETUP_TOKEN. `docker info` prints `info` as JSON (DOCKER_INFO).
 
+    `tags` are the Admin's own image tags, openfit-admin:{local,prev,next},
+    each the image id it names: :local is ADMIN_IMAGE_ID to start with, and
+    the image the Admin's container runs from the start; a build of the
+    Admin points :local at a new image (built_admin_image()), `docker tag`
+    moves a tag (a tag that isn't there is "No such image"), and the
+    Admin's container, when compose recreates it, runs the image :local
+    names then - so its inspect says which version it's on.
+
+    stream() is Runner.stream()'s: it records the command as run() does,
+    and yields `stream_out` (bytes), then raises an OpError if
+    `stream_rc` isn't 0, its detail `stream_err`.
+
     `frames` holds, for each call, the names of the functions it was made
     through (innermost first), so a test can tell which code ran it."""
 
@@ -262,7 +282,10 @@ class FakeRunner:
         self.frames = []
         self.rules = []
         self.projects = {"openfit": {"n": 0, "state": "running", "library": False},
-                         "openfit-admin": {"n": 0, "state": "running", "library": False}}
+                         "openfit-admin": {"n": 0, "state": "running", "library": False, "image": ADMIN_IMAGE_ID}}
+        self.tags = {"openfit-admin:local": ADMIN_IMAGE_ID}
+        self.builds = 0
+        self.stream_out, self.stream_rc, self.stream_err = b"", 0, ""
         self.helper = False
         self.volumes = {VOLUME, LIBRARY_VOLUME}
         self.images = {"openfit-tracker:latest"}
@@ -272,15 +295,29 @@ class FakeRunner:
     def run(self, args, cwd=None, as_owner=False, timeout=None):
         assert isinstance(args, list), f"a command must be a list, not {args!r}"
         assert all(isinstance(a, str) for a in args), args
+        self._record(args, cwd, as_owner, sys._getframe(1))
+        result = self._answer(args, cwd, as_owner, timeout)
+        self.results.append(result)
+        return result
+
+    def _record(self, args, cwd, as_owner, frame):
         self.calls.append(Call(list(args), cwd, as_owner))
-        frame, names = sys._getframe(1), []
+        names = []
         while frame is not None:
             names.append(frame.f_code.co_name)
             frame = frame.f_back
         self.frames.append(names)
-        result = self._answer(args, cwd, as_owner, timeout)
-        self.results.append(result)
-        return result
+
+    @contextlib.contextmanager
+    def stream(self, args):
+        import admin_ops
+
+        assert isinstance(args, list) and all(isinstance(a, str) for a in args), args
+        self._record(args, None, False, sys._getframe(2))
+        self.results.append((self.stream_rc, "", self.stream_err))
+        yield io.BufferedReader(io.BytesIO(self.stream_out))
+        if self.stream_rc != 0:
+            raise admin_ops.OpError(f"{args[0]} stopped with exit code {self.stream_rc}.", self.stream_err)
 
     def _answer(self, args, cwd, as_owner, timeout):
         for matches, result in self.rules:
@@ -331,8 +368,9 @@ class FakeRunner:
             mounts = [{"Type": "volume", "Name": f"{project}_tracker-data", "Destination": "/data"}]
             if project and self.projects[project].get("library"):
                 mounts.append({"Type": "volume", "Name": LIBRARY_VOLUME, "Destination": "/library", "RW": False})
-            info = {"Id": args[-1], "Image": ADMIN_IMAGE_ID if project == "openfit-admin" else IMAGE_ID,
-                    "Mounts": mounts}
+            info = {"Id": args[-1], "Mounts": mounts,
+                    "Image": self.projects[project].get("image", ADMIN_IMAGE_ID) if project == "openfit-admin"
+                    else IMAGE_ID}
             return 0, json.dumps([info]), ""
         if sub == "exec" and args[3:] == ["python", "auth_cli.py", "setup-link"]:
             return 0, json.dumps({"token": SETUP_TOKEN, "expires_at": SETUP_EXPIRES}) + "\n", ""
@@ -347,9 +385,17 @@ class FakeRunner:
                 f.write(b"backup")
             return 0, "", ""
         if sub == "image" and args[2] == "inspect":
+            if args[-1] in self.tags:
+                return 0, self.tags[args[-1]] + "\n", ""
             if args[-1] in self.images:
                 return 0, IMAGE_ID + "\n", ""
             return 1, "", f"Error response from daemon: No such image: {args[-1]}"
+        if sub == "tag" and args[3].startswith("openfit-admin:"):
+            source = self.tags.get(args[2], args[2] if args[2].startswith("sha256:") else None)
+            if source is None:
+                return 1, "", f"Error response from daemon: No such image: {args[2]}"
+            self.tags[args[3]] = source
+            return 0, "", ""
         if sub == "volume" and args[2] == "inspect":
             if args[-1] in self.volumes:
                 return 0, args[-1] + "\n", ""
@@ -360,10 +406,15 @@ class FakeRunner:
         if sub == "compose":
             project = args[3]
             p = self.projects.setdefault(project, {"n": -1, "state": None, "library": False})
+            if project == "openfit-admin" and "build" in args:
+                self.builds += 1
+                self.tags["openfit-admin:local"] = built_admin_image(self.builds)
             if "up" in args:
                 if not p["state"] or "--force-recreate" in args or p["state"] != "running":
                     p["n"] += 1
                     p["library"] = self.mounts_library(args)
+                    if project == "openfit-admin":
+                        p["image"] = self.tags["openfit-admin:local"]
                 p["state"] = "created" if "--no-start" in args else "running"
                 self.volumes.add(f"{project}_tracker-data")
             elif "stop" in args and p["state"]:

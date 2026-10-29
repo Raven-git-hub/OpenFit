@@ -333,7 +333,10 @@ pre.cmd{margin:6px 0 0;padding:10px 12px;background:var(--inset);border:1px soli
 .addrow{display:grid;grid-template-columns:minmax(0,2fr) minmax(0,1fr) auto;gap:12px;align-items:end;}
 .foot-line{display:flex;align-items:center;gap:10px;margin-top:12px;font-size:12.5px;color:var(--muted);}
 .foot-line .lead{margin-right:auto;}
-.soon{font-size:12px;color:var(--muted);font-family:var(--font-mono);}
+/* a download, without the password: its warning, then the link itself, as a button */
+.install-warn p{margin:0;}
+a.btn{display:inline-block;text-decoration:none;}
+a.btn.primary:hover{color:var(--accent-ink);}
 /* the sign-in and setup views: OpenFit's sign-in card */
 .gate{min-height:100vh;display:grid;place-items:center;padding:24px 16px;}
 .gate .card{width:min(380px,100%);padding:26px 24px 24px;}
@@ -485,8 +488,9 @@ pre.cmd{margin:6px 0 0;padding:10px 12px;background:var(--inset);border:1px soli
   </div>
 </div>
 
-<!-- The one popup, filled by popup(): settings, an update, a last update or
-     publish, a backup or kept data, and the coming-soon stub -->
+<!-- The one popup, filled by popup(): settings, an update, a last update
+     (and the Admin's revert) or publish, a backup or kept data (each with its
+     download), and the coming-soon stub -->
 <div class="modal-bg" id="popupBg" hidden>
   <div class="modal" id="popup" role="dialog" aria-modal="true" aria-labelledby="popupTitle">
     <h4 id="popupTitle"></h4>
@@ -522,8 +526,10 @@ const OUTCOMES = {
 };
 const KINDS = {
   update: "Update OpenFit", undo: "Undo last update", add_user: "Add user", admin_update: "Update the Admin",
-  update_apps: "Update apps",
+  update_apps: "Update apps", admin_revert: "Revert the Admin",
 };
+// The Admin's own operations: while one runs, a request that fails is the Admin restarting.
+const SELF = ["admin_update", "admin_revert"];
 const STATES = {
   running: ["Running", "ok"], stopped: ["Stopped", "off"], missing: ["Not found", "bad"], unknown: ["Unknown", "wait"],
 };
@@ -541,7 +547,9 @@ const SENTENCES = {
 };
 const ROUTES = { user: "/api/update", admin: "/api/admin/update", apps: "/api/library/update" };
 const PRIMARY_NOTE = "This is the server's main OpenFit: new versions are built from it, so it can't be removed.";
-const NEXT_UPDATE = "Coming in the next update.";
+// Said before every download: what's in the file, and what isn't.
+const NO_PASSWORD = "This file holds everything in that OpenFit except its password: its data, apps and device logins. "
+  + "Keep it somewhere safe. Whoever restores it sets a new password with a setup link.";
 const ICONS = {
   fold: '<svg viewBox="0 0 10 10" aria-hidden="true"><path d="M3 1.8 8.4 5 3 8.2z"/></svg>',
   warn: '<svg class="warn-ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1.2 15.4 14H.6zM7.2 6v4.2h1.6V6zm0 5.4V13h1.6v-1.6z"/></svg>',
@@ -550,7 +558,7 @@ const ICONS = {
 
 let S = null;  // the last status read
 let polling = null;
-let selfUpdating = false;  // an Admin update is running: a request that fails is the Admin restarting
+let selfUpdating = false;  // an Admin update or revert is running: a request that fails is the Admin restarting
 let restarting = null;  // polls GET / while it does, and reloads once it answers
 let portTouched = false;  // Add user's port typed in: the suggestion stops replacing it
 let removing = null;  // the user whose Remove asks to be sure
@@ -745,7 +753,7 @@ function startPolling() {
     if (r.status === 0 && selfUpdating) return watchRestart();
     if (r.status !== 200) return;
     const op = r.data.op;
-    selfUpdating = !!(op && op.kind === "admin_update" && op.outcome === "running");
+    selfUpdating = isSelf(op);
     paintLive(op && op.outcome === "running" ? op : null);
     if (!op || op.outcome !== "running") {
       stopPolling();
@@ -759,7 +767,11 @@ function stopPolling() {
   polling = null;
 }
 
-// The Admin has stopped answering in its own update: it's being swapped.
+function isSelf(op) {
+  return !!(op && SELF.includes(op.kind) && op.outcome === "running");
+}
+
+// The Admin has stopped answering in its own update or revert: it's being swapped.
 // GET / every 2s, and a reload once it answers - the page the Admin now
 // running serves, which carries on with the op until it's finished.
 function watchRestart() {
@@ -866,11 +878,6 @@ function actions(...buttons) {
   return row;
 }
 
-// Where S2's buttons wait, disabled: said once, beside them.
-function soon() {
-  return el("span", NEXT_UPDATE, "soon");
-}
-
 // The changes an update brings: each group a check reports (only those with
 // a change), its commits and its pull requests' links.
 function changesBlock(groups) {
@@ -969,7 +976,7 @@ function openLastUpdate(kind) {
       const dl = el("dl", null, "info");
       const rows = [["When", when(op.finished_at || op.started_at)], ["Outcome", outcomePill(op.outcome)]];
       if (op.old || op.new) rows.push(["Versions", `${op.old || "?"} → ${op.new || "?"}`]);
-      if (op.undone_at) rows.push(["Undone", when(op.undone_at)]);
+      if (op.undone_at) rows.push([kind === "admin" ? "Reverted" : "Undone", when(op.undone_at)]);
       body.append(infoList(dl, rows));
       if (op.summary) body.append(el("p", op.summary, "dnote"));
       body.append(el("h5", "What it brought", "subhead"));
@@ -979,9 +986,7 @@ function openLastUpdate(kind) {
     const msg = el("div", null, "form-msg");
     body.append(msg);
     if (kind === "admin") {
-      const revert = button("Revert the Admin", "btn", () => {}, true);
-      revert.dataset.next = "s2";
-      body.append(soonLead(actions(soon(), revert, button("Close", "btn", closePopup))));
+      body.append(...revertBlock(msg));
     } else {
       const sure = el("div", null, "danger-panel");
       sure.hidden = true;
@@ -1006,6 +1011,54 @@ function openLastUpdate(kind) {
       body.append(row, sure);
     }
   }, true);
+}
+
+// Revert the Admin, under its last update: offered or not (and why not, in
+// one line), then its confirm, which starts it as Update the Admin does.
+function revertBlock(msg) {
+  const offer = S.admin_revert || { offered: false, reason: null };
+  const offered = offer.offered && !busy();
+  const sure = el("div", null, "danger-panel");
+  sure.hidden = true;
+  sure.dataset.f = "revert";
+  sure.append(el("h5", "Revert the Admin?"),
+    el("p", `The Admin goes back to ${offer.old || "the version before that update"} and its settings as they were at `
+      + "that update. OpenFit and your users aren't touched. The page reconnects by itself."),
+    actions(button("Cancel", "btn", () => { sure.hidden = true; }),
+      button("Revert", "btn danger solid", async (b) => {
+        b.disabled = true;
+        const r = await api("/api/admin/revert", {});
+        b.disabled = false;
+        if (r.status !== 202) return say(msg, r.data.error || "That didn't start.", "bad");
+        selfUpdating = true;
+        closePopup();
+        await loadStatus();
+      })));
+  const row = actions(button("Revert the Admin", "btn danger lead", () => { sure.hidden = false; }, !offered),
+    button("Close", "btn", closePopup));
+  const out = [row, sure];
+  if (!offered) {
+    const why = offer.offered ? "Something else is running. Wait for it to finish, then try again." : offer.reason;
+    if (why) out.unshift(el("p", why, "dnote revert-why"));
+  }
+  return out;
+}
+
+// Download, without the password: the warning first, then the link itself -
+// a plain link, so the browser downloads the file as the server streams it.
+// Off while something runs (the server would refuse it).
+function downloadBlock(href) {
+  const panel = el("div", null, "install-warn");
+  panel.hidden = true;
+  panel.dataset.f = "download";
+  panel.style.marginTop = "14px";
+  const link = el("a", "Download without the password", "btn primary");
+  link.href = href;
+  link.setAttribute("download", "");
+  link.addEventListener("click", () => { panel.hidden = true; });
+  panel.append(el("p", NO_PASSWORD), actions(button("Cancel", "btn", () => { panel.hidden = true; }), link));
+  const open = button("Download", "btn", () => { panel.hidden = false; }, busy());
+  return { open, panel };
 }
 
 // A source's last publish to the app library: when, from which commit,
@@ -1297,17 +1350,32 @@ function openBackup(b) {
       ["User", b.user], ["Update", update], ["Date", when(b.created)], ["Size", size(b.size)],
       ["File", el("span", b.name, "mono")],
     ]));
-    const down = button("Download", "btn", () => {}, true), del = button("Delete", "btn danger", () => {}, true);
-    down.dataset.next = "s2";
-    del.dataset.next = "s2";
-    body.append(soonLead(actions(soon(), down, del, button("Close", "btn", closePopup))));
+    const enc = encodeURIComponent(b.name);
+    const down = downloadBlock(`/api/backups/${enc}/download`);
+    const msg = el("div", null, "form-msg");
+    const sure = el("div", null, "danger-panel");
+    sure.hidden = true;
+    sure.dataset.f = "delete";
+    sure.style.marginTop = "14px";
+    const text = `This deletes ${b.name} from the server, for good.`
+      + (b.undo_relies ? " Undo for that update will no longer be offered." : "");
+    sure.append(el("h5", "Delete this backup?"), el("p", text),
+      actions(button("Cancel", "btn", () => { sure.hidden = true; }),
+        button("Delete backup", "btn danger solid", async (btn) => {
+          btn.disabled = true;
+          const r = await api(`/api/backups/${enc}/delete`, {});
+          btn.disabled = false;
+          if (r.status !== 200) return say(msg, errorText(r), "bad");
+          closePopup();
+          say($("usersMsg"), `Deleted the backup ${b.name}.`);
+          await loadStatus();
+        }, busy())));
+    const del = button("Delete", "btn danger", () => { down.panel.hidden = true; sure.hidden = false; }, busy());
+    down.open.addEventListener("click", () => { sure.hidden = true; });
+    const row = actions(down.open, del, button("Close", "btn", closePopup));
+    down.open.className += " lead";
+    body.append(row, down.panel, sure, msg);
   }, true);
-}
-
-// A popup's foot whose first item, the S2 note, keeps to the left.
-function soonLead(row) {
-  row.firstChild.className += " lead";
-  return row;
 }
 
 // Kept data: Delete data, once their name is typed exactly (the server
@@ -1342,9 +1410,9 @@ function openKept(r) {
     panel.append(el("h5", "Delete data?"),
       el("p", `This deletes everything ${r.name}'s OpenFit stored, for good. Their backups stay until they're pruned.`),
       field, actions(go));
-    const down = button("Download", "btn", () => {}, true);
-    down.dataset.next = "s2";
-    body.append(panel, msg, soonLead(actions(soon(), down, button("Close", "btn", closePopup))));
+    const down = downloadBlock(`/api/removed/${encodeURIComponent(r.name)}/download`);
+    down.open.className += " lead";
+    body.append(panel, msg, actions(down.open, button("Close", "btn", closePopup)), down.panel);
   }, true);
 }
 
@@ -1403,7 +1471,7 @@ function paint(s) {
   paintUserData(s);
   paintUserVersion(s);
   paintSources(s);
-  selfUpdating = !!(s.op && s.op.kind === "admin_update" && s.op.outcome === "running");
+  selfUpdating = isSelf(s.op);
   if (isBusy) startPolling(); else stopPolling();
 }
 

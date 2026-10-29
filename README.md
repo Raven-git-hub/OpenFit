@@ -757,9 +757,17 @@ line never had:
 - **Undo last update** does the same rollback by hand, for every user, while
   the users are the ones the update had.
 - **Backups**: one per user per update; the newest three updates' are kept,
-  listed under **User data** with removed users' kept data.
+  listed under **User data** with removed users' kept data. **Download** one,
+  or a removed user's kept data, as a `tar.gz` that never holds their
+  password: whoever restores it sets a new one with a setup link (the
+  backups on the server keep everything, so Undo never locks anyone out).
+  **Delete** a single backup; deleting one Undo needs says so first.
 - **Update the Admin**: the Admin updates itself, rolling back by itself if
-  the new version doesn't start.
+  the new version doesn't start. **Revert the Admin**, in its last update,
+  takes it back to the version before, and its settings as they were then,
+  keeping your Admin password, sessions and activity log; it's offered
+  while nobody's been added or removed since, and if the old version doesn't
+  start, the current one is put back.
 - **The app shelf**: the official apps (`library/`, named by its
   `repo.yaml`), published to a volume every user's OpenFit mounts read-only at
   `/library`, with no network between them; the **Repo** tab lists each
