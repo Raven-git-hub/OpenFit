@@ -1046,7 +1046,10 @@ symlink to an immutable published set. `index.json` says what's on the shelf:
                             "description": "Aviation applications for OpenFit.",
                             "apps": {"frms": {"sha256": "<fingerprint>",
                                               "name": "FRMS",
-                                              "description": "Fatigue risk management for airline crew. ..."}},
+                                              "description": "Fatigue risk management for airline crew. ...",
+                                              "changes": [{"sha": "<12 hex>",
+                                                           "subject": "FRMS: the rest budget counts the pre-duty time",
+                                                           "date": "2026-10-29T08:30:00+00:00"}]}},
                             "published_at": "2026-10-29T12:00:00Z"}}}
 ```
 
@@ -1055,7 +1058,10 @@ index's, when the index was last written, by any source's publish.
 
 The fingerprint is `admin_ops.fingerprint()` of the published app folder
 (each file's path and contents, dotfiles and caches left out). B1 and B3 read
-the index. Publishing one source keeps any other source's entry as it is.
+the index: B3's user systems compare it with their installed copies' own,
+the same function reproduced in `app/shelf.py`, to see a new version. Each
+app's `changes` are its change notes (B3, below). Publishing one source
+keeps any other source's entry as it is.
 
 A source's `name` and `description` (S1) come from `library/repo.yaml`:
 
@@ -1108,6 +1114,34 @@ Publishing never runs a docker command or a helper: it's file work through
 the Admin's own mount. Every path written is under `/library`, built with
 `os.path.join` from checked names, and each is resolved with
 `os.path.realpath` and checked to sit inside `/library` before it's written.
+
+### Change notes (B3)
+
+Since B3 a library app installed in a user's OpenFit updates itself when
+the shelf has a new version, and the user sees what changed
+([app-host.md](app-host.md#library-apps-follow-the-shelf)). What changed is
+the Admin's to say: each app's index entry carries `changes`, up to the 10
+newest non-merge commits touching the app's folder, newest first, `[{sha,
+subject, date}]` - `sha` the commit's first 12 hex, `subject` cut to 200
+characters, `date` the committer's, ISO 8601 (`parse_changes()`). The one
+git command, `change_notes_args()`:
+
+```
+git log -n 10 --no-merges --format=%H%x09%cI%x09%s <commit> -- library/<app>   (the official library)
+git log -n 10 --no-merges --format=%H%x09%cI%x09%s <commit> -- <app>           (an organisation repo)
+```
+
+`<commit>` the full commit being published, `<app>` the app's folder name
+as validated for publishing (`[a-z0-9][a-z0-9-]*`), always after a literal
+`--`. The official library's runs as the checkout's owner in the checkout,
+as every git command there does; an organisation repo's in its clone,
+through `org_git()` (its allowlist has exactly this form, below).
+`publish_set()` takes them as `changes(app)`; a `git log` that fails gives
+that app `changes: []` and a log line ("Couldn't read library/frms's change
+notes, so it's published without them."), and the publish goes on: change
+notes never fail one. A publish of the commit the shelf is already on reads
+them again, to compare the index; an index from before B3 has none, and the
+user system takes that as `[]`.
 
 ### When it runs
 
@@ -1345,8 +1379,12 @@ root, in the repo's own clone in the Admin's storage - never the server's
 checkout, never as its owner - and only one of these, each in its one shape
 (`org_git_allowed()`): `clone -- <its url> <its folder>`, `fetch origin`,
 `rev-parse --verify -q` of `HEAD^{commit}` or `@{upstream}^{commit}`, `log`
-between full commits, `merge --ff-only` and `reset --hard` of a full
-commit, and `cat-file` of a full commit's tree or an object by its full id.
+between full commits (or the newest of one), an app's change notes (B3:
+`log -n 10 --no-merges --format=%H%x09%cI%x09%s <full commit> -- <app>`,
+exactly that - another count or format, no `--`, two paths, or a path that
+isn't one app folder's name, and it's refused), `merge --ff-only` and
+`reset --hard` of a full commit, and `cat-file` of a full commit's tree or
+an object by its full id.
 No HTTPS fallback and no tokens. A network that blocks port 22 to GitHub is a
 later fix: GitHub's `ssh.github.com:443` route.
 
@@ -1488,7 +1526,8 @@ Tailscale sidecars and more), and the Admin must never touch any of them.
   clone under `/data/repos/<slug>/`, never the server's checkout; always
   with its pinned `GIT_SSH_COMMAND` (its key, GitHub's host keys,
   `StrictHostKeyChecking=yes`, `BatchMode=yes`); only `clone`, `fetch
-  origin`, `rev-parse`, `log`, `merge --ff-only`, `reset --hard` and
+  origin`, `rev-parse`, `log` (a span, the newest of a commit, or an app
+  folder's change notes, B3), `merge --ff-only`, `reset --hard` and
   `cat-file`, each in its one shape (`org_git()` refuses anything else,
   running nothing). `ssh-keygen` only ever in its one form, making a repo's
   key. A test holds every scenario to both, written out by hand.
