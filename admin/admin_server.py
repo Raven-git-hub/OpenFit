@@ -3,7 +3,10 @@ The OpenFit Admin's web server: one page and its JSON API, on port 8090.
 
 Every /api route but setup and login needs a logged-in session (401),
 and every request that isn't a GET must be JSON and carry the header
-X-OpenFit-Admin: 1 (403) - a cross-site page can't send either. Nothing
+X-OpenFit-Admin: 1 (403) - a cross-site page can't send either. The two
+downloads are GETs that change nothing, so a plain link fetches them: the
+session is all they need (its cookie is SameSite=Strict, so another site
+can't send it). Nothing
 runs on import: serve() reads the environment, publishes the app shelf if
 it's behind the code, prints the setup code if there's no password yet,
 starts the weekly check and the server.
@@ -12,7 +15,7 @@ starts the weekly check and the server.
 import os
 import sys
 
-from flask import Flask, jsonify, render_template, request, session
+from flask import Flask, Response, jsonify, render_template, request, session
 
 from admin_auth import Auth, AuthError, load_secret_key
 from admin_ops import Admin, OpError, Refused
@@ -135,6 +138,13 @@ def create_app(admin, auth, secret_key):
         except Refused as e:
             return _fail(e.message, e.status)
 
+    @app.post("/api/admin/revert")
+    def api_admin_revert():
+        try:
+            return jsonify(ok=True, op=admin.start_admin_revert()), 202
+        except Refused as e:
+            return _fail(e.message, e.status)
+
     @app.post("/api/users")
     def api_add_user():
         data = body()
@@ -183,6 +193,34 @@ def create_app(admin, auth, secret_key):
     @app.post("/api/removed/<name>/delete-data")
     def api_delete_data(name):
         return done(lambda: admin.delete_data(name, body().get("confirm")))
+
+    def download(start):
+        """A download, without the password: the archive streamed as an
+        attachment, or its refusal - or a 502 if it failed before its first
+        byte. A failure part-way cuts the download off."""
+        try:
+            filename, chunks = start()
+        except Refused as e:
+            return _fail(e.message, e.status)
+        except OpError as e:
+            return _fail(e.message, 502, detail=e.detail)
+        return Response(chunks, mimetype="application/gzip", headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff",
+        })
+
+    @app.get("/api/backups/<name>/download")
+    def api_download_backup(name):
+        return download(lambda: admin.download_backup(name))
+
+    @app.post("/api/backups/<name>/delete")
+    def api_delete_backup(name):
+        return done(lambda: admin.delete_backup(name))
+
+    @app.get("/api/removed/<name>/download")
+    def api_download_kept(name):
+        return download(lambda: admin.download_kept(name))
 
     @app.post("/api/library/publish")
     def api_publish_again():

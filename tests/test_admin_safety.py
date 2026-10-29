@@ -3,16 +3,20 @@ own compose files (the primary's exactly the repo's and the Admin's
 override, in that order); their labelled containers, where it execs only
 the health check and a setup link's `python auth_cli.py setup-link`; its own --rm
 helpers; the user system's image; the app shelf's volume, only ever
-looked at; a removed user's kept volume, only on a confirmed delete;
+looked at; a removed user's kept volume, only on a confirmed delete or
+read out, read-only, by the download helper in its one exact form;
 `docker info`, with one format, for the System panel; and its own
-project, only to update itself. Publishing the shelf runs no
-docker command at all. Argument lists, never a shell; git as the repo's
-owner, docker as root."""
+project, only to update itself or revert that - its image tagged only
+among openfit-admin:{local,prev,next}, its swap helper in an update's form
+or a revert's. Publishing the shelf runs no docker command at all.
+Argument lists, never a shell; git as the repo's owner, docker as root."""
 
 import glob
+import io
 import json
 import os
 import subprocess
+import tarfile
 
 import pytest
 from conftest import CONTAINERS, container_id, seed_users
@@ -54,6 +58,33 @@ def three_users(env):
 def apps_pending(env, message="New app"):
     env.repos.push({"library/caffeine/app.yaml": f"id: caffeine  # {message}\n"}, message)
     env.admin.check()
+
+
+def a_real_backup(env, name="20261027T120000Z-abcdef0-andy.tar.gz"):
+    """A backup that's a real archive (the fake's helper writes a stand-in)."""
+    with tarfile.open(env.backups / name, "w:gz") as tar:
+        for member, body in (("./tracker.db", b"db"), ("./auth.json", b"{}"), ("./.session_key", b"k" * 32)):
+            info = tarfile.TarInfo(member)
+            info.size = len(body)
+            tar.addfile(info, io.BytesIO(body))
+    return name
+
+
+def revert_the_admin(env, unhealthy=()):
+    """After an Admin update that worked: its finish, the offer read, then
+    Revert the Admin - the Admin's own steps, then its helper's revert.
+    The helper's outcome."""
+    assert update_the_admin(env) == "ok"
+    env.fake.helper = False
+    assert env.admin.current_op()["outcome"] == "ok"
+    env.clock.advance(60)
+    assert env.admin.status()["admin_revert"]["offered"] is True
+    env.admin.start_admin_revert()
+    env.admin.wait(10)
+    run = env.fake.commands()[-1]
+    env.fake.unhealthy = {container_id("openfit-admin", n) for n in unhealthy}
+    return admin_swap.revert(env.fake, env.repos.repo, str(env.data), run[-3], run[-2], run[-1], env.clock,
+                             env.clock.sleep)
 
 
 def update_the_admin(env, unhealthy=()):
@@ -261,6 +292,54 @@ def scenario_admin_rollback_fails(env):
     return {"admin": True}
 
 
+def scenario_admin_revert(env):
+    three_users(env)
+    pending(env)
+    assert revert_the_admin(env) == "ok"
+    return {"admin": True}
+
+
+def scenario_admin_revert_falls_back(env):
+    three_users(env)
+    pending(env)
+    assert revert_the_admin(env, unhealthy=[2]) == "rolled_back"
+    return {"admin": True}
+
+
+def scenario_admin_revert_fails(env):
+    pending(env)
+    assert revert_the_admin(env, unhealthy=[2, 3]) == "failed"
+    return {"admin": True}
+
+
+def scenario_download_backup(env):
+    three_users(env)
+    pending(env)
+    assert update(env)["outcome"] == "ok"
+    _filename, chunks = env.admin.download_backup(a_real_backup(env))
+    assert b"".join(chunks)
+    env.admin.status()
+
+
+def scenario_download_kept(env):
+    seed_users(env, ("sam", 8101, "running"), ("kim", 8102, "running"))
+    env.admin.remove_user("sam")
+    env.fake.stream_out = b"an archive"
+    _filename, chunks = env.admin.download_kept("sam")
+    assert b"".join(chunks) == b"an archive"
+    with pytest.raises(admin_ops.Refused):
+        env.admin.download_kept("kim")  # not removed
+    env.admin.status()
+
+
+def scenario_delete_backup(env):
+    three_users(env)
+    pending(env)
+    assert update(env)["outcome"] == "ok"
+    env.admin.delete_backup(env.admin.list_backups()[0]["name"])
+    assert env.admin.status()["undo"] is None
+
+
 def scenario_admin_build_fails(env):
     pending(env)
     env.fake.fail(lambda a: a[:4] == ["docker", "compose", "-p", "openfit-admin"] and "build" in a)
@@ -302,6 +381,12 @@ SCENARIOS = [
     scenario_admin_rollback,
     scenario_admin_rollback_fails,
     scenario_admin_build_fails,
+    scenario_admin_revert,
+    scenario_admin_revert_falls_back,
+    scenario_admin_revert_fails,
+    scenario_download_backup,
+    scenario_download_kept,
+    scenario_delete_backup,
 ]
 
 
@@ -316,11 +401,14 @@ def known_names(env):
 
 
 def admin_lane(env, call, out, labelled, images):
-    """One of the Admin's own commands, in an Admin update (`admin` allowed):
-    True once it's held to its exact shape, False if it isn't one. Its own
-    project only through admin_compose()'s two commands; its own container
-    found by its labels; the helper looked for by its name and started
-    exactly so; its image kept as :prev, and :prev put back as :local."""
+    """One of the Admin's own commands, in an Admin update or revert
+    (`admin` allowed): True once it's held to its exact shape, False if it
+    isn't one. Its own project only through admin_compose()'s two commands;
+    its own container found by its labels; the helper looked for by its
+    name and started exactly so, in an update's form or a revert's; the
+    image it runs kept as :prev or :next, :prev or :next put back as
+    :local, and :prev looked at - never a tag outside
+    openfit-admin:{local,prev,next}."""
     a, repo = call.args, env.repos.repo
     folder = os.path.join(repo, "admin")
     if a[1:4] == ["compose", "-p", "openfit-admin"]:
@@ -336,19 +424,29 @@ def admin_lane(env, call, out, labelled, images):
     if a[1] == "ps" and any(x.startswith("name=") for x in a):
         assert a[2:] == ["-a", "--no-trunc", "--filter", "name=^openfit-admin-swap$", "--format", "{{.ID}}"], a
         return True
-    if a[1] == "tag" and a[3:] == ["openfit-admin:prev"]:
-        assert (a[2], "openfit-admin") in images, a
+    if a[1] == "tag" and a[3:] in (["openfit-admin:prev"], ["openfit-admin:next"]):
+        assert len(a) == 4 and (a[2], "openfit-admin") in images, a
         return True
-    if a[1] == "tag" and a[2:] == ["openfit-admin:prev", "openfit-admin:local"]:
+    if a[1] == "tag" and a[2:] in (["openfit-admin:prev", "openfit-admin:local"],
+                                   ["openfit-admin:next", "openfit-admin:local"]):
         return True
     if a[1:3] == ["run", "-d"]:
-        assert a[2:-2] == [
+        common = [
             "-d", "--rm", "--name", "openfit-admin-swap", "--label", "openfit.admin.helper=true",
             "-v", "/var/run/docker.sock:/var/run/docker.sock", "-v", f"{repo}:{repo}",
             "-v", "openfit-admin_admin-data:/data", "-e", f"OPENFIT_REPO={repo}",
-            "openfit-admin:prev", "python", "/app/admin_swap.py",
-        ], a
-        assert admin_ops._FILE_STAMP.match(a[-2]) and admin_ops.SWAP_OP_ID.match(a[-1]), a
+        ]
+        assert a[2:2 + len(common)] == common, a
+        rest, stamp = a[2 + len(common):], admin_ops._FILE_STAMP
+        if rest[0] == "openfit-admin:prev":  # an update's: on the image it ran before
+            assert rest[1:3] == ["python", "/app/admin_swap.py"] and len(rest) == 5, a
+            assert stamp.match(rest[3]) and admin_ops.UPDATE_OP_ID.match(rest[4]), a
+        else:  # a revert's: on the image it runs now
+            assert rest[:4] == ["openfit-admin:local", "python", "/app/admin_swap.py", "revert"] and len(rest) == 7, a
+            assert stamp.match(rest[4]) and stamp.match(rest[5]) and admin_ops.REVERT_OP_ID.match(rest[6]), a
+        return True
+    if a[1:3] == ["image", "inspect"] and a[-1] == "openfit-admin:prev":
+        assert a == ["docker", "image", "inspect", "--format", "{{.Id}}", "openfit-admin:prev"], a
         return True
     if a[1] == "exec" and (a[2], "openfit-admin") in labelled:
         assert a[3:] == ["python", "-c", admin_ops.ADMIN_HEALTH_CODE], a
@@ -419,6 +517,13 @@ def assert_in_lane(env, allow):
         elif sub == "run":
             assert a[2:5] == ["--rm", "--label", "openfit.admin.helper=true"], a
             assert "openfit-admin:local" in a, a
+            if a[a.index("openfit-admin:local") + 1:][:3] == ["tar", "czf", "-"] or "--log-driver" in a:
+                # The download helper: a removed user's kept volume, read-only, exactly so.
+                kept = [n for n in names if a == admin_ops.kept_download_args(f"openfit-{n}_tracker-data")]
+                assert kept, a
+                assert a == ["docker", "run", "--rm", "--label", "openfit.admin.helper=true", "--log-driver", "none",
+                             "-v", f"openfit-{kept[0]}_tracker-data:/v:ro", "openfit-admin:local", "tar", "czf", "-",
+                             "-C", "/v", "--exclude=./auth.json", "--exclude=./.session_key", "."], a
         elif sub == "image":
             assert a == ["docker", "image", "inspect", "--format", "{{.Id}}", "openfit-tracker:latest"], a
         elif sub == "info":
@@ -451,6 +556,35 @@ def test_the_admin_stays_in_its_lane(admin_env, scenario):
     commands = admin_env.fake.commands()
     assert any(a[-2:] == ["down", "-v"] for a in commands) == bool(allow.get("down_v"))
     assert any(a[1:3] == ["volume", "rm"] for a in commands) == bool(allow.get("volume_rm"))
+    # And the download helper, where a scenario reads kept data out.
+    assert any("--log-driver" in a for a in commands) == (scenario is scenario_download_kept)
+
+
+ADMIN_TAGS = {"openfit-admin:local", "openfit-admin:prev", "openfit-admin:next"}
+
+
+@pytest.mark.parametrize("scenario", SCENARIOS, ids=lambda f: f.__name__.removeprefix("scenario_"))
+def test_the_admins_image_is_tagged_only_among_its_three_tags(admin_env, scenario):
+    """Every tag of the Admin's image lands on openfit-admin:{local,prev,next},
+    from the image it runs or another of the three, and only through
+    admin_tag(); :local only ever from :prev or :next."""
+    scenario(admin_env)
+    seen = 0
+    for call, frames in zip(admin_env.fake.calls, admin_env.fake.frames):
+        a = call.args
+        if a[:2] != ["docker", "tag"]:
+            continue
+        assert len(a) == 4, a
+        if a[3].startswith("openfit-tracker:"):
+            assert a[3] in ("openfit-tracker:prev", "openfit-tracker:latest") and "admin_tag" not in frames, a
+            continue
+        seen += 1
+        assert a[3] in ADMIN_TAGS and "admin_tag" in frames, (a, frames)
+        assert a[2] in ADMIN_TAGS or admin_ops._IMAGE_ID.match(a[2]), a
+        if a[3] == "openfit-admin:local":
+            assert a[2] in ("openfit-admin:prev", "openfit-admin:next"), a
+    # Every Admin update or revert tags it (so the check isn't vacuous); nothing else does.
+    assert bool(seen) == scenario.__name__.startswith("scenario_admin_")
 
 
 PUBLISHING = {"publish_set", "publish_official", "publish_at_startup", "publish_again", "_publish_step",

@@ -46,6 +46,7 @@ the files it writes stay the owner's and git never refuses the repo as
 someone else's. Docker runs as root, for the socket.
 """
 
+import contextlib
 import errno
 import hashlib
 import json
@@ -55,6 +56,7 @@ import secrets
 import stat
 import subprocess
 import shutil
+import tarfile
 import threading
 import time
 from datetime import datetime, timezone
@@ -82,9 +84,13 @@ USER_NAME = re.compile(r"[a-z0-9]{1,20}\Z")
 USER_VOLUME = re.compile(r"openfit-[a-z0-9]{1,20}_tracker-data\Z")
 _STAMP = re.compile(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ\Z")
 
-# An Admin update's settings snapshot, /data/self-update/<stamp>/, and its op.
+# An Admin update's or revert's settings snapshot, /data/self-update/<stamp>/,
+# and its op: the two the swap helper finishes.
 _FILE_STAMP = re.compile(r"\d{8}T\d{6}Z\Z")
-SWAP_OP_ID = re.compile(r"\d{8}T\d{6}Z-admin_update\Z")
+UPDATE_OP_ID = re.compile(r"\d{8}T\d{6}Z-admin_update\Z")
+REVERT_OP_ID = re.compile(r"\d{8}T\d{6}Z-admin_revert\Z")
+SWAP_OP_ID = re.compile(r"\d{8}T\d{6}Z-admin_(update|revert)\Z")
+SWAP_KINDS = ("admin_update", "admin_revert")
 
 # What docker and git hand back, checked before it goes into a command.
 _CONTAINER_ID = re.compile(r"[0-9a-f]{12,64}\Z")
@@ -116,12 +122,20 @@ ADMIN_SERVICE = "admin"
 # The Admin's own update. Its current image is kept as :prev, which is also
 # the image the helper runs; its settings files are copied into a snapshot
 # the helper can put back; the helper writes its log to the result file.
+# Its revert keeps the current image as :next, and its helper runs that
+# one, :local, the image the Admin runs now.
 ADMIN_PREV = "openfit-admin:prev"
+ADMIN_NEXT = "openfit-admin:next"
 SWAP_NAME = "openfit-admin-swap"
 SWAP_RESULT = "self_update_result.json"
 SWAP_OUTCOMES = ("ok", "rolled_back", "failed")
+SWAP_SCRIPT = ("python", "/app/admin_swap.py")
 SNAPSHOTS = "self-update"
 SNAPSHOT_FILES = ("admin.json", "users.json", "auth.json", "secret_key", "history.json", "last_check.json")
+# What a revert puts back from the update's snapshot: the settings and the
+# users. The password, its sessions' key, the activity and the last check
+# stay as they are now, so nobody is logged out and nothing is forgotten.
+REVERT_FILES = ("admin.json", "users.json")
 KEEP_SNAPSHOTS = 3
 # The only compose commands ever run on the Admin's own project.
 ADMIN_COMPOSE_ARGS = (
@@ -218,6 +232,16 @@ def health_code(port):
 HEALTH_CODE = health_code(80)
 ADMIN_HEALTH_CODE = health_code(ADMIN_PORT)
 
+# Downloads (S2) never carry a password: these two files, at the root of a
+# user's /data - its OpenFit password's hash and its sessions' key - are
+# left out of every archive the Admin hands over, as tar names them, with
+# and without the leading ./. Nothing else is. Whoever restores a download
+# sets a new password with a setup link. The backups kept on the server,
+# which Undo puts back, still hold everything.
+NO_PASSWORD = ("auth.json", ".session_key")
+NO_PASSWORD_MEMBERS = frozenset(n for name in NO_PASSWORD for n in (name, f"./{name}"))
+CHUNK = 64 * 1024
+
 # A setup link (U1): the user system's own CLI, run in a user's running
 # container, makes the token and prints one JSON line - the only command
 # the Admin execs there besides the health check. The token is handed
@@ -273,6 +297,45 @@ class Runner:
         except OSError as e:
             return 127, "", str(e)
         return done.returncode, done.stdout, done.stderr
+
+    @contextlib.contextmanager
+    def stream(self, args):
+        """Runs one command, an argument list and never through a shell, for
+        its output as it comes: a context manager yielding its stdout, a
+        binary file read in chunks. Leaving the block early - the browser
+        gone, or anything else raised - kills the command; leaving it at the
+        end of the output waits for it, and a non-zero exit (or a command
+        that can't start) is an OpError with its error output. No timeout:
+        the block's reader decides how long it runs."""
+        if not isinstance(args, list) or not all(isinstance(a, str) for a in args):
+            raise TypeError("a command is a list of strings")
+        try:
+            proc = subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                    stderr=subprocess.PIPE, env=dict(os.environ, GIT_TERMINAL_PROMPT="0"))
+        except OSError as e:
+            raise OpError(f"{args[0]} didn't start.", str(e))
+        err = []
+
+        def drain():  # its error output, read meanwhile so a full pipe never stalls it
+            err.append(proc.stderr.read(CHUNK))
+            while proc.stderr.read(CHUNK):
+                pass
+
+        reader = threading.Thread(target=drain, daemon=True)
+        reader.start()
+        finished = False
+        try:
+            yield proc.stdout
+            finished = True
+        finally:
+            if not finished:
+                proc.kill()
+            proc.stdout.close()
+            rc = proc.wait()
+            reader.join(10)
+        if rc != 0:
+            raise OpError(f"{args[0]} stopped with exit code {rc}.",
+                          _tail("", (err[0] if err else b"").decode("utf-8", "replace")))
 
 
 def _text(out):
@@ -927,6 +990,122 @@ def admin_compose(runner, repo, *args):
                       cwd=os.path.dirname(compose_file))
 
 
+def admin_tag(runner, source, target):
+    """docker tag on the Admin's own image, and only ever one of four: the
+    image the Admin runs now, by the id Docker gave for it, kept as :prev
+    (its update) or :next (its revert); and :prev or :next put back as
+    :local (the helper: a revert, a rollback, a revert's fallback). The one
+    way the Admin's image is tagged: :local never names anything else, and
+    nothing outside openfit-admin:{local,prev,next} is ever tagged."""
+    by_id = isinstance(source, str) and bool(_IMAGE_ID.match(source))
+    if not ((by_id and target in (ADMIN_PREV, ADMIN_NEXT))
+            or (source in (ADMIN_PREV, ADMIN_NEXT) and target == ADMIN_IMAGE)):
+        raise ValueError(f"a tag of the Admin's image that isn't one of its four: {source!r} -> {target!r}")
+    return runner.run(["docker", "tag", source, target])
+
+
+def swap_helper_args(repo, admin_volume, *command):
+    """The swap helper's `docker run`, exactly, in one of its two forms: an
+    update's, on :prev (the image the Admin ran before it, never the new
+    one) with `<stamp> <op id>`, or a revert's, on :local (the image the
+    Admin runs now, the one known to work, which holds the revert) with
+    `revert <update stamp> <fresh stamp> <op id>`. Anything else is a
+    ValueError."""
+    def stamp(x):
+        return isinstance(x, str) and bool(_FILE_STAMP.match(x))
+
+    def op_id(x, rule):
+        return isinstance(x, str) and bool(rule.match(x))
+
+    if len(command) == 2 and stamp(command[0]) and op_id(command[1], UPDATE_OP_ID):
+        image = ADMIN_PREV
+    elif (len(command) == 4 and command[0] == "revert" and stamp(command[1]) and stamp(command[2])
+          and command[1] != command[2] and op_id(command[3], REVERT_OP_ID)):
+        image = ADMIN_IMAGE
+    else:
+        raise ValueError(f"a swap helper that isn't an update's or a revert's: {command!r}")
+    return [
+        "docker", "run", "-d", "--rm", "--name", SWAP_NAME, "--label", HELPER_LABEL,
+        "-v", "/var/run/docker.sock:/var/run/docker.sock",
+        "-v", f"{repo}:{repo}",
+        "-v", f"{admin_volume}:/data",
+        "-e", f"OPENFIT_REPO={repo}",
+        image, *SWAP_SCRIPT, *command,
+    ]
+
+
+def kept_download_args(volume, image=ADMIN_IMAGE):
+    """The helper that reads a removed user's kept volume out as a tar.gz on
+    its stdout, exactly: mounted read-only, the password's two files left
+    out, and no container log - Docker would otherwise keep a copy of the
+    whole archive in the container's log while it runs."""
+    if not isinstance(volume, str) or not USER_VOLUME.match(volume):
+        raise ValueError(f"not a user's kept volume: {volume!r}")
+    return ["docker", "run", "--rm", "--label", HELPER_LABEL, "--log-driver", "none",
+            "-v", f"{volume}:/v:ro", image,
+            "tar", "czf", "-", "-C", "/v", *(f"--exclude=./{name}" for name in NO_PASSWORD), "."]
+
+
+def without_password(src):
+    """A backup's archive, read from the open binary file `src` (a tar.gz),
+    as a new tar.gz streamed in chunks: every member as it is - its header
+    and its bytes - but the NO_PASSWORD_MEMBERS, which are left out. Never
+    a temp file: a thread writes the new archive into a pipe this reads
+    from, so the memory it takes is a chunk, whatever the backup's size.
+    `src` is closed once it's read, or the reader gone. A backup that won't
+    read raises an OpError, after whatever was streamed before it."""
+    rfd, wfd = os.pipe()
+    failed = []
+
+    def write():
+        try:
+            with os.fdopen(wfd, "wb") as out, src, \
+                    tarfile.open(fileobj=src, mode="r|gz") as old, tarfile.open(fileobj=out, mode="w|gz") as new:
+                for member in old:
+                    if member.name in NO_PASSWORD_MEMBERS:
+                        continue
+                    new.addfile(member, old.extractfile(member) if member.isreg() else None)
+        except BrokenPipeError:
+            pass  # the reader went away
+        except (OSError, tarfile.TarError, EOFError, ValueError) as e:
+            failed.append(e)
+
+    writer = threading.Thread(target=write, name="admin-download", daemon=True)
+    writer.start()
+    with os.fdopen(rfd, "rb") as pipe:
+        while True:
+            chunk = pipe.read1(CHUNK)
+            if not chunk:
+                break
+            yield chunk
+    writer.join()
+    if failed:
+        raise OpError("The backup couldn't be read.", str(failed[0]))
+
+
+def primed(chunks):
+    """A download's chunks, its first already read: a failure before any
+    byte - a backup that won't open, a helper that won't start - is raised
+    here, while the reply can still say so; then a generator of them all."""
+    chunks = iter(chunks)
+    try:
+        first = next(chunks)
+    except StopIteration:
+        first = b""
+
+    def again():
+        try:
+            if first:
+                yield first
+            yield from chunks
+        finally:
+            close = getattr(chunks, "close", None)
+            if close:
+                close()
+
+    return again()
+
+
 def admin_command(repo):
     """The Admin's own update, by hand on the server."""
     return f"cd {repo} && docker compose -f admin/docker-compose.yml -p {ADMIN_PROJECT} up -d --build"
@@ -982,15 +1161,40 @@ def read_swap_result(data_dir):
     return raw
 
 
+def revert_summary(op, outcome):
+    """A revert's summary, once its helper is done: `outcome` ok, rolled_back
+    or failed. Its op's `new` is the version it went back to. Shared by the
+    Admin that finishes the op and the helper, when it finishes the op for
+    an Admin from before reverts (admin_swap.py)."""
+    target = op.get("new") if isinstance(op.get("new"), dict) else {}
+    short = target.get("short") if isinstance(target.get("short"), str) else None
+    if outcome == "ok":
+        return f"The Admin went back to {short}." if short else "The Admin went back to the version before its last update."
+    if outcome == "rolled_back":
+        return "The previous Admin didn't come up, so this version was put back, with its settings as they were."
+    return "The revert didn't finish. The log says where things stand, and what to run on the server."
+
+
+def registry_people(reg):
+    """Who a users.json holds, as a revert compares two: each added user by
+    name and when they were added, each removed one by name and when they
+    were removed."""
+    return ({(e["name"], e["created_at"]) for e in reg["users"]},
+            {(e["name"], e["removed_at"]) for e in reg["removed"]})
+
+
 class Admin:
     """The OpenFit users the Admin manages, and the operations on them.
 
     One operation at a time (`lock`): a check, an update, an undo, adding,
     starting, stopping, restarting or removing a user, making a setup link,
-    deleting a removed user's data, updating the apps, publishing them
-    again, or updating the Admin itself. An update, an undo, adding a user, updating the apps and
-    an Admin update run in a background thread, their progress in `op`;
-    the rest run in the caller's thread. An Admin update keeps the lock
+    deleting a removed user's data or a backup, starting a download,
+    updating the apps, publishing them again, or updating the Admin itself
+    or reverting it. An update, an undo, adding a user, updating the apps,
+    an Admin update and an Admin revert run in a background thread, their
+    progress in `op`; the rest run in the caller's thread (a download only
+    while it starts: once its file is open, or its helper under way, it
+    streams without the lock). An Admin update or revert keeps the lock
     after its thread has handed over to the helper, until the helper has
     gone (`_settle`).
 
@@ -1423,12 +1627,14 @@ class Admin:
                 self.say(op, f"There's already a container called {SWAP_NAME}: another Admin update's helper.")
                 return self._finish(op, "failed", "An Admin update is already under way. Nothing was changed.")
             self.say(op, "Keeping a copy of the version the Admin is on…")
-            rc, out, err = self.docker("tag", image_id, ADMIN_PREV)
+            rc, out, err = admin_tag(self.runner, image_id, ADMIN_PREV)
             if rc != 0:
                 raise OpError("Couldn't keep a copy of the Admin's version.", _tail(out, err))
             stamp = self._stamp()
             self.say(op, "Keeping a copy of the Admin's settings…")
             self._snapshot(stamp)
+            with self._op_lock:
+                op["snapshot"] = stamp  # what a revert of this update puts back
         except OpError as e:
             self.say(op, e.message, e.detail)
             return self._finish(op, "failed", "Nothing was changed.")
@@ -1440,15 +1646,7 @@ class Admin:
             return self._finish(op, "failed", "The build failed, so nothing was changed. The Admin kept running.")
 
         self.say(op, "Starting the helper that swaps the Admin over…")
-        rc, out, err = self.docker(
-            "run", "-d", "--rm", "--name", SWAP_NAME, "--label", HELPER_LABEL,
-            "-v", "/var/run/docker.sock:/var/run/docker.sock",
-            "-v", f"{self.repo}:{self.repo}",
-            "-v", f"{self.admin_volume}:/data",
-            "-e", f"OPENFIT_REPO={self.repo}",
-            ADMIN_PREV,
-            "python", "/app/admin_swap.py", stamp, op["id"],
-        )
+        rc, out, err = self.runner.run(swap_helper_args(self.repo, self.admin_volume, stamp, op["id"]))
         if rc != 0:
             self.say(op, "The helper didn't start.", _tail(out, err))
             return self._finish(op, "failed", "The helper didn't start, so the Admin wasn't swapped. It's still on its old version.")
@@ -1467,10 +1665,11 @@ class Admin:
 
     def _admin_base(self, before=None):
         """The commit the running Admin was built from, as far as the history
-        says, or None: the `new` of the last ok Admin update, else the `old`
-        of the first ok OpenFit update after it (the one that pulled the
-        Admin's new code), else - none since - None. Only the ops before the
-        one with id `before` count."""
+        says, or None: the `new` of the last ok Admin update or revert (a
+        revert's `new` the version it went back to), else the `old` of the
+        first ok OpenFit update after it (the one that pulled the Admin's
+        new code), else - none since - None. Only the ops before the one
+        with id `before` count."""
         base, since = None, None
         for o in self.history():
             if before is not None and o.get("id") == before:
@@ -1479,6 +1678,8 @@ class Admin:
                 continue
             if o.get("kind") == "admin_update" and _commit_of(o.get("new")):
                 base, since = _commit_of(o["new"]), None
+            elif o.get("kind") == "admin_revert":
+                base, since = _commit_of(o.get("new")), None
             elif o.get("kind") == "update" and since is None and _commit_of(o.get("old")):
                 since = _commit_of(o["old"])
         return since or base
@@ -1502,10 +1703,11 @@ class Admin:
         with self._op_lock:
             op["new"], op["old"] = new, old
 
-    def _snapshot(self, stamp):
+    def _snapshot(self, stamp, keep=()):
         """The Admin's settings files, each if present, copied into
         /data/self-update/<stamp>/ for the helper to put back; the newest
-        KEEP_SNAPSHOTS kept."""
+        KEEP_SNAPSHOTS kept, and the stamps in `keep` (the update a revert
+        puts back) whatever their age."""
         root = os.path.join(self.data_dir, SNAPSHOTS)
         folder = snapshot_dir(self.data_dir, stamp)
         try:
@@ -1518,13 +1720,14 @@ class Admin:
             stamps = sorted((n for n in os.listdir(root) if _FILE_STAMP.match(n)
                              and os.path.isdir(os.path.join(root, n))), reverse=True)
             for old in stamps[KEEP_SNAPSHOTS:]:
-                shutil.rmtree(os.path.join(root, old), ignore_errors=True)
+                if old not in keep:
+                    shutil.rmtree(os.path.join(root, old), ignore_errors=True)
         except OSError as e:
             raise OpError("Couldn't keep a copy of the Admin's settings.", str(e))
 
     def _pick_up_swap(self):
         """At startup, before _mark_interrupted: the helper's result, if an
-        Admin update left one. Finished, it finishes its op. Still "running",
+        Admin update or revert left one. Finished, it finishes its op. Still "running",
         the helper is at work - checking this very Admin answers - so the op
         stays running and the lock is held until the helper has gone; its
         id is returned, for _mark_interrupted to leave alone."""
@@ -1536,9 +1739,10 @@ class Admin:
             return None
         if result is None:
             return None
-        op = next((o for o in self.history() if o.get("id") == result["op_id"] and o.get("kind") == "admin_update"), None)
+        op = next((o for o in self.history() if o.get("id") == result["op_id"] and o.get("kind") in SWAP_KINDS), None)
         if op is None:
-            print(f"[admin] removing the update helper's result: no Admin update {result['op_id']} to finish", flush=True)
+            print(f"[admin] removing the update helper's result: no Admin update or revert {result['op_id']} to finish",
+                  flush=True)
             self._drop_swap_result()
             return None
         if result["outcome"] != "running":
@@ -1589,11 +1793,24 @@ class Admin:
         removed. With no outcome (no result, or one still "running" when
         the helper has gone), the helper stopped part-way: failed."""
         outcome = result["outcome"] if result else "running"
-        if op.get("new") is None:  # started by an Admin from before S1, which didn't note it
+        revert = op.get("kind") == "admin_revert"
+        if op.get("new") is None and not revert:  # started by an Admin from before S1, which didn't note it
             self._note_admin_range(op)
         with self._op_lock:
             op["log"].extend({"t": line["t"], "text": line["text"]} for line in (result or {}).get("lines", []))
-        if outcome == "ok":
+            if result and not op.get("snapshot"):  # started by an Admin from before S2, which didn't note it
+                op["snapshot"] = result["stamp"]
+        if revert and outcome in SWAP_OUTCOMES:
+            summary = revert_summary(op, outcome)
+        elif revert:
+            outcome = "failed"
+            if where == "handover":
+                self.say(op, "The helper stopped before it took the Admin back, so this is still the current version.")
+            else:
+                self.say(op, "The helper stopped before it finished, after the step above. This Admin is answering; "
+                         "if it isn't the version you expected, run this on the server: " + admin_command(self.repo))
+            summary = "The helper stopped part-way. The log says how far it got."
+        elif outcome == "ok":
             try:
                 summary = f"The Admin updated itself to {self.head()['short']}."
             except OpError:
@@ -1620,6 +1837,155 @@ class Admin:
             pass
         except OSError as e:
             print(f"[admin] couldn't remove {self.swap_result}: {e}", flush=True)
+
+    # --- reverting the Admin -----------------------------------------------
+
+    def _admin_images(self):
+        """(the Admin's own container, the image it runs, :prev's image) -
+        the images by the ids Docker gave, :prev's None if there's no such
+        image. An OpError if Docker can't say."""
+        me = find_admin(self.runner)
+        if me is None:
+            raise OpError("The Admin's own container wasn't found: it's started with "
+                          f"`docker compose -f admin/docker-compose.yml -p {ADMIN_PROJECT} up -d --build`.")
+        running = self.inspect(me["id"]).get("Image", "")
+        if not _IMAGE_ID.match(running):
+            raise OpError("Couldn't tell which image the Admin is running.", running)
+        rc, out, err = self.docker("image", "inspect", "--format", "{{.Id}}", ADMIN_PREV)
+        if rc != 0:
+            if "no such image" in f"{out}\n{err}".lower():
+                return me, running, None
+            raise OpError("Couldn't ask Docker about the Admin's previous version.", _tail(out, err))
+        prev = out.strip()
+        if not _IMAGE_ID.match(prev):
+            raise OpError("Docker gave back an image id the Admin doesn't recognise.", prev)
+        return me, running, prev
+
+    def revert_offer(self, busy=False, ops=None):
+        """Whether Revert the Admin is on offer: {offered, reason, update,
+        old} - `reason` the one line saying why not, `update` the Admin
+        update it would reverse (its id), `old` the version it goes back to
+        (short), where known.
+
+        Offered only when the newest Admin update worked; its settings
+        snapshot is still here; the users are the ones it had - nobody
+        added, removed or deleted since (the snapshot's users.json and the
+        live one hold the same people), so putting users.json back loses
+        no one; nothing is running (`busy`); the image it ran before,
+        openfit-admin:prev, is still on the server; and the Admin isn't
+        already running that image (reverted already). The Docker checks
+        last, so they run only when the rest hold."""
+        ops = self.history() if ops is None else ops
+        update = next((o for o in reversed(ops) if o.get("kind") == "admin_update"), None)
+        old = update.get("old") if update and isinstance(update.get("old"), dict) else {}
+        view = {"offered": False, "reason": None, "update": update.get("id") if update else None,
+                "old": old.get("short") if isinstance(old.get("short"), str) else None}
+
+        def no(reason):
+            return dict(view, reason=reason)
+
+        if update is None:
+            return no("The Admin hasn't updated itself here yet, so there's no earlier version to go back to.")
+        if update.get("outcome") != "ok":
+            return no("The Admin's last update didn't finish, so there's no earlier version to go back to.")
+        stamp = update.get("snapshot")
+        if not (isinstance(stamp, str) and _FILE_STAMP.match(stamp)
+                and os.path.isdir(snapshot_dir(self.data_dir, stamp))):
+            return no("The Admin's settings from before that update aren't kept any more, so it can't be reverted.")
+        try:
+            then = load_users(snapshot_dir(self.data_dir, stamp), self.settings)
+            now = self.registry()
+        except ValueError:
+            return no("The users kept with that update don't read, so it can't be reverted.")
+        if registry_people(then) != registry_people(now):
+            return no("Users were added or removed since that update, so it can't be reverted.")
+        if busy:
+            return no("Something else is running. Wait for it to finish, then try again.")
+        try:
+            _me, running, prev = self._admin_images()
+        except OpError:
+            return no("Couldn't ask Docker about the Admin's versions, so it can't be reverted now.")
+        if prev is None:
+            return no("The Admin's previous version isn't on the server any more, so it can't be reverted.")
+        if running == prev:
+            return no("The Admin is already on the version from before that update.")
+        return dict(view, offered=True)
+
+    def start_admin_revert(self):
+        """Revert the Admin: the lock and the offer here, so a refusal is a
+        409 with nothing done; the rest (an op with a log) in the
+        background."""
+        self._take_lock()
+        try:
+            ops = self.history()
+            offer = self.revert_offer(ops=ops)
+            if not offer["offered"]:
+                raise Refused(offer["reason"])
+            update = next(o for o in ops if o.get("id") == offer["update"])
+            op = self._begin("admin_revert", undoes=update["id"])
+            with self._op_lock:
+                # From the version the update brought, back to the one before it.
+                op.update(old=update.get("new"), new=update.get("old"))
+            self._save_op(op)
+        except BaseException:
+            self.lock.release()
+            raise
+        self._spawn(op, self._admin_revert, update["snapshot"])
+        return self.current_op()
+
+    def _admin_revert(self, op, update_stamp):
+        """Keep the image the Admin runs now as openfit-admin:next and its
+        settings as they are now, then hand the revert to the helper - which
+        runs that same image (openfit-admin:local), the one known to work,
+        never the one it goes back to - with the update's snapshot to put
+        back and the fresh one to fall back on."""
+        try:
+            self.say(op, "Finding the Admin's own container…")
+            me = find_admin(self.runner)
+            if me is None:
+                raise OpError("The Admin's own container wasn't found: it's started with "
+                              f"`docker compose -f admin/docker-compose.yml -p {ADMIN_PROJECT} up -d --build`.")
+            image_id = self.inspect(me["id"]).get("Image", "")
+            if not _IMAGE_ID.match(image_id):
+                raise OpError("Couldn't tell which image the Admin is running.", image_id)
+            if swap_helper(self.runner):
+                self.say(op, f"There's already a container called {SWAP_NAME}: another Admin update's or revert's "
+                         "helper.")
+                return self._finish(op, "failed", "An Admin update or revert is already under way. Nothing was changed.")
+            self.say(op, "Keeping a copy of the version the Admin is on, to come back to if the previous one "
+                     "doesn't start…")
+            rc, out, err = admin_tag(self.runner, image_id, ADMIN_NEXT)
+            if rc != 0:
+                raise OpError("Couldn't keep a copy of the Admin's version.", _tail(out, err))
+            fresh = self._stamp()
+            if fresh == update_stamp or os.path.lexists(snapshot_dir(self.data_dir, fresh)):
+                raise OpError("The Admin's settings were copied a moment ago. Try again in a few seconds.")
+            self.say(op, "Keeping a copy of the Admin's settings as they are now…")
+            self._snapshot(fresh, keep={update_stamp})
+            with self._op_lock:
+                op["snapshot"] = fresh
+        except OpError as e:
+            self.say(op, e.message, e.detail)
+            return self._finish(op, "failed", "Nothing was changed.")
+
+        self.say(op, "Starting the helper that takes the Admin back…")
+        rc, out, err = self.runner.run(swap_helper_args(self.repo, self.admin_volume, "revert", update_stamp, fresh,
+                                                        op["id"]))
+        if rc != 0:
+            self.say(op, "The helper didn't start.", _tail(out, err))
+            return self._finish(op, "failed", "The helper didn't start, so the Admin wasn't reverted. It's still on "
+                                              "its current version.")
+        self.say(op, "Handing over to the helper. The Admin restarts in a moment, and this page reconnects by itself.")
+        # As an update's: the log so far saved, and in the fresh snapshot too,
+        # which the helper puts back if the previous version doesn't come up.
+        self._save_op(op)
+        try:
+            shutil.copy2(self.history_path, os.path.join(snapshot_dir(self.data_dir, fresh), "history.json"))
+        except OSError as e:
+            print(f"[admin] admin_revert: couldn't add the log to the settings snapshot: {e}", flush=True)
+        with self._settle_lock:
+            self._awaiting = (op, "handover")
+        return HANDED_OVER
 
     # --- the app shelf ------------------------------------------------------
 
@@ -1909,6 +2275,113 @@ class Admin:
     def _helper(self, *args):
         """A container of the Admin's own image, labelled as its helper and --rm."""
         return self.docker("run", "--rm", "--label", HELPER_LABEL, *args)
+
+    def _backup_path(self, name):
+        """A backup in the Admin's own listing, by the name in a URL - its
+        path - else a 404."""
+        if not isinstance(name, str) or not BACKUP_NAME.match(name) or name not in {
+                b["name"] for b in self.list_backups()}:
+            raise Refused("There's no backup by that name.", 404)
+        return os.path.join(self.backups_dir, name)
+
+    def undo_relies_on(self, undo):
+        """The backups the Undo on offer (undo_candidate()'s update) would put
+        back: deleting any of them takes the Undo away."""
+        return {r.get("backup") for r in (self._op_users(undo) or []) if r.get("backup")} if undo else set()
+
+    def delete_backup(self, name):
+        """One backup deleted, under the lock: only a name in the Admin's own
+        listing (404), never while an operation runs (409)."""
+        self._backup_path(name)
+        self._take_lock()
+        try:
+            path = self._backup_path(name)
+            try:
+                os.remove(path)
+            except OSError as e:
+                raise OpError("The backup wasn't deleted.", str(e))
+            print(f"[admin] deleted the backup {name}", flush=True)
+        finally:
+            self.lock.release()
+
+    @staticmethod
+    def _download(filename, chunks):
+        """A download's chunks, and one line on the Admin's log once it has
+        all gone - the file's name, never anything in it. A failure part-way
+        is logged and raised, so the browser's download is cut off, never
+        finished short."""
+        try:
+            yield from chunks
+        except GeneratorExit:
+            print(f"[admin] The download of {filename} stopped: the browser went away.", flush=True)
+            raise
+        except OpError as e:
+            print(f"[admin] The download of {filename} stopped part-way: {e.message} {e.detail}".rstrip(), flush=True)
+            raise
+        print(f"[admin] Downloaded {filename} (no password)", flush=True)
+
+    def download_backup(self, name):
+        """A backup to download, without its password: (filename, chunks) -
+        `<backup>-nopassword.tar.gz`, a copy of its archive with auth.json
+        and .session_key left out (without_password()). Only a name in the
+        Admin's own listing (404); never while an operation runs (409), so
+        it never races an update's backup or prune. The backup is opened, and
+        its first chunk read, under the lock; the rest streams without it (an
+        open file is read whole, even if it's pruned meanwhile)."""
+        self._backup_path(name)
+        self._take_lock()
+        try:
+            path = self._backup_path(name)
+            try:
+                src = open(path, "rb")
+            except OSError as e:
+                raise OpError("The backup couldn't be read.", str(e))
+            filename = name.removesuffix(".tar.gz") + "-nopassword.tar.gz"
+            chunks = primed(self._download(filename, without_password(src)))
+        finally:
+            self.lock.release()
+        return filename, chunks
+
+    def download_kept(self, name):
+        """A removed user's kept data to download, without its password:
+        (filename, chunks) - `openfit-<name>-kept-<UTC date>-nopassword.tar.gz`,
+        streamed from a helper reading their volume read-only, the password's
+        two files left out (kept_download_args()). Only a name in users.json's
+        removed list (404), with no container left in their project and no
+        operation running (409). The helper is started, and its first chunk
+        read, under the lock; the rest streams without it."""
+        self._known(name, removed=True)
+        self._take_lock()
+        try:
+            entry = self._known(name, removed=True)
+            volume = entry["volume"]
+            if volume != user_volume(name) or not USER_VOLUME.match(volume):
+                raise OpError("Their kept data isn't stored under the name the Admin expects, so it can't be "
+                              "downloaded.")
+            rc, out, err = self.docker(
+                "ps", "-a", "--no-trunc", "--filter", f"label=com.docker.compose.project={user_project(name)}",
+                "--format", "{{.ID}}",
+            )
+            if rc != 0:
+                raise OpError(f"Couldn't ask Docker about {name}'s containers.", _tail(out, err))
+            if out.strip():
+                raise Refused(f"{name} has a container again, so their kept data can't be downloaded now.", 409)
+            day = datetime.fromtimestamp(self.clock(), timezone.utc).strftime("%Y-%m-%d")
+            filename = f"openfit-{name}-kept-{day}-nopassword.tar.gz"
+            args = kept_download_args(volume, self.admin_image)
+
+            def read():
+                with self.runner.stream(args) as stdout:
+                    while True:
+                        chunk = stdout.read1(CHUNK)
+                        if not chunk:
+                            break
+                        yield chunk
+
+            chunks = primed(self._download(filename, read()))
+        finally:
+            self.lock.release()
+        return filename, chunks
 
     # --- update -----------------------------------------------------------
 
@@ -2588,11 +3061,12 @@ class Admin:
     def _op_view(self, op, ops, folder=None):
         """An update's record for the Versions panel: when, its outcome, the
         versions it went between and the commits it brought (_range(), of
-        `folder` if given), and when it was undone, if it was."""
+        `folder` if given), and when it was undone - an Admin update,
+        reverted - if it was."""
         if not op:
             return None
         old, new = _commit_of(op.get("old")), _commit_of(op.get("new"))
-        undone = next((o.get("finished_at") for o in ops if o.get("kind") == "undo"
+        undone = next((o.get("finished_at") for o in ops if o.get("kind") in ("undo", "admin_revert")
                        and o.get("undoes") == op.get("id") and o.get("outcome") == "ok"), None)
         return {
             **{k: op.get(k) for k in ("id", "kind", "outcome", "summary", "started_at", "finished_at")},
@@ -2727,11 +3201,14 @@ class Admin:
         check = self.last_check()
         undo = self.undo_candidate(head) if head else None
         ops = self.history()
+        op = self.current_op()
         recent = [{k: o.get(k) for k in ("id", "kind", "outcome", "summary", "started_at", "finished_at")}
                   for o in reversed(ops[-5:])]
         backups = self.list_backups()
+        relied = self.undo_relies_on(undo)
         for b in backups:
             b["update"] = self._backup_update(b, ops)
+            b["undo_relies"] = b["name"] in relied
         au = self.admin_update(check)
         library = self.library_status(head)
         return {
@@ -2753,7 +3230,8 @@ class Admin:
             "library": library,
             "undo": {"id": undo["id"], "old": undo["old"], "new": undo["new"]} if undo else None,
             "admin_update": au,
-            "op": self.current_op(),
+            "admin_revert": self.revert_offer(busy=bool(op and op.get("outcome") == "running"), ops=ops),
+            "op": op,
             "history": recent,
             "backups": backups,
             # The portal's (S1): the left column's panels, and the Repo tab.
