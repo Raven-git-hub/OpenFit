@@ -1994,7 +1994,7 @@ own calls to its device API. Full direction:
   byte-identical, to `tests/fixtures/apps/`. Not `apps/`, so it can't be
   confused with `app/`. The distribution design it starts is
   `docs/architecture/distribution.md`.
-- `admin/` — the OpenFit Admin (A1, A2, A4, A5, A6, U1's setup links, S1's portal, S2, R1, `docs/architecture/admin.md`): its own
+- `admin/` — the OpenFit Admin (A1, A2, A4, A5, A6, U1's setup links, S1's portal, S2, R1, SU1, `docs/architecture/admin.md`): its own
   image (`python:3.12-slim`, git and `openssh-client`, the docker CLI and
   compose plugin copied from pinned images, `github_known_hosts` -
   GitHub's three host keys - at `/app/github_known_hosts`) and compose file (`docker compose -f
@@ -2021,7 +2021,7 @@ own calls to its device API. Full direction:
   --no-build`/`stop`, any user), Remove (`down`, never `-v`; the entry to
   `removed`) and Delete data (`docker volume rm`, only with `confirm` = the
   name and no container left). A check (`git fetch`, the changes grouped by
-  top folder — `app/`, `admin/`, `library/`, other — weekly and on a
+  top folder — `app/`, `admin/`, `library/`, other — on the schedule and on a
   button), Update OpenFit for everyone (clean tree, `:prev` tag, `merge
   --ff-only`, one build, every running user stopped, a `tar` backup each
   by a helper — one stamp, a set — each recreated as it was, `up -d` or
@@ -2268,7 +2268,7 @@ own calls to its device API. Full direction:
   published_at}` (A6: each source its own, `_published_at()` falling back
   to the index's), only its own entry, link and sets changed;
   `unpublish_source()` its link, then its sets, then its entry, never
-  `openfit`'s. Check now and the weekly check (`_check()` →
+  `openfit`'s. Check now and the schedule's check (`_check()` →
   `_check_repos()`, after the official part, even when that failed) `fetch
   origin` each connected repo (an empty clone cloned afresh) and read its
   `repo.yaml` at `@{upstream}` by `cat-file` (`_repo_yaml_at()`: a regular
@@ -2294,7 +2294,58 @@ own calls to its device API. Full direction:
   Add repository (the address, then `keyBlock()`: the public key, Copy key,
   `KEY_STEPS`, then Connect), each repo's row its GitHub link, state,
   Connect and Show key while pending, Remove behind `REMOVE_REPO`; the
-  Repos panel's row Update available → `openUpdate("repo", r)`. Modules prefixed
+  Repos panel's row Update available → `openUpdate("repo", r)`.
+  **The schedule** (SU1, `admin.md`'s Scheduled updates): the only thing
+  the Admin runs by itself (`CHECK_EVERY`, the check a week after the
+  last, gone). `/data/schedule.json` `{day: mon…sun, time: HH:MM, timezone:
+  an IANA name in timezones() (zoneinfo's, less localtime and Factory;
+  tzdata==2026.5 in admin/requirements.txt), mode: check | update}`,
+  `load_schedule()` strict (a bad file stops the Admin starting, naming
+  the key; none → `DEFAULT_SCHEDULE`, Sunday 03:00 UTC, check);
+  `/data/schedule_state.json` `{last_due, last_run: {id, due, started_at,
+  finished_at, mode, outcome, summary, steps: [{kind, op_id, outcome}],
+  dismissed}}`, `load_schedule_state()` as strict; both written by
+  `_write_atomic()` (mkstemp beside it, fsync, `os.replace`), every
+  read-modify-write under `_schedule_lock`. `next_run(schedule, after)` /
+  `last_due(schedule, now)` over `_instants()` (`zoneinfo`; a skipped time
+  the first minute after it that exists, a repeated one its first, by
+  `_wall_instant()`). `start_schedule()` (serve()'s) ticks at once, then
+  every `TICK_EVERY` 60s; `tick()`: no state → the latest due time noted
+  handled (nothing run, so the rollout never catches up); else a due time
+  after `last_due` takes the lock (busy → `"waiting"`, said once, retried
+  each minute), notes `last_due` at once (never twice, even across a
+  restart), and runs `_scheduled_run()` in the scheduler's own thread
+  under that one hold: the check (`_check()`), then — update mode, not
+  late (`LATE_AFTER` 3600s; late update → `missed_update`, check only) —
+  `update_apps` (only when `update_apps_offered`), each repo's
+  `repo_update` (registry order, `can_update`; one behind with a problem
+  said and passed over), `update`, then `admin_update` last, each through
+  `_step()`: the step's `_begin_x()` (`start_x()`'s refusals and op, split
+  out so both share them; `_start()` is the buttons' wrapper) then its body
+  via `_run()` — never a second thread. The first not ok stops the run
+  ("Stopped at <step>: <its summary> Earlier steps stayed done."), a
+  refused step `refused`, the run failed; nothing → "Up to date.". The
+  Admin's `_admin_update(op, handing_over=…)` calls back once its helper
+  has started, before its log is saved for the helper: the run finished
+  ok ("…then the Admin updated itself: see its own entry.", the step
+  `handed_over`) so a rollback's history has it done; the lock and op are
+  then `_settle()`'s. `_begin()` gives a same-second id `-2`, `-3`. An
+  op saved moves to the history's end, so the run follows its steps.
+  `_interrupted_run()` at startup marks a `running` last run
+  `interrupted`. `PUT /api/schedule` (`save_schedule()`: each field's
+  `SCHEDULE_PROBLEMS`, a `BadSchedule` 400 with `field`; a changed schedule
+  notes its own latest due time handled) → `{ok, next_run, next_run_local,
+  schedule}`; `POST /api/schedule/dismiss` (`dismiss_run()`, 409 with none
+  or while running); `status()["schedule"]` `{day, time, timezone, mode,
+  next_run, next_run_local, last_run}` (`schedule_view()`), the activity's
+  ops their `steps`. The page: the Schedule panel between Versions and
+  Repos (day, time, mode, the timezone select from `TIMEZONES`, rendered
+  into the script by `index()`; Save `api(…, "PUT")`; the mode note; "Next
+  run: …"), Versions' "Last scheduled run: <when>, <outcome>" linking to
+  its Activity entry (`showRun()`), a run's entry its steps as links, and
+  the red `#runNotice` (failed, rolled_back, interrupted, missed_update,
+  not dismissed) with Open and Dismiss; all text by `textContent`. Tests:
+  `tests/test_admin_schedule.py`. Modules prefixed
   `admin_` so they never clash with `app/`'s on the test path:
   `admin_ops.py` (every command through one `Runner`, argument lists, never a
   shell; git as the repo's owner; compose only `-p openfit` with the repo's
@@ -3408,11 +3459,17 @@ same PR:
   written (never the password, its sessions' key or the app update notes;
   the device logins only if kept), extracted by a helper into a new
   user's brand new volume; they start locked, Setup link in the result.
-  Restoring over a user, or merging, is out. Still to come, in order: L4;
+  Restoring over a user, or merging, is out. Then SU1 (`admin/` only; no
+  migration): scheduled updates — a weekly schedule (day, time, timezone,
+  Check only or Check and update) in place of the check a week after the
+  last; an update run installs the apps, OpenFit, then the Admin, each its
+  existing op and rollback, under one hold of the lock, stopping at the
+  first not ok; over an hour late, the check alone (`missed_update`); a
+  failed or missed run a red notice until dismissed. Still to come, in order: L4;
   non-GitHub hosts, HTTPS or token access, and per-user repo visibility
   are out; installing an app with folders
-  inside it is out; scheduled updates
-  parked; the `.local` names and
+  inside it is out; scheduled updates are SU1's weekly schedule (built:
+  a one-off scheduled update is out); the `.local` names and
   the proxy deferred (users on `IP:port`). L3 as agreed: `replaces` (declared in the library copy's
   `app.yaml`, run only at the new app's install, one transaction moving
   the old id's sources, session ids, custom metric keys, source roles

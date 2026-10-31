@@ -1,11 +1,11 @@
-# The OpenFit Admin (A1, A2, A4, A5, A6, U1, S1, S2, R1): updates behind buttons, users, its own update and revert, the app shelf, organisation repos, setup links, the Admin Portal, downloads and restore
+# The OpenFit Admin (A1, A2, A4, A5, A6, U1, S1, S2, R1, SU1): updates behind buttons, users, its own update and revert, the app shelf, organisation repos, setup links, the Admin Portal, downloads and restore, and scheduled updates
 
 _Built: A1, A2, A4, A5 and A6, slices of the Admin in
 [distribution.md](distribution.md), U1's setup links (the user login,
 [auth.md](auth.md)), S1, the Admin Portal: the page in OpenFit's style,
 S2: reverting the Admin, downloads without the password and deleting a
-backup, and R1: restoring a backup as a new user. The code is `admin/`;
-the tests are `tests/test_admin_*.py`._
+backup, R1: restoring a backup as a new user, and SU1: scheduled updates.
+The code is `admin/`; the tests are `tests/test_admin_*.py`._
 
 Until A1, OpenFit was updated by SSHing to the docker host and running:
 
@@ -38,7 +38,8 @@ system's Browse (B1) reads `/library` and installs from it.
 S1 is the **Admin Portal**: the page redrawn in OpenFit's own style (its
 tokens and components, copied, and held to OpenFit's by a test), as a
 header, a left column of four panels that are always there (system
-information, versions, repos and the activity log) and two tabs on the
+information, versions, repos and the activity log; SU1 adds a fifth, the
+schedule) and two tabs on the
 right (Users and Repo), with the few reads behind them: the server's
 name, Docker version, CPUs and memory, the free disk, each version's last
 update and what it brought, and the shelf's sources and apps, named by
@@ -66,6 +67,13 @@ a clean copy is written without the password (and, unless they're kept,
 the device logins), and the new user always starts **locked**: a setup
 link gives them a password.
 
+SU1 puts the updates on a **schedule**: once a week, at a day, time and
+timezone the admin picks, the Admin checks - or checks and then installs
+whatever's waiting, the apps, then OpenFit, then itself, each through the
+operation its button runs, with that operation's backups and rollback. It
+replaces the old automatic check, a week after the last: the schedule is
+now the only thing the Admin runs by itself.
+
 ## What the Admin doesn't do yet
 
 - Rename a user, or change a user's port after it's added. Users on
@@ -81,8 +89,12 @@ link gives them a password.
 - Fetch anything from GitHub but the repo itself and the organisation repos
   added: pull request numbers are read from merge commit titles and linked,
   never fetched.
-- Scheduled updates: an update runs now, or is found by the weekly check and
-  left for a person.
+- An update at a one-off time, or more than one schedule: there's one
+  weekly schedule (SU1), and every button runs now.
+- Tell anyone a scheduled run failed by email or anything else: the page's
+  red notice is all there is.
+- Wait for the users: a scheduled update runs at its time whatever they're
+  doing (the time is chosen for when they should be asleep).
 - The proxy and `.local` names. OpenFit and the Admin are reached at
   `IP:port`.
 - The backup file format (a zip with a passphrase,
@@ -366,12 +378,12 @@ A check is `git fetch origin main`, and nothing else: the working tree and
   `https://github.com/Raven-git-hub/OpenFit/pull/N` that your browser opens.
 
 The result is saved to `/data/last_check.json`. A check runs on **Check
-now**, and automatically from a background thread: it wakes hourly and checks
-once a week has passed since `checked_at`. An automatic check only fetches;
-it never updates. A check that fails (no network, say) keeps the last good
-result and records the error and its time, which the page shows. Because
-`checked_at` is the last *successful* check, a failing automatic check is
-retried hourly until one succeeds.
+now**, and at the schedule's time ([Scheduled updates](#scheduled-updates-su1),
+SU1) - nowhere else: the old automatic check, a week after `checked_at`, is
+gone. A check that fails (no network, say) keeps the last good result and
+records the error and its time, which the page shows; the schedule's run
+then ends failed, and the next check is the next Check now or the next
+week's run.
 
 ## Updating OpenFit, for everyone
 
@@ -746,8 +758,8 @@ out**, the only setting for now. **theme** steps auto, light, dark, as
 OpenFit's does: the same states and the same `data-theme` attribute, stored
 in this browser as `openfit-admin-theme`.
 
-**Two columns** under it: on the left, about 40%, four panels that are always
-there; on the right, about 60%, a tab strip with **Users** (the default) and
+**Two columns** under it: on the left, about 40%, five panels that are always
+there (and over them, a failed or missed scheduled run's red notice); on the right, about 60%, a tab strip with **Users** (the default) and
 **Repo**, the choice stored in this browser as `openfit-admin-tab`. Those two
 keys are all the page stores. Each panel folds with the button after its
 title, for the page's life. Lists sit in scroll boxes whose rows have a
@@ -781,8 +793,16 @@ The left column:
   pill, shown for the User when Update OpenFit is offered and for the Admin
   when `admin_update()` says one is available; it opens the update popup.
   A row's name opens its **last update** popup. Under the rows: when the
-  last check ran (and whether GitHub has new commits), **Check now**, and a
-  failed check's error.
+  last check ran (and whether GitHub has new commits), **Check now**,
+  "Last scheduled run: <date time>, <outcome>" (SU1; its words a link that
+  opens the run's entry in the Activity log), and a failed check's error.
+- **Schedule** (SU1): Day, Time (`HH:MM`), Mode (Check only or Check and
+  update) and Timezone - every name `zoneinfo` knows, sorted, a select
+  you type into to find one - then **Save** and "Next run: Sun 2 Nov, 03:00
+  (Asia/Hong_Kong)." With Check and update chosen, a note: "Installs waiting
+  updates in this order: apps, OpenFit, then the Admin. Each rolls back on
+  failure. Runs whether or not anyone is using OpenFit." While you're
+  editing it, a repaint leaves the fields alone; Save sends all four.
 - **Repos**: a row for each source on the shelf and each organisation repo
   (A6), OpenFit first, then the rest by name, three rows high: its name
   (from `repo.yaml`; `owner/repo` for a repo not published yet), its
@@ -898,7 +918,8 @@ rollout's own) is given them when the new Admin finishes it.
   from the shelf's `index.json`; `current`, `error` and `update` (`"apps"`,
   `"openfit"` or null) OpenFit's alone.
 - `activity`: every operation in the history, newest first, each `{id,
-  kind, outcome, summary, started_at, finished_at, log, user}`.
+  kind, outcome, summary, started_at, finished_at, log, user, repo,
+  steps}` (`steps` a scheduled run's, SU1).
 - each of `backups` gains `update`: `{id, old, new, started_at, outcome}` of
   the update that took it, or null once that's gone from the history.
 
@@ -909,6 +930,9 @@ S2 adds:
   reverse (its id) and the version it goes back to (short), where known.
 - each of `backups` gains `undo_relies` (above).
 - a `last` Admin update's `undone_at` is when a revert of it worked.
+
+SU1 adds `schedule`: `{day, time, timezone, mode, next_run, next_run_local,
+last_run}` (below).
 
 Every state-changing call still goes through the page's one `fetch` wrapper
 (the `X-OpenFit-Admin` header) and needs a session.
@@ -1344,7 +1368,7 @@ user system takes that as `[]`.
 
 ### When it runs
 
-1. **The Admin's startup**, before the weekly check and the server start: if
+1. **The Admin's startup**, before the schedule and the server start: if
    `index.json` is missing, or its `openfit` commit isn't `HEAD`. So the shelf
    appears by itself on first rollout. A failure is logged and shown on the
    page; it never stops the Admin starting.
@@ -1608,7 +1632,7 @@ every repo's apps again.
 
 ### Checks and updates
 
-**Check now**, and the weekly check, also run `git fetch origin` for each
+**Check now**, and the schedule's check (SU1), also run `git fetch origin` for each
 connected repo, and read its `repo.yaml` again at the commit fetched
 (`git cat-file`: a regular file at the top only, never a link, at most 256
 KB). A repo is **behind** when `origin`'s head (its upstream) isn't the
@@ -1647,6 +1671,137 @@ other source's exactly as it was), then `/data/repos/<slug>/` deleted - the
 clone and the key - then its `repos.json` entry. Installed copies in users'
 `/data/apps` aren't touched: the Admin never reaches into a user's volume.
 A step that fails stops there, with the repo still listed, to remove again.
+
+## Scheduled updates (SU1)
+
+Once a week, at a day, time and timezone you pick, the Admin runs by
+itself, in one of two modes:
+
+- **Check only**: a check, as Check now runs it (the organisation repos
+  fetched too), and nothing else. What it finds waits for you, as before.
+- **Check and update**: the check, then whatever is waiting, installed
+  through the operation its button runs, in this order:
+  1. **The apps**: the official library's **Update apps**, but only when
+     Update apps would be offered (an app change with OpenFit's own, the
+     User system or the Admin, comes with Update OpenFit instead), then each
+     organisation repo's update, in the order the repos were added.
+  2. **OpenFit**: **Update OpenFit**, if it's offered - its backups, every
+     user moved together and its rollback, unchanged.
+  3. **The Admin**, last: **Update the Admin**, if it's offered (the code
+     is pulled - the step before pulls it - and the running Admin is behind).
+
+**Why that order.** The apps go first because they're the smallest change:
+a publish, no rebuild and no restarts, and each source's own. OpenFit next,
+because it pulls the code the Admin's update builds - Update the Admin is
+only ever offered once Update OpenFit has pulled it. The Admin goes last
+because its update hands over to the helper and this Admin goes: nothing
+after it could run.
+
+**It runs whatever the users are doing.** Nobody is asked and nothing waits
+for them: pick a time when they should be asleep. Each step is the existing
+operation, with its own rollback.
+
+**A run** is one operation in the history, `scheduled_run`. It takes the
+lock at its check and holds it to its last step, so nothing else starts
+between its steps (a button meanwhile gets 409, as during any operation).
+Each step is still its own operation - `update_apps`, `repo_update`,
+`update`, `admin_update` - with its own log, begun and run in the run's own
+thread exactly as its button begins it (its refusals first) and its
+background thread runs it: the same code, shared, never a second copy. The
+run's log says each step as it starts and how it ended; its `steps` list
+them, `{kind, op_id, outcome}`, the check first (`op_id` null). Ops begun in
+the same second (two repos' updates) get ids of their own: `-2`, `-3`.
+
+- A step with nothing to do is skipped: "Nothing waiting for apps.",
+  "Nothing waiting for OpenFit.", "Nothing waiting for the Admin." A run
+  with nothing at all to install ends ok: "Up to date."
+- The first step that doesn't end ok - `failed`, `rolled_back`,
+  `interrupted` - stops the run, and its outcome is the run's: "Stopped at
+  Update OpenFit: Updated, didn't come up, rolled back. Earlier steps stayed
+  done." What earlier steps installed stays installed (a repo's apps stay
+  published). A step its button would refuse (the server's copy has local
+  changes, say) stops it too: it's `refused` in the steps, and the run fails
+  ("Stopped at Update OpenFit: it didn't start: …").
+- A check that fails ends the run failed: "Stopped at the check: …
+  Nothing was installed."
+- A repo with new commits its update can't apply (its `repo.yaml`
+  refused) is said, and passed over, as its button wouldn't offer it.
+- **The Admin's step** hands over to the helper as Update the Admin does.
+  Just before the hand-over - the helper started, its log not yet saved for
+  it - the run is finished ok: "Updated OpenFit, then the Admin updated
+  itself: see its own entry." So the history a rollback puts back already
+  has the run done, never left running. The `admin_update` operation then
+  finishes as in A4, under the Admin that comes up; its step is
+  `handed_over` in the run's `steps`. The lock and the page's reconnect are
+  the hand-over's, as from the button.
+
+Undo is unchanged: the OpenFit update a run made is the last update, and
+Undo is offered for it as for any.
+
+### When a run is due
+
+The next run is the schedule's next day and time in its timezone, at or
+after now (`zoneinfo`, so daylight saving is right): a time the clocks skip
+that day (they go forward over it) runs at the first minute after it that
+exists; a time they pass twice (they go back through it) runs at the first.
+A thread wakes every minute (`tick()`); once the clock reaches the due time,
+the run starts. The first tick after SU1 arrives notes the latest due time
+as handled and runs nothing, so the rollout never sets off a catch-up; so
+does saving a schedule that differs from the saved one (its first run is its
+first due time from then on).
+
+**Missed runs** - the Admin was down at the due time, or an operation held
+the lock:
+
+- A run that starts within 60 minutes of its due time runs as normal.
+- Later than that: **Check only** runs the check as soon as it can (at
+  startup, or when the lock frees); **Check and update** runs only the
+  check, and records the run as `missed_update`: "The update was skipped:
+  the Admin wasn't running at 03:00. Next week's run will catch up." (or
+  "something else was running", when it was the lock).
+- At most one run per due time, ever: the due time is handled when its run
+  starts, so a restart mid-run doesn't run it again, and weeks missed catch
+  up once, for the latest.
+
+A run waiting on the lock is said once in the Admin's log, then tried each
+minute until the lock frees.
+
+### The schedule and its state
+
+`/data/schedule.json`: `{"day": "sun", "time": "03:00", "timezone":
+"Asia/Hong_Kong", "mode": "check"}` - `day` `mon` to `sun`, `time` `HH:MM`
+on the 24-hour clock, `timezone` an IANA name (`zoneinfo`'s, less the
+system's `localtime` and the `Factory` placeholder; the image has `tzdata`,
+pinned as `app/`'s), `mode` `check` or `update`. No file is the default,
+Sunday 03:00 UTC, check only. It's checked strictly on every read, as
+`users.json` is: a bad file stops the Admin starting, naming the key. **`PUT
+/api/schedule`** `{day, time, timezone, mode}` (a session and the
+`X-OpenFit-Admin` header, as every write) checks each field - a 400 with
+the field's problem, and `field` naming it - writes the file whole (a file
+of its own, flushed, then renamed over it) and answers with the next run:
+`{ok, next_run, next_run_local, schedule}`. It isn't under the lock: a run
+going meanwhile keeps the schedule it started with.
+
+`/data/schedule_state.json`, the Admin's own, checked as strictly:
+`{last_due, last_run}` - `last_due` the due time last handled (UTC), and
+`last_run` `{id, due, started_at, finished_at, mode, outcome, summary,
+steps: [{kind, op_id, outcome}], dismissed}`, or null before the first run.
+`outcome` is the run's - `running`, `ok`, `failed`, `rolled_back`,
+`interrupted` or `missed_update`. A run the Admin was stopped in the middle
+of is `interrupted` at the next startup.
+
+`GET /api/status`'s `schedule`: `{day, time, timezone, mode, next_run,
+next_run_local, last_run}` - `next_run` UTC and `next_run_local` as the
+schedule's own clocks show it ("Sun 2 Nov, 03:00").
+
+### The notice
+
+A last run that's `failed`, `rolled_back`, `interrupted` or
+`missed_update`, and not dismissed, puts a red notice at the top of the left
+column: what happened ("The scheduled update was rolled back"), when, and
+the run's summary, with **Open in the Activity log** and **Dismiss**
+(**`POST /api/schedule/dismiss`**, which sets `dismissed`; 409 with no run,
+or while one is going). The next run's notice is its own again.
 
 ## The safety rules
 
@@ -1766,12 +1921,23 @@ compose file, because the backup helpers mount it by name), at `/data`:
 | `repos/<slug>/` | A repo's deploy key pair (`deploy_key`, 0600, and `deploy_key.pub`) and its clone (`repo/`); the folder 0700, deleted by Remove. |
 | `repo_checks.json` | What the last check, connect or update found of each repo: GitHub's head, the commits since, a `repo.yaml` problem, a failed fetch. |
 | `restore-uploads/` | A restore's own files (R1), 0700: an upload, a removed user's kept data packed, the database's copy checked and the clean archive the helper extracts. Deleted as each restore ends, and at startup. |
+| `schedule.json` | The schedule (SU1): `{day, time, timezone, mode}`; none is Sunday 03:00 UTC, check only. |
+| `schedule_state.json` | The schedule's runs: the due time last handled, and the last run - its outcome, summary, steps and whether its notice was dismissed. |
 
 Each user's own data is their volume: `openfit_tracker-data` for the primary,
 `openfit-<name>_tracker-data` for an added user. The app shelf is the volume
 `openfit-library` (A5), the Admin's `/library` and every user's, read-only.
 
 ## Try it
+
+For SU1, on the server:
+
+1. Check now, Update OpenFit, then Update the Admin.
+2. In the Schedule panel, set your timezone (`Asia/Hong_Kong`), pick the
+   day and time, choose a mode, and **Save**: "Next run: …" says when.
+3. To watch one run, set it a few minutes ahead, Check only, and wait: the
+   Activity log shows "Scheduled run", Versions "Last scheduled run: …,
+   done". Then set the time you want.
 
 For R1, on the server, once Update OpenFit and then Update the Admin have
 run:

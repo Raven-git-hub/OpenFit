@@ -217,8 +217,15 @@ the order was changed so the Admin comes first, in A-slices:
    reinstalled fresh from Browse, so there's nothing to move.
 6. Organisation repos (A6).
 
-Parked: scheduled updates (an update at a time the admin picks), and B2
-(`replaces` moving an older app's data, until one needs moving).
+Then **SU1, built:** scheduled updates (`docs/architecture/admin.md`). A
+weekly schedule in the Admin (a day, time and timezone), in place of the
+check a week after the last: Check only, or Check and update - the apps,
+then OpenFit, then the Admin, each through its existing operation and
+rollback, the first that fails stopping the run; a run over an hour late
+only checks, and a failed or missed run puts up a red notice. The one-off
+"Schedule" button once planned is dropped in favour of it.
+
+Parked: B2 (`replaces` moving an older app's data, until one needs moving).
 
 The `.local` names and the proxy are deferred: users are on `IP:port` for now.
 
