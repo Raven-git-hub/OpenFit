@@ -330,7 +330,27 @@ ul.commits .mono{color:var(--muted);margin-right:8px;}
 a{color:var(--accent);}
 pre.cmd{margin:6px 0 0;padding:10px 12px;background:var(--inset);border:1px solid var(--border);border-radius:var(--radius-sm);
   font-family:var(--font-mono);font-size:12px;white-space:pre-wrap;word-break:break-all;}
-.addrow{display:grid;grid-template-columns:minmax(0,2fr) minmax(0,1fr) auto;gap:12px;align-items:end;}
+.addrow{display:grid;grid-template-columns:minmax(0,3fr) minmax(0,2fr) minmax(0,4fr) auto;gap:12px;align-items:end;}
+/* restoring a backup as a new user (R1): Add user's file control, a
+   popup's Restore as a new user form, and the tick box both have */
+.input.file{padding:6px;font-size:12.5px;color:var(--ink-2);cursor:pointer;}
+.input.file::file-selector-button{
+  margin-right:8px;padding:4px 9px;border:1px solid var(--border-strong);border-radius:var(--radius-sm);
+  background:var(--surface);color:var(--ink);font:600 12.5px var(--font-body);cursor:pointer;
+}
+.input.file:hover::file-selector-button{border-color:var(--accent);color:var(--accent);}
+.check{display:inline-flex;align-items:center;gap:7px;font-size:13px;font-weight:600;color:var(--ink-2);cursor:pointer;}
+.check input{margin:0;accent-color:var(--accent);cursor:pointer;}
+.keep-row{display:flex;align-items:center;gap:12px;margin-top:12px;}
+.keep-row[hidden]{display:none;}
+.keep-row .lead{margin-right:auto;}
+.restore-panel{border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--inset);padding:14px;margin-top:14px;}
+.restore-panel[hidden]{display:none;}
+.restore-panel h5{font-family:var(--font-display);font-weight:700;font-size:14px;margin:0 0 4px;}
+.restore-panel > p{font-size:13px;color:var(--ink-2);margin:0 0 12px;}
+.restore-panel .pair{display:grid;grid-template-columns:minmax(0,2fr) minmax(0,1fr);gap:12px;}
+.restore-panel .install-warn{margin-top:12px;}
+.restore-panel .install-warn[hidden]{display:none;}
 .foot-line{display:flex;align-items:center;gap:10px;margin-top:12px;font-size:12.5px;color:var(--muted);}
 .foot-line .lead{margin-right:auto;}
 /* a download, without the password: its warning, then the link itself, as a button */
@@ -462,9 +482,14 @@ ol.steps li{padding:2px 0;}
             <form id="addForm" class="addrow">
               <div class="field"><label for="addName">Name</label><input class="input" id="addName" autocomplete="off" maxlength="20" required></div>
               <div class="field"><label for="addPort">Port</label><input class="input" id="addPort" type="number" min="1024" max="65535" required></div>
+              <div class="field"><label for="addFile">Restore from a file</label><input class="input file" id="addFile" type="file" accept=".gz,.tgz,application/gzip"></div>
               <button class="btn primary" type="submit" id="addBtn">Add user</button>
             </form>
-            <p class="hint foot">1 to 20 lowercase letters and digits. Their own OpenFit on that port, with its own storage, on everyone's version.</p>
+            <div class="keep-row" id="addKeepRow" hidden>
+              <label class="check lead"><input type="checkbox" id="addKeep" checked> Keep device logins</label>
+              <button class="btn sm" type="button" id="addClear">Clear file</button>
+            </div>
+            <p class="hint foot" id="addHint">1 to 20 lowercase letters and digits. Their own OpenFit on that port, with its own storage, on everyone's version.</p>
             <div class="form-msg" id="addMsg"></div>
           </div>
         </section>
@@ -532,7 +557,8 @@ const OUTCOMES = {
   rolled_back: ["Rolled back", "wait"], interrupted: ["Interrupted", "bad"],
 };
 const KINDS = {
-  update: "Update OpenFit", undo: "Undo last update", add_user: "Add user", admin_update: "Update the Admin",
+  update: "Update OpenFit", undo: "Undo last update", add_user: "Add user", restore_user: "Restore user",
+  admin_update: "Update the Admin",
   update_apps: "Update apps", admin_revert: "Revert the Admin", repo_connect: "Connect", repo_update: "Update",
 };
 // The Admin's own operations: while one runs, a request that fails is the Admin restarting.
@@ -572,6 +598,13 @@ const PRIMARY_NOTE = "This is the server's main OpenFit: new versions are built 
 // Said before every download: what's in the file, and what isn't.
 const NO_PASSWORD = "This file holds everything in that OpenFit except its password: its data, apps and device logins. "
   + "Keep it somewhere safe. Whoever restores it sets a new password with a setup link.";
+// Restoring a backup as a new user (R1): the hints, and the cap the server holds an upload to.
+const ADD_HINT = "1 to 20 lowercase letters and digits. Their own OpenFit on that port, with its own storage, on everyone's version.";
+const RESTORE_HINT = "Restores a backup downloaded from an OpenFit Admin as this new user: its data, apps and settings. "
+  + "They start locked: once it's done, give them a password with Setup link.";
+const KEEP_HINT = "Keep device logins: their devices sync as before. Untick to leave them out: they remove and re-add each device.";
+const UPLOAD_MAX = 2 * 1024 * 1024 * 1024;
+const TOO_LARGE = "That file is too large: a backup to restore is at most 2 GB.";
 const ICONS = {
   fold: '<svg viewBox="0 0 10 10" aria-hidden="true"><path d="M3 1.8 8.4 5 3 8.2z"/></svg>',
   warn: '<svg class="warn-ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1.2 15.4 14H.6zM7.2 6v4.2h1.6V6zm0 5.4V13h1.6v-1.6z"/></svg>',
@@ -583,6 +616,7 @@ let polling = null;
 let selfUpdating = false;  // an Admin update or revert is running: a request that fails is the Admin restarting
 let restarting = null;  // polls GET / while it does, and reloads once it answers
 let portTouched = false;  // Add user's port typed in: the suggestion stops replacing it
+let restoreFile = null;  // the backup chosen in Add user: it restores that file as the new user
 let removing = null;  // the user whose Remove asks to be sure
 let watching = null;  // the running op's id, opened in the list once it's done
 let removingRepo = null;  // the repo whose Remove asks to be sure
@@ -735,13 +769,19 @@ function emptyBox(box, text) {
 
 // --- requests -----------------------------------------------------------
 
-// Every request carries the header the server checks, and a body as JSON.
+// Every request carries the header the server checks, and a body as JSON -
+// or, for a restore's upload, a FormData, sent as multipart (the browser
+// sets that Content-Type itself, with its boundary).
 async function api(path, data) {
   const opts = { credentials: "same-origin", headers: { "X-OpenFit-Admin": "1" } };
   if (data !== undefined) {
     opts.method = "POST";
-    opts.headers["Content-Type"] = "application/json";
-    opts.body = JSON.stringify(data);
+    if (typeof FormData !== "undefined" && data instanceof FormData) {
+      opts.body = data;
+    } else {
+      opts.headers["Content-Type"] = "application/json";
+      opts.body = JSON.stringify(data);
+    }
   }
   let res, body = {};
   try {
@@ -1205,7 +1245,7 @@ async function publishAgain(btn) {
 }
 
 function opWhat(op) {
-  return (KINDS[op.kind] || op.kind) + (op.kind === "add_user" && op.user ? " " + op.user.name : "")
+  return (KINDS[op.kind] || op.kind) + ((op.kind === "add_user" || op.kind === "restore_user") && op.user ? " " + op.user.name : "")
     + (op.repo ? ` ${op.repo.owner}/${op.repo.repo}` : "");
 }
 
@@ -1246,10 +1286,26 @@ function paintActivity(s) {
     rows.append(expandable(open.activity, op.id, head, () => {
       const panel = el("div", null, "dpanel one");
       if (op.summary) panel.append(el("p", op.summary, "dnote"));
+      const restored = restoredUser(op);
+      if (restored) {
+        // A restored user starts locked: their setup link, straight from the result.
+        const acts = el("div", null, "acts");
+        acts.style.marginTop = "10px";
+        acts.append(button("Setup link", "btn sm primary", (b) => makeLink(restored.name, b),
+          busy() || restored.state !== "running"));
+        panel.append(acts);
+      }
       panel.append(logLines(el("div", null, "log"), op.log));
       return panel;
     }));
   }
+}
+
+// The user a restore made, if it worked and they're still a user: the one
+// its result offers a Setup link for.
+function restoredUser(op) {
+  if (op.kind !== "restore_user" || op.outcome !== "ok" || !op.user || !S) return null;
+  return S.users.find((u) => u.name === op.user.name) || null;
 }
 
 // --- the Users tab ----------------------------------------------------------
@@ -1351,6 +1407,84 @@ function closeLink() {
 function paintAdd(s, isBusy) {
   if (!portTouched) $("addPort").value = s.next_port === null ? "" : s.next_port;
   $("addBtn").disabled = isBusy;
+  paintRestoreFile();
+}
+
+// A file chosen in Add user turns it into Restore user, with Keep device
+// logins (ticked to start with) and Clear file beside it.
+function paintRestoreFile() {
+  $("addBtn").textContent = restoreFile ? "Restore user" : "Add user";
+  $("addKeepRow").hidden = !restoreFile;
+  $("addHint").textContent = restoreFile ? RESTORE_HINT + " " + KEEP_HINT : ADD_HINT;
+}
+
+function clearRestoreFile() {
+  restoreFile = null;
+  $("addFile").value = "";
+  $("addKeep").checked = true;
+  paintRestoreFile();
+}
+
+// The warning before a restore keeps the device logins of someone who is
+// still a user here: the same device accounts, synced by two OpenFits.
+function deviceWarning(original) {
+  return `${original} is still a user here. Two OpenFits syncing the same Garmin or Google account can sign one `
+    + `of them out. Untick Keep device logins, or remove ${original} first.`;
+}
+
+// Restore as a new user, in a backup's or kept data's popup: its small form
+// (Name, Port - the suggestion prefilled - and Keep device logins, ticked),
+// the warning when the logins kept are a current user's, then Restore,
+// which starts it. `source` is {backup: name} or {removed: name};
+// `original` the user it was.
+function restoreBlock(source, original, extra) {
+  const panel = el("div", null, "restore-panel");
+  panel.hidden = true;
+  panel.dataset.f = "restore";
+  const ids = { name: "restoreName", port: "restorePort", keep: "restoreKeep" };
+  const pair = el("div", null, "pair");
+  const nameField = el("div", null, "field"), portField = el("div", null, "field");
+  const nameLabel = el("label", "Name"), portLabel = el("label", "Port");
+  const name = el("input", null, "input"), port = el("input", null, "input");
+  name.id = ids.name; name.autocomplete = "off"; name.maxLength = 20;
+  port.id = ids.port; port.type = "number"; port.min = "1024"; port.max = "65535";
+  port.value = S.next_port === null ? "" : String(S.next_port);
+  nameLabel.htmlFor = ids.name; portLabel.htmlFor = ids.port;
+  nameField.append(nameLabel, name);
+  portField.append(portLabel, port);
+  pair.append(nameField, portField);
+  const keepLabel = el("label", null, "check");
+  const keep = el("input");
+  keep.type = "checkbox"; keep.id = ids.keep; keep.checked = true;
+  keepLabel.append(keep, " Keep device logins");
+  const keepRow = el("div", null, "keep-row");
+  keepRow.append(keepLabel);
+  const warn = el("p", deviceWarning(original), "install-warn");
+  warn.dataset.f = "warn";
+  const current = S.users.some((u) => u.name === original);
+  const reflect = () => { warn.hidden = !(keep.checked && current); };
+  keep.addEventListener("change", reflect);
+  reflect();
+  const msg = el("div", null, "form-msg");
+  const go = button("Restore", "btn primary", async (b) => {
+    say(msg, "");
+    const raw = port.value, n = Number(raw);
+    b.disabled = true;
+    const r = await api("/api/users/restore-from", { name: name.value, port: raw !== "" && Number.isInteger(n) ? n : raw,
+      keep_devices: !!keep.checked, ...source });
+    b.disabled = false;
+    if (r.status !== 202) return say(msg, r.data.error || "That didn't start.", "bad");
+    closePopup();
+    say($("usersMsg"), `Restoring ${name.value}… its progress is in the Activity log.`);
+    await loadStatus();
+  }, busy());
+  panel.append(el("h5", "Restore as a new user"),
+    el("p", "A new user, with this data, apps and settings. They start locked: once it's done, give them a "
+      + "password with Setup link. " + KEEP_HINT), pair, keepRow, warn);
+  if (extra) panel.append(el("p", extra, "dnote"));
+  panel.append(msg, actions(button("Cancel", "btn", () => { panel.hidden = true; }), go));
+  const open = button("Restore as a new user", "btn", () => { panel.hidden = false; }, busy());
+  return { open, panel };
 }
 
 // Backups and removed users' kept data, in one list, newest first.
@@ -1407,11 +1541,15 @@ function openBackup(b) {
           say($("usersMsg"), `Deleted the backup ${b.name}.`);
           await loadStatus();
         }, busy())));
-    const del = button("Delete", "btn danger", () => { down.panel.hidden = true; sure.hidden = false; }, busy());
-    down.open.addEventListener("click", () => { sure.hidden = true; });
-    const row = actions(down.open, del, button("Close", "btn", closePopup));
+    const restore = restoreBlock({ backup: b.name }, b.user);
+    const del = button("Delete", "btn danger", () => {
+      down.panel.hidden = true; restore.panel.hidden = true; sure.hidden = false;
+    }, busy());
+    down.open.addEventListener("click", () => { sure.hidden = true; restore.panel.hidden = true; });
+    restore.open.addEventListener("click", () => { sure.hidden = true; down.panel.hidden = true; });
+    const row = actions(down.open, restore.open, del, button("Close", "btn", closePopup));
     down.open.className += " lead";
-    body.append(row, down.panel, sure, msg);
+    body.append(row, down.panel, restore.panel, sure, msg);
   }, true);
 }
 
@@ -1449,7 +1587,12 @@ function openKept(r) {
       field, actions(go));
     const down = downloadBlock(`/api/removed/${encodeURIComponent(r.name)}/download`);
     down.open.className += " lead";
-    body.append(panel, msg, actions(down.open, button("Close", "btn", closePopup)), down.panel);
+    const restore = restoreBlock({ removed: r.name }, r.name,
+      `To bring ${r.name} back as they were, add a user called ${r.name} instead: their kept data is reattached.`);
+    down.open.addEventListener("click", () => { restore.panel.hidden = true; });
+    restore.open.addEventListener("click", () => { down.panel.hidden = true; });
+    body.append(panel, msg, actions(down.open, restore.open, button("Close", "btn", closePopup)), down.panel,
+      restore.panel);
   }, true);
 }
 
@@ -1680,18 +1823,43 @@ $("checkBtn").addEventListener("click", async () => {
 
 $("addPort").addEventListener("input", () => { portTouched = true; });
 
+$("addFile").addEventListener("change", () => {
+  const files = $("addFile").files;
+  restoreFile = files && files.length ? files[0] : null;
+  $("addKeep").checked = true;  // each file chosen starts with its device logins kept
+  say($("addMsg"), "");
+  paintRestoreFile();
+});
+$("addClear").addEventListener("click", clearRestoreFile);
+
+// Add user, or - with a file chosen - Restore user: the file uploaded with
+// the name, the port and Keep device logins, as multipart.
 $("addForm").addEventListener("submit", async (ev) => {
   ev.preventDefault();
   const msg = $("addMsg");
   say(msg, "");
   const raw = $("addPort").value, port = Number(raw);
+  const file = restoreFile;
+  if (file && file.size > UPLOAD_MAX) return say(msg, TOO_LARGE, "bad");
   $("addBtn").disabled = true;
-  const r = await api("/api/users", { name: $("addName").value, port: raw !== "" && Number.isInteger(port) ? port : raw });
+  let r;
+  if (file) {
+    const form = new FormData();
+    form.append("name", $("addName").value);
+    form.append("port", raw);
+    form.append("keep_devices", $("addKeep").checked ? "true" : "false");
+    form.append("file", file);
+    say(msg, `Uploading ${file.name} (${size(file.size)})… keep this page open.`, "info");
+    r = await api("/api/users/restore", form);
+  } else {
+    r = await api("/api/users", { name: $("addName").value, port: raw !== "" && Number.isInteger(port) ? port : raw });
+  }
   $("addBtn").disabled = false;
   if (r.status === 202) {
     $("addName").value = "";
     portTouched = false;
-    say(msg, "Adding… its progress is in the Activity log.");
+    if (file) clearRestoreFile();
+    say(msg, (file ? "Restoring" : "Adding") + "… its progress is in the Activity log.");
   } else {
     say(msg, r.data.error || "That didn't start.", "bad");
   }
