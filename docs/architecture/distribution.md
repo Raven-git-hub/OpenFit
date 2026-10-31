@@ -427,7 +427,16 @@ custom `frms` becoming `openfitavi.frms`:
   into an older version is refused. The same format serves a user's export,
   the backup taken before an update, and creating a user from a file.
 - **A restore always creates a new user, with a new password.** The backup
-  never carries a login.
+  never carries a login. Built (R1, [admin.md](admin.md#restoring-a-backup-as-a-new-user-r1)),
+  on the Admin's plain `tar.gz`: a file uploaded to Add user, or one of the
+  server's own backups or a removed user's kept data, restored as a new
+  user who always starts locked - the password and its sessions' key are
+  never restored, whatever the file holds, and a setup link sets a new one.
+  The device logins come along unless the Admin unticks Keep device logins
+  (then they're left out, and the user re-adds each device). A backup from a
+  newer OpenFit than the server runs is refused; an older one is migrated as
+  it starts. This completes the backup file's restore rule: restoring always
+  means a new password. Restoring over an existing user, or merging, is out.
 - **A downloaded backup never carries a password** (S2, built). Whatever the
   Admin hands over - a backup, a removed user's kept data - leaves out the
   user's OpenFit password (`auth.json`) and its sessions' key
@@ -484,8 +493,7 @@ a second real person gets a container. Re-ordered 2026-10-27, after A1:
 6. **The Admin Portal**: S1 (built), the page in OpenFit's style, with
    the reads behind its panels; S2 (built): reverting the Admin,
    downloading backups and kept data without the password, deleting single
-   backups. Restoring from a downloaded file comes with the backup file and
-   restore-on-add-user, below.
+   backups. Restoring a download is R1, below.
 7. **Organisation repos** (A6, built): each a source of its own on the
    shelf, its name and blurb from its own `repo.yaml`, cloned over SSH with
    a read-only deploy key the Admin makes for it; FRMS moved to the first,
@@ -501,6 +509,17 @@ a second real person gets a container. Re-ordered 2026-10-27, after A1:
    it puts any settings back - a rollback, a revert, a revert's fallback -
    so a slow new Admin can't write over them ([admin.md](admin.md)); and
    B3's guard on an app folder that leads out of the shelf is tested.
+9. **R1: restore a backup as a new user** (built,
+   [admin.md](admin.md#restoring-a-backup-as-a-new-user-r1)): Add user's
+   Restore from a file, for a download (moving someone between servers),
+   and Restore as a new user on a backup or kept data, with no download.
+   The archive is read, never extracted by the Admin: every member checked
+   (files and folders only, plain names, an archive bomb's limits, a sound
+   `tracker.db` no newer than the server's OpenFit), then a clean copy
+   written without the password, its sessions' key and the app update
+   notes (and the device logins unless they're kept), which a helper
+   extracts into the new user's brand new volume. They start locked: Setup
+   link gives them a password.
 
 ### Parked
 
@@ -512,7 +531,8 @@ a second real person gets a container. Re-ordered 2026-10-27, after A1:
   refused until it's needed, then L3's rules (above) apply.
 
 The proxy and the mDNS announcer are deferred: users are on `IP:port` until
-then. The backup file (export, passphrase, restore) is designed above and not
-yet placed in this order; the Admin's update backups are plain `tar.gz`
-archives of each user's `/data` volume, not that format, and a download of
-one (S2) is the same archive less the password's two files.
+then. The backup file's format (a zip, a passphrase, a user's own export) is
+designed above and not yet placed in this order; the Admin's update backups
+are plain `tar.gz` archives of each user's `/data` volume, not that format, a
+download of one (S2) is the same archive less the password's two files, and
+a restore (R1) takes either, always as a new user with a new password.

@@ -775,6 +775,13 @@ line never had:
   password: whoever restores it sets a new one with a setup link (the
   backups on the server keep everything, so Undo never locks anyone out).
   **Delete** a single backup; deleting one Undo needs says so first.
+- **Restore** a backup as a new user: **Restore from a file** in Add user
+  (a download, from this server or another), or **Restore as a new user**
+  on a backup or a removed user's kept data. The file is checked through
+  before anything is made, and the new user starts locked: **Setup link**
+  gives them a password. Their device logins come along unless you untick
+  **Keep device logins** (then they re-add each device). A backup from a
+  newer OpenFit than the server runs is refused until you update.
 - **Update the Admin**: the Admin updates itself, rolling back by itself if
   the new version doesn't start. **Revert the Admin**, in its last update,
   takes it back to the version before, and its settings as they were then,
@@ -809,6 +816,23 @@ by itself. (The Admin installed before this has no helper yet, so install
 this one with the command its note shows,
 `docker compose -f admin/docker-compose.yml -p openfit-admin up -d --build`
 from the repo, once.)
+
+### Moving a user between servers
+
+1. On the old server's Admin, under **User data**, open the user's latest
+   backup (or, once you've removed them, their kept data) and **Download**
+   it: a `…-nopassword.tar.gz` holding everything but their password.
+2. On the new server's Admin, **Add user**: a name, a port, and **Restore
+   from a file** with that download. **Restore user**, and watch the Activity
+   log.
+3. **Setup link** in the restore's result: send it to them, and they set a
+   new password. Their data, apps and settings are there; with Keep device
+   logins ticked their devices carry on syncing.
+
+Then remove them from the old server, so two OpenFits never sync the same
+device accounts (they can sign each other out). The new server must run the
+same version of OpenFit or newer: an older one refuses the backup until it's
+updated. Uploads are at most 2 GB.
 
 ### Adding an organisation repo
 
@@ -853,7 +877,7 @@ ports, to the internet; from away, use Tailscale. The design and every step, in 
 ## Architecture
 
 ```
-admin/                        The OpenFit Admin: users, updates, its own update, the app shelf, organisation repos (port 8090)
+admin/                        The OpenFit Admin: users, updates, its own update, the app shelf, organisation repos, restore (port 8090)
 app/
   main.py                     Flask API + scheduler, loads plugins from plugins/
   auth.py                     The one account: password, setup links, sessions (/data/auth.json)

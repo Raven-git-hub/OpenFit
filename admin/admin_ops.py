@@ -21,7 +21,10 @@ commands it execs are the health check and the user system's own
 `python auth_cli.py setup-link`, for a setup link - the Admin's own
 helper containers (labelled openfit.admin.helper=true, always --rm), the
 user system's image, and the kept volume of a user removed from
-users.json, when its deletion is confirmed. Beside those, `docker info`,
+users.json, when its deletion is confirmed. A restore (R1) fills a new
+user's volume, made moments before by `up --no-start`, with a helper that
+extracts only a clean archive the Admin wrote itself: the Admin reads an
+archive with tarfile and never extracts one. Beside those, `docker info`,
 with one fixed format, for the System panel: of all it says, only the
 server's name, Docker version, CPUs and memory are kept. Nothing else on
 the server is listed, inspected, stopped or removed.
@@ -65,12 +68,14 @@ import secrets
 import stat
 import subprocess
 import shutil
+import sqlite3
 import tarfile
 import threading
 import time
+import zlib
 from datetime import datetime, timezone
 from typing import NamedTuple
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 import yaml
 
@@ -302,6 +307,39 @@ CHUNK = 64 * 1024
 # straight back to the page, once: never in the Admin's history or log.
 SETUP_LINK_ARGS = ("python", "auth_cli.py", "setup-link")
 SETUP_TOKEN = re.compile(r"[A-Za-z0-9_-]{40,50}\Z")
+
+# Restoring a backup as a new user (R1). Everything a restore works with -
+# an uploaded file, a removed user's kept data packed into one, the database
+# taken out to be checked, and the clean archive the helper extracts - is
+# in /data/restore-uploads/, and deleted when the restore ends, however it
+# ends (and at startup: anything there then is left from an Admin stopped
+# part-way). The Admin never extracts an archive itself: it reads one with
+# tarfile, checks every member, then writes a clean copy of the members it
+# checked, and only a helper extracts that, into the new user's volume.
+RESTORE_DIR = "restore-uploads"
+RESTORE_FILE = re.compile(r"[0-9a-f]{32}\.tar\.gz\Z")  # an upload, or kept data packed
+CLEAN_FILE = re.compile(r"[0-9a-f]{32}-clean\.tar\.gz\Z")  # the one name the helper extracts
+MAX_MEMBERS = 200_000
+MAX_UNPACKED = 8 * 1024 ** 3  # the sum of the members' sizes: an archive bomb stops here
+MAX_PART = 255  # characters in one part of a member's name
+DB_NAME = "tracker.db"
+DB_WAL = "tracker.db-wal"  # recent writes, if the database wasn't closed cleanly
+# The user system's own rule for a migration's file name (app/migrations).
+MIGRATION_FILE = re.compile(r"^(\d+)_[\w-]+\.sql$")
+NEWER_BACKUP = "This backup is from a newer OpenFit than this server runs. Update OpenFit first."
+# Never restored: the password and its sessions' key, so a restored user
+# always starts locked (a setup link sets their password), and the library
+# apps' update notes, which start afresh with them.
+NEVER_RESTORED = ("auth.json", ".session_key", "app_updates.json")
+# Left out too unless the device logins are kept: the key that unlocks the
+# stored device credentials (without it they can't be read, and the user
+# removes and re-adds each device) and Garmin's own login tokens, a folder.
+DEVICE_KEY = ".secret_key"
+GARMIN_TOKENS = ".garminconnect"
+_MEMBER_KINDS = {
+    tarfile.SYMTYPE: "a symbolic link", tarfile.LNKTYPE: "a hard link", tarfile.CHRTYPE: "a device",
+    tarfile.BLKTYPE: "a device", tarfile.FIFOTYPE: "a FIFO",
+}
 
 
 class Runner:
@@ -1393,11 +1431,182 @@ def kept_download_args(volume, image=ADMIN_IMAGE):
     its stdout, exactly: mounted read-only, the password's two files left
     out, and no container log - Docker would otherwise keep a copy of the
     whole archive in the container's log while it runs."""
+    return _kept_tar_args(volume, image, NO_PASSWORD)
+
+
+def kept_pack_args(volume, image=ADMIN_IMAGE):
+    """The same helper, packing a removed user's kept volume for a restore
+    (R1): its output written to a file in /data/restore-uploads/, not
+    streamed to a browser, and nothing excluded - the restore's clean
+    archive leaves the password out, and more besides."""
+    return _kept_tar_args(volume, image, ())
+
+
+def _kept_tar_args(volume, image, exclude):
     if not isinstance(volume, str) or not USER_VOLUME.match(volume):
         raise ValueError(f"not a user's kept volume: {volume!r}")
     return ["docker", "run", "--rm", "--label", HELPER_LABEL, "--log-driver", "none",
             "-v", f"{volume}:/v:ro", image,
-            "tar", "czf", "-", "-C", "/v", *(f"--exclude=./{name}" for name in NO_PASSWORD), "."]
+            "tar", "czf", "-", "-C", "/v", *(f"--exclude=./{name}" for name in exclude), "."]
+
+
+def restore_helper_args(volume, clean, admin_volume=ADMIN_VOLUME, image=ADMIN_IMAGE):
+    """The helper that fills a restored user's new volume, exactly: their
+    volume read-write, the Admin's read-only, and GNU tar extracting the
+    clean archive the Admin wrote - only ever a name CLEAN_FILE matches,
+    never an upload or a backup as it came."""
+    if not isinstance(volume, str) or not USER_VOLUME.match(volume):
+        raise ValueError(f"not a user's volume: {volume!r}")
+    if not isinstance(clean, str) or not CLEAN_FILE.match(clean):
+        raise ValueError(f"not a clean archive the Admin wrote: {clean!r}")
+    return ["docker", "run", "--rm", "--label", HELPER_LABEL, "--log-driver", "none",
+            "-v", f"{volume}:/v", "-v", f"{admin_volume}:/b:ro", image,
+            "tar", "xzf", f"/b/{RESTORE_DIR}/{clean}", "-C", "/v"]
+
+
+# --- checking an archive before a restore (R1) ---------------------------------
+
+
+def _shown(name):
+    """A member's name as a log line shows it: printable, at most 80 characters."""
+    text = "".join(c if c.isprintable() else "?" for c in name)
+    return text if len(text) <= 80 else text[:79] + "…"
+
+
+def member_name(member):
+    """A member's name, normalised: its leading ./ stripped, "" for the
+    archive's own folder. An OpError (why, in plain words) for a name that
+    could lead anywhere but inside the new volume: absolute, with a `..`
+    part, a NUL byte or an empty or `.` part, or a part over 255 characters."""
+    name = member.name
+    if "\x00" in name:
+        raise OpError("It holds a name with a NUL byte in it, which a backup never does.")
+    if name.startswith("/"):
+        raise OpError(f"It holds an absolute name ({_shown(name)}), which a backup never does.")
+    if member.isdir():
+        name = name.rstrip("/")
+    while name.startswith("./"):
+        name = name[2:]
+    if name in ("", "."):
+        return ""
+    parts = name.split("/")
+    if ".." in parts:
+        raise OpError(f"It holds a name that leads out of it ({_shown(name)}).")
+    if any(part in ("", ".") for part in parts):
+        raise OpError(f"It holds a name that isn't a plain path ({_shown(name)}).")
+    if any(len(part) > MAX_PART for part in parts):
+        raise OpError(f"It holds a name with a part longer than {MAX_PART} characters ({_shown(name)}).")
+    return name
+
+
+def check_members(tar):
+    """Every member of an archive open for reading, walked before anything is
+    written: [(name, member)], each name member_name()'s, in the archive's
+    order. Only regular files and folders, each name once, at most
+    MAX_MEMBERS of them and MAX_UNPACKED bytes between them, the archive's
+    own folder ("") a folder; anything else is an OpError saying why, and
+    the whole archive is refused."""
+    found, seen, total = [], set(), 0
+    for member in tar:
+        if len(found) >= MAX_MEMBERS:
+            raise OpError(f"It holds more than {MAX_MEMBERS:,} files and folders, more than a backup would.")
+        if member.type in _MEMBER_KINDS:
+            raise OpError(f"It holds {_MEMBER_KINDS[member.type]} ({_shown(member.name)}), which a backup never "
+                          "does.")
+        if member.type not in (tarfile.REGTYPE, tarfile.AREGTYPE, tarfile.DIRTYPE):
+            raise OpError(f"It holds something that isn't a file or a folder ({_shown(member.name)}).")
+        name = member_name(member)
+        if name == "" and not member.isdir():
+            raise OpError("It holds a file where its own folder should be.")
+        if name in seen:
+            raise OpError(f"It holds {_shown(name) or 'its own folder'} twice, which a backup never does.")
+        seen.add(name)
+        total += member.size
+        if total > MAX_UNPACKED:
+            raise OpError(f"Unpacked, it would be more than {MAX_UNPACKED // 1024 ** 3} GB, more than a backup "
+                          "would.")
+        found.append((name, member))
+    return found
+
+
+def check_database(tar, members, work, newest):
+    """The archive's tracker.db - with its tracker.db-wal, if it has one -
+    copied into `work` (a folder of the Admin's own) and opened read-only:
+    it must pass SQLite's integrity check and have a schema_migrations table
+    whose newest version is at most `newest`, the newest migration this
+    server's OpenFit has. Returns that version; an OpError says why not."""
+    by_name = dict(members)
+    db = by_name.get(DB_NAME)
+    if db is None or not db.isfile():
+        raise OpError(f"There's no {DB_NAME} in it, so it isn't an OpenFit backup.")
+    os.makedirs(work, mode=0o700)
+    path = os.path.join(work, DB_NAME)
+    for name, dest in ((DB_NAME, path), (DB_WAL, path + "-wal")):
+        member = by_name.get(name)
+        if member is None or not member.isfile():
+            continue
+        fd = os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, "wb") as out:
+            shutil.copyfileobj(tar.extractfile(member), out, CHUNK)
+    damaged = f"Its {DB_NAME} is damaged, so it can't be restored."
+    try:
+        conn = sqlite3.connect(f"file:{quote(path)}?mode=ro", uri=True)
+    except sqlite3.Error as e:
+        raise OpError(damaged, str(e))
+    try:
+        if hasattr(conn, "setconfig"):  # Python 3.12's: no writes through the schema, even by accident
+            conn.setconfig(sqlite3.SQLITE_DBCONFIG_DEFENSIVE, True)
+        conn.execute("PRAGMA trusted_schema = OFF")
+        if conn.execute("PRAGMA integrity_check").fetchall() != [("ok",)]:
+            raise OpError(damaged)
+        if conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'"
+                        ).fetchone() is None:
+            raise OpError(f"Its {DB_NAME} has no schema_migrations table, so it isn't one OpenFit wrote.")
+        version = conn.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0]
+    except sqlite3.Error as e:
+        raise OpError(damaged, str(e))
+    finally:
+        conn.close()
+    if version is None:
+        version = 0
+    if type(version) is not int:
+        raise OpError(f"Its {DB_NAME} has a schema version that isn't a number, so it isn't one OpenFit wrote.")
+    if version > newest:
+        raise OpError(NEWER_BACKUP, f"It's at migration {version}; this server's OpenFit has up to {newest}.")
+    return version
+
+
+def left_out(name, keep_devices):
+    """Whether a member's (normalised) name stays out of the clean archive:
+    NEVER_RESTORED always, and the device logins unless they're kept."""
+    if name in NEVER_RESTORED:
+        return True
+    return not keep_devices and (name == DEVICE_KEY or name == GARMIN_TOKENS
+                                 or name.startswith(GARMIN_TOKENS + "/"))
+
+
+def write_clean(tar, members, dest, keep_devices):
+    """The clean archive: a fresh tar.gz at `dest` (made here, 0600) of the
+    checked `members`, read from `tar` - never the archive as it came - but
+    those left_out(). Each a new header, `./<name>` (the archive's own
+    folder `.`), a regular file or a folder, its mode (no setuid, setgid or
+    sticky bit), owner, group and time kept, and nothing else of the
+    original's; each file's bytes as they were. The names left out."""
+    dropped = []
+    fd = os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "wb") as out, tarfile.open(fileobj=out, mode="w:gz", format=tarfile.PAX_FORMAT) as new:
+        for name, member in members:
+            if left_out(name, keep_devices):
+                dropped.append(name)
+                continue
+            info = tarfile.TarInfo(f"./{name}" if name else ".")
+            info.type = tarfile.DIRTYPE if member.isdir() else tarfile.REGTYPE
+            info.mode = member.mode & 0o777
+            info.uid, info.gid, info.uname, info.gname = member.uid, member.gid, member.uname, member.gname
+            info.mtime = member.mtime
+            info.size = member.size if member.isfile() else 0
+            new.addfile(info, tar.extractfile(member) if member.isfile() else None)
+    return dropped
 
 
 def without_password(src):
@@ -1541,20 +1750,21 @@ class Admin:
     """The OpenFit users the Admin manages, and the operations on them.
 
     One operation at a time (`lock`): a check, an update, an undo, adding,
-    starting, stopping, restarting or removing a user, making a setup link,
-    deleting a removed user's data or a backup, starting a download,
-    updating the apps, publishing them again, updating the Admin itself or
-    reverting it, or adding, connecting, updating or removing an
-    organisation repo. An update, an undo, adding a user, updating the
-    apps, an Admin update, an Admin revert and a repo's connect and update
-    run in a background thread, their
+    restoring, starting, stopping, restarting or removing a user, making a
+    setup link, deleting a removed user's data or a backup, starting a
+    download, updating the apps, publishing them again, updating the Admin
+    itself or reverting it, or adding, connecting, updating or removing an
+    organisation repo. An update, an undo, adding or restoring a user,
+    updating the apps, an Admin update, an Admin revert and a repo's
+    connect and update run in a background thread, their
     progress in `op`; the rest run in the caller's thread (a download only
     while it starts: once its file is open, or its helper under way, it
     streams without the lock). An Admin update or revert keeps the lock
     after its thread has handed over to the helper, until the helper has
-    gone (`_settle`).
+    gone (`_settle`). A restore's upload arrives before the lock is taken.
 
-    Constructing one writes the users' mounts of the app shelf
+    Constructing one deletes what an interrupted restore left in
+    /data/restore-uploads/, writes the users' mounts of the app shelf
     (write_mounts()) and nothing else; publish_at_startup() is serve()'s
     to call.
     """
@@ -1592,6 +1802,7 @@ class Admin:
         self.override_path = os.path.join(data_dir, PRIMARY_OVERRIDE)
         self.repos_path = os.path.join(data_dir, REPOS_FILE)
         self.repo_checks_path = os.path.join(data_dir, "repo_checks.json")
+        self.restore_dir = os.path.join(data_dir, RESTORE_DIR)
         self.library_dir = library_dir
         self.library_error = None  # the last publish's failure, until one succeeds
         self.lock = threading.Lock()
@@ -1604,6 +1815,7 @@ class Admin:
         self._server = None  # (when, server_fields()) of the last `docker info`
         self._ranges = {}  # (old, new, folder) -> the commits and PRs between: fixed once read
         os.makedirs(self.backups_dir, exist_ok=True)
+        self._clear_restores()  # left from a restore the Admin was stopped in the middle of
         self.registry()  # a bad users.json stops the Admin starting
         self.repos_registry()  # and so does a bad repos.json
         self._mark_interrupted(keep=self._pick_up_swap())
@@ -3622,14 +3834,17 @@ class Admin:
 
     # --- adding, starting, stopping and removing users -------------------------
 
-    def _check_new_user(self, name, port):
-        """400 for a name or port that can't be a user's, 409 for one taken."""
+    def _check_new_user(self, name, port, kept_ok=True):
+        """400 for a name or port that can't be a user's, 409 for one taken -
+        and, unless `kept_ok` (a restore), for a name with kept data."""
         users = self.users()
         problem = name_problem(name, self.settings)
         if problem:
             raise Refused(problem, 400)
         if any(u.name == name for u in users):
             raise Refused(f"There's already a user called {name}.", 409)
+        if not kept_ok and any(r["name"] == name for r in self.registry()["removed"]):
+            raise Refused(f"{name} has kept data on this server. Choose another name.", 409)
         problem = port_problem(port)
         if problem:
             raise Refused(problem, 400)
@@ -3734,14 +3949,263 @@ class Admin:
             rc, out, err = self.compose(user, "down")
         else:
             # The one place -v is ever used. Safe only because this project's
-            # volume was made moments ago, in this op, by the `up` above:
-            # start_add_user refused a name whose volume was already on the
-            # server, so it holds nothing but what this failed OpenFit wrote
-            # in the last minute, and it's nobody's data.
+            # volume was made moments ago, in this op, by its own `up` (an
+            # add's `up -d`, a restore's `up --no-start`): start_add_user and
+            # start_restore refused a name whose volume was already on the
+            # server, so it holds nothing but what this op put there in the
+            # last minutes - a failed OpenFit's first writes, or a restore's
+            # copy of a backup that's still where it came from - and it's
+            # nobody's data.
             rc, out, err = self.compose(user, "down", "-v")
         if rc != 0:
             self.say(op, "Their OpenFit didn't come down.", _tail(out, err))
         shutil.rmtree(os.path.dirname(user.compose_file), ignore_errors=True)
+
+    # --- restoring a backup as a new user (R1) -----------------------------------
+
+    def _clear_restores(self):
+        """At startup: anything in /data/restore-uploads/ is left from a
+        restore (or an upload) the Admin was stopped in the middle of."""
+        try:
+            names = os.listdir(self.restore_dir)
+        except FileNotFoundError:
+            return
+        for name in names:
+            path = os.path.join(self.restore_dir, name)
+            try:
+                if os.path.isdir(path) and not os.path.islink(path):
+                    shutil.rmtree(path)
+                else:
+                    os.unlink(path)
+                print(f"[admin] deleted {name}, left from a restore", flush=True)
+            except OSError as e:
+                print(f"[admin] couldn't delete {path}: {e}", flush=True)
+
+    def _restore_path(self, name):
+        os.makedirs(self.restore_dir, mode=0o700, exist_ok=True)
+        return os.path.join(self.restore_dir, name)
+
+    def new_upload(self):
+        """A new, empty file for an uploaded backup, made here (0600): (path,
+        an open binary file to write it to) - /data/restore-uploads/<random>.tar.gz."""
+        path = self._restore_path(secrets.token_hex(16) + ".tar.gz")
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        return path, os.fdopen(fd, "wb")
+
+    def drop_upload(self, path):
+        """An upload that never became a restore (refused, cut off or too
+        large), deleted - one new_upload() made, and nothing else."""
+        if os.path.dirname(path) == self.restore_dir and RESTORE_FILE.match(os.path.basename(path)):
+            with contextlib.suppress(FileNotFoundError):
+                os.unlink(path)
+
+    def newest_migration(self):
+        """The newest migration of the OpenFit this server runs: the highest
+        NNN of app/migrations/NNN_*.sql in the repo at HEAD, by the user
+        system's own file name rule. An OpError if there's none."""
+        out = self._git_out("ls-tree", "--name-only", "HEAD", "--", "app/migrations/",
+                            what="read which migrations OpenFit has")
+        versions = [int(m.group(1)) for line in out.splitlines()
+                    if (m := MIGRATION_FILE.match(line.rsplit("/", 1)[-1]))]
+        if not versions:
+            raise OpError("Couldn't read which migrations OpenFit has.")
+        return max(versions)
+
+    def start_restore(self, name, port, keep_devices, source, host=None):
+        """A new user from a backup: `source` ("upload", the path new_upload()
+        made), ("backup", a backup's name) or ("removed", a removed user's
+        name, their kept data). The new user's name and port, the source and
+        the lock checked here, as Add user's are, so a refusal is a 400, 404
+        or 409 with nothing done - an upload stays the caller's to delete;
+        the rest, the archive's checks among it, is an op with a log
+        (`restore_user`), which deletes the upload however it ends."""
+        if type(keep_devices) is not bool:
+            raise Refused("Say whether to keep the device logins: true or false.", 400)
+        kind, ref = source if isinstance(source, tuple) and len(source) == 2 else (None, None)
+        if kind == "upload":
+            if not (isinstance(ref, str) and os.path.dirname(ref) == self.restore_dir
+                    and RESTORE_FILE.match(os.path.basename(ref))):
+                raise ValueError(f"not an upload new_upload() made: {ref!r}")
+        elif kind not in ("backup", "removed"):
+            raise ValueError(f"not a restore's source: {source!r}")
+        self._check_new_user(name, port, kept_ok=False)
+        self._restore_source(kind, ref)
+        self._take_lock()
+        try:
+            self._check_new_user(name, port, kept_ok=False)  # again: another may have finished meanwhile
+            record = self._restore_source(kind, ref, locked=True)
+            self._image_built()
+            self._shelf_ready()
+            # As Add user: a volume the Admin has no record of is someone's
+            # data - never adopted, and never at risk from the failure
+            # path's `down -v`.
+            if self._volume_exists(user_volume(name)):
+                raise Refused(
+                    f"There's already storage called {user_volume(name)} on the server that the Admin "
+                    "has no record of, so it won't use it. Choose another name.", 409)
+            op = self._begin("restore_user", user={"name": name, "port": port}, source=record,
+                             keep_devices=keep_devices)
+        except OpError as e:
+            self.lock.release()
+            raise Refused(e.message, 500)
+        except BaseException:
+            self.lock.release()
+            raise
+        self._spawn(op, self._restore_user, self.added(name, port), kind, ref, keep_devices, address(host, port))
+        return self.current_op()
+
+    def _restore_source(self, kind, ref, locked=False):
+        """The source a restore reads, checked: what the op records of it, or
+        a refusal - a backup not in the Admin's own listing, or no kept data
+        by that name, a 404; kept data whose project has a container again
+        (only looked for under the lock), a 409."""
+        if kind == "upload":
+            return {"kind": "upload"}
+        if kind == "backup":
+            path = self._backup_path(ref)
+            m = BACKUP_NAME.match(os.path.basename(path))
+            return {"kind": "backup", "name": ref, "user": m.group(3) or self.settings["user"]}
+        entry = self._known(ref, removed=True)
+        if locked:
+            if entry["volume"] != user_volume(ref) or not USER_VOLUME.match(entry["volume"]):
+                raise OpError("Their kept data isn't stored under the name the Admin expects, so it can't be "
+                              "restored.")
+            rc, out, err = self.docker(
+                "ps", "-a", "--no-trunc", "--filter", f"label=com.docker.compose.project={user_project(ref)}",
+                "--format", "{{.ID}}",
+            )
+            if rc != 0:
+                raise OpError(f"Couldn't ask Docker about {ref}'s containers.", _tail(out, err))
+            if out.strip():
+                raise Refused(f"{ref} has a container again, so their kept data can't be restored now.", 409)
+        return {"kind": "removed", "name": ref, "user": ref}
+
+    def _restore_user(self, op, user, kind, ref, keep, where):
+        made = []  # every file and folder this restore wrote in /data/restore-uploads/, deleted as it ends
+        if kind == "upload":
+            made.append(ref)
+        try:
+            return self._restore_steps(op, user, kind, ref, keep, where, made)
+        finally:
+            for path in made:
+                try:
+                    if os.path.isdir(path) and not os.path.islink(path):
+                        shutil.rmtree(path)
+                    else:
+                        os.unlink(path)
+                except FileNotFoundError:
+                    pass
+                except OSError as e:
+                    self.say(op, f"Couldn't delete {os.path.basename(path)} from the restore's own files.", str(e))
+
+    def _restore_steps(self, op, user, kind, ref, keep, where, made):
+        stamp = secrets.token_hex(16)
+        # 1. The archive: the upload, the backup itself, or the kept data packed.
+        if kind == "upload":
+            archive = ref
+        elif kind == "backup":
+            archive = os.path.join(self.backups_dir, ref)
+            self.say(op, f"Restoring {user.name} from the backup {ref}.")
+        else:
+            archive = self._restore_path(f"{stamp}.tar.gz")
+            made.append(archive)
+            self.say(op, f"Packing {ref}'s kept data…")
+            try:
+                fd = os.open(archive, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+                with os.fdopen(fd, "wb") as out, \
+                        self.runner.stream(kept_pack_args(user_volume(ref), self.admin_image)) as stdout:
+                    while True:
+                        chunk = stdout.read1(CHUNK)
+                        if not chunk:
+                            break
+                        out.write(chunk)
+            except OpError as e:
+                self.say(op, e.message, e.detail)
+                return self._finish(op, "failed", f"Couldn't read {ref}'s kept data. Nothing was created.")
+            except OSError as e:
+                self.say(op, "Couldn't write their kept data to a file.", str(e))
+                return self._finish(op, "failed", f"Couldn't read {ref}'s kept data. Nothing was created.")
+
+        # 2. Every member checked, the database too, before anything is created.
+        self.say(op, "Checking the backup…")
+        clean = self._restore_path(f"{stamp}-clean.tar.gz")
+        work = self._restore_path(f"{stamp}-db")
+        made += [clean, work]
+        try:
+            newest = self.newest_migration()
+            with tarfile.open(archive, "r:gz") as tar:
+                members = check_members(tar)
+                version = check_database(tar, members, work, newest)
+                self.say(op, f"It holds {len(members)} files and folders, and its database is sound, at "
+                             f"migration {version}.")
+                # 3. The clean archive: the checked members, but what's never restored.
+                dropped = write_clean(tar, members, clean, keep)
+        except OpError as e:
+            self.say(op, e.message, e.detail)
+            return self._finish(op, "failed", f"{e.message} Nothing was created.")
+        except (OSError, tarfile.TarError, EOFError, zlib.error, ValueError) as e:
+            self.say(op, "It isn't a backup the Admin can read: it should be a .tar.gz.", str(e))
+            return self._finish(op, "failed", "It isn't a backup the Admin can read: it should be a .tar.gz. "
+                                              "Nothing was created.")
+        shutil.rmtree(work, ignore_errors=True)
+        self.say(op, "Left out: " + (", ".join(_shown(n) for n in dropped) if dropped else "nothing") + ". "
+                 + ("The device logins are kept." if keep else "The device logins aren't kept: remove and re-add "
+                                                             f"each device in {user.name}'s OpenFit."))
+
+        # 4. Their compose file, from the template.
+        folder = os.path.dirname(user.compose_file)
+        self.say(op, f"Writing {user.name}'s compose file…")
+        try:
+            os.makedirs(folder, exist_ok=True)
+            with open(user.compose_file, "w", encoding="utf-8") as f:
+                f.write(self._compose_text(user))
+        except OSError as e:
+            self.say(op, "Couldn't write their compose file.", str(e))
+            shutil.rmtree(folder, ignore_errors=True)
+            return self._finish(op, "failed", f"{user.name} wasn't restored. Nothing was created.")
+
+        # From here on a failure is taken back with `down -v`: this project
+        # and its volume were made moments ago, by this op's own `up
+        # --no-start` - start_restore refused a name whose volume was already
+        # on the server - so the volume holds nothing but the copy of a
+        # backup that is still where it came from. It's nobody's data.
+        def fail(summary):
+            self._take_back(op, user, kept=False)
+            return self._finish(op, "failed", summary)
+
+        # 5. Created, not started: the container and its new, empty volume.
+        self.say(op, f"Creating {user.name}'s OpenFit, without starting it…")
+        rc, out, err = self.compose(user, "up", "--no-start", "--no-build")
+        if rc != 0:
+            self.say(op, "Their OpenFit wasn't created.", _tail(out, err))
+            return fail(f"{user.name} wasn't restored: their OpenFit wasn't created.")
+
+        # 6. The volume filled, by a helper, from the clean archive alone.
+        self.say(op, f"Putting the backup's data into {user.name}'s storage…")
+        rc, out, err = self.runner.run(restore_helper_args(user_volume(user.name), os.path.basename(clean),
+                                                           self.admin_volume, self.admin_image))
+        if rc != 0:
+            self.say(op, "The data didn't go in.", _tail(out, err))
+            return fail(f"{user.name} wasn't restored: the backup's data didn't go into their storage.")
+
+        # 7. Started (its migrations run as it starts), and checked.
+        self.say(op, f"Starting {user.name}'s OpenFit…")
+        rc, out, err = self.compose(user, "up", "-d", "--no-build")
+        if rc != 0:
+            clash = port_clash(user.port, out, err)
+            self.say(op, clash or "Their OpenFit didn't start.", _tail(out, err))
+            return fail(clash or f"{user.name} wasn't restored: their OpenFit didn't start.")
+        self.say(op, f"Checking {user.name}'s OpenFit is answering…")
+        if not self.healthy(user):
+            self.say(op, "Their OpenFit didn't answer.")
+            return fail(f"{user.name} wasn't restored: their OpenFit didn't answer.")
+
+        reg = self.registry()
+        reg["users"].append({"name": user.name, "port": user.port, "created_at": self._iso()})
+        self._save_registry(reg)
+        self.say(op, f"Their OpenFit is at {where}")
+        return self._finish(op, "ok", f"Restored {user.name}. They start locked: use Setup link to give them a "
+                                      "password.")
 
     def _known(self, name, removed=False):
         """An added or primary user (or, `removed`, a removed one's entry) by

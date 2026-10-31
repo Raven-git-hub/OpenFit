@@ -4,7 +4,10 @@ override, in that order); their labelled containers, where it execs only
 the health check and a setup link's `python auth_cli.py setup-link`; its own --rm
 helpers; the user system's image; the app shelf's volume, only ever
 looked at; a removed user's kept volume, only on a confirmed delete or
-read out, read-only, by the download helper in its one exact form;
+read out, read-only, by the download helper in its one exact form (or,
+for a restore, the same helper with nothing excluded); a restored user's
+new volume, created by `up --no-start` and filled by the restore helper in
+its one exact form, from a clean archive the Admin wrote;
 `docker info`, with one format, for the System panel; and its own
 project, only to update itself or revert that - its image tagged only
 among openfit-admin:{local,prev,next}, its swap helper in an update's form
@@ -20,8 +23,10 @@ import io
 import json
 import os
 import re
+import sqlite3
 import subprocess
 import tarfile
+import tempfile
 
 import pytest
 from conftest import CONTAINERS, container_id, seed_users
@@ -91,6 +96,57 @@ def a_real_backup(env, name="20261027T120000Z-abcdef0-andy.tar.gz"):
             info.size = len(body)
             tar.addfile(info, io.BytesIO(body))
     return name
+
+
+def with_migrations(env):
+    """The repo's OpenFit holding migrations 001 to 010 at HEAD, as a
+    restore's version check reads them."""
+    for n in range(1, 11):
+        path = os.path.join(env.repos.repo, "app", "migrations", f"{n:03d}_step.sql")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
+            f.write("-- a step\n")
+    for args in (["add", "-A"], ["commit", "-q", "-m", "Migrations"]):
+        subprocess.run(["git", *args], cwd=env.repos.repo, check=True, capture_output=True)
+
+
+def restorable(link=False):
+    """A backup's bytes that a restore takes: a sound database at migration
+    10, the password files beside it - or, `link`, a symbolic link too."""
+    db = os.path.join(tempfile.mkdtemp(), "tracker.db")
+    conn = sqlite3.connect(db)
+    conn.execute("CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT)")
+    conn.executemany("INSERT INTO schema_migrations VALUES (?, 'then')", [(v,) for v in range(1, 11)])
+    conn.commit()
+    conn.close()
+    with open(db, "rb") as f:
+        files = {"./tracker.db": f.read(), "./auth.json": b"{}", "./.session_key": b"k" * 32,
+                 "./.secret_key": b"key"}
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        root = tarfile.TarInfo("./")
+        root.type = tarfile.DIRTYPE
+        tar.addfile(root)
+        for name, body in files.items():
+            info = tarfile.TarInfo(name)
+            info.size = len(body)
+            tar.addfile(info, io.BytesIO(body))
+        if link:
+            info = tarfile.TarInfo("./latest.db")
+            info.type, info.linkname = tarfile.SYMTYPE, "tracker.db"
+            tar.addfile(info)
+    return buf.getvalue()
+
+
+def restore(env, name, port, source, blob=None, keep=True):
+    if source == "upload":
+        path, f = env.admin.new_upload()
+        with f:
+            f.write(blob)
+        source = ("upload", path)
+    env.admin.start_restore(name, port, keep, source, "192.168.1.10:8090")
+    env.admin.wait(10)
+    return env.admin.current_op()
 
 
 def revert_the_admin(env, unhealthy=()):
@@ -363,6 +419,46 @@ def scenario_delete_backup(env):
     assert env.admin.status()["undo"] is None
 
 
+def scenario_restore_upload(env):
+    three_users(env)
+    with_migrations(env)
+    assert restore(env, "lee", 8110, "upload", restorable())["outcome"] == "ok"
+    env.admin.status()
+    return {"restore": True}
+
+
+def scenario_restore_from_backup(env):
+    with_migrations(env)
+    (env.backups / "20261027T120000Z-abcdef0-andy.tar.gz").write_bytes(restorable())
+    assert restore(env, "lee", 8110, ("backup", "20261027T120000Z-abcdef0-andy.tar.gz"), keep=False)["outcome"] == "ok"
+    return {"restore": True}
+
+
+def scenario_restore_from_kept(env):
+    seed_users(env, ("sam", 8101, "running"), ("kim", 8102, "running"))
+    with_migrations(env)
+    env.admin.remove_user("sam")
+    env.fake.stream_out = restorable()
+    assert restore(env, "lee", 8110, ("removed", "sam"))["outcome"] == "ok"
+    with pytest.raises(admin_ops.Refused):
+        restore(env, "sam", 8111, ("removed", "sam"))  # kept data's name
+    return {"restore": True, "pack": True}
+
+
+def scenario_restore_fails(env):
+    seed_users(env, ("kim", 8101, "running"))
+    with_migrations(env)
+    env.fake.unhealthy = {container_id("openfit-lee", 1)}
+    assert restore(env, "lee", 8110, "upload", restorable())["outcome"] == "failed"
+    return {"restore": True, "down_v": True}
+
+
+def scenario_restore_refused(env):
+    seed_users(env, ("kim", 8101, "running"))
+    with_migrations(env)
+    assert restore(env, "lee", 8110, "upload", restorable(link=True))["outcome"] == "failed"
+
+
 def scenario_admin_build_fails(env):
     pending(env)
     env.fake.fail(lambda a: a[:4] == ["docker", "compose", "-p", "openfit-admin"] and "build" in a)
@@ -455,6 +551,11 @@ SCENARIOS = [
     scenario_download_backup,
     scenario_download_kept,
     scenario_delete_backup,
+    scenario_restore_upload,
+    scenario_restore_from_backup,
+    scenario_restore_from_kept,
+    scenario_restore_fails,
+    scenario_restore_refused,
     scenario_repo_add,
     scenario_repo_connect,
     scenario_repo_key_refused,
@@ -524,7 +625,7 @@ def known_names(env):
     path = env.data / "users.json"
     reg = json.loads(path.read_text()) if path.exists() else {"users": [], "removed": []}
     names = {e["name"] for e in reg["users"] + reg["removed"]}
-    names.update(o["user"]["name"] for o in env.admin.history() if o.get("kind") == "add_user")
+    names.update(o["user"]["name"] for o in env.admin.history() if o.get("kind") in ("add_user", "restore_user"))
     return names
 
 
@@ -637,7 +738,8 @@ def assert_in_lane(env, allow):
             if "-v" in rest:
                 assert rest == ["down", "-v"] and project != "openfit" and allow.get("down_v"), a
             else:
-                assert rest[-1] == "tracker" or rest in (["down"], ["up", "-d", "--no-build"]), a
+                assert rest[-1] == "tracker" or rest in (["down"], ["up", "-d", "--no-build"]) or (
+                    rest == ["up", "--no-start", "--no-build"] and allow.get("restore")), a
         elif sub == "ps":
             label = [x for x in a if x.startswith("label=com.docker.compose.project=")]
             assert len(label) == 1 and label[0].split("=", 2)[2] in projects, a
@@ -659,13 +761,27 @@ def assert_in_lane(env, allow):
         elif sub == "run":
             assert a[2:5] == ["--rm", "--label", "openfit.admin.helper=true"], a
             assert "openfit-admin:local" in a, a
-            if a[a.index("openfit-admin:local") + 1:][:3] == ["tar", "czf", "-"] or "--log-driver" in a:
-                # The download helper: a removed user's kept volume, read-only, exactly so.
-                kept = [n for n in names if a == admin_ops.kept_download_args(f"openfit-{n}_tracker-data")]
+            after = a[a.index("openfit-admin:local") + 1:]
+            if "xzf" in after:
+                # The restore helper: a restored user's new volume filled from
+                # the clean archive the Admin wrote, exactly so.
+                assert allow.get("restore"), a
+                filled = [n for n in names if a[8] == f"openfit-{n}_tracker-data:/v"]
+                assert filled and a[:8] == ["docker", "run", "--rm", "--label", "openfit.admin.helper=true",
+                                            "--log-driver", "none", "-v"], a
+                assert a[9:] == ["-v", "openfit-admin_admin-data:/b:ro", "openfit-admin:local", "tar", "xzf",
+                                 a[14], "-C", "/v"], a
+                assert re.fullmatch(r"/b/restore-uploads/[0-9a-f]{32}-clean\.tar\.gz", a[14]), a
+            elif after[:3] == ["tar", "czf", "-"] or "--log-driver" in a:
+                # The download helper: a removed user's kept volume, read-only,
+                # exactly so - or, packed for a restore, with nothing excluded.
+                kept = [n for n in names if a[8] == f"openfit-{n}_tracker-data:/v:ro"]
                 assert kept, a
+                excluded = [] if allow.get("pack") and "--exclude=./auth.json" not in a else [
+                    "--exclude=./auth.json", "--exclude=./.session_key"]
                 assert a == ["docker", "run", "--rm", "--label", "openfit.admin.helper=true", "--log-driver", "none",
                              "-v", f"openfit-{kept[0]}_tracker-data:/v:ro", "openfit-admin:local", "tar", "czf", "-",
-                             "-C", "/v", "--exclude=./auth.json", "--exclude=./.session_key", "."], a
+                             "-C", "/v", *excluded, "."], a
         elif sub == "image":
             assert a == ["docker", "image", "inspect", "--format", "{{.Id}}", "openfit-tracker:latest"], a
         elif sub == "info":
@@ -706,8 +822,14 @@ def test_the_admin_stays_in_its_lane(admin_env, scenario):
     commands = admin_env.fake.commands()
     assert any(a[-2:] == ["down", "-v"] for a in commands) == bool(allow.get("down_v"))
     assert any(a[1:3] == ["volume", "rm"] for a in commands) == bool(allow.get("volume_rm"))
-    # And the download helper, where a scenario reads kept data out.
-    assert any("--log-driver" in a for a in commands) == (scenario is scenario_download_kept)
+    # And the download helper, where a scenario reads kept data out; packs
+    # it, for a restore; and the restore helper, where a restore fills a volume.
+    assert any("--exclude=./auth.json" in a for a in commands) == (scenario is scenario_download_kept)
+    assert any("czf" in a and "--log-driver" in a and "--exclude=./auth.json" not in a for a in commands) == (
+        scenario is scenario_restore_from_kept)
+    assert any("xzf" in a for a in commands) == (scenario in (scenario_restore_upload, scenario_restore_from_backup,
+                                                               scenario_restore_from_kept, scenario_restore_fails))
+    assert any(a[-3:] == ["up", "--no-start", "--no-build"] for a in commands) == bool(allow.get("restore"))
     # And the Admin stopped, where its helper puts settings back: a
     # rollback, a revert, a revert's fallback - never an update that worked.
     assert any(a[1:4] == ["compose", "-p", "openfit-admin"] and a[-2:] == ["stop", "admin"] for a in commands) == (

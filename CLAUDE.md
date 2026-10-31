@@ -1994,7 +1994,7 @@ own calls to its device API. Full direction:
   byte-identical, to `tests/fixtures/apps/`. Not `apps/`, so it can't be
   confused with `app/`. The distribution design it starts is
   `docs/architecture/distribution.md`.
-- `admin/` — the OpenFit Admin (A1, A2, A4, A5, A6, U1's setup links, S1's portal, S2, `docs/architecture/admin.md`): its own
+- `admin/` — the OpenFit Admin (A1, A2, A4, A5, A6, U1's setup links, S1's portal, S2, R1, `docs/architecture/admin.md`): its own
   image (`python:3.12-slim`, git and `openssh-client`, the docker CLI and
   compose plugin copied from pinned images, `github_known_hosts` -
   GitHub's three host keys - at `/app/github_known_hosts`) and compose file (`docker compose -f
@@ -2096,7 +2096,52 @@ own calls to its device API. Full direction:
   the first byte a 502, one part-way cutting the download off; the log
   "Downloaded <file> (no password)", never the contents. `POST
   /api/backups/<name>/delete` deletes one, under the lock; each status
-  backup's `undo_relies` marks the set the Undo on offer puts back. And the app shelf
+  backup's `undo_relies` marks the set the Undo on offer puts back.
+  Restore a backup as a new user (R1, `admin.md`): `POST
+  /api/users/restore` (multipart `name`, `port`, `keep_devices`
+  `true`/`false`, `file` — the one non-JSON body the guard lets through,
+  the header its guard; `parse_form_data()` streaming the file part into
+  `new_upload()`'s `/data/restore-uploads/<32 hex>.tar.gz`, 0600, through
+  `_Capped`, 413 past `UPLOAD_MAX` 2 GB; Flask's `MAX_CONTENT_LENGTH` 2 GB
+  plus `UPLOAD_MARGIN`, every other request held to `BODY_MAX` 1 MB in
+  `guard()`; refused or cut off, `drop_upload()`) and `POST
+  /api/users/restore-from {name, port, keep_devices, backup | removed}`
+  (exactly one; a listed backup else 404, kept data else 404, a
+  container in its project 409) → `start_restore(name, port,
+  keep_devices, source, host)`: `keep_devices` a bool (400), Add user's
+  name/port rules with `kept_ok=False` (a name with kept data 409, "<name>
+  has kept data on this server. Choose another name."), the lock, the
+  image, the shelf, no unrecorded volume (409); then the op
+  `restore_user` (`user`, `source` `{kind, name, user}`, `keep_devices`):
+  kept data packed first by `kept_pack_args()` (the download helper's
+  form, nothing excluded) through `Runner.stream()` into a file; then the
+  archive opened `r:gz` and `check_members()` (only regular files and
+  folders, `member_name()` — leading `./` stripped, no absolute name, `..`,
+  NUL, empty or `.` part or part over 255 — no name twice, ≤ `MAX_MEMBERS`
+  200,000, ≤ `MAX_UNPACKED` 8 GB of header sizes), `check_database()`
+  (`tracker.db`, with its `-wal`, copied out and opened `mode=ro`,
+  defensive: `integrity_check` `ok`, `schema_migrations` there, its MAX
+  ≤ `newest_migration()` — the highest `NNN` of `app/migrations/` at HEAD
+  by `git ls-tree`, `MIGRATION_FILE` — else `NEWER_BACKUP`) and
+  `write_clean()` (a fresh `w:gz`, `<32 hex>-clean.tar.gz`, of the checked
+  members, new headers, mode `& 0o777`, less `left_out()`:
+  `NEVER_RESTORED` auth.json, .session_key, app_updates.json, and unless
+  kept `.secret_key` and `.garminconnect/`); a refusal "<why> Nothing was
+  created."; then the compose file, `up --no-start --no-build`, the
+  helper `restore_helper_args()` (exactly `docker run --rm --label
+  openfit.admin.helper=true --log-driver none -v <volume>:/v -v
+  openfit-admin_admin-data:/b:ro openfit-admin:local tar xzf
+  /b/restore-uploads/<clean> -C /v`, `CLEAN_FILE` only), `up -d
+  --no-build`, the health check, then `users.json`; "Restored <name>.
+  They start locked: use Setup link to give them a password."; a failure
+  from the create on `_take_back()`'s `down -v`. Everything in
+  `restore-uploads/` deleted as the op ends, and at startup
+  (`_clear_restores()`). The page: Add user's Restore from a file (Add
+  user → Restore user, Keep device logins ticked, Clear file, 2 GB checked
+  first, `api()` sending a FormData as multipart), Restore as a new user
+  in a backup's or kept data's popup (`restoreBlock()`, the device-login
+  warning `deviceWarning()` while the backup's user is a current one),
+  and Setup link in a successful restore's Activity result. And the app shelf
   (A5): the volume `openfit-library`, made by the Admin's compose file,
   written through the Admin's `/library` and mounted read-only at
   `/library` by every user — the primary through
@@ -3356,7 +3401,14 @@ same PR:
   data); a library app's taken id isn't told to use Update; the session
   cookie named by the port (everyone signed out once by the rollout); the
   swap helper stopping the Admin before every restore; B3's `_inside`
-  guard in `_update_files()` tested. Still to come, in order: L4;
+  guard in `_update_files()` tested. Then R1 (`admin/` only; no
+  migration): restore a backup as a new user — uploaded to Add user (a
+  download: moving someone between servers) or straight from a backup or
+  kept data — the archive checked member by member and a clean copy
+  written (never the password, its sessions' key or the app update notes;
+  the device logins only if kept), extracted by a helper into a new
+  user's brand new volume; they start locked, Setup link in the result.
+  Restoring over a user, or merging, is out. Still to come, in order: L4;
   non-GitHub hosts, HTTPS or token access, and per-user repo visibility
   are out; installing an app with folders
   inside it is out; scheduled updates

@@ -835,11 +835,15 @@ function boot(stored, status) {
     localStorage: { getItem: k => store.has(k) ? store.get(k) : null, setItem: (k, v) => store.set(k, String(v)), removeItem: k => store.delete(k) },
     location: { protocol: 'http:', hostname: '192.168.1.10', reload() {} },
     navigator: {}, window: { isSecureContext: false },
+    // A FormData of the page's own: its entries in order, a file as its name and size.
+    FormData: class { constructor() { this.entries = []; }
+                      append(k, v) { this.entries.push([k, v && typeof v === 'object' ? { file: v.name, size: v.size } : String(v)]); } },
     fetch: async (url, opts) => {
       opts = opts || {};
-      fetches.push({ url, method: opts.method || 'GET', header: (opts.headers || {})['X-OpenFit-Admin'] || null, body: opts.body || null });
+      fetches.push({ url, method: opts.method || 'GET', header: (opts.headers || {})['X-OpenFit-Admin'] || null, body: opts.body || null,
+                     type: (opts.headers || {})['Content-Type'] || null });
       const background = ['/api/update', '/api/undo', '/api/admin/update', '/api/admin/revert', '/api/library/update',
-                          '/api/users'];
+                          '/api/users', '/api/users/restore', '/api/users/restore-from'];
       // A reply a test set for this url (page.replies[url] = {status, body}), else the server's usual.
       const reply = (page.replies || {})[url];
       if (reply) return { status: reply.status, ok: reply.status < 400, json: async () => JSON.parse(JSON.stringify(reply.body)) };
