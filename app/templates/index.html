@@ -3047,7 +3047,7 @@ h5 + .dnote{margin-top:0;}
   /* Why an app on the shelf can't be added, by its state. */
   const SHELF_STATES = {
     installed:        () => 'Installed',
-    replaces_pending: a  => `Replaces your ${a.replaces_name}: available in a coming update.`,
+    replaces_pending: a  => `You have your own ${a.replaces_name}. Uninstall it and delete its data under Your data to use this one.`,
     needs_update:     () => 'Needs a newer OpenFit.',
     unsupported:      () => "It has folders inside it, which this OpenFit can't install yet.",
   };

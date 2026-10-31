@@ -706,8 +706,11 @@ def test_install_from_the_library_refuses_each_state_but_available(client, conn,
         "mine": "Already installed",
         "nested": "It has folders inside it, which this OpenFit can't install yet.",
         "newer": "Needs a newer OpenFit.",
-        "heir": "Heir replaces your My old app. Moving it across comes in a coming update.",
-        "heir2": "Heir 2 replaces your gone. Moving it across comes in a coming update.",
+        # B2 is parked: what to do instead - the user's own app and its data out of the way first.
+        "heir": "You have your own My old app. To use this one instead, uninstall yours and delete its data "
+                "under Your data first.",
+        "heir2": "You have your own gone. To use this one instead, uninstall yours and delete its data "
+                 "under Your data first.",
     }
     assert tree(apps_dir) == before
 
@@ -771,7 +774,7 @@ def test_frms_published_by_the_admin_from_the_aviation_repo_is_browsed_and_insta
     assert [(a["id"], a["library"]) for a in client.get("/api/apps").get_json()] == [("openfitavi.frms", "openfitavi")]
 
 
-def test_frms_on_the_shelf_waits_for_b2_while_a_custom_frms_is_installed(client, apps_dir, library, tmp_path):
+def test_frms_on_the_shelf_is_refused_while_a_custom_frms_is_installed(client, apps_dir, library, tmp_path):
     publish_both(tmp_path, library)
     write(apps_dir / "frms", {"app.yaml": "id: frms\nname: FRMS\n" + SIZE})
 
@@ -779,5 +782,7 @@ def test_frms_on_the_shelf_waits_for_b2_while_a_custom_frms_is_installed(client,
     assert (frms["id"], frms["state"], frms["replaces_name"]) == ("openfitavi.frms", "replaces_pending", "FRMS")
     resp = client.post("/api/library/openfitavi/frms/install")
     assert resp.status_code == 409
-    assert resp.get_json()["error"] == "FRMS replaces your FRMS. Moving it across comes in a coming update."
+    assert resp.get_json()["error"] == (
+        "You have your own FRMS. To use this one instead, uninstall yours and delete its data under Your data first."
+    )
     assert sorted(os.listdir(apps_dir)) == ["frms"]
