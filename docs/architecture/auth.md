@@ -149,9 +149,9 @@ The settings popup ends with **Sign out**: it calls logout, then reloads.
 
 ## The cookie
 
-`openfit_session`: `HttpOnly`, `SameSite=Lax`, permanent for 30 days and
-renewed on every request (so it lapses after a month unused), signed with
-the key in `/data/.session_key`.
+`openfit_session_<port>` - `openfit_session_8080`: `HttpOnly`,
+`SameSite=Lax`, permanent for 30 days and renewed on every request (so it
+lapses after a month unused), signed with the key in `/data/.session_key`.
 
 **No `Secure` flag**, on purpose: OpenFit is plain HTTP on your LAN, and a
 browser never sends a `Secure` cookie back over `http://`, so with it nobody
@@ -160,10 +160,25 @@ HTTPS and the `.local` names are later work. On a network you don't trust,
 the cookie (like the password, as you type it) is readable in transit, the
 same as any plain-HTTP login.
 
-Cookies are kept apart by host, not by port. Every OpenFit on one server
-uses the same cookie name, so one browser signed in to two of them (say
-`:8080` and `:8101`) signs out of one each time it signs in to the other.
-It's never let in to the wrong one: each container signs with its own key.
+**Named by the port** (T1). A browser keeps cookies apart by host, not by
+port: one cookie of a name for `192.168.1.127`, whatever the port. With one
+name for every OpenFit on a server, one browser signed in to two of them
+(say `:8080` and `:8101`) had a single cookie between them, so signing in
+to one replaced the other's and signed it out. Each OpenFit now names its
+cookie by the port the request came to, so they sit side by side and both
+stay signed in. It was never let in to the wrong one, before or since: each
+container signs with its own key.
+
+The name is `_KeyFileSessions.get_cookie_name()` in `app/main.py`: inside a
+request, `openfit_session_` and the digits after the last `:` of the
+request's host (`request.host`), 1 to 5 of them, else `80` - no port (as
+for port 80 itself, which the host leaves out), or one that isn't one
+(`a:b:c`, `x:99999999`). Outside a request it's plain `openfit_session`.
+Nothing else about the cookie changed.
+
+Rolling it out signs everyone out once: the cookie a browser holds is under
+the old name, `openfit_session`, which nothing reads any more (it lapses by
+itself within 30 days). Sign in again, once per OpenFit.
 
 ## The Admin's Setup link
 

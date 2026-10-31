@@ -805,9 +805,11 @@ runs, and 409 when there's nothing to apply ("Update OpenFit first: …", or
    held: the helper finishes it (below).
 
 Every compose command on the Admin's own project goes through one function,
-`admin_compose()` (`admin_ops.py`), which runs only `build admin` and `up -d
---no-build --force-recreate admin` and refuses anything else, and it's called
-from exactly two places: step 5, and the helper.
+`admin_compose()` (`admin_ops.py`), which runs only `build admin`, `stop
+admin` and `up -d --no-build --force-recreate admin` and refuses anything
+else, and it's called from exactly three places: step 5 (the build), and the
+helper's `stop()` and `recreate()`. The Admin's own steps never stop it:
+only the helper does, and every stop is followed by an `up`.
 
 ### What the helper does
 
@@ -825,10 +827,16 @@ sleep)`, which the tests call directly. In order:
    the user system's check on port 8090, every 2 s for up to 60 s.
 4. **Healthy**: the result is written as `ok`, and the helper exits.
 5. **Not healthy** (or the new Admin didn't start), it rolls back:
-   `docker tag openfit-admin:prev openfit-admin:local`; the snapshot restored,
-   each file in `/data/self-update/<stamp>/` copied back over `/data/`, and any
-   of the six names the snapshot doesn't have removed; `up -d --no-build
-   --force-recreate admin` again, and the health check. The result is
+   `docker tag openfit-admin:prev openfit-admin:local`; **the Admin stopped**
+   (`docker compose -p openfit-admin -f <repo>/admin/docker-compose.yml stop
+   admin`, T1), so a slow new Admin, still running, can't write over the
+   settings as they go back; the snapshot restored, each file in
+   `/data/self-update/<stamp>/` copied back over `/data/`, and any of the six
+   names the snapshot doesn't have removed; `up -d --no-build
+   --force-recreate admin` again, which starts it, and the health check. A
+   stop that fails is logged and the settings are put back all the same (the
+   recreate replaces the container either way, and an Admin on the wrong
+   settings is the worse of the two). The result is
    `rolled_back` if the old Admin answers, else `failed`, with the log saying
    exactly where things stand (which image `:local` is, whether the settings
    are back) and the commands to run by hand.
@@ -974,7 +982,9 @@ sleep)` in `admin_swap.py`:
 2. **The previous image**: `docker tag openfit-admin:prev openfit-admin:local`.
    If that fails, nothing has changed: `failed`, the Admin still on its
    version.
-3. **Only `admin.json` and `users.json`** come back from the update's
+3. **The Admin stopped** (`stop admin`, T1), so the current one can't
+   write over the settings as they go back; then **only `admin.json` and
+   `users.json`** come back from the update's
    snapshot (one it doesn't have is removed). `auth.json`, `secret_key`,
    `history.json` and `last_check.json` stay as they are now: the admin
    password and its sessions survive (nobody is logged out), the activity
@@ -983,8 +993,9 @@ sleep)` in `admin_swap.py`:
    then the check on 8090, every 2 s for up to 60 s.
 5. **Healthy**: `ok`, finished as "The Admin went back to `<short>`."
 6. **Not healthy** (or it didn't start, or the settings didn't go back):
-   `docker tag openfit-admin:next openfit-admin:local`, all six files back
-   from the fresh snapshot, recreate and health-check: `rolled_back` ("The
+   `docker tag openfit-admin:next openfit-admin:local`, the Admin stopped
+   again, all six files back from the fresh snapshot, recreate and
+   health-check: `rolled_back` ("The
    previous Admin didn't come up, so this version was put back, with its
    settings as they were.") if it answers, else `failed`, with where things
    stand and the commands by hand (`docker tag openfit-admin:next
@@ -1466,9 +1477,12 @@ Tailscale sidecars and more), and the Admin must never touch any of them.
 - **Its own project only to update itself.** The `openfit-admin` project is
   only ever `docker compose -p openfit-admin -f
   <OPENFIT_REPO>/admin/docker-compose.yml`, run in `<OPENFIT_REPO>/admin`,
-  and only `build admin` (the running Admin) or `up -d --no-build
-  --force-recreate admin` (the helper), through `admin_compose()`, which
-  refuses anything else. Its own container is found by its labels, health-
+  and only `build admin` (the running Admin), or `stop admin` and `up -d
+  --no-build --force-recreate admin` (the helper: a stop just before it puts
+  settings back, always followed by the up that starts it again - the lane
+  test holds a stop to the helper's swap or revert, and to an up after it),
+  through `admin_compose()`, which refuses anything else. Its own container
+  is found by its labels, health-
   checked and inspected for its image; the helper is looked for by its name,
   `openfit-admin-swap`, and started exactly in one of its two forms: an
   update's, on `openfit-admin:prev`, or a revert's (S2), on
@@ -1574,8 +1588,9 @@ For A6, on the server:
    on GitHub as a deploy key (read-only), then **Connect**. The Activity log
    says "Connected Raven-git-hub/openfit-aviation, and published 1 app to
    the app library as 'openfitavi'."
-4. In OpenFit, Browse lists FRMS under "OpenFit Aviation", saying it
-   replaces your FRMS (until B2).
+4. In OpenFit, Browse lists FRMS under "OpenFit Aviation", saying you have
+   your own FRMS, to uninstall it and delete its data first (B2, moving it
+   across, is parked).
 
 For S2: Check now, Update OpenFit, then Update the Admin. Revert is on
 offer straight away, under Versions, in the Admin's last update: it takes the

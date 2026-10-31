@@ -1661,7 +1661,10 @@ the files.
      can be absolute or name anywhere outside the new folder. Every file's
      content must be text.
 3. **A taken id is refused** with a 409: `'<id>' already exists — use Update
-   in its row to replace its files, or remove it first to reinstall.` That's
+   in its row to replace its files, or remove it first to reinstall.` (A
+   library app's id, which has no Update, says instead `'<id>' is already
+   installed. It updates itself when your admin publishes a new version.`:
+   `taken_message()`, T1.) That's
    when `<apps dir>/<id>` exists as anything (a folder, a file, a broken
    link), or an app in another folder already loads under that id. An
    install only ever creates. It never updates an app in place: **Update**
@@ -1830,9 +1833,10 @@ no apps in the library yet.". Each row is a disclosure button (the
 Applications list's `expandable()`): the name and a library tag ("OpenFit"
 for `openfit`, another source as written). Open, it shows the description (or
 "No description.") and **Add Application** for an available app, or the
-state in words: Installed; "Replaces your <name>: available in a coming
-update."; "Needs a newer OpenFit."; or the unsupported reason. All of it set
-as text.
+state in words: Installed; "You have your own <name>. Uninstall it and
+delete its data under Your data to use this one." (T1: B2 is parked, so
+that's the way to it); "Needs a newer OpenFit."; or the unsupported reason.
+All of it set as text.
 
 **Add Application** reads the app's files (`GET
 /api/library/<source>/<app>`), closes Browse and opens the Add popup in
@@ -2166,9 +2170,13 @@ again, or uninstall the app, to see or remove it.
   shelf's own files as `<source>.<app>`; any body is ignored. The app's state
   is worked out afresh first: 409 "Already installed", or the state's words
   for one that's unsupported, needs a newer OpenFit, or replaces an app still
-  here ("<name> replaces your <replaces_name>. Moving it across comes in a
-  coming update."). Then `install_library_app()`: `201 {"ok": true, "id",
-  "has_app_py"}`, as `POST /api/apps`, its refusals as that route gives them.
+  here ("You have your own <replaces_name>. To use this one instead,
+  uninstall yours and delete its data under Your data first."). Then
+  `install_library_app()`: `201 {"ok": true, "id", "has_app_py"}`, as `POST
+  /api/apps`, its refusals as that route gives them - a library id already
+  taken "'<id>' is already installed. It updates itself when your admin
+  publishes a new version." (`taken_message()`; a custom id's says to use
+  Update in its row).
 - `POST /api/app/<id>/render` with `{"cfg": {key: value}}` → the app's spec,
   rendered now with that `cfg`, passed to `render()` as given. A body with no
   `cfg`, or one that isn't an object (or no body at all), renders with `{}`.
