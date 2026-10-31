@@ -17,9 +17,10 @@ POST_ROUTES = [
     "/api/users", "/api/users/sam/start", "/api/users/sam/stop", "/api/users/sam/remove",
     "/api/users/andy/start", "/api/users/andy/stop", "/api/removed/kim/delete-data",
     "/api/users/sam/restart", "/api/users/andy/restart", "/api/library/update", "/api/library/publish",
+    "/api/users/restore-from", "/api/users/restore",
 ]
-# A body every route would act on: a new user, the right confirm.
-BODY = {"name": "lee", "port": 8110, "confirm": "kim"}
+# A body every route would act on: a new user, the right confirm, kim's kept data to restore.
+BODY = {"name": "lee", "port": 8110, "confirm": "kim", "removed": "kim", "keep_devices": True}
 
 
 def with_users(env):
