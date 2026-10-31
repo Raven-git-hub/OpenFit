@@ -133,9 +133,29 @@ def test_installing_a_library_app_twice_is_a_409(apps_dir):
         install(apps_dir, "frms")
 
     assert refused.value.status == 409
-    assert str(refused.value) == apps.taken_message("openfit.frms")
+    # Not "use Update in its row": a library app has none - it follows the shelf.
+    assert str(refused.value) == (
+        "'openfit.frms' is already installed. It updates itself when your admin publishes a new version."
+    )
     assert listing(apps_dir) == ["openfit.frms"]
     assert {p.name: p.read_bytes() for p in (apps_dir / "openfit.frms").iterdir()} == before
+
+
+@pytest.mark.parametrize("app_id, said", [
+    # A library app's id (LIBRARY_APP_ID): it has no Update, so none is offered.
+    ("openfit.frms", "'openfit.frms' is already installed. It updates itself when your admin publishes a new version."),
+    ("openfitavi.frms",
+     "'openfitavi.frms' is already installed. It updates itself when your admin publishes a new version."),
+    # A custom app's - an install's, or a hand-placed one's: Update is how it changes.
+    ("frms", "'frms' already exists — use Update in its row to replace its files, or remove it first to reinstall."),
+    ("frms-2",
+     "'frms-2' already exists — use Update in its row to replace its files, or remove it first to reinstall."),
+    ("My_App",
+     "'My_App' already exists — use Update in its row to replace its files, or remove it first to reinstall."),
+])
+def test_a_taken_id_is_said_by_whether_the_app_is_a_library_one(app_id, said):
+    assert apps.taken_message(app_id) == said
+
 
 
 @pytest.mark.parametrize("source", ["OpenFit", "open-fit", "1fit", "", "open.fit", "openfit ", None])

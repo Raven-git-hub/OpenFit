@@ -691,6 +691,11 @@ class InstallError(LibraryError):
 
 
 def taken_message(app_id):
+    """What an install says of an id already taken (409). A custom app is
+    changed with Update in its row; a library app has no Update - it
+    follows the shelf by itself (shelf.sync_library_apps())."""
+    if isinstance(app_id, str) and LIBRARY_APP_ID.match(app_id):
+        return f"'{app_id}' is already installed. It updates itself when your admin publishes a new version."
     return (
         f"'{app_id}' already exists — use Update in its row to replace its files, "
         "or remove it first to reinstall."
