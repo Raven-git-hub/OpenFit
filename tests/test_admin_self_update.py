@@ -49,6 +49,7 @@ ADMIN_PS = docker(
 HELPER_PS = docker("ps", "-a", "--no-trunc", "--filter", "name=^openfit-admin-swap$", "--format", "{{.ID}}")
 RETAG = docker("tag", "openfit-admin:prev", "openfit-admin:local")
 UP = ("up", "-d", "--no-build", "--force-recreate", "admin")
+STOP = ("stop", "admin")
 
 
 def admin_cid(n):
@@ -64,6 +65,21 @@ def acompose(env, *args):
 
 def health(cid):
     return docker("exec", cid, "python", "-c", admin_ops.ADMIN_HEALTH_CODE)
+
+
+def watch(env, names=admin_ops.SNAPSHOT_FILES):
+    """Each compose command on the Admin's own project as it's run - (its
+    command, the settings files as they are at that moment, {name:
+    bytes}) - answered as the fake answers it: which settings an Admin
+    stopped or started had on disk."""
+    seen = []
+
+    def at(args):
+        seen.append((tuple(args[6:]), {n: (env.data / n).read_bytes() for n in names if (env.data / n).exists()}))
+        return env.fake.docker(args)
+
+    env.fake.rules.append((lambda a: a[:4] == ["docker", "compose", "-p", "openfit-admin"], at))
+    return seen
 
 
 def helper_run(env, stamp=STAMP, op_id=OP_ID):
@@ -139,6 +155,11 @@ def write_settings(env):
         with os.fdopen(fd, "wb") as f:
             f.write(body)
     return {name: (d / name).read_bytes() for name in admin_ops.SNAPSHOT_FILES}
+
+
+def files_in(folder, names=admin_ops.SNAPSHOT_FILES):
+    """The settings files there are in `folder`: {name: bytes}."""
+    return {n: (folder / n).read_bytes() for n in names if (folder / n).exists()}
 
 
 @pytest.fixture
@@ -453,7 +474,7 @@ def test_the_swap_rolls_back_an_admin_that_doesnt_answer(admin_env):
     calls = env.fake.calls
     assert calls[:2] == [acompose(env, *UP), ADMIN_PS]
     assert calls[2:33] == [health(admin_cid(1))] * 31  # every 2s for 60s
-    assert calls[33:] == [RETAG, acompose(env, *UP), ADMIN_PS, health(admin_cid(2))]
+    assert calls[33:] == [RETAG, acompose(env, *STOP), acompose(env, *UP), ADMIN_PS, health(admin_cid(2))]
     for name, body in snapped.items():
         assert (env.data / name).read_bytes() == body, name
     assert not (env.data / "users.json").exists()
@@ -464,6 +485,53 @@ def test_the_swap_rolls_back_an_admin_that_doesnt_answer(admin_env):
     assert "The new Admin didn't answer." in texts
     assert "Its settings are put back as they were before the update." in texts
     assert texts[-1] == "The old Admin is answering again."
+
+
+def test_the_rollback_stops_the_new_admin_before_it_puts_the_settings_back(admin_env):
+    """A slow new Admin, still running, could write over the settings as
+    they're put back: so it's stopped first, then they're put back, then
+    the old one is started."""
+    env = admin_env
+    pulled(env)
+    write_settings(env)
+    hand_over(env)
+    snapped = files_in(env.data / "self-update" / STAMP)
+    # What the new version wrote in its moment.
+    (env.data / "admin.json").write_text(json.dumps(dict(admin_ops.DEFAULT_SETTINGS, user="newv")))
+    (env.data / "auth.json").write_text('{"password_hash": "pbkdf2:new"}')
+    written = files_in(env.data)
+    assert written != snapped
+    env.fake.unhealthy = {admin_cid(1)}
+    seen = watch(env)
+    env.fake.clear()
+
+    assert swap(env) == "rolled_back"
+
+    # The new Admin swapped in; then stopped, its settings still its own -
+    # nothing put back yet; then the old one started, on the old settings.
+    assert seen == [(UP, written), (STOP, written), (UP, snapped)]
+    assert files_in(env.data) == snapped
+    commands = env.fake.commands()
+    assert commands.index(acompose(env, *STOP).args) == commands.index(RETAG.args) + 1
+
+
+def test_a_stop_that_fails_is_said_and_the_settings_are_put_back_all_the_same(admin_env):
+    env = admin_env
+    pulled(env)
+    write_settings(env)
+    hand_over(env)
+    snapped = files_in(env.data / "self-update" / STAMP)
+    (env.data / "admin.json").write_text(json.dumps(dict(admin_ops.DEFAULT_SETTINGS, user="newv")))
+    env.fake.unhealthy = {admin_cid(1)}
+    env.fake.fail(lambda a: a[-2:] == ["stop", "admin"], err="cannot stop container")
+
+    assert swap(env) == "rolled_back"
+
+    assert files_in(env.data) == snapped
+    texts = [line["text"] for line in result(env)["lines"]]
+    said = texts.index("Couldn't stop the Admin before putting its settings back, so they're put back all the same."
+                       "\ncannot stop container")
+    assert texts[said + 1] == "Its settings are put back as they were before the update."
 
 
 def test_a_new_admin_that_wont_start_is_rolled_back(admin_env):
@@ -477,10 +545,11 @@ def test_a_new_admin_that_wont_start_is_rolled_back(admin_env):
         ups.append(args)
         return (1, "", "port is already allocated") if len(ups) == 1 else (0, "", "")
 
-    env.fake.rules.append((lambda a: a[:4] == ["docker", "compose", "-p", "openfit-admin"], up))
+    env.fake.rules.append((lambda a: a[:4] == ["docker", "compose", "-p", "openfit-admin"] and "up" in a, up))
 
     assert swap(env) == "rolled_back"
-    assert env.fake.calls == [acompose(env, *UP), RETAG, acompose(env, *UP), ADMIN_PS, health(admin_cid(0))]
+    assert env.fake.calls == [acompose(env, *UP), RETAG, acompose(env, *STOP), acompose(env, *UP), ADMIN_PS,
+                              health(admin_cid(0))]
     assert any("port is already allocated" in line["text"] for line in result(env)["lines"])
 
 
@@ -668,21 +737,23 @@ def test_the_admins_own_project_only_through_admin_compose(admin_env):
         assert a[:4] == ["docker", "compose", "-p", "openfit-admin"], a
         assert "admin_compose" in frames, (a, frames)
         assert a[4:6] == ["-f", os.path.join(env.repos.repo, "admin", "docker-compose.yml")], a
-        assert tuple(a[6:]) in (("build", "admin"), UP), a
+        assert tuple(a[6:]) in (("build", "admin"), UP, STOP), a
         seen.add(tuple(a[6:]))
-    assert seen == {("build", "admin"), UP}
+    assert seen == {("build", "admin"), UP, STOP}
 
 
-def test_admin_compose_runs_only_its_two_commands(admin_env):
+def test_admin_compose_runs_only_its_three_commands(admin_env):
     for args in (("down",), ("down", "-v"), ("build",), ("up", "-d"), ("build", "admin", "--no-cache"),
-                 ("up", "-d", "--no-build", "--force-recreate"), ("rm", "-f", "admin"), ("stop", "admin")):
+                 ("up", "-d", "--no-build", "--force-recreate"), ("rm", "-f", "admin"), ("stop",),
+                 ("stop", "admin", "-t", "0"), ("stop", "tracker"), ("kill", "admin"), ("restart", "admin")):
         with pytest.raises(ValueError):
             admin_ops.admin_compose(admin_env.fake, admin_env.repos.repo, *args)
     assert admin_env.fake.calls == []
+    assert admin_ops.ADMIN_COMPOSE_ARGS == (("build", "admin"), UP, STOP)
 
 
-def test_admin_compose_is_called_from_exactly_two_places():
-    """The Admin's build, and the helper's recreate."""
+def test_admin_compose_is_called_from_exactly_three_places():
+    """The Admin's build, and the helper's stop and recreate."""
     sites = []
     for path in sorted(glob.glob(os.path.join(ROOT, "admin", "*.py"))):
         tree = ast.parse(open(path, encoding="utf-8").read())
@@ -695,7 +766,8 @@ def test_admin_compose_is_called_from_exactly_two_places():
                     name = f.id if isinstance(f, ast.Name) else f.attr if isinstance(f, ast.Attribute) else None
                     if name == "admin_compose":
                         sites.append((os.path.basename(path), fn.name))
-    assert sorted(sites) == [("admin_ops.py", "_admin_update"), ("admin_swap.py", "recreate")]
+    assert sorted(sites) == [("admin_ops.py", "_admin_update"), ("admin_swap.py", "recreate"),
+                             ("admin_swap.py", "stop")]
 
 
 def test_the_swap_never_names_another_project_and_never_deletes(admin_env):
@@ -712,6 +784,9 @@ def test_the_swap_never_names_another_project_and_never_deletes(admin_env):
         assert a[0] == "docker" and a[1] in ("compose", "ps", "exec", "tag"), a
         if a[1] == "compose":
             assert a[2:4] == ["-p", "openfit-admin"], a
+            if "stop" in a:  # the one stop: the Admin's own service, through admin_compose()
+                assert a == acompose(env, *STOP).args, a
+                continue
         if a[1] == "ps":
             projects = [x.split("=", 2)[2] for x in a if x.startswith("label=com.docker.compose.project=")]
             assert projects == ["openfit-admin"], a

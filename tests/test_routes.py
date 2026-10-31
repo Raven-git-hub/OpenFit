@@ -3216,7 +3216,7 @@ def test_browse_lists_the_shelf_in_order_with_each_apps_state(client, browse_she
     assert {i: (rows[i]["add"], rows[i]["state"]) for i in
             ("openfit.added", "openfit.heir", "openfit.newer", "openfit.deep")} == {
         "openfit.added": (None, "Installed"),
-        "openfit.heir": (None, "Replaces your Old one: available in a coming update."),
+        "openfit.heir": (None, "You have your own Old one. Uninstall it and delete its data under Your data to use this one."),
         "openfit.newer": (None, "Needs a newer OpenFit."),
         "openfit.deep": (None, "It has folders inside it, which this OpenFit can't install yet."),
     }

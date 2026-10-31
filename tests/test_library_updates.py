@@ -469,6 +469,50 @@ def test_a_version_this_openfit_cant_install_fails_and_changes_nothing(env, file
     assert rendered(env) == {"type": "empty", "message": "version 1"}
 
 
+def test_an_app_folder_that_leads_out_of_the_shelf_is_never_read(env, monkeypatch, capsys):
+    """_update_files() holds every path inside the shelf (_inside()): an
+    app's folder there that's a link out of it - openfitavi/frms onto a
+    folder elsewhere on the server, holding what a read through it would
+    install - fails, the installed copy as it was, and nothing outside the
+    library is read: not its listing, not a file."""
+    frms = {p.name: p.read_text(encoding="utf-8") for p in FRMS.iterdir() if p.is_file()}
+    publish(env, {"frms": frms})
+    install(env, "frms")
+    app_id = f"{SOURCE}.frms"
+    copy = installed(env, app_id)
+    newer = {**frms, "app.yaml": frms["app.yaml"].replace("Fatigue risk management", "Fatigue-risk management")}
+    assert newer != frms
+    publish(env, {"frms": newer})
+    sha = listed_sha(env, "frms")
+    elsewhere = env.tmp / "elsewhere"
+    write(elsewhere / "frms", newer)
+    on_shelf_folder = env.library / SOURCE / "frms"  # in the published set, through the source's link
+    shutil.rmtree(on_shelf_folder)
+    os.symlink(elsewhere / "frms", on_shelf_folder)
+    # Every path the shelf's reads take: a file (_read_regular()) or a folder's listing (_listing()).
+    touched = []
+    read, listing = shelf._read_regular, shelf._listing
+    monkeypatch.setattr(shelf, "_read_regular", lambda path, limit: touched.append(path) or read(path, limit))
+    monkeypatch.setattr(shelf, "_listing", lambda folder: touched.append(folder) or listing(folder))
+    capsys.readouterr()
+
+    result = sync(env)
+
+    note = {"state": "failed", "at": LATER, "sha256": sha, "changes": [],
+            "reason": f"{app_id}'s folder isn't on the shelf as its index says"}
+    assert result == {app_id: note} and notes(env) == {app_id: note}
+    assert installed(env, app_id) == copy
+    assert apps.find_app(str(env.apps), app_id).description.startswith("Fatigue risk management")
+    # Nothing outside the library read - the shelf's index and the update record aside, nothing at all.
+    library, outside = os.path.realpath(env.library), os.path.realpath(elsewhere)
+    assert touched
+    for path in touched:
+        real = os.path.realpath(path)
+        assert os.path.commonpath([outside, real]) != outside, path
+        assert os.path.commonpath([library, real]) == library or path == str(env.notes), path
+    assert f"[library] couldn't update {app_id}: {note['reason']}" in capsys.readouterr().out
+
+
 def test_an_app_that_left_the_shelf_is_removed_and_left_as_it_is(env, capsys):
     publish(env, {"hello": hello(1)})
     install(env)

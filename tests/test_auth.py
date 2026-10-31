@@ -418,7 +418,7 @@ def test_the_session_cookie(guest, client):
     resp = post(guest, "/api/auth/login", {"password": TEST_PASSWORD})
     cookie = _cookie(resp)
     parts = [p.strip() for p in cookie.split(";")]
-    assert parts[0].startswith("openfit_session=")
+    assert parts[0].startswith("openfit_session_80=")  # named by the port: none is 80
     flags = {p.split("=", 1)[0].lower(): (p.split("=", 1) + [""])[1] for p in parts[1:]}
     assert "httponly" in flags
     assert flags["samesite"] == "Lax"
@@ -428,10 +428,10 @@ def test_the_session_cookie(guest, client):
     assert abs(expires - datetime.now(timezone.utc) - timedelta(days=30)) < timedelta(minutes=2)
     # Renewed on use: any signed-in request sets it again, a fresh 30 days.
     again = _cookie(guest.get("/api/apps"))
-    assert again.startswith("openfit_session=") and "Expires=" in again
+    assert again.startswith("openfit_session_80=") and "Expires=" in again
     # Signing out deletes it.
     out = _cookie(post(guest, "/api/auth/logout"))
-    assert out.startswith("openfit_session=;") and "1970" in out
+    assert out.startswith("openfit_session_80=;") and "1970" in out
 
 
 def test_a_signed_out_request_sets_no_cookie(guest):
@@ -440,6 +440,123 @@ def test_a_signed_out_request_sets_no_cookie(guest):
         resp.close()
         assert "Set-Cookie" not in resp.headers, url
 
+
+
+# --- 6. one cookie per port --------------------------------------------------
+
+# A browser keeps one cookie of a name per host, whatever the port - as the
+# test client does - so the cookie is named by the port: two users'
+# OpenFits on one server never overwrite each other's session.
+
+SERVER = "192.168.1.127"
+
+
+@pytest.fixture
+def two_openfits(tmp_path, db_path, monkeypatch):
+    """Two users' OpenFits on one server, at :8080 and :8101 - each its own
+    account (auth.json: a password and its own session tag) and session
+    key, as each container has its own /data - told apart by the port a
+    request comes to. And one browser, that has never signed in to
+    either."""
+    from werkzeug.security import generate_password_hash
+
+    monkeypatch.setitem(main.app.config, "DB_PATH", db_path)
+    monkeypatch.setitem(main.app.config, "TESTING", True)
+    hashed = generate_password_hash(TEST_PASSWORD)
+    openfits = {}
+    for port, tag in (("8080", "a1" * 16), ("8101", "b2" * 16)):
+        folder = tmp_path / f"openfit-{port}"
+        folder.mkdir()
+        (folder / "auth.json").write_text(json.dumps({"password_hash": hashed, "session_tag": tag, "setup": None}))
+        openfits[port] = (str(folder / "auth.json"), str(folder / ".session_key"))
+    inner = main.app.wsgi_app
+
+    def by_port(environ, start_response):
+        # conftest's monkeypatch puts both paths back after the test.
+        main.app.config["AUTH_PATH"], main.app.config["SESSION_KEY_PATH"] = openfits[
+            environ["HTTP_HOST"].rpartition(":")[2]]
+        return inner(environ, start_response)
+
+    monkeypatch.setattr(main.app, "wsgi_app", by_port)
+    return main.app.test_client()
+
+
+def at(port):
+    return f"http://{SERVER}:{port}"
+
+
+def signed_in_at(browser, port):
+    """Whether `browser` is signed in to the OpenFit at `port`: its status,
+    and a guarded route - which answers 401 when it isn't."""
+    signed = browser.get("/api/auth/status", base_url=at(port)).get_json()["signed_in"]
+    apps = browser.get("/api/apps", base_url=at(port)).status_code
+    assert apps == (200 if signed else 401), (port, signed, apps)
+    return signed
+
+
+def test_signing_in_to_one_openfit_keeps_the_browser_signed_in_to_the_other(two_openfits):
+    browser = two_openfits
+
+    resp = browser.post("/api/auth/login", json={"password": TEST_PASSWORD}, headers=H, base_url=at(8080))
+    assert resp.status_code == 200
+    assert (signed_in_at(browser, 8080), signed_in_at(browser, 8101)) == (True, False)
+
+    # Signing in to the second leaves the first signed in.
+    resp = browser.post("/api/auth/login", json={"password": TEST_PASSWORD}, headers=H, base_url=at(8101))
+    assert resp.status_code == 200
+    assert (signed_in_at(browser, 8080), signed_in_at(browser, 8101)) == (True, True)
+    # A cookie each, for the one host, by the port.
+    assert browser.get_cookie("openfit_session_8080", domain=SERVER) is not None
+    assert browser.get_cookie("openfit_session_8101", domain=SERVER) is not None
+    assert browser.get_cookie("openfit_session", domain=SERVER) is None
+
+    # And signing out of one leaves the other.
+    assert browser.post("/api/auth/logout", headers=H, base_url=at(8101)).status_code == 200
+    assert (signed_in_at(browser, 8080), signed_in_at(browser, 8101)) == (True, False)
+    assert browser.get_cookie("openfit_session_8101", domain=SERVER) is None
+
+
+@pytest.mark.parametrize("host, name", [
+    (f"{SERVER}:8080", "openfit_session_8080"),
+    (f"{SERVER}:8101", "openfit_session_8101"),
+    ("openfit.lan:65535", "openfit_session_65535"),
+    ("[::1]:8101", "openfit_session_8101"),
+    # No port - nor 80 itself, which the request's host leaves out - is 80.
+    (SERVER, "openfit_session_80"),
+    ("localhost", "openfit_session_80"),
+    (f"{SERVER}:80", "openfit_session_80"),
+    ("[::1]", "openfit_session_80"),
+    # A host that isn't one falls back to 80.
+    ("a:b:c", "openfit_session_80"),
+    ("x:99999999", "openfit_session_80"),
+    ("x:", "openfit_session_80"),
+])
+def test_the_cookie_is_named_by_the_port(guest, client, host, name):
+    signed_in(client)
+    resp = guest.post("/api/auth/login", json={"password": TEST_PASSWORD}, headers={**H, "Host": host})
+    assert resp.status_code == 200
+    assert _cookie(resp).startswith(f"{name}=")
+    # Signing out deletes that one.
+    out = _cookie(guest.post("/api/auth/logout", headers={**H, "Host": host}))
+    assert out.startswith(f"{name}=;") and "1970" in out
+
+
+@pytest.mark.parametrize("host, port", [
+    ("192.168.1.127:8080", "8080"), ("h:1", "1"), ("h:65535", "65535"), ("h:00080", "00080"),
+    ("[::1]:8101", "8101"),
+    # The digits after the last ':', 1 to 5 of them - else 80.
+    ("", "80"), ("localhost", "80"), ("8080", "80"), ("a:b:c", "80"), ("x:99999999", "80"),
+    ("x:123456", "80"), ("x:", "80"), ("x:80a", "80"), ("x:-1", "80"), ("x: 81", "80"),
+    ("x:8080\n", "80"), ("x:\u0668\u0660\u0668\u0660", "80"), ("[::1]", "80"),
+])
+def test_the_port_is_the_digits_after_the_last_colon(host, port):
+    assert main.session_cookie_name("openfit_session", host) == f"openfit_session_{port}"
+
+
+def test_outside_a_request_the_cookie_is_openfit_session():
+    assert main.app.session_interface.get_cookie_name(main.app) == "openfit_session"
+    with main.app.test_request_context(base_url=at(8101)):
+        assert main.app.session_interface.get_cookie_name(main.app) == "openfit_session_8101"
 
 # --- 7. the page's three views -----------------------------------------------
 

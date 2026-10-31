@@ -48,7 +48,11 @@ own calls to its device API. Full direction:
   then signs this browser in; `GET /api/auth/status` → `{signed_in,
   password_set}`. Sessions: Flask's signed cookies through
   `_KeyFileSessions` (the key read per request from
-  `app.config["SESSION_KEY_PATH"]`), `openfit_session`, `HttpOnly`,
+  `app.config["SESSION_KEY_PATH"]`), `openfit_session_<port>` (T1:
+  `get_cookie_name()` → `session_cookie_name()`, the digits after the
+  last `:` of `request.host`, 1–5 of them, else `80`; outside a request
+  `openfit_session` — a browser keeps a host's cookies whatever the port,
+  so two OpenFits on one server each keep their own), `HttpOnly`,
   `SameSite=Lax`, not `Secure` (plain HTTP on the LAN; Tailscale from
   away), permanent for 30 days and refreshed on every request
   (`SESSION_REFRESH_EACH_REQUEST`); `session["auth"]` the tag.
@@ -274,7 +278,9 @@ own calls to its device API. Full direction:
   `<apps dir>/<id>` as anything, a broken link included, and no app in
   another folder loading under it) else 409 `"'<id>' already exists — use
   Update in its row to replace its files, or remove it first to
-  reinstall."` (install only creates, never updates — that's
+  reinstall."` (`taken_message()`; for a `LIBRARY_APP_ID`, which has no
+  Update, `"'<id>' is already installed. It updates itself when your admin
+  publishes a new version."`) (install only creates, never updates — that's
   `update_app()`); then
   `check_app(manifest, files)` — **the correctness layer that grows**; its
   rules so far: the app level (`requires` checked, an app needing more than
@@ -401,8 +407,9 @@ own calls to its device API. Full direction:
   `app:<id>` in `metrics`, `sessions` or `samples`, `LIMIT 1` each —
   `replaces_name` its id), `available`. `shelf_app()` one entry, or None;
   `refusal(entry)` its 409 words ("Already installed", `HAS_FOLDERS`,
-  "Needs a newer OpenFit.", "<name> replaces your <replaces_name>. Moving
-  it across comes in a coming update.") or None.
+  "Needs a newer OpenFit.", "You have your own <replaces_name>. To use
+  this one instead, uninstall yours and delete its data under Your data
+  first.") or None.
   `read_app_files(library_dir, source, app)` → `{name: text}`, found the
   same way, each file `O_NOFOLLOW|O_NONBLOCK` and `S_ISREG` once open (a
   link swapped in since the listing refused, 404), ≤ `MAX_APP_FILES` 64 and
@@ -1403,8 +1410,9 @@ own calls to its device API. Full direction:
   both `textContent`; open, `shelfPanel()`: the description
   (or "No description.") and **Add Application** (`btn sm primary`) for
   `available`, else the state in words (`SHELF_STATES`: Installed;
-  "Replaces your <replaces_name>: available in a coming update."; "Needs a
-  newer OpenFit."; the unsupported reason), as text. Add Application
+  "You have your own <replaces_name>. Uninstall it and delete its data
+  under Your data to use this one."; "Needs a newer OpenFit."; the
+  unsupported reason), as text. Add Application
   `api.libraryApp(source, app)` — a refusal in the row, Browse kept — then
   closes Browse and `openAddApp(files, null, null, lib)`, `lib` `{source,
   app, id, name}`: **library mode** — titled "Add application from the
@@ -2030,8 +2038,9 @@ own calls to its device API. Full direction:
   runs, and hands the swap to a `docker run -d --rm --name
   openfit-admin-swap` helper on `:prev` — never the new image —
   (`admin_swap.py`'s `swap()`): wait 3s, recreate the Admin, health-check
-  it on 8090 and, unhealthy, retag `:prev` as `:local`, put the snapshot
-  back and recreate again — `ok`, `rolled_back` or `failed`, its log in
+  it on 8090 and, unhealthy, retag `:prev` as `:local`, stop the Admin
+  (`stop()`, T1: so a slow new one can't write over the settings), put the
+  snapshot back and recreate again — `ok`, `rolled_back` or `failed`, its log in
   `/data/self_update_result.json` as it goes. The Admin running afterwards
   finishes the op from it (`_pick_up_swap()` at startup, before
   `_mark_interrupted()`; `_settle()` once the helper has gone), holding
@@ -2050,11 +2059,13 @@ own calls to its device API. Full direction:
   snapshot (pruning never takes the update's) and starts the helper on
   `openfit-admin:local` (the image running now, never `:prev`) with
   `admin_swap.py revert <update stamp> <fresh stamp> <op id>`
-  (`revert()`): wait 3s, `:prev` → `:local`, only `admin.json` and
-  `users.json` back from the update's snapshot (`REVERT_FILES`; the
-  password, `secret_key`, history and last check kept), recreate,
-  health-check; unhealthy, `:next` → `:local`, all six from the fresh
-  snapshot, recreate — `ok`, `rolled_back` or `failed`, finished as an
+  (`revert()`): wait 3s, `:prev` → `:local`, the Admin stopped, only
+  `admin.json` and `users.json` back from the update's snapshot
+  (`REVERT_FILES`; the password, `secret_key`, history and last check
+  kept), recreate, health-check; unhealthy, `:next` → `:local`, stopped
+  again, all six from the fresh snapshot, recreate — every restore just
+  after a stop (a stop that fails logged, the settings put back all the
+  same) — `ok`, `rolled_back` or `failed`, finished as an
   update is; an Admin from before reverts can't read that result (it
   drops it and marks the op interrupted), so the helper finishes the
   record for it (`finish_for_an_older_admin()`). `_admin_base()` counts an
@@ -2062,8 +2073,9 @@ own calls to its device API. Full direction:
   `admin_tag()` (the running id → `:prev`/`:next`, `:prev`/`:next` →
   `:local`), the helper's arguments only `swap_helper_args()`'s two forms.
   The `openfit-admin`
-  project only through `admin_compose()`: `build admin` or `up -d
-  --no-build --force-recreate admin`, nothing else. Downloads (S2) never
+  project only through `admin_compose()`: `build admin`, `stop admin` or
+  `up -d --no-build --force-recreate admin` (`ADMIN_COMPOSE_ARGS`), nothing
+  else — the stop only ever the helper's, always followed by its up. Downloads (S2) never
   hold the password: `auth.json` and `.session_key` at the volume's root
   (`NO_PASSWORD_MEMBERS`, with and without `./`) are left out, nothing
   else. `GET /api/backups/<name>/download` (`BACKUP_NAME` and in
@@ -3339,7 +3351,12 @@ same PR:
   (its ten newest non-merge commits), the org-repo allowlist the one new
   `git log` form. B2 is parked: the owner reinstalled FRMS fresh from
   Browse, so there's no data to move; `replaces` stays parsed and refused
-  until it's needed. Still to come, in order: L4;
+  until it's needed. Then T1, a tidy-up (no migration): Browse's
+  `replaces` refusal says how to proceed (uninstall yours, delete its
+  data); a library app's taken id isn't told to use Update; the session
+  cookie named by the port (everyone signed out once by the rollout); the
+  swap helper stopping the Admin before every restore; B3's `_inside`
+  guard in `_update_files()` tested. Still to come, in order: L4;
   non-GitHub hosts, HTTPS or token access, and per-user repo visibility
   are out; installing an app with folders
   inside it is out; scheduled updates

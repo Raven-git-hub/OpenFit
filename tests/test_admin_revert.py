@@ -25,8 +25,8 @@ from datetime import datetime, timezone
 
 import pytest
 from conftest import ADMIN_IMAGE_ID, built_admin_image, seed_users
-from test_admin_self_update import (ADMIN_PS, HELPER_PS, OP_ID, RETAG, STAMP, UP, acompose, admin_cid, docker,
-                                    hand_over, health, pulled, swap)
+from test_admin_self_update import (ADMIN_PS, HELPER_PS, OP_ID, RETAG, STAMP, STOP, UP, acompose, admin_cid,
+                                    docker, hand_over, health, pulled, swap, watch)
 
 import admin_ops
 import admin_swap
@@ -428,7 +428,7 @@ def test_the_helper_puts_back_only_the_settings_and_the_users(admin_env):
 
     assert revert(env) == "ok"
 
-    assert env.fake.calls == [RETAG, acompose(env, *UP), ADMIN_PS, health(admin_cid(2))]
+    assert env.fake.calls == [RETAG, acompose(env, *STOP), acompose(env, *UP), ADMIN_PS, health(admin_cid(2))]
     assert admin_image(env) == ADMIN_IMAGE_ID  # the previous version, running
     for name in ("admin.json", "users.json"):
         assert (env.data / name).read_bytes() == then[name], name
@@ -441,6 +441,53 @@ def test_the_helper_puts_back_only_the_settings_and_the_users(admin_env):
                          "Switching to the previous Admin's image…"]
     assert texts[-1] == "The previous Admin is answering."
     assert r["lines"][1]["t"] == admin_ops.iso(started + admin_swap.WAIT)
+
+
+def test_the_revert_stops_the_admin_before_it_puts_the_settings_back(admin_env):
+    """Its main path: the current Admin stopped, its settings still as it
+    left them; then admin.json and users.json put back; then the previous
+    Admin started on them."""
+    env = admin_env
+    updated(env, users=[("sam", 8101, "running")])
+    handed(env)
+    then = files(env.data / "self-update" / STAMP, admin_ops.REVERT_FILES)
+    now = changed_since(env)
+    put_back = {**now, **then}
+    assert put_back != now
+    seen = watch(env)
+    env.fake.clear()
+
+    assert revert(env) == "ok"
+
+    assert seen == [(STOP, now), (UP, put_back)]
+    assert files(env.data) == put_back
+    assert env.fake.commands()[:2] == [RETAG.args, acompose(env, *STOP).args]
+
+
+def test_the_fallback_stops_the_admin_before_it_puts_the_settings_back(admin_env):
+    """Its fallback: the previous Admin, not answering, stopped - on the
+    update's settings - before all six are put back from the fresh
+    snapshot; then the current one started on them."""
+    env = admin_env
+    updated(env)
+    handed(env)
+    fresh = files(env.data / "self-update" / FRESH)
+    then = files(env.data / "self-update" / STAMP, admin_ops.REVERT_FILES)
+    now = changed_since(env)
+    reverted = {**now, **then}
+    for name in admin_ops.REVERT_FILES:  # the update had none: put back as none
+        if name not in then:
+            reverted.pop(name, None)
+    env.fake.unhealthy = {admin_cid(2)}
+    seen = watch(env)
+    env.fake.clear()
+
+    assert revert(env) == "rolled_back"
+
+    assert seen == [(STOP, now), (UP, reverted), (STOP, reverted), (UP, fresh)]
+    assert files(env.data) == fresh
+    commands = env.fake.commands()
+    assert commands[commands.index(NEXT_RETAG.args) + 1] == acompose(env, *STOP).args
 
 
 def test_a_users_json_the_update_didnt_have_is_removed(admin_env):
@@ -465,9 +512,9 @@ def test_a_previous_admin_that_doesnt_answer_puts_the_current_one_back(admin_env
     assert revert(env) == "rolled_back"
 
     calls = env.fake.calls
-    assert calls[:3] == [RETAG, acompose(env, *UP), ADMIN_PS]
-    assert calls[3:34] == [health(admin_cid(2))] * 31  # every 2s for 60s
-    assert calls[34:] == [NEXT_RETAG, acompose(env, *UP), ADMIN_PS, health(admin_cid(3))]
+    assert calls[:4] == [RETAG, acompose(env, *STOP), acompose(env, *UP), ADMIN_PS]
+    assert calls[4:35] == [health(admin_cid(2))] * 31  # every 2s for 60s
+    assert calls[35:] == [NEXT_RETAG, acompose(env, *STOP), acompose(env, *UP), ADMIN_PS, health(admin_cid(3))]
     assert admin_image(env) == built_admin_image(1)  # the current version, running again
     for name in admin_ops.SNAPSHOT_FILES:
         if name in fresh:
@@ -494,11 +541,11 @@ def test_a_previous_admin_that_wont_start_puts_the_current_one_back(admin_env):
         ups.append(args)
         return (1, "", "port is already allocated") if len(ups) == 1 else env.fake.docker(args)
 
-    env.fake.rules.append((lambda a: a[:4] == ["docker", "compose", "-p", "openfit-admin"], up))
+    env.fake.rules.append((lambda a: a[:4] == ["docker", "compose", "-p", "openfit-admin"] and "up" in a, up))
 
     assert revert(env) == "rolled_back"
-    assert env.fake.calls == [RETAG, acompose(env, *UP), NEXT_RETAG, acompose(env, *UP), ADMIN_PS,
-                              health(admin_cid(2))]
+    assert env.fake.calls == [RETAG, acompose(env, *STOP), acompose(env, *UP), NEXT_RETAG, acompose(env, *STOP),
+                              acompose(env, *UP), ADMIN_PS, health(admin_cid(2))]
 
 
 def test_a_fallback_that_doesnt_answer_either_is_failed_with_the_manual_command(admin_env):
@@ -768,6 +815,9 @@ def test_the_revert_never_names_another_project_and_never_deletes(admin_env):
         assert a[1] in ("compose", "ps", "exec", "tag", "inspect", "image", "run"), a
         if a[1] == "compose":
             assert a[2:4] == ["-p", "openfit-admin"], a
+            if "stop" in a:  # the one stop: the Admin's own service, through admin_compose()
+                assert a == acompose(env, *STOP).args, a
+                continue
         if a[1] == "run":
             assert a == revert_run(env).args, a  # its mounts, exactly
             continue

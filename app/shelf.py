@@ -350,7 +350,8 @@ def refusal(entry):
     if state == NEEDS_UPDATE:
         return "Needs a newer OpenFit."
     if state == REPLACES_PENDING:
-        return f"{entry['name']} replaces your {entry['replaces_name']}. Moving it across comes in a coming update."
+        return (f"You have your own {entry['replaces_name']}. To use this one instead, uninstall yours and "
+                "delete its data under Your data first.")
     return None
 
 

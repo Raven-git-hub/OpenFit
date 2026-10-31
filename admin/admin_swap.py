@@ -36,11 +36,15 @@ and recreates the Admin. If it doesn't answer, :next is retagged as
 :local, all six files are put back from the fresh snapshot, and it's
 recreated again.
 
+Before it puts any settings back - a rollback, a revert, a revert's
+fallback - it stops the Admin's container, so no Admin is running to
+write over them, then recreates it straight after.
+
 It keeps to the Admin's own project: compose only through admin_compose()
-(admin_ops.py), to recreate the Admin's container; docker only to find
-that container by its labels, health-check it, and put :prev or :next back
-as openfit-admin:local (admin_tag()). Never another project, and never
-down, -v, rm or a volume.
+(admin_ops.py), to stop the Admin's container and recreate it; docker only
+to find that container by its labels, health-check it, and put :prev or
+:next back as openfit-admin:local (admin_tag()). Never another project,
+and never down, -v, rm or a volume.
 """
 
 import os
@@ -84,6 +88,19 @@ def recreate(runner, repo):
     """The Admin's container recreated on the image openfit-admin:local names
     now. It isn't this container's project, so this carries on."""
     return admin_ops.admin_compose(runner, repo, "up", "-d", "--no-build", "--force-recreate", ADMIN_SERVICE)
+
+
+def stop(log, runner, repo):
+    """The Admin's container stopped, just before its settings are put
+    back: an Admin still running - a slow new one, half up - could write
+    over them. Never removed: recreate() starts it again straight after
+    the settings are back. A stop that fails is said, and the settings are
+    put back all the same: the recreate replaces the container either way,
+    and an Admin on the wrong settings is the worse of the two."""
+    rc, out, err = admin_ops.admin_compose(runner, repo, "stop", ADMIN_SERVICE)
+    if rc != 0:
+        log.say("Couldn't stop the Admin before putting its settings back, so they're put back all the same.",
+                admin_ops._tail(out, err))
 
 
 def healthy(runner, clock, sleep):
@@ -147,6 +164,7 @@ def _swap(log, runner, repo, data_dir, stamp, op_id, clock, sleep):
     retagged = rc == 0
     if not retagged:
         log.say("Couldn't switch back to the old Admin's image.", admin_ops._tail(out, err))
+    stop(log, runner, repo)
     problems = restore(data_dir, stamp)
     if problems:
         log.say("Couldn't put all of its settings back.", "\n".join(problems))
@@ -206,6 +224,7 @@ def _revert(log, runner, repo, data_dir, update_stamp, fresh_stamp, op_id, clock
         log.say("Couldn't switch to the previous Admin's image, so nothing was changed: the Admin is still on its "
                 "current version.", admin_ops._tail(out, err))
         return log.finish("failed")
+    stop(log, runner, repo)
     problems = restore(data_dir, update_stamp, REVERT_FILES)
     if problems:
         log.say("Couldn't put the Admin's settings back as they were at that update.", "\n".join(problems))
@@ -230,6 +249,7 @@ def _revert(log, runner, repo, data_dir, update_stamp, fresh_stamp, op_id, clock
     retagged = rc == 0
     if not retagged:
         log.say("Couldn't switch back to the current Admin's image.", admin_ops._tail(out, err))
+    stop(log, runner, repo)
     problems = restore(data_dir, fresh_stamp)
     if problems:
         log.say("Couldn't put all of its settings back.", "\n".join(problems))

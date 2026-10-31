@@ -10,9 +10,10 @@ the user system installing from the shelf, the user login (U1,
 [auth.md](auth.md)): one account per user container, set through setup
 links from the Admin, the Admin Portal (S1, [admin.md](admin.md)): the
 Admin's page in OpenFit's style, S2: reverting the Admin, downloads
-without the password and deleting a backup, and B3: installed library
-apps updating themselves when the shelf has a new version. B2 is parked
-(below). Everything else here is designed, not yet in the code._
+without the password and deleting a backup, B3: installed library
+apps updating themselves when the shelf has a new version, and T1, a
+tidy-up of five loose ends (below). B2 is parked (below). Everything else
+here is designed, not yet in the code._
 
 OpenFit is splitting into three layers: the repo, an **Admin** container that
 manages user containers on a server, and the **user system** (today's `app/`).
@@ -322,10 +323,17 @@ The user system reads the shelf (`app/shelf.py`, at `/library`, or
   available), the files read from the shelf, then `install_library_app()`.
   The page shows the files read-only (`GET /api/library/<source>/<app>`)
   but never sends them, so what's installed is exactly what was published.
-- **`replaces` is parsed and refused until B2.** FRMS declares `replaces:
-  [frms]` (from the aviation repo, `openfitavi.frms`), so while the owner's
-  `frms`, or its data, is here, Browse says it replaces it and is available
-  in a coming update, and the install refuses it.
+- **`replaces` is parsed and refused** (B2, which would move the data, is
+  parked). FRMS declares `replaces: [frms]` (from the aviation repo,
+  `openfitavi.frms`), so while the owner's `frms`, or its data, is here,
+  the install refuses it, saying how to proceed (T1): "You have your own
+  FRMS. To use this one instead, uninstall yours and delete its data under
+  Your data first." - and Browse's row says the same: "You have your own
+  FRMS. Uninstall it and delete its data under Your data to use this one."
+- **An install of a library app already installed** is refused with "'<id>'
+  is already installed. It updates itself when your admin publishes a new
+  version." (T1): a library app has no Update, so a custom app's "use
+  Update in its row" isn't said of one.
 - **Each app's library by its name** (A6): every listed app carries
   `source_name`, its source's name from the shelf's index (OpenFit,
   OpenFit Aviation; else the source's id), which Browse's tag shows.
@@ -482,6 +490,17 @@ a second real person gets a container. Re-ordered 2026-10-27, after A1:
    shelf, its name and blurb from its own `repo.yaml`, cloned over SSH with
    a read-only deploy key the Admin makes for it; FRMS moved to the first,
    `openfit-aviation`, and since B3 it updates itself from there.
+8. **T1, a tidy-up** (built): five loose ends from the reviews of A6 to
+   B3, none changing how anything is used. Browse's `replaces` refusal says
+   how to proceed now B2 is parked (above); a library app already installed
+   isn't told to "use Update in its row", which it hasn't got (above); the
+   user system's session cookie is named by the port,
+   `openfit_session_<port>`, so one browser stays signed in to two users'
+   OpenFits on one server ([auth.md](auth.md#the-cookie) - rolling it out
+   signs everyone out once); the Admin's swap helper stops the Admin before
+   it puts any settings back - a rollback, a revert, a revert's fallback -
+   so a slow new Admin can't write over them ([admin.md](admin.md)); and
+   B3's guard on an app folder that leads out of the shelf is tested.
 
 ### Parked
 
