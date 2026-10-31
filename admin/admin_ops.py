@@ -146,10 +146,13 @@ SNAPSHOT_FILES = ("admin.json", "users.json", "auth.json", "secret_key", "histor
 # stay as they are now, so nobody is logged out and nothing is forgotten.
 REVERT_FILES = ("admin.json", "users.json")
 KEEP_SNAPSHOTS = 3
-# The only compose commands ever run on the Admin's own project.
+# The only compose commands ever run on the Admin's own project: the
+# Admin's build, and its helper's stop - before it puts settings back, so
+# no Admin is running to write over them - and recreate.
 ADMIN_COMPOSE_ARGS = (
     ("build", ADMIN_SERVICE),
     ("up", "-d", "--no-build", "--force-recreate", ADMIN_SERVICE),
+    ("stop", ADMIN_SERVICE),
 )
 # What an Admin update's step returns once the helper has it: the op stays
 # running, and the lock held, until the helper has gone (Admin._settle).
@@ -1330,11 +1333,12 @@ def swap_helper(runner):
 
 def admin_compose(runner, repo, *args):
     """docker compose on the Admin's own project: -p openfit-admin with the
-    repo's admin/docker-compose.yml, and only ever one of its two commands -
-    `build admin`, run by the Admin, and `up -d --no-build --force-recreate
-    admin`, run by the helper. The one way such a command is run."""
+    repo's admin/docker-compose.yml, and only ever one of its three
+    commands - `build admin`, run by the Admin, and `stop admin` and `up -d
+    --no-build --force-recreate admin`, run by the helper (a stop always
+    followed by an up). The one way such a command is run."""
     if args not in ADMIN_COMPOSE_ARGS:
-        raise ValueError(f"a compose command on the Admin's own project that isn't one of its two: {args!r}")
+        raise ValueError(f"a compose command on the Admin's own project that isn't one of its three: {args!r}")
     compose_file = os.path.join(repo, "admin", "docker-compose.yml")
     return runner.run(["docker", "compose", "-p", ADMIN_PROJECT, "-f", compose_file, *args],
                       cwd=os.path.dirname(compose_file))

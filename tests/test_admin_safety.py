@@ -528,10 +528,12 @@ def known_names(env):
     return names
 
 
-def admin_lane(env, call, out, labelled, images):
+def admin_lane(env, call, out, labelled, images, frames):
     """One of the Admin's own commands, in an Admin update or revert
     (`admin` allowed): True once it's held to its exact shape, False if it
-    isn't one. Its own project only through admin_compose()'s two commands;
+    isn't one. Its own project only through admin_compose()'s three
+    commands - `stop admin` only ever from the helper, never the Admin's
+    own steps (and always followed by an up: assert_in_lane());
     its own container found by its labels; the helper looked for by its
     name and started exactly so, in an update's form or a revert's; the
     image it runs kept as :prev or :next, :prev or :next put back as
@@ -541,7 +543,12 @@ def admin_lane(env, call, out, labelled, images):
     folder = os.path.join(repo, "admin")
     if a[1:4] == ["compose", "-p", "openfit-admin"]:
         assert a[4:6] == ["-f", os.path.join(folder, "docker-compose.yml")] and call.cwd == folder, a
-        assert a[6:] in (["build", "admin"], ["up", "-d", "--no-build", "--force-recreate", "admin"]), a
+        assert a[6:] in (["build", "admin"], ["up", "-d", "--no-build", "--force-recreate", "admin"],
+                         ["stop", "admin"]), a
+        if a[6:] == ["stop", "admin"]:
+            # The helper's swap or revert (admin_swap.py), never the Admin stopping itself.
+            assert "admin_compose" in frames and {"_swap", "_revert"} & set(frames), (a, frames)
+            assert not {"_admin_update", "_admin_revert"} & set(frames), (a, frames)
         return True
     if a[1] == "ps" and "label=com.docker.compose.project=openfit-admin" in a:
         assert a[2:] == ["-a", "--no-trunc", "--filter", "label=com.docker.compose.project=openfit-admin",
@@ -595,7 +602,7 @@ def assert_in_lane(env, allow):
     labelled = set()  # (id, project) for each container the labelled lookups gave back
     images = set()  # (image, project) for those containers
     docker_calls = 0
-    for call, (rc, out, _err) in zip(env.fake.calls, env.fake.results):
+    for call, (rc, out, _err), frames in zip(env.fake.calls, env.fake.results, env.fake.frames):
         a = call.args
         if a[0] == "git":
             if call.env is not None:
@@ -608,7 +615,7 @@ def assert_in_lane(env, allow):
             continue
         assert a[0] == "docker", a
         docker_calls += 1
-        if allow.get("admin") and admin_lane(env, call, out, labelled, images):
+        if allow.get("admin") and admin_lane(env, call, out, labelled, images, frames):
             continue
         ids = {cid for cid, project in labelled if project != "openfit-admin"}
         sub = a[1]
@@ -677,6 +684,14 @@ def assert_in_lane(env, allow):
         assert not any(x == "openfit-admin" or x.startswith("openfit-admin_") and x != "openfit-admin_admin-data:/b"
                        and x != "openfit-admin_admin-data:/b:ro" for x in a), a
     assert docker_calls
+    # The Admin stopped is always started again: each stop is followed by
+    # an up, with no other command on its project between (a second stop
+    # aside - a revert's fallback after settings that wouldn't go back).
+    own = [c.args[6:] for c in env.fake.calls if c.args[:4] == ["docker", "compose", "-p", "openfit-admin"]]
+    for i, args in enumerate(own):
+        if args == ["stop", "admin"]:
+            after = [x for x in own[i + 1:] if x != ["stop", "admin"]]
+            assert after and after[0] == ["up", "-d", "--no-build", "--force-recreate", "admin"], own
 
 
 @pytest.mark.parametrize("scenario", SCENARIOS, ids=lambda f: f.__name__.removeprefix("scenario_"))
@@ -693,6 +708,34 @@ def test_the_admin_stays_in_its_lane(admin_env, scenario):
     assert any(a[1:3] == ["volume", "rm"] for a in commands) == bool(allow.get("volume_rm"))
     # And the download helper, where a scenario reads kept data out.
     assert any("--log-driver" in a for a in commands) == (scenario is scenario_download_kept)
+    # And the Admin stopped, where its helper puts settings back: a
+    # rollback, a revert, a revert's fallback - never an update that worked.
+    assert any(a[1:4] == ["compose", "-p", "openfit-admin"] and a[-2:] == ["stop", "admin"] for a in commands) == (
+        scenario in (scenario_admin_rollback, scenario_admin_rollback_fails, scenario_admin_revert,
+                     scenario_admin_revert_falls_back, scenario_admin_revert_fails))
+
+
+def test_the_lane_holds_the_admins_stop_to_its_helper_and_an_up_after(admin_env):
+    """The lane's own checks bite: a stop of the Admin from anywhere but
+    the helper's swap or revert is out of it, and so is one from the
+    helper that's never followed by an up."""
+    env = admin_env
+    log = admin_swap.Log(str(env.data), "x", "y", env.clock)
+
+    admin_ops.admin_compose(env.fake, env.repos.repo, "stop", "admin")  # not the helper
+    with pytest.raises(AssertionError):
+        assert_in_lane(env, {"admin": True})
+
+    def _swap():  # the helper's, by its name - but nothing starts it again
+        admin_swap.stop(log, env.fake, env.repos.repo)
+
+    env.fake.clear()
+    _swap()
+    with pytest.raises(AssertionError):
+        assert_in_lane(env, {"admin": True})
+    # Started again after: in the lane.
+    admin_swap.recreate(env.fake, env.repos.repo)
+    assert_in_lane(env, {"admin": True})
 
 
 ADMIN_TAGS = {"openfit-admin:local", "openfit-admin:prev", "openfit-admin:next"}
