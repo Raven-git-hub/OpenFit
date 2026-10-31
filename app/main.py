@@ -14,7 +14,8 @@ import urllib.parse
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta, timezone
 
-from flask import Flask, jsonify, make_response, render_template, request, send_from_directory, session
+from flask import (Flask, has_request_context, jsonify, make_response, render_template, request,
+                   send_from_directory, session)
 from flask.sessions import SecureCookieSessionInterface
 from apscheduler.executors.pool import ThreadPoolExecutor
 from apscheduler.jobstores.base import JobLookupError
@@ -118,7 +119,8 @@ app.config["SESSION_KEY_PATH"] = os.getenv("OPENFIT_SESSION_KEY_PATH", auth.DEFA
 # X-OpenFit header, below, is the guard for writes). Not Secure: OpenFit
 # is plain HTTP on the LAN, where a Secure cookie would never come back,
 # and from away Tailscale encrypts it in transit. 30 days, renewed on
-# every request, so it lapses only after a month unused.
+# every request, so it lapses only after a month unused. Named by the
+# port, openfit_session_<port> (_KeyFileSessions.get_cookie_name()).
 app.config.update(
     SESSION_COOKIE_NAME="openfit_session",
     SESSION_COOKIE_HTTPONLY=True,
@@ -129,14 +131,39 @@ app.config.update(
 )
 
 
+# A port, as the Host header gives it: 1 to 5 ASCII digits.
+_PORT = re.compile(r"[0-9]{1,5}\Z")
+
+
+def session_cookie_name(base, host):
+    """The session cookie's name for a request to `host` (its Host, as
+    request.host gives it): <base>_<port>, the port the digits after the
+    last ':' - 1 to 5 of them - else 80 (no port, as for port 80 itself,
+    or one that isn't one: a:b:c, x:99999999)."""
+    _, colon, port = host.rpartition(":")
+    return f"{base}_{port if colon and _PORT.match(port) else '80'}"
+
+
 class _KeyFileSessions(SecureCookieSessionInterface):
     """Flask's signed-cookie sessions, under the key in SESSION_KEY_PATH:
     read as a request comes in (so the path in app.config is the one used
-    - a test's own), and made on the first."""
+    - a test's own), and made on the first.
+
+    The cookie is named by the port the request came to:
+    openfit_session_8080. A browser keeps one cookie of a name per host,
+    whatever the port, so two users' OpenFits on one server - :8080 and
+    :8101 - would each overwrite the other's session under one name, and
+    signing in to one would sign the same browser out of the other."""
 
     def get_signing_serializer(self, app):
         app.secret_key = auth.session_key(app.config["SESSION_KEY_PATH"])
         return super().get_signing_serializer(app)
+
+    def get_cookie_name(self, app):
+        base = app.config["SESSION_COOKIE_NAME"]
+        if not has_request_context():
+            return base
+        return session_cookie_name(base, request.host)
 
 
 app.session_interface = _KeyFileSessions()
