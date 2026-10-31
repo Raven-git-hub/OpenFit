@@ -1,10 +1,11 @@
-# The OpenFit Admin (A1, A2, A4, A5, A6, U1, S1, S2): updates behind buttons, users, its own update and revert, the app shelf, organisation repos, setup links, the Admin Portal and downloads
+# The OpenFit Admin (A1, A2, A4, A5, A6, U1, S1, S2, R1): updates behind buttons, users, its own update and revert, the app shelf, organisation repos, setup links, the Admin Portal, downloads and restore
 
 _Built: A1, A2, A4, A5 and A6, slices of the Admin in
 [distribution.md](distribution.md), U1's setup links (the user login,
-[auth.md](auth.md)), S1, the Admin Portal: the page in OpenFit's style, and
+[auth.md](auth.md)), S1, the Admin Portal: the page in OpenFit's style,
 S2: reverting the Admin, downloads without the password and deleting a
-backup. The code is `admin/`; the tests are `tests/test_admin_*.py`._
+backup, and R1: restoring a backup as a new user. The code is `admin/`;
+the tests are `tests/test_admin_*.py`._
 
 Until A1, OpenFit was updated by SSHing to the docker host and running:
 
@@ -57,6 +58,14 @@ removed user's kept data, as a `tar.gz` **without the password**: the
 user's `auth.json` and `.session_key` are never in a downloaded file.
 **Delete** removes a single backup.
 
+R1 puts a backup back to use: **restore it as a new user**, from a file
+uploaded to Add user (a download, moving someone between servers), or
+straight from one of the server's own backups or a removed user's kept
+data. The archive is checked member by member before anything is created,
+a clean copy is written without the password (and, unless they're kept,
+the device logins), and the new user always starts **locked**: a setup
+link gives them a password.
+
 ## What the Admin doesn't do yet
 
 - Rename a user, or change a user's port after it's added. Users on
@@ -76,11 +85,12 @@ user's `auth.json` and `.session_key` are never in a downloaded file.
   left for a person.
 - The proxy and `.local` names. OpenFit and the Admin are reached at
   `IP:port`.
-- The backup file format. An Admin backup is a plain `tar.gz` of a user's
-  `/data` volume.
-- Restore from a downloaded file. That comes with the backup file and
-  restore-on-add-user ([distribution.md](distribution.md)); a download is
-  for keeping, for now.
+- The backup file format (a zip with a passphrase,
+  [distribution.md](distribution.md)). An Admin backup is a plain `tar.gz`
+  of a user's `/data` volume, and that's what a download is and what a
+  restore takes.
+- Restore over an existing user, or merge a backup into one: a restore is
+  always a new user, with a new password.
 - Revert more than one step: Revert the Admin goes back to the version
   before its last update, and no further.
 - A phone layout: the portal is for a desktop browser, and scrolls sideways
@@ -135,6 +145,12 @@ both copied from their pinned images, and GitHub's host keys,
   **Every request that isn't a GET** must be JSON and carry the header
   `X-OpenFit-Admin: 1` (403). That's the CSRF guard: another site's page
   can't send either. The page's `fetch` wrapper always sends the header.
+  The one exception to JSON is a restore's upload (R1), `POST
+  /api/users/restore`, which is multipart: the header alone guards it
+  (another site's form can send multipart, but never a header). A body is
+  at most 1 MB on every other route (413), an upload's 2 GB: Flask's
+  `MAX_CONTENT_LENGTH` is 2 GB and a small margin, for that route's sake,
+  and every other request is held to 1 MB.
 - **Forgotten password:** delete `auth.json` from the Admin's volume and
   restart the Admin. It prints a new setup code. A new password ends every
   session made under the old one.
@@ -539,6 +555,169 @@ and never anything that's in it.
   goes away, the `docker run` client is killed; the helper itself, reading a
   volume nothing else uses, finishes on its own and is removed (`--rm`).
 
+## Restoring a backup as a new user (R1)
+
+A backup can be put back to use as a **new user**: never over an existing
+one, and never merged into one. The source is one of three:
+
+- **A file**, uploaded: a download from this Admin or another (moving
+  someone between servers is a download on the old one and a restore on
+  the new). Add user's third control, **Restore from a file**: with a file
+  chosen, Add user becomes **Restore user**, and **Keep device logins**
+  appears beside it, ticked.
+- **One of the server's own backups**, or **a removed user's kept data**,
+  with no download and upload: **Restore as a new user** in its popup under
+  User data opens a small form - Name, Port (the suggestion prefilled) and
+  Keep device logins, ticked - and **Restore**.
+
+Both are one operation, `kind: "restore_user"`, under the lock, with a log
+as Add user's has.
+
+### The routes
+
+- `POST /api/users/restore`: multipart - `name`, `port`, `keep_devices`
+  (`true` or `false`) and `file` - with the `X-OpenFit-Admin` header and a
+  session. The file is written to `/data/restore-uploads/<random>.tar.gz`
+  (0600, in a folder 0700) as it arrives, through Werkzeug's form parser
+  with the file as its stream: never held in memory, and stopped with a
+  413, "That file is too large: a backup to restore is at most 2 GB.", the
+  moment it passes 2 GB (a body whose `Content-Length` says more is refused
+  before it's read). A form that isn't whole (no file, two files, a field
+  missing) is a 400. Refused, cut off or too large, the file is deleted
+  there and then; once the restore has started, the restore deletes it when
+  it ends, whatever the outcome.
+- `POST /api/users/restore-from {name, port, keep_devices, backup |
+  removed}`: exactly one of `backup` (a name `BACKUP_NAME` matches and the
+  Admin's own listing holds, else 404) or `removed` (a name in `removed`,
+  else 404, with no container left in their project, else 409).
+
+Before the operation starts, in the request, as Add user's: the name and
+port by Add user's rules (400, or 409 for one taken), and **a name with
+kept data is refused**, 409, "<name> has kept data on this server. Choose
+another name." (to bring a removed user back as they were, add a user of
+that name instead: their kept data is reattached); `keep_devices` a
+boolean (400); the lock (409); OpenFit's image built (409); the app
+shelf's volume there (409); and no volume under the new name the Admin
+has no record of (409), so the failure path's `down -v` can only ever
+take what this restore made.
+
+### The archive's checks, before anything is created
+
+A removed user's kept data is first packed into a file in
+`/data/restore-uploads/` by the download helper's own form, its output
+written to the file instead of a browser, with **no exclusions** (the
+clean archive below leaves the password out, and more):
+
+```
+docker run --rm --label openfit.admin.helper=true --log-driver none
+  -v openfit-<name>_tracker-data:/v:ro openfit-admin:local tar czf - -C /v .
+```
+
+Then the archive (the upload, the backup itself, or the packed file) is
+opened with `tarfile` (`r:gz`) and **every member walked before anything
+is written**:
+
+- only regular files and folders: a symbolic link, a hard link, a device
+  or a FIFO refuses the whole archive;
+- each name normalised, its leading `./` stripped, and refused if it's
+  absolute, has a `..` part, a NUL byte, an empty or `.` part, or a part
+  over 255 characters; and no name twice (a second `tracker.db` would be
+  the one extracted, unchecked);
+- at most 200,000 members and 8 GB unpacked, the sum of the members'
+  sizes, read from their headers: an archive bomb stops there;
+- `tracker.db` there, copied out (with its `tracker.db-wal`, if it has one:
+  a database not closed cleanly keeps recent writes there, its newest
+  migration among them) into a folder of the Admin's own and opened
+  read-only with `sqlite3` (`file:…?mode=ro`, defensive, untrusted schema
+  off): `PRAGMA integrity_check` must say `ok`, and a `schema_migrations`
+  table must be there;
+- **its version**: `MAX(version)` of `schema_migrations` must be at most
+  the newest migration of the OpenFit this server runs - the highest `NNN`
+  of `app/migrations/NNN_*.sql` in the repo at `HEAD` (`git ls-tree`), by
+  the user system's own file name rule - else "This backup is from a newer
+  OpenFit than this server runs. Update OpenFit first." An older one is
+  fine: the user system migrates it as it starts.
+
+Each refusal is a failed operation with a plain message ("… Nothing was
+created."): no compose file, no container, no volume, no helper run, and
+the restore's files deleted.
+
+### The clean archive
+
+The Admin then writes a **clean archive** of its own - a fresh `w:gz` of
+the checked members, read from the original, never the original itself -
+into `/data/restore-uploads/<random>-clean.tar.gz` (0600). Each member is
+a new header, `./<name>`, a regular file or a folder with its mode (no
+setuid, setgid or sticky bit), owner, group and time; nothing else of the
+original's header is carried, and each file's bytes are as they were.
+Always left out:
+
+- `auth.json` and `.session_key`, so the user starts **locked**: a setup
+  link sets their password, as for a new user;
+- `app_updates.json`, so their library apps' update notes start afresh.
+
+With **Keep device logins** unticked, also left out:
+
+- `.secret_key`, the key their device credentials are stored under: their
+  OpenFit makes a new one, can't read the stored credentials, and says to
+  remove and re-add each device;
+- everything under `.garminconnect/`, Garmin's own login tokens.
+
+Then the user removes and re-adds each device in their OpenFit. The log
+names what was left out.
+
+### Creating the user
+
+Then, in order:
+
+1. **Their compose file**, from the template, as Add user writes it.
+2. **Created, not started**: `docker compose -p openfit-<name> -f <file> up
+   --no-start --no-build` makes the container and its volume, brand new and
+   empty.
+3. **Filled**, by a helper, exactly:
+
+   ```
+   docker run --rm --label openfit.admin.helper=true --log-driver none
+     -v openfit-<name>_tracker-data:/v -v openfit-admin_admin-data:/b:ro
+     openfit-admin:local tar xzf /b/restore-uploads/<random>-clean.tar.gz -C /v
+   ```
+
+   The volume was made a moment ago, so nothing is overwritten. The helper
+   only ever extracts a name the clean archive's pattern matches
+   (`restore_helper_args()`), never an upload or a backup as it came: **no
+   archive is ever extracted by the Admin process itself**, and only the
+   clean one by the helper.
+4. **Started**: `up -d --no-build`, then the health check, as for Add user.
+   Its migrations run as it starts.
+5. On success, the user is appended to `users.json` (only now), and the
+   log ends "Restored <name>. They start locked: use Setup link to give
+   them a password." The operation's result in the Activity log offers
+   **Setup link** straight away.
+
+A failure from step 2 on is taken back with `down -v` and their folder
+removed, `users.json` untouched - Add user's take-back, the second place
+`-v` is used, and safe for the same reason: the project and its volume
+were made moments ago, in this operation, by its own `up --no-start`, and
+the request refused a name whose volume was already there. What they held
+is a copy of a backup that is still where it came from. A port clash says
+so, as for Add user.
+
+The operation records `user: {name, port}`, `source` (`{kind: "upload"}`,
+`{kind: "backup", name, user}` or `{kind: "removed", name, user}`) and
+`keep_devices`. Everything in `/data/restore-uploads/` - the upload, the
+packed kept data, the database's copy and the clean archive - is deleted
+when the restore ends, whatever the outcome, and anything there at the
+Admin's startup is a leftover, deleted then.
+
+### Device logins: the warning
+
+With Keep device logins ticked, restoring the server's own backup or kept
+data of someone who is **still a user here** warns, in the form: "<name> is
+still a user here. Two OpenFits syncing the same Garmin or Google account
+can sign one of them out. Untick Keep device logins, or remove <name>
+first." The backup's user is read from its name. An uploaded file carries
+no user name, so there's no warning for one.
+
 ## The page: the Admin Portal (S1)
 
 `admin/templates/index.html`: one self-contained page, no external requests
@@ -622,7 +801,8 @@ The left column:
   every second, as before), then every operation the history keeps (20),
   newest first, each a row - what, when, an outcome pill - that opens to its
   summary and log, in a box about eight rows high. An operation watched to
-  its end opens by itself.
+  its end opens by itself. A restore that worked (R1) offers **Setup link**
+  for the restored user in its result, while they're a user and running.
 
 The **Users** tab:
 
@@ -633,8 +813,12 @@ The **Users** tab:
   or **Start**, **Restart**, **Setup link** and **Remove** (with its
   confirm). The primary has no Remove; in its place: "This is the server's
   main OpenFit: new versions are built from it, so it can't be removed."
-- **Add user**: one row - Name, Port (the suggestion prefilled, editable)
-  and Add user - with the hint under it.
+- **Add user**: one row - Name, Port (the suggestion prefilled, editable),
+  **Restore from a file** (R1) and Add user - with the hint under it. With a
+  file chosen, Add user is **Restore user**, and under the row **Keep device
+  logins** (ticked) and **Clear file**; the hint says what a restore does.
+  A file over 2 GB is refused on the page, before anything is sent; while
+  one uploads, the row says "Uploading <file>… keep this page open."
 - **User data**: the backups and the removed users' kept data, newest first,
   ten rows high. A backup is its user, date and size; kept data a red warning
   triangle, the user and "Removed <date>". A row opens a popup: a backup's
@@ -644,7 +828,11 @@ The **Users** tab:
   **Download** beside it. Download opens the warning (above) and the link
   itself, "Download without the password"; Delete a confirm, "Delete this
   backup? This deletes `<name>` from the server, for good.", with the Undo
-  line when `undo_relies`. Both are off while an operation runs.
+  line when `undo_relies`. Both popups also have **Restore as a new user**
+  (R1): its small form - Name, Port (the suggestion prefilled), Keep device
+  logins (ticked), the device-login warning when it applies, and Restore;
+  kept data's adds that to bring them back as they were is to add a user of
+  that name instead. All of these are off while an operation runs.
 - **User version info**: what every user is running - the version (short
   sha and date), `HEAD`'s subject, and the pull requests the last update
   that worked brought, as links. Read only.
@@ -1467,7 +1655,8 @@ shared server runs other things (n8n, Open WebUI, Music Assistant,
 Tailscale sidecars and more), and the Admin must never touch any of them.
 
 - **Its own users' projects only.** Every compose command is one of two
-  shapes: `docker compose -p openfit -f <OPENFIT_REPO>/docker-compose.yml -f
+  shapes (and a restore's create, R1, is `up --no-start --no-build` on a
+  new user's project): `docker compose -p openfit -f <OPENFIT_REPO>/docker-compose.yml -f
   /data/primary.override.yml …`, run in `OPENFIT_REPO`, for the primary
   (exactly those two files, in that order); or `docker compose -p
   openfit-<name> -f /data/users/<name>/docker-compose.yml …`, for a name in
@@ -1502,7 +1691,11 @@ Tailscale sidecars and more), and the Admin must never touch any of them.
   `openfit.admin.helper=true`, always `--rm`, from its own image (the
   backup helpers, the update helper above, and the kept-data download's,
   in its one form, `kept_download_args()`: the removed user's volume
-  read-only, the password's two files excluded);
+  read-only, the password's two files excluded - or, packing it for a
+  restore, the same form with nothing excluded, `kept_pack_args()`; and a
+  restore's, R1, in its one form, `restore_helper_args()`: the new user's
+  volume read-write, the Admin's read-only, and `tar xzf` of a clean
+  archive the Admin wrote, by a name only its pattern matches);
   `docker image inspect openfit-tracker:latest`; `docker volume inspect` of
   the volume a user being added would get, and of the shelf's,
   `openfit-library`, before anything that recreates a user; and `docker volume rm
@@ -1513,8 +1706,9 @@ Tailscale sidecars and more), and the Admin must never touch any of them.
   minute), of which only the server's name, Docker version, CPUs and memory
   are kept. Nothing else is listed, inspected, stopped or removed; the Admin
   doesn't list other containers, even to find free ports.
-- **Data deleted in two places only.** `down -v` only in a failed add, on a
-  volume that add made; `docker volume rm` only in Delete data. Remove is
+- **Data deleted in two places only.** `down -v` only in a failed add or a
+  failed restore (R1), on a volume that operation made; `docker volume rm`
+  only in Delete data. Remove is
   always a plain `down`. The shelf's volume is never removed: the users'
   files name it `external`, so not even a failed add's `down -v` touches it.
 - **The shelf is written as files, never through docker.** Publishing is
@@ -1528,10 +1722,14 @@ Tailscale sidecars and more), and the Admin must never touch any of them.
   reaches a command only as a user's name or port, after the rules above. The
   rest is fixed strings, the settings and `users.json` (checked against
   strict patterns on every read), and ids that git and docker gave back
-  (checked before use). The one `sh -c` is the restore helper's fixed string,
-  inside a container. A test reads every `admin/*.py` for `shell=True` and
+  (checked before use). The one `sh -c` is Undo's restore helper's fixed
+  string, inside a container. A test reads every `admin/*.py` for `shell=True` and
   `os.system`. A download's helper runs through `Runner.stream()`, an
   argument list too.
+- **No archive extracted by the Admin** (R1). A restore reads an archive
+  with `tarfile` and writes a clean copy of the members it checked; the
+  Admin process never extracts one. Only the restore helper extracts, and
+  only that clean copy, into a volume made moments before.
 - **Git as the owner.** Git runs as the uid and gid that own `OPENFIT_REPO`,
   with `HOME=/tmp` and no supplementary groups, so the files `git merge`
   writes stay owned by `docker` (your own `git pull` keeps working) and git's
@@ -1567,12 +1765,35 @@ compose file, because the backup helpers mount it by name), at `/data`:
 | `repos.json` | The organisation repos added (A6), pending or connected, each its source and published commit once it has them (above). |
 | `repos/<slug>/` | A repo's deploy key pair (`deploy_key`, 0600, and `deploy_key.pub`) and its clone (`repo/`); the folder 0700, deleted by Remove. |
 | `repo_checks.json` | What the last check, connect or update found of each repo: GitHub's head, the commits since, a `repo.yaml` problem, a failed fetch. |
+| `restore-uploads/` | A restore's own files (R1), 0700: an upload, a removed user's kept data packed, the database's copy checked and the clean archive the helper extracts. Deleted as each restore ends, and at startup. |
 
 Each user's own data is their volume: `openfit_tracker-data` for the primary,
 `openfit-<name>_tracker-data` for an added user. The app shelf is the volume
 `openfit-library` (A5), the Admin's `/library` and every user's, read-only.
 
 ## Try it
+
+For R1, on the server, once Update OpenFit and then Update the Admin have
+run:
+
+1. Under User data, open a backup and **Download** it (the file is
+   `…-nopassword.tar.gz`).
+2. In Add user, a new name, the suggested port, and **Restore from a
+   file**: the downloaded file. The button reads **Restore user**; leave
+   Keep device logins ticked and press it. The Activity log shows the checks
+   ("It holds N files and folders, and its database is sound, at migration
+   10."), what was left out, then "Restored <name>. They start locked: use
+   Setup link to give them a password."
+3. **Setup link** in that result: open it, set a password, and their data is
+   there, as the backup had it.
+4. Open the same backup again, **Restore as a new user**: with Keep device
+   logins ticked the form warns that the backup's user is still a user here;
+   untick it and Restore under another name. That user's devices need
+   removing and re-adding.
+5. Remove that test user and Delete data, as for any user.
+
+To move someone to another server: Download their backup (or their kept
+data, once removed) here, and Restore from a file there.
 
 For A6, on the server:
 
