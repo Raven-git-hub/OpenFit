@@ -51,14 +51,16 @@ a removed user's data without its password (S2), and nothing more.
 
 ## Updates
 
-- **Checks** run automatically, weekly, or when the button is pressed. They
+- **Checks** run on the weekly schedule (SU1), or when the button is pressed. They
   are reported separately for the user system, the admin system and the app
   repository, each with its release notes. A change is classified by the
   folder it's in, so an app change never triggers an image rebuild: the
   library is outside the image (below). An app-only change goes out with
   **Update apps**, with no rebuild and no restarts (A5).
-- **Updating is always manual.** The user system image is built once per
-  version, tagged by commit. Each user's data is backed up, then their
+- **Updating is manual, or the weekly schedule's** (SU1: its Check and
+  update mode installs what's waiting - the apps, then OpenFit, then the
+  Admin - through the same operations as the buttons). The user system
+  image is built once per version, tagged by commit. Each user's data is backed up, then their
   container is recreated on the new image. The previous tag is kept, for
   rollback.
 - **The Admin updates itself** through a short-lived helper container: stop
@@ -379,7 +381,8 @@ within a minute every installed copy is the new one
   ([admin.md](admin.md#change-notes-b3)).
 
 Out of B3: a user choosing when (the admin publishes, everyone follows),
-updating custom apps from anywhere, and scheduled updates.
+updating custom apps from anywhere, and scheduled updates (SU1 since: the
+Admin's own weekly run, which publishes to the shelf like any update).
 
 ### `replaces` (L3, agreed; the move is B2, parked)
 
@@ -520,12 +523,25 @@ a second real person gets a container. Re-ordered 2026-10-27, after A1:
    notes (and the device logins unless they're kept), which a helper
    extracts into the new user's brand new volume. They start locked: Setup
    link gives them a password.
+10. **SU1: scheduled updates** (built,
+   [admin.md](admin.md#scheduled-updates-su1)): the Admin's own clock. Once
+   a week, at a day, time and timezone the admin picks in the Schedule
+   panel, it checks for updates - or, in Check and update, checks and then
+   installs whatever's waiting: the apps (the official library's Update
+   apps when it's on offer, then each organisation repo's update), then
+   OpenFit, then the Admin itself, last, since its update hands over to the
+   helper. Each step is the existing operation, with its own op, log and
+   rollback; the first that doesn't end ok stops the run, with what came
+   before it kept. It runs whatever the users are doing. A run that starts
+   over an hour late (the Admin was down, or busy) only checks, and an
+   update run is then recorded as missed; a failed or missed run puts a red
+   notice up until it's dismissed. It replaces the old automatic check, a
+   week after the last. The one-off "Schedule" button once planned beside
+   "now" (an update at a time the admin picks) is dropped in favour of the
+   weekly schedule: every button runs now.
 
 ### Parked
 
-- **Scheduled updates**: an update at a time the admin picks, alongside "now"
-  and the automatic check (which only ever finds an update, never applies
-  one).
 - **B2, `replaces` moving data**: the owner reinstalled FRMS fresh from
   Browse, so there's no old data to move. `replaces` stays parsed and
   refused until it's needed, then L3's rules (above) apply.
