@@ -7429,6 +7429,44 @@ def test_a_duty_lanes_trips_are_amber_bars_behind_its_pieces_the_port_past_the_f
     assert r["html"] == ""
 
 
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
+def test_a_sleep_lanes_layovers_tint_it_full_height_behind_its_stages_the_port_at_the_foot(client):
+    page = _page(client)
+    css = page[: page.index("</style>")]
+    # A layover from 06:00Z on the 20th to 02:00Z on the 21st, a stage over
+    # its start; another unlabelled.
+    lane = {**SLEEP_STRIPS["lanes"][0], "bands": [
+        {"start": "2026-10-20T06:00:00Z", "end": "2026-10-21T02:00:00Z", "label": "BLR"},
+        {"start": "2026-10-21T10:00:00Z", "end": "2026-10-21T12:00:00Z", "label": None}],
+        "spans": [{**SLEEP_STRIPS["lanes"][0]["spans"][0], "start": "2026-10-20T05:30:00Z", "end": "2026-10-20T07:00:00Z"}]}
+    spec = {**SLEEP_STRIPS, "lanes": [lane, *SLEEP_STRIPS["lanes"][1:]]}
+    r = _node(_strips_script(page, f"""
+        const st = renderSpec({json.dumps(spec)}, 'FRMS', 'frms');
+        showStrips(st, 480, 200);
+        const lane = st.querySelector('.st-lane');
+        r.order = lane.children.map(c => c.className);
+        const z0 = Date.parse('2026-10-19T00:00:00Z'), sx = 480 / (72 * 3600000), pd = 240;
+        const x = iso => pd + (Date.parse(iso) - z0) * sx;
+        r.bands = kids(lane, 'st-band').map(b => [parseFloat(b.style.left), parseFloat(b.style.width)]);
+        r.want = [[x('2026-10-20T06:00:00Z'), x('2026-10-21T02:00:00Z') - x('2026-10-20T06:00:00Z')],
+                  [x('2026-10-21T10:00:00Z'), x('2026-10-21T12:00:00Z') - x('2026-10-21T10:00:00Z')]];
+        // The port from the layover's start - a stage over it makes no difference.
+        r.label = kids(lane, 'st-band-label').map(t => [t.textContent, parseFloat(t.style.left)]);
+        r.at = x('2026-10-20T06:00:00Z');
+    """))
+
+    # The grid and the levels, then the bands - each its label after it -
+    # then the stages over them.
+    assert r["order"] == ["st-hours st-hours-v", "st-lvl st-s-light", "st-lvl st-s-deep", "st-lvl st-s-rem",
+                          "st-band", "st-band-label", "st-band", "st-span st-t-out st-s-light"]
+    assert r["bands"] == [[pytest.approx(a), pytest.approx(w)] for a, w in r["want"]]
+    assert r["label"] == [["BLR", pytest.approx(r["at"])]]
+    # Full height, soft, borderless; the label at the foot.
+    assert (".st-sleep .st-band{top:0;bottom:0;height:auto;border:0;border-radius:0;"
+            "background:color-mix(in srgb, var(--layover) 14%, transparent);}") in css
+    assert ".st-sleep .st-band-label{top:auto;bottom:2px;}" in css
+
+
 # The first lane's curve, as FRMS draws it - the troughs at 20:00Z, 04:00
 # in Hong Kong - with the WOCL, 02:00 to 06:00 there, 18:00Z to 22:00Z,
 # three nights of it: the trough inside each.
