@@ -483,6 +483,21 @@ a.btn{display:inline-block;text-decoration:none;}
 /* the Settings popup's foot: Sign out, under its own controls */
 .modal-actions.settings-foot{align-items:center;border-top:1px solid var(--border);padding-top:14px;}
 .modal-actions.settings-foot .hint{margin:0;}
+/* its two sections: This browser's (localStorage) over Your account's
+   (the server's, the same on every device) */
+.settings-sec{margin-top:16px;}
+.settings-sec + .settings-sec{border-top:1px solid var(--border);padding-top:14px;}
+.settings-h{font-family:var(--font-display);font-weight:700;font-size:13.5px;margin:0 0 10px;}
+.settings-sec .field{margin-bottom:0;}
+.settings-sec .hint{margin:2px 0 0;font-size:12.5px;}
+/* the timezone: a search over its select, then "Use this device's" */
+.tz-device{
+  align-self:flex-start;border:none;background:none;padding:1px 0;color:var(--accent);
+  text-align:left;font-size:12.5px;cursor:pointer;
+}
+.tz-device:hover{text-decoration:underline;}
+.tz-device[hidden]{display:none;}
+.settings-sec .form-msg{margin-top:0;min-height:0;}
 /* a source's Settings: its account as a label / value list */
 .info{display:grid;grid-template-columns:auto minmax(0,1fr);margin:14px 0 0;}
 .info dt, .info dd{display:flex;align-items:center;padding:10px 0;border-bottom:1px solid var(--border);}
@@ -1342,6 +1357,11 @@ h5 + .dnote{margin-top:0;}
     /* Signing out: this browser's session ended (the page then reloads,
        onto the sign-in). */
     signOut:      ()             => send('/api/auth/logout', 'POST'),
+    /* The account's profile - its timezone ({timezone, timezone_set,
+       zones}: the one in effect, UTC when none is saved, whether one
+       is, and every zone it can be) - and a new timezone saved. */
+    profile:      ()             => fetchJSON('/api/profile'),
+    saveProfile:  body           => send('/api/profile', 'PUT', body),
   };
 
   /* =========================================================
@@ -5871,10 +5891,13 @@ h5 + .dnote{margin-top:0;}
   // Shown only while Configure is on.
   $('#addTabBtn').onclick = () => { if(home.configuring && !home.saving) openTabEditor(null); };
 
-  /* ---- settings (per browser, like the theme) ----
-     One control for now: the tab the page opens on. Its options are the
-     tab strip's own tabs - Home's, as the layout names them, and Data -
-     so a new tab is offered without touching this. */
+  /* ---- settings ----
+     Two sections. This browser's, kept in localStorage like the theme:
+     the tab the page opens on - its options the tab strip's own tabs,
+     Home's as the layout names them and Data, so a new tab is offered
+     without touching this. And Your account's, kept by the server
+     (/api/profile), the same on every device signed in: the timezone,
+     which day is today for OpenFit and its apps. */
   const OPENING_TAB = 'of-opening-tab';
   const tabButtons = () => Array.from(document.querySelectorAll('.tab[data-tab]'));
   function openingTab(){
@@ -5889,16 +5912,35 @@ h5 + .dnote{margin-top:0;}
     // A tab since deleted: Home's default tab.
     return home.layout.default_tab;
   }
+  /* The timezone the browser is in, an IANA name - or null. */
+  function deviceZone(){
+    try{ return Intl.DateTimeFormat().resolvedOptions().timeZone || null; }catch(e){ return null; }
+  }
+  const TZ_UNSET = 'UTC (not set)';
   function openSettings(){
     const current = openingTab();
     const options = tabButtons().map(b =>
       `<option value="${esc(b.dataset.tab)}"${b.dataset.tab===current ? ' selected' : ''}>${esc(b.textContent.trim())}</option>`).join('');
     const {box, close} = openModal(`
       <h4>Settings</h4>
-      <div class="field">
-        <label for="openingTab">Opening page</label>
-        <select class="input" id="openingTab">${options}</select>
-      </div>
+      <section class="settings-sec">
+        <h5 class="settings-h">This browser</h5>
+        <div class="field">
+          <label for="openingTab">Opening page</label>
+          <select class="input" id="openingTab">${options}</select>
+        </div>
+      </section>
+      <section class="settings-sec">
+        <h5 class="settings-h">Your account</h5>
+        <div class="field">
+          <label for="tzZone">Timezone</label>
+          <input class="input" id="tzSearch" type="search" placeholder="Type to search" aria-label="Search timezones" autocomplete="off" spellcheck="false" disabled>
+          <select class="input" id="tzZone" disabled><option value="">Loading…</option></select>
+          <button class="tz-device" data-act="device-tz" type="button" hidden></button>
+          <p class="hint">Used for 'today' everywhere in OpenFit and its apps, on every device you sign in from.</p>
+          <p class="form-msg bad" data-f="tz-msg"></p>
+        </div>
+      </section>
       <div class="modal-actions">
         <button class="btn sm" data-act="close" type="button">Close</button>
         <button class="btn sm primary" data-act="save" type="button">Save</button>
@@ -5908,10 +5950,72 @@ h5 + .dnote{margin-top:0;}
         <button class="btn sm" data-act="signout" type="button">Sign out</button>
       </div>`);
     const select = box.querySelector('#openingTab');
+    const search = box.querySelector('#tzSearch');
+    const zone = box.querySelector('#tzZone');
+    const useDevice = box.querySelector('[data-act="device-tz"]');
+    const tzMsg = box.querySelector('[data-f="tz-msg"]');
+    const save = box.querySelector('[data-act="save"]');
+    const device = deviceZone();
+    // The account's timezone once read: {saved, zones} - saved null
+    // while none is (UTC (not set)).
+    let tz = null;
+
+    /* The zones listed: those matching what's typed in the search (a
+       space for an underscore, any case), the one picked always among
+       them - typing picks the first match - and while none is saved,
+       UTC (not set) first. Names and values as text, never markup. */
+    function paintZones(pick){
+      const q = search.value.trim().toLowerCase().replace(/\s+/g, '_');
+      const hit = z => z.toLowerCase().includes(q);
+      const matches = q ? tz.zones.filter(hit) : tz.zones;
+      const picked = pick!==undefined ? pick : (q && matches.length ? matches[0] : zone.value);
+      const opts = tz.zones.filter(z => z===picked || !q || hit(z)).map(z => {
+        const o = el('option'); o.value = z; o.textContent = z; return o;
+      });
+      if(!tz.saved){
+        const o = el('option'); o.value = ''; o.textContent = TZ_UNSET; opts.unshift(o);
+      }
+      zone.replaceChildren(...opts);
+      zone.value = picked;
+    }
+    /* "Use this device's timezone", while the browser's own zone is one
+       OpenFit knows and isn't the saved one - nor the one picked. */
+    function paintDevice(){
+      const show = !!tz && !!device && device!==tz.saved && tz.zones.includes(device) && zone.value!==device;
+      useDevice.hidden = !show;
+      useDevice.textContent = show ? `Use this device's timezone (${device})` : '';
+    }
+    api.profile().then(p => {
+      tz = {saved: p.timezone_set ? p.timezone : null, zones: Array.isArray(p.zones) ? p.zones : []};
+      search.disabled = zone.disabled = false;
+      paintZones(tz.saved || '');
+      paintDevice();
+    }).catch(() => {
+      zone.replaceChildren();
+      tzMsg.textContent = "Couldn't read your timezone.";
+    });
+    search.oninput = () => { if(tz){ paintZones(); paintDevice(); } };
+    zone.onchange = paintDevice;
+    useDevice.onclick = () => { search.value = ''; paintZones(device); paintDevice(); };
+
     box.querySelector('[data-act="close"]').onclick = close;
-    box.querySelector('[data-act="save"]').onclick = () => {
+    /* Both sections at once: the opening page to this browser, and - if
+       another was picked - the timezone to the account, then a reload,
+       so Home is drawn afresh on the new today. A refusal stays in the
+       popup, nothing reloaded. */
+    save.onclick = async () => {
       try{ localStorage.setItem(OPENING_TAB, select.value); }catch(e){}
-      close();
+      const picked = tz ? zone.value : '';
+      if(!picked || picked===tz.saved){ close(); return; }
+      save.disabled = true;
+      tzMsg.textContent = '';
+      const res = await api.saveProfile({timezone: picked});
+      if(!res.ok){
+        tzMsg.textContent = res.error || "Couldn't save your timezone.";
+        save.disabled = false;
+        return;
+      }
+      location.reload();
     };
     // Whatever the server says, the reload shows where this browser
     // stands: the sign-in once the session is gone.

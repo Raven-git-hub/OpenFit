@@ -264,14 +264,14 @@ class FakeGarmin:
 
 
 @pytest.fixture
-def garmin(monkeypatch):
+def garmin(monkeypatch, pin_clock):
     """The real Garmin plugin, syncing from a FakeGarmin on 2026-01-02.
     `vitals` is the fixture day's responses, or {date: responses} with
     by_date=True. The fake from the latest sync is garmin.client."""
     from plugins import PLUGINS
 
     plugin = PLUGINS["garmin"]
-    monkeypatch.setattr("plugins.garmin.plugin.date", FrozenDate)
+    pin_clock(FrozenDate.today())
 
     def sync_with(conn, vitals, days=1, by_date=False):
         sync_with.client = FakeGarmin(vitals if by_date else {DAY: vitals})

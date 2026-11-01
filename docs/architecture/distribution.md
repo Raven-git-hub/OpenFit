@@ -229,8 +229,8 @@ until a move is needed.
 - **Host version.** A library app carries a host-version requirement, and
   the host refuses an install it isn't compatible with. Built in B1 as an
   **app level**: a manifest's `requires` (1 when it doesn't say) against the
-  user system's `APP_LEVEL` (1), raised when apps gain something an older
-  OpenFit lacks. An app needing more doesn't load, won't install, and shows in
+  user system's `APP_LEVEL` (2 since TZ1, below), raised when apps gain
+  something an older OpenFit lacks. An app needing more doesn't load, won't install, and shows in
   Browse as needing a newer OpenFit. L4's host-version labels build on it.
 - **Library apps are the Admin's to update.** The Admin publishes a library
   app's updates, and every installed copy takes them up by itself. A user
@@ -539,12 +539,34 @@ a second real person gets a container. Re-ordered 2026-10-27, after A1:
    week after the last. The one-off "Schedule" button once planned beside
    "now" (an update at a time the admin picks) is dropped in favour of the
    weekly schedule: every button runs now.
+11. **TZ1: the user's timezone** (built; the user system, no migration):
+   one per-account setting, the timezone, an IANA name in the settings
+   table as `profile.timezone`, read and written only through `GET`/`PUT
+   /api/profile` (the generic `/api/settings/<key>` refuses `profile.*`),
+   and set in Settings' new Your account section. Every "today" in the
+   user system follows it through one module, `app/clock.py`: Home's
+   (`ctx.today()`), the webhook's default date, the trailing `?days=`
+   windows, a sync's re-derived window, Garmin's sync days and Google
+   Health's, and the local midnights Google's intraday series start from.
+   Unset is UTC, the container's clock, so nothing changed until it's set.
+   Apps get it through the ctx: `ctx.today()` is the user's date, and
+   `ctx.timezone()` (new) its IANA name, which raised `APP_LEVEL` to 2; an
+   app that says nothing is level 1 and loads as ever. Stored data doesn't
+   move. A test keeps `date.today()`, `datetime.today()` and a bare
+   `datetime.now()` out of `app/` but `clock.py`. **FRMS** still reads its
+   own `personal.timezone` from its `config.json`; when FRMS work resumes
+   it should switch to `ctx.timezone()` (and say `requires: 2`), so the
+   body clock follows the account's setting. Nothing in the Admin changed.
 
 ### Parked
 
 - **B2, `replaces` moving data**: the owner reinstalled FRMS fresh from
   Browse, so there's no old data to move. `replaces` stays parsed and
   refused until it's needed, then L3's rules (above) apply.
+- **Per-app settings**: settings an app keeps for the account rather than
+  per tile (FRMS's home base, say), beside TZ1's profile. Parked: the
+  timezone is the one account-wide field apps need now, and a tile's
+  `config` covers the rest.
 
 The proxy and the mDNS announcer are deferred: users are on `IP:port` until
 then. The backup file's format (a zip, a passphrase, a user's own export) is

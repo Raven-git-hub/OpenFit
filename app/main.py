@@ -12,7 +12,7 @@ import time
 import traceback
 import urllib.parse
 from contextlib import contextmanager
-from datetime import date, datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 
 from flask import (Flask, has_request_context, jsonify, make_response, render_template, request,
                    send_from_directory, session)
@@ -22,6 +22,7 @@ from apscheduler.jobstores.base import JobLookupError
 from apscheduler.schedulers.background import BackgroundScheduler
 
 import auth
+from clock import DEFAULT_ZONE, PROFILE_PREFIX, TIMEZONE_KEY, is_zone, stored_zone, user_today, zones
 from migrations import connect, run_migrations
 from plugins import PLUGINS
 from plugins.base import OAUTH_REDIRECT_URI, write_metric
@@ -525,14 +526,24 @@ def get_activity():
 # with DELETE /api/app-sources/<id>/app:<id>:<key>).
 
 
+def _user_today():
+    """The user's date (clock.user_today()), over a connection of its own:
+    for a read that needs today only when it's asked for ?days=."""
+    conn = get_conn()
+    try:
+        return user_today(conn)
+    finally:
+        conn.close()
+
+
 def _date_range(args):
     """((from, to), None) for a contract read's query args, or (None, what's wrong).
 
     ?from= and ?to= are optional YYYY-MM-DD dates, both inclusive; one
     that is missing or empty is None, leaving that end open. ?days=N
-    instead keeps the trailing N days - today (the server's local date)
-    and the N - 1 before it, as a sync's days count - and can't be
-    combined with them.
+    instead keeps the trailing N days - today (the user's date: their
+    timezone setting, UTC if unset) and the N - 1 before it, as a sync's
+    days count - and can't be combined with them.
     """
     raw_days = args.get("days", "")
     if raw_days:
@@ -542,7 +553,7 @@ def _date_range(args):
         # few thousand digits raises rather than returning.
         if not re.fullmatch(r"[0-9]{1,9}", raw_days) or int(raw_days) < 1:
             return None, "days must be a whole number from 1 to 999999999"
-        return trailing_window(int(raw_days)), None
+        return trailing_window(int(raw_days), _user_today()), None
 
     bounds = []
     for name in ("from", "to"):
@@ -1561,8 +1572,16 @@ def put_home_layout():
 # a new preference from needing a migration or a route of its own.
 
 
+# The profile's own keys (profile.*, clock.py) are /api/profile's alone,
+# where each is checked before it's stored: refused here both ways, so a
+# value can't skip that check.
+PROFILE_ONLY = f"{PROFILE_PREFIX}* settings are read and written through /api/profile"
+
+
 @app.route("/api/settings/<key>", methods=["GET"])
 def get_setting(key):
+    if key.startswith(PROFILE_PREFIX):
+        return jsonify({"ok": False, "error": PROFILE_ONLY}), 400
     conn = get_conn()
     row = conn.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
     conn.close()
@@ -1574,6 +1593,8 @@ def get_setting(key):
 
 @app.route("/api/settings/<key>", methods=["PUT"])
 def set_setting(key):
+    if key.startswith(PROFILE_PREFIX):
+        return jsonify({"ok": False, "error": PROFILE_ONLY}), 400
     body = request.get_json(force=True, silent=True) or {}
     value = body.get("value")
     if not isinstance(value, str):
@@ -1587,6 +1608,59 @@ def set_setting(key):
     conn.commit()
     conn.close()
     return jsonify({"ok": True})
+
+
+# ---------- the profile ----------
+
+# The account's own settings, the same on every device it signs in from
+# (unlike the page's per-browser choices, in localStorage). One so far:
+# the timezone, an IANA name - which day is today for every "today" in
+# OpenFit and its apps (clock.py). Stored as the profile.timezone
+# settings row; unset is UTC.
+
+PROFILE_FIELDS = ("timezone",)
+BAD_TIMEZONE = "timezone must be an IANA timezone name, such as Asia/Hong_Kong"
+
+
+@app.route("/api/profile", methods=["GET"])
+def get_profile():
+    """{timezone, timezone_set, zones}: the timezone in effect (UTC when
+    none is saved, or what's saved isn't one), whether one is saved, and
+    every zone it can be set to, sorted."""
+    conn = get_conn()
+    try:
+        saved = stored_zone(conn)
+    finally:
+        conn.close()
+    return jsonify({"timezone": saved or DEFAULT_ZONE, "timezone_set": saved is not None,
+                    "zones": list(zones())})
+
+
+@app.route("/api/profile", methods=["PUT"])
+def set_profile():
+    """{timezone}: saved if it's one of GET's zones, else 400 and nothing
+    stored. → {ok: true, timezone}. There's no unsetting it: UTC is a
+    zone like any."""
+    body = request.get_json(force=True, silent=True)
+    if not isinstance(body, dict):
+        return jsonify({"ok": False, "error": 'expected a JSON object: {"timezone": "<IANA name>"}'}), 400
+    unknown = sorted(k for k in body if k not in PROFILE_FIELDS)
+    if unknown:
+        return jsonify({"ok": False, "error": f"unknown profile field: {unknown[0]}"}), 400
+    zone = body.get("timezone")
+    if not is_zone(zone):
+        return jsonify({"ok": False, "error": BAD_TIMEZONE}), 400
+    conn = get_conn()
+    try:
+        conn.execute(
+            "INSERT INTO settings (key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (TIMEZONE_KEY, zone),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return jsonify({"ok": True, "timezone": zone})
 
 
 # ---------- source roles ----------
@@ -1742,10 +1816,12 @@ def regenerate_webhook_token():
     return jsonify({"ok": True, **_webhook_address(token)})
 
 
-def _webhook_reading(body):
+def _webhook_reading(body, conn):
     """(reading, None) for a valid webhook body, or (None, what's wrong).
 
     The reading is {date, source, metric, value}, ready for write_metric().
+    With no date it's today where the user is (their timezone setting,
+    read over `conn`).
     """
     if not isinstance(body, dict):
         return None, 'expected a JSON object: {"metric": "<key>", "value": <number>}'
@@ -1759,7 +1835,7 @@ def _webhook_reading(body):
     except ValueError as e:
         return None, str(e)
 
-    day = body.get("date") or date.today().isoformat()
+    day = body.get("date") or user_today(conn).isoformat()
     try:
         # strptime rather than date.fromisoformat, which also takes
         # '20260101' and week dates: dates are stored as YYYY-MM-DD.
@@ -1799,7 +1875,8 @@ def webhook(token):
 
     `metric` is a canonical key and `value` a number in its unit, within
     its plausible range (PLAUSIBLE_RANGES); `date` is YYYY-MM-DD and
-    defaults to today; `source` defaults to "webhook". Idempotent: it's
+    defaults to today - the user's date, in their timezone setting (UTC
+    if unset); `source` defaults to "webhook". Idempotent: it's
     an upsert, so a repeat of the same (date, source, metric) replaces
     the reading - one value per source per day, the latest push wins.
 
@@ -1815,7 +1892,7 @@ def webhook(token):
         if stored is None or not hmac.compare_digest(token.encode(), stored.encode()):
             return jsonify({"ok": False, "error": "unknown webhook token"}), 401
 
-        reading, error = _webhook_reading(request.get_json(force=True, silent=True))
+        reading, error = _webhook_reading(request.get_json(force=True, silent=True), conn)
         if error:
             return jsonify({"ok": False, "error": error}), 400
 
@@ -2272,11 +2349,12 @@ def _sync(plugin, conn, days):
     """Run one plugin's sync, then re-derive the window it wrote.
 
     A `days`-day sync covers today and the days - 1 before it, as every
-    plugin counts it, so that is the window recomputed - nothing older.
+    plugin counts it - today the user's date, in their timezone setting
+    (UTC if unset) - so that is the window recomputed - nothing older.
     Its start is taken before the sync runs: one that crosses midnight
     then starts its own window a day later, still inside this one.
     """
-    since = (date.today() - timedelta(days=days - 1)).isoformat()
+    since = (user_today(conn) - timedelta(days=days - 1)).isoformat()
     n = plugin.sync(conn, days)
     recompute_derived(conn, since=since)
     return n

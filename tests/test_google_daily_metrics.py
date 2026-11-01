@@ -205,11 +205,11 @@ def data_type_of(url):
 
 
 @pytest.fixture
-def google(conn, monkeypatch):
+def google(conn, monkeypatch, pin_clock):
     """A FakeGoogle behind the real Google Health plugin, syncing on TODAY."""
     from plugins import PLUGINS
 
-    monkeypatch.setattr("plugins.google_health.plugin.date", FrozenDate)
+    pin_clock(FrozenDate.today())
     for var in ("GOOGLE_HEALTH_CLIENT_ID", "GOOGLE_HEALTH_CLIENT_SECRET"):
         monkeypatch.delenv(var, raising=False)
     conn.execute(

@@ -153,12 +153,12 @@ class FakeGarmin:
 
 
 @pytest.fixture
-def garmin(monkeypatch):
+def garmin(monkeypatch, pin_clock):
     """The real Garmin plugin, syncing from a FakeGarmin on 2026-01-02."""
     from plugins import PLUGINS
 
     plugin = PLUGINS["garmin"]
-    monkeypatch.setattr("plugins.garmin.plugin.date", FrozenDate)
+    pin_clock(FrozenDate.today())
 
     def sync_with(conn, sleep, days=1, stats=None):
         monkeypatch.setattr(plugin, "_get_client", lambda conn=None: FakeGarmin(sleep, stats))
@@ -363,7 +363,7 @@ NAP_SESSION = (
 
 
 @pytest.fixture
-def google(conn, monkeypatch):
+def google(conn, monkeypatch, pin_clock):
     """The real Google Health plugin, its HTTP calls stubbed, syncing on
     2026-01-02.
 
@@ -374,7 +374,7 @@ def google(conn, monkeypatch):
     """
     from plugins import PLUGINS
 
-    monkeypatch.setattr("plugins.google_health.plugin.date", FrozenDate)
+    pin_clock(FrozenDate.today())
     for var in ("GOOGLE_HEALTH_CLIENT_ID", "GOOGLE_HEALTH_CLIENT_SECRET"):
         monkeypatch.delenv(var, raising=False)
     conn.execute(

@@ -186,9 +186,10 @@ built-in/default metrics themselves are never purgeable.
 ## Build order (one branch each)
 
 - Done: docs cleanup (#55/#56) and apps-as-source + weight app (#57).
-- **A — base_tz universal setting:** home timezone in universal settings,
-  validated IANA, read-only to apps via `ctx`. Small, independent. Weight app
-  uses server-local date until it lands.
+- **A — base_tz universal setting:** built as TZ1 — the account's timezone
+  (`profile.timezone`, validated IANA, set in Settings → Your account),
+  read-only to apps via `ctx.today()` and `ctx.timezone()`. An app's write
+  with no date lands on the user's day.
 - **Data-lifecycle (A):** orphaned-source data removal (above). Done for app
   sources; reuses the disconnect path and clears the stale `source_roles` entry.
 - **Custom metrics (B0):** done — app-declared `daily`/`instant` metrics stored

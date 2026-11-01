@@ -12,7 +12,8 @@ own calls to its device API. Full direction:
 - Python + Flask, raw `sqlite3` (NOT SQLAlchemy/an ORM); PyYAML only to read
   an installed app's `app.yaml`; `tzdata` (the IANA time-zone database as a
   package, so `zoneinfo` finds a zone even in a slim image without the
-  system's — FRMS's circadian engine the first to use it; nothing imports it)
+  system's — FRMS's circadian engine the first to use it, then the user's
+  timezone, `app/clock.py`; nothing imports it)
 - Vanilla JS, no build step
 - Docker + docker-compose; one container, SQLite at `/data/tracker.db` (in WAL
   mode, so `tracker.db-wal`/`tracker.db-shm` beside it are part of the
@@ -149,6 +150,34 @@ own calls to its device API. Full direction:
   range (`substr("start", 1, 10)`, inclusive, built inline: `main` imports
   `derived`, never the reverse) and `source_rank()` order once; the caller
   checks `kind`.
+- `app/clock.py` — the user's clock (TZ1, no migration): which day is
+  today where the user is. Every "today" in `app/` comes from here, never
+  the container's clock (UTC): `now_utc()` (the one place `app/` asks the
+  system for the time — a test pins it, conftest's `pin_clock`, and
+  everything follows), `user_zone(conn)` → a `ZoneInfo`, `user_today(conn)`
+  → a `date`, `today_in(zone)`, `local_midnight(d, zone)` → the aware UTC
+  moment day `d` begins in `zone` (its first midnight where a clock going
+  back repeats it; where a change skips midnight, or the whole day, the
+  change itself). The setting is one `settings` row, `profile.timezone`
+  (`TIMEZONE_KEY`), an IANA name in `zones()` (`available_timezones()`
+  less `NOT_ZONES` — `localtime`, `Factory` — sorted, cached; `is_zone()`);
+  `stored_zone(conn)` → it, or None when unset, not a zone, or the
+  database won't read (each bad value logged once, `[clock] ...`) — never
+  raising: UTC (`DEFAULT_ZONE`). Read and written only through `GET`/`PUT
+  /api/profile` (`app/main.py`): GET → `{timezone, timezone_set, zones}`
+  (the zone in effect, UTC when none is saved; whether one is; every zone);
+  PUT `{timezone}` → `{ok, timezone}`, 400 `BAD_TIMEZONE` for anything not
+  in `zones()` (`""`, a non-string, a near miss), 400 for a body not an
+  object or a field the profile hasn't got (`PROFILE_FIELDS`), nothing
+  stored; no unsetting (UTC is a zone like any). `/api/settings/<key>`
+  refuses any `profile.` key (`PROFILE_PREFIX`) both ways, 400
+  `PROFILE_ONLY`, so nothing skips the check. Followed by: the webhook's
+  default date (`_webhook_reading(body, conn)`), a sync's re-derived window
+  (`_sync()`), `?days=` (`_date_range()` → `trailing_window(days,
+  _user_today())`), `ctx.today()`/`ctx.timezone()`, Garmin's sync days and
+  Google Health's, and Google's series' local midnights. Stored data never
+  moves. `tests/test_clock.py` holds every other module in `app/` off
+  `date.today()`, `datetime.today()` and a bare `datetime.now()`.
 - `app/crypto.py` — Fernet encrypt/decrypt for stored credentials.
 - `app/auth.py` — the one account (U1; no Flask, so the CLI imports it
   alone): `/data/auth.json` (0600), `{password_hash, session_tag, setup:
@@ -217,10 +246,11 @@ own calls to its device API. Full direction:
   `check_app()` doesn't check it), `description` (text ≤
   `MAX_DESCRIPTION` 300 once trimmed, blank none — what Browse shows),
   `requires` (the **app level** it needs, a whole number ≥ 1, not a bool,
-  default 1; `APP_LEVEL` = 1, "the app contract this OpenFit provides;
-  raised when apps gain something an older OpenFit lacks" — checked first,
-  an app needing more skipped: "needs OpenFit app level 2; this OpenFit is
-  level 1"; `manifest_requires()`, `level_problem()`) and `replaces` (a
+  default 1; `APP_LEVEL` = 2, "the app contract this OpenFit provides;
+  raised when apps gain something an older OpenFit lacks" — 1 the first
+  contract, 2 (TZ1) `ctx.timezone()` and `ctx.today()` the user's date;
+  checked first, an app needing more skipped: "needs OpenFit app level 3;
+  this OpenFit is level 2"; `manifest_requires()`, `level_problem()`) and `replaces` (a
   list of ≤ `MAX_REPLACES` 5 ids passing `is_app_id()`, none twice, never
   the library app's own full id — a custom app's own bare id isn't refused,
   its `replaces` never acted on, so FRMS's library files pasted in as
@@ -478,8 +508,9 @@ own calls to its device API. Full direction:
   metric's declared one — `.source`),
   ascending by date — `data[-1]` the latest day, `[]` for none — the derived
   points `GET /api/metric/<key>` serves (`derived_points()` in
-  `app/derived.py`, shared by both), trailing `days` (`trailing_window()`:
-  today − (days−1) … today) or all history; `key` a canonical metric or
+  `app/derived.py`, shared by both), trailing `days` (`trailing_window(days,
+  today)`, `today` always given — it has no clock: today − (days−1) …
+  today) or all history; `key` a canonical metric or
   one the ctx's app declares, by its short key (`_resolve()`: read from
   `custom_metric_key(id, key)` = `app:<id>:<key>`); any other key —
   another app's, by either form — or a `days` not an
@@ -507,8 +538,12 @@ own calls to its device API. Full direction:
   after the `until` → `ValueError("since must not be after until: <since>
   > <until>")`; no `days=`. On the base `Ctx`, so `render()` and
   `handle()` both have it (in `handle()` it sees the action's own
-  uncommitted sessions); reads only. `ctx.today()` → the server's
-  local date as `YYYY-MM-DD`. The spec builders (also module functions):
+  uncommitted sessions); reads only. `ctx.today()` → the user's
+  local date (their timezone, `app/clock.py`; UTC if unset) as
+  `YYYY-MM-DD`, and `ctx.timezone()` → that timezone's IANA name
+  (`"Asia/Hong_Kong"`, `"UTC"`) — app level 2 — both read once a ctx, the
+  first time either is asked (`_user_zone()`; a `today` given to the ctx
+  stands). The spec builders (also module functions):
   `number(value, label, caption, unit)`, `line(points, title=None)` →
   `{"type": "line", "points": [[date, value], ...], "title"}` (points
   `(date, value)` pairs — the apps' `[(p.date, p.value) for p in data]` — or
@@ -1223,8 +1258,27 @@ own calls to its device API. Full direction:
   the left, **Applications** on the right (below); at 1240px and under it
   drops to one column, at the old 940px cap, Applications under the data —
   narrower than that, a Your data row would squeeze the metric's name. `settings`
-  opens the Settings popup (the `.modal` chrome): one control, **Opening
-  page**, then at its foot (`.settings-foot`, "Signed in on this browser.")
+  opens the Settings popup (the `.modal` chrome): two sections
+  (`.settings-sec`, each headed `.settings-h`) — **This browser**, one
+  control, **Opening page** (below); and **Your account**, the
+  **Timezone** (TZ1): a search box (`#tzSearch`) over a `<select>`
+  (`#tzZone`) of `GET /api/profile`'s `zones` (`api.profile()`, read as
+  the popup opens; both disabled until it lands, "Couldn't read your
+  timezone." if it fails), the saved zone selected, or while none is
+  "UTC (not set)" (`TZ_UNSET`, value `""`) first; typing narrows the list
+  (`paintZones()`: any case, a space for an underscore), picks the first
+  match and keeps the pick listed; "Use this device's timezone (<zone>)"
+  (`.tz-device`, `data-act="device-tz"`) shown only while the browser's
+  own (`deviceZone()`, `Intl.DateTimeFormat().resolvedOptions().timeZone`)
+  is in the list and is neither the saved zone nor the one picked
+  (`paintDevice()`), a click picking it; the hint "Used for 'today'
+  everywhere in OpenFit and its apps, on every device you sign in from.";
+  every name as text. Save writes both: the opening page to
+  `localStorage`, and — only when a zone other than the saved one is
+  picked — `api.saveProfile({timezone})` (`PUT /api/profile`), then
+  `location.reload()` (Home on the new today); a refusal shown in the
+  section (`data-f="tz-msg"`), Save back on, nothing reloaded. Then at its
+  foot (`.settings-foot`, "Signed in on this browser.")
   **Sign out** (`data-act="signout"`: held, `api.signOut()` → `POST
   /api/auth/logout`, then `location.reload()` — the sign-in); the
   dropdown built from the tab strip (`.tab[data-tab]`, so Home's
@@ -1265,8 +1319,8 @@ own calls to its device API. Full direction:
   included) shows in the modal. Only the refresh token is replaced:
   `_store_account()`'s upsert keeps the account's Added date, and its data,
   cadence and source roles are untouched. No
-  global cadence control: the universal Settings popup keeps Opening page
-  and Sign out only. Remove is a two-step gate in
+  global cadence control: the universal Settings popup keeps Opening page,
+  the timezone and Sign out only. Remove is a two-step gate in
   the same modal, no `confirm()`: "Disconnecting stops future syncs." over a
   danger panel "Wipe data?" ([Keep data] / [Wipe data]), then "Are you
   sure?" naming the source and whether its data goes ([Cancel] / [Remove] or
@@ -1539,8 +1593,8 @@ own calls to its device API. Full direction:
   /api/app/<id>/action`, `/api/app/<id>/file`, `/api/app-sources`, `DELETE
   /api/app-sources/<id>`, `DELETE /api/app-sources/<id>/<metric>`), the
   library's (`/api/library`, `/api/library/<source>/<app>`, `POST
-  /api/library/<source>/<app>/install`), Home's layout (`GET`/`PUT /api/home-layout`)
-  and `POST /api/auth/logout`;
+  /api/library/<source>/<app>/install`), Home's layout (`GET`/`PUT /api/home-layout`),
+  the profile (`GET`/`PUT /api/profile`) and `POST /api/auth/logout`;
   not `/api/activity` (the last-sync stamp that read it
   is gone). See `docs/architecture/frontend-redesign-and-widget-model.md`.
   **Home** reads `GET /api/apps` and `GET /api/home-layout` together, then
@@ -2396,7 +2450,10 @@ own calls to its device API. Full direction:
   `auth.json`, its session carrying the tag, and `X-OpenFit: 1` on every
   request (`environ_base`). There's no switch that turns auth off. A test
   of signing in starts from a client of its own (`test_auth.py`'s
-  `guest`), signed out.
+  `guest`), signed out. The suite runs on UTC (conftest sets `TZ`, as the
+  container is), and `pin_clock(moment)` holds `clock.now_utc()` — every
+  today — at a moment (a date: noon UTC that day); the plugin tests pin
+  their sync day with it.
 - `docs/architecture/` — design direction (read first). `docs/design/` — frontend references.
 
 ## Data model
@@ -2701,9 +2758,9 @@ own calls to its device API. Full direction:
     only) via list, filtered `oxygen_saturation.sample_time.physical_time
     >= start AND < end`: each point's `percentage`, rounded, at its own
     `sampleTime.physicalTime` — no downsampling.
-  Both over the sync window's days in the server's local time (the zone
-  `date.today()` reads): local midnight on its first day up to the start of
-  the current minute, in back-to-back windows of at most 14 days of elapsed
+  Both over the sync window's days in the user's timezone (`app/clock.py`,
+  UTC if unset): midnight there on its first day (`local_midnight()`) up to
+  the start of the current minute (`clock.now_utc()`), in back-to-back windows of at most 14 days of elapsed
   time (`_spans()`, so a clock change never stretches one past rollUp's
   limit), `SERIES_PAGE_SIZE` = 1440 (a day of minutes) to a page, so a full
   window is 14 pages and `MAX_PAGES` only stops a runaway. Each window's
@@ -2772,6 +2829,12 @@ own calls to its device API. Full direction:
   "flow", "subtitle", "items": [{"app_id", "size"}]}`, is upgraded on
   read to one `home` tab — no migration. It's config, not data: an app's
   tile placement, never a metric.
+- Profile (TZ1, no migration): the `settings` row `profile.timezone`, an
+  IANA name (`Asia/Hong_Kong`), the account's timezone — which day is today
+  for every "today" in the user system (`app/clock.py`); absent or not a
+  zone, UTC. Written only by `PUT /api/profile`, read through `GET
+  /api/profile` and `clock.user_zone()`; `/api/settings/<key>` refuses every
+  `profile.` key. Config, not data: nothing stored moves when it changes.
 - Webhook (push input, no migration): `POST /api/webhook/<token>` with
   `{"metric", "value", "date"?, "source"?}` writes one reading via
   `write_metric()` then `recompute_derived(since=date, until=date)`, in one
@@ -2783,7 +2846,7 @@ own calls to its device API. Full direction:
   `POST /api/webhook-token/regenerate` replaces it. 400 unless `metric` is a
   canonical key, `value` a finite number (not a bool) within the metric's
   `PLAUSIBLE_RANGES` (`app/metrics.py`; inclusive; no entry = any number),
-  `date` is `YYYY-MM-DD` (default today), and `source` a non-empty string
+  `date` is `YYYY-MM-DD` (default today, the user's date), and `source` a non-empty string
   (default `webhook`) that isn't a pull plugin's id, an app's (`app:`
   prefix — `APP_SOURCE_PREFIX`) or a frozen one (`manual`). The value
   rule is `plausible_value()` (`app/metrics.py`), shared with an app's
@@ -2856,7 +2919,7 @@ own calls to its device API. Full direction:
   - `from`/`to`: optional, inclusive `YYYY-MM-DD` (empty = omitted); malformed,
     or `from` after `to` → 400. Or `days=N` (every read above; one parser,
     `_date_range()`): the trailing N days, `trailing_window()` (today, the
-    server's local date, − (N−1) … today), so `?days=7` is ≤ 7 points and a
+    user's local date — their timezone, UTC if unset — − (N−1) … today), so `?days=7` is ≤ 7 points and a
     reading dated after today is out; `1`–`999999999` digits only, else 400;
     with a non-empty `from`/`to` → 400; empty = omitted. Errors are
     `{"ok": false, "error"}`.
@@ -3331,8 +3394,9 @@ same PR:
   beyond the clock tag, the
   cards' popups and PDF, the
   report store (re-attached to a trip by its id), per-block or per-band
-  detail on click or hover, and home-local (`base_tz`) day lines and
-  WOCL shading on the axis.
+  detail on click or hover, home-local day lines and WOCL shading on the
+  axis, and reading the account's timezone (`ctx.timezone()`, TZ1) in
+  place of its own `personal.timezone`.
   Still to come for write-back: an app replacing its own sessions and
   metrics over a date range (so a re-planned roster's dropped duties go),
   the rostered↔flown per-duty matching (needs a derived duty key — the
@@ -3344,8 +3408,7 @@ same PR:
   Python; a PDF library isn't in it), several files in one input and,
   for a select, `{value, label}` options,
   host-side option-membership enforcement and multi-select,
-  `base_tz` (slice A: an app's write lands on the server's local date
-  until then), timestamped weigh-ins more than one a day (the instant
+  timestamped weigh-ins more than one a day (the instant
   grain), and how apps rank against other unnamed sources
   (`data-consolidation-model.md` §10 — today by name).
   Data lifecycle (A) landed (no migration): an uninstalled app's data
@@ -3428,7 +3491,7 @@ same PR:
   /api/library/<source>/<app>[/install]`, the files the shelf's, never
   the page's), the page's Browse and the Add popup's read-only library
   mode its front end; the manifest gained `description`, `requires` (an
-  app level, `APP_LEVEL` 1: skipped and refused above it) and `replaces`
+  app level, `APP_LEVEL` 1 then — 2 since TZ1: skipped and refused above it) and `replaces`
   (parsed; the install refused while what it replaces, or its data, is
   here); and `library/` was corrected to FRMS alone, the other seven
   apps moved to `tests/fixtures/apps/`. Then organisation repos landed
@@ -3510,7 +3573,17 @@ same PR:
   FRMS's rest budget (aviation repo) - month paging, the WOCL purple, a
   switch narrowing to the disturbed slots. Deploy: rebuild the image
   first, then Update FRMS (on the old image the budget panel errors - an
-  unknown `ctx.switch`). Still to come, in order: L4;
+  unknown `ctx.switch`). Then TZ1, the user's
+  timezone (the user system; no migration): one account setting,
+  `profile.timezone` (an IANA name, UTC unset), through `GET`/`PUT
+  /api/profile` and Settings' Your account; every "today" in `app/`
+  through `app/clock.py` — `ctx.today()`, the webhook's default date,
+  `?days=`, a sync's re-derived window, Garmin's and Google's sync days and
+  Google's series' local midnights — and `ctx.timezone()` for apps, which
+  raised `APP_LEVEL` to 2. FRMS keeps its own config timezone until its
+  work resumes, then switches to `ctx.timezone()`; per-app settings stay
+  parked. Deploy: rebuild the image; set the timezone in settings, then
+  Sync now. Still to come, in order: L4;
   non-GitHub hosts, HTTPS or token access, and per-user repo visibility
   are out; installing an app with folders
   inside it is out; scheduled updates are SU1's weekly schedule (built:

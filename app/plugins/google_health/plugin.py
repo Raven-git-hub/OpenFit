@@ -47,8 +47,8 @@ span across all of them (see DAILY_ROLLUPS and DAILY_SUMMARIES):
 
 The intraday series (see INTRADAY_SERIES) are filed as samples, one value
 per SERIES_WINDOW_SECONDS (a minute) - the one place that resolution is
-set - over the sync window's days, from local midnight on its first day
-up to the current minute:
+set - over the sync window's days, from midnight on its first day in the
+user's timezone up to the current minute:
   - heart-rate        -> heart_rate, via rollUp: Google keeps it at about
                          one reading a second, and a rollUp windowed to
                          SERIES_WINDOW_SECONDS averages it per minute
@@ -79,10 +79,12 @@ import math
 import os
 import re
 import urllib.parse
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timedelta
 
 import requests
 
+import clock
+from clock import local_midnight, today_in, user_zone
 from metrics import (
     ACTIVE_KCAL,
     ACTIVE_MINUTES,
@@ -389,7 +391,10 @@ class GoogleHealthPlugin(SyncPlugin):
         access_token = self._get_access_token(conn)
         headers = {"Authorization": f"Bearer {access_token}", "Accept": "application/json"}
 
-        today = date.today()
+        # The user's timezone (their setting, UTC if unset): which day is
+        # today, and where each day of the series begins.
+        zone = user_zone(conn)
+        today = today_in(zone)
         start = today - timedelta(days=days - 1)
 
         # Every daily metric over the one window, start to today, as
@@ -405,7 +410,7 @@ class GoogleHealthPlugin(SyncPlugin):
         # Each series over the same days, as {metric: [(ts, value)]}; one
         # that fails or comes back empty costs only its own samples.
         series = {
-            spec["metric"]: self._fetch_series(headers, spec, start, today)
+            spec["metric"]: self._fetch_series(headers, spec, start, today, zone)
             for spec in INTRADAY_SERIES
         }
 
@@ -596,14 +601,14 @@ class GoogleHealthPlugin(SyncPlugin):
                   f"heart rate or calories in any. Sample point: {points[0]}")
         return sessions
 
-    def _fetch_series(self, headers, spec, start, end):
-        """One INTRADAY_SERIES type's samples, from local midnight on
-        `start` to local midnight after `end` or the start of the current
+    def _fetch_series(self, headers, spec, start, end, zone):
+        """One INTRADAY_SERIES type's samples, from midnight on `start` to
+        midnight after `end` - both in `zone` - or the start of the current
         minute, whichever is sooner, as [(ts, value)]: ts an iso_utc()
         timestamp, value a whole number.
 
-        The days are the sync window's, in the server's local time - the
-        zone date.today() reads. The rest of today holds nothing yet, so
+        The days are the sync window's, in the user's timezone - `zone`,
+        the one their today is read in. The rest of today holds nothing yet, so
         it isn't asked for - a rollUp could answer an empty bucket for
         every minute of it - and a minute still under way is left to the
         next sync. Asked for MAX_SERIES_DAYS at a time; each
@@ -619,9 +624,9 @@ class GoogleHealthPlugin(SyncPlugin):
         outside the window are logged too.
         """
         label, metric = spec["data_type"], spec["metric"]
-        lo = _local_midnight(start)
-        hi = min(_local_midnight(end + timedelta(days=1)),
-                 _now().replace(second=0, microsecond=0))
+        lo = local_midnight(start, zone)
+        hi = min(local_midnight(end + timedelta(days=1), zone),
+                 clock.now_utc().replace(second=0, microsecond=0))
         first, last = iso_utc(lo), iso_utc(hi)
         samples = []
         earliest = latest = example = first_rejected = None
@@ -1124,14 +1129,3 @@ def _spans(start, end, step):
         spans.append((start, stop))
         start = stop
     return spans
-
-
-def _local_midnight(d):
-    """The moment day d begins in the server's local time - the zone
-    date.today() reads - as an aware UTC datetime."""
-    return datetime(d.year, d.month, d.day).astimezone(timezone.utc)
-
-
-def _now():
-    """The current moment, as an aware UTC datetime."""
-    return datetime.now(timezone.utc)

@@ -35,21 +35,18 @@ from plugins.base import write_sample
 from plugins.google_health.plugin import MAX_PAGES, SERIES_WINDOW_SECONDS
 
 TODAY = date(2026, 6, 30)
+# When the sync runs: half a minute before TODAY ends, in UTC - the
+# user's timezone while none is set - so its window runs to 23:59, the
+# minute under way the next sync's.
+NOW = datetime(2026, 6, 30, 23, 59, 30, tzinfo=timezone.utc)
 MINUTE = timedelta(seconds=SERIES_WINDOW_SECONDS)
-
-
-class FrozenDate(date):
-    """date, with today pinned to TODAY."""
-
-    @classmethod
-    def today(cls):
-        return cls(TODAY.year, TODAY.month, TODAY.day)
 
 
 @pytest.fixture(autouse=True)
 def local_tz():
-    """The server's local zone, UTC unless a test sets another: series
-    days run local midnight to local midnight. Restored afterwards."""
+    """The machine's own zone, UTC unless a test sets another - which
+    moves nothing: the series' days are the user's timezone's (TZ1).
+    Restored afterwards."""
     saved = os.environ.get("TZ")
 
     def set_tz(name):
@@ -215,11 +212,12 @@ def data_type_of(url):
 
 
 @pytest.fixture
-def google(conn, monkeypatch):
-    """A FakeGoogle behind the real Google Health plugin, syncing on TODAY."""
+def google(conn, monkeypatch, pin_clock):
+    """A FakeGoogle behind the real Google Health plugin, syncing at NOW,
+    on TODAY."""
     from plugins import PLUGINS
 
-    monkeypatch.setattr("plugins.google_health.plugin.date", FrozenDate)
+    pin_clock(NOW)
     for var in ("GOOGLE_HEALTH_CLIENT_ID", "GOOGLE_HEALTH_CLIENT_SECRET"):
         monkeypatch.delenv(var, raising=False)
     conn.execute(
@@ -235,6 +233,12 @@ def google(conn, monkeypatch):
     monkeypatch.setattr("plugins.google_health.plugin.requests.get", fake.get)
     fake.sync = lambda days=7: PLUGINS["google_health"].sync(conn, days)
     return fake
+
+
+def set_zone(conn, name):
+    """The user's timezone, as PUT /api/profile saves it."""
+    conn.execute("INSERT INTO settings (key, value) VALUES ('profile.timezone', ?)", (name,))
+    conn.commit()
 
 
 def samples(conn, metric, source="google_health"):
@@ -286,7 +290,7 @@ def test_heart_rate_is_asked_for_as_one_minute_rollup_buckets(google):
     google.sync(days=1)
 
     assert google.requests_for("heart-rate") == [{
-        "range": {"startTime": "2026-06-30T00:00:00Z", "endTime": "2026-07-01T00:00:00Z"},
+        "range": {"startTime": "2026-06-30T00:00:00Z", "endTime": "2026-06-30T23:59:00Z"},
         "windowSize": "60s",
         "pageSize": 1440,
     }]
@@ -303,16 +307,16 @@ def test_heart_rate_files_a_whole_number_sample_per_minute(conn, google):
 
 def test_a_full_day_is_one_sample_a_minute(conn, google):
     """Two days of buckets, a day to a page: every minute once, each on
-    the minute."""
+    the minute - but the one under way at NOW, 23:59, the next sync's."""
     google.hr.update(minutes("2026-06-29T00:00:00Z", [60 + i % 30 for i in range(2 * 1440)]))
 
     google.sync(days=2)
 
     filed = samples(conn, HEART_RATE)
-    assert len(filed) == 2 * 1440
-    assert len({ts for ts, *_ in filed}) == 2 * 1440
+    assert len(filed) == 2 * 1440 - 1
+    assert len({ts for ts, *_ in filed}) == 2 * 1440 - 1
     assert all(ts.endswith(":00Z") for ts, *_ in filed)
-    assert (filed[0][0], filed[-1][0]) == ("2026-06-29T00:00:00Z", "2026-06-30T23:59:00Z")
+    assert (filed[0][0], filed[-1][0]) == ("2026-06-29T00:00:00Z", "2026-06-30T23:58:00Z")
     assert len(google.requests_for("heart-rate")) == 2
 
 
@@ -326,7 +330,7 @@ def test_heart_rate_is_asked_for_14_days_at_a_time(conn, google):
     assert google.rollup_ranges() == [
         ("2026-06-01T00:00:00Z", "2026-06-15T00:00:00Z"),
         ("2026-06-15T00:00:00Z", "2026-06-29T00:00:00Z"),
-        ("2026-06-29T00:00:00Z", "2026-07-01T00:00:00Z"),
+        ("2026-06-29T00:00:00Z", "2026-06-30T23:59:00Z"),
     ]
     assert [ts for ts, *_ in samples(conn, HEART_RATE)] == [
         "2026-06-01T12:00:00Z", "2026-06-20T12:00:00Z",
@@ -363,7 +367,7 @@ def test_spo2_is_listed_by_its_sample_time_over_the_window(google):
 
     field = "oxygen_saturation.sample_time.physical_time"
     assert google.requests_for("oxygen-saturation") == [{
-        "filter": f'{field} >= "2026-06-24T00:00:00Z" AND {field} < "2026-07-01T00:00:00Z"',
+        "filter": f'{field} >= "2026-06-24T00:00:00Z" AND {field} < "2026-06-30T23:59:00Z"',
         "pageSize": 1440,
     }]
 
@@ -416,30 +420,40 @@ def test_a_spo2_point_with_no_usable_time_is_dropped(conn, google, capsys):
 
 # ---------- the window ----------
 
-# US Eastern as a POSIX rule, so no tz database is needed: UTC-5, UTC-4
+# US Eastern as a POSIX rule, for the machine's own zone: UTC-5, UTC-4
 # from the second Sunday in March to the first in November.
 EASTERN = "EST+5EDT,M3.2.0,M11.1.0"
 
 
-def test_series_days_run_local_midnight_to_local_midnight(google, local_tz):
-    """The sync's days in the server's zone - the one date.today() reads -
-    as UTC bounds: New York's 30 June is 04:00Z to 04:00Z in summer."""
+def test_series_days_run_from_midnight_in_the_users_timezone(conn, google, pin_clock):
+    """The sync's days in the user's timezone, as UTC bounds: at 23:00 on
+    30 June in New York - 1 July in UTC - today is the 30th, which began
+    at 04:00Z, and the window runs from then to the current minute."""
+    set_zone(conn, "America/New_York")
+    pin_clock(at("2026-07-01T03:00:00+00:00"))
+
+    google.sync(days=2)
+
+    field = "oxygen_saturation.sample_time.physical_time"
+    assert google.rollup_ranges() == [("2026-06-29T04:00:00Z", "2026-07-01T03:00:00Z")]
+    assert google.requests_for("oxygen-saturation")[0]["filter"] == (
+        f'{field} >= "2026-06-29T04:00:00Z" AND {field} < "2026-07-01T03:00:00Z"'
+    )
+
+
+def test_the_machines_own_zone_moves_nothing(google, local_tz):
+    """No timezone set is UTC, wherever the server's clock is set."""
     local_tz(EASTERN)
 
     google.sync(days=1)
 
-    field = "oxygen_saturation.sample_time.physical_time"
-    assert google.rollup_ranges() == [("2026-06-30T04:00:00Z", "2026-07-01T04:00:00Z")]
-    assert google.requests_for("oxygen-saturation")[0]["filter"] == (
-        f'{field} >= "2026-06-30T04:00:00Z" AND {field} < "2026-07-01T04:00:00Z"'
-    )
+    assert google.rollup_ranges() == [("2026-06-30T00:00:00Z", "2026-06-30T23:59:00Z")]
 
 
-def test_the_window_stops_at_the_current_minute(google, monkeypatch):
+def test_the_window_stops_at_the_current_minute(google, pin_clock):
     """Not the rest of today, which holds nothing yet; the minute under
     way is the next sync's."""
-    monkeypatch.setattr("plugins.google_health.plugin._now",
-                        lambda: at("2026-06-30T18:30:45.5+00:00"))
+    pin_clock(at("2026-06-30T18:30:45.5+00:00"))
 
     google.sync(days=1)
 
@@ -450,17 +464,18 @@ def test_the_window_stops_at_the_current_minute(google, monkeypatch):
     )
 
 
-def test_no_window_is_longer_than_14_days_across_a_clock_change(google, local_tz):
+def test_no_window_is_longer_than_14_days_across_a_clock_change(conn, google, pin_clock):
     """14 days of local midnights over the March change is 14 days less
     an hour; over November's, an hour more - which Google would refuse.
     Windows are measured in elapsed time, so none is."""
-    local_tz(EASTERN)
+    set_zone(conn, "America/New_York")
+    pin_clock(at("2026-07-01T03:00:00+00:00"))
 
     google.sync(days=120)
 
     ranges = [(at(start), at(end)) for start, end in google.rollup_ranges()]
     assert ranges[0][0] == at("2026-03-03T05:00:00Z")
-    assert ranges[-1][1] == at("2026-07-01T04:00:00Z")
+    assert ranges[-1][1] == at("2026-07-01T03:00:00Z")
     assert all(end == nxt for (_, end), (nxt, _) in zip(ranges, ranges[1:]))
     assert all(end - start <= timedelta(days=14) for start, end in ranges)
 
@@ -477,7 +492,7 @@ def test_a_point_timed_outside_the_window_is_dropped_and_logged(conn, google, ca
 
     assert samples(conn, SPO2) == [SPO2_SAMPLES[0]]
     assert ("oxygen-saturation: dropped 1 points timed outside 2026-06-24T00:00:00Z to "
-            "2026-07-01T00:00:00Z") in capsys.readouterr().out
+            "2026-06-30T23:59:00Z") in capsys.readouterr().out
 
 
 def test_a_token_that_never_runs_out_stops_at_the_page_cap(conn, google, capsys):
@@ -547,7 +562,7 @@ def test_an_empty_series_writes_nothing_and_says_so(conn, google, capsys,
             assert samples(conn, other) == filed
     assert daily(conn) == {STEPS: 8123, RESTING_HR_BPM: 58}
     assert (f"[google_health] {data_type}: no data from 2026-06-24T00:00:00Z to "
-            "2026-07-01T00:00:00Z") in capsys.readouterr().out
+            "2026-06-30T23:59:00Z") in capsys.readouterr().out
 
 
 def test_failed_daily_fetches_leave_the_series_alone(conn, google):

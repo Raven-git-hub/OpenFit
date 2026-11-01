@@ -3121,7 +3121,7 @@ def browse_shelf(tmp_path, monkeypatch):
                      "app.py": "def render(ctx, cfg):\n    return ctx.empty('<i>hi</i>')\n",
                      "notes.txt": "stride: 0.75 m\n"},
             "added": {"app.yaml": "id: added\nname: Added\nsizes: [{w: 1, h: 1}]\n"},
-            "newer": {"app.yaml": "id: newer\nname: Newer\nrequires: 2\nsizes: [{w: 1, h: 1}]\n"},
+            "newer": {"app.yaml": "id: newer\nname: Newer\nrequires: 3\nsizes: [{w: 1, h: 1}]\n"},
             "heir": {"app.yaml": "id: heir\nname: Heir\nreplaces: [old]\nsizes: [{w: 1, h: 1}]\n"},
             "deep": {"app.yaml": "id: deep\nname: Deep\nsizes: [{w: 1, h: 1}]\n", "assets/x.txt": "x"},
         },
@@ -4242,8 +4242,11 @@ SIGN_OUT_SCRIPT = r"""
     const openModal = h => { html = h; return {box:{querySelector:q}, close:() => { closed++; }}; };
     const tabButtons = () => [], openingTab = () => 'data', esc = s => s;
     const OPENING_TAB = 'of-opening-tab';
+    // The timezone section's: its profile never read here.
+    const deviceZone = () => null, TZ_UNSET = 'UTC (not set)', el = () => ({});
     const calls = [];
-    const api = {signOut:async () => { calls.push('signOut'); return {ok:true}; }};
+    const api = {signOut:async () => { calls.push('signOut'); return {ok:true}; },
+                 profile:() => new Promise(() => {})};
     globalThis.location = {reload(){ calls.push('reload'); }};
     SETTINGS
     openSettings();

@@ -130,7 +130,9 @@ class AppError(Exception):
 # (1 when it doesn't say): the scanner skips one that needs more, and
 # install refuses it (check_app()), so an app written for a newer
 # OpenFit never half-runs on this one.
-APP_LEVEL = 1
+#   1  the first contract
+#   2  ctx.timezone(), and ctx.today() the user's date, not the server's (TZ1)
+APP_LEVEL = 2
 
 # The most a description says, trimmed: a line or two in Browse.
 MAX_DESCRIPTION = 300
@@ -786,7 +788,7 @@ def check_app(manifest, files):
     - the app level. `requires`, if given, must be a whole number from
       1, and no more than APP_LEVEL: an app written for a newer OpenFit
       is refused with the scanner's own words ("needs OpenFit app level
-      2; this OpenFit is level 1"), before anything else about it.
+      3; this OpenFit is level 2"), before anything else about it.
     - a size. The manifest must declare the tile size(s) the app is
       drawn at (manifest_sizes(): `sizes`, or the older `default_size`),
       each w and h a whole number of cells, 1 to MAX_CELLS. An app
