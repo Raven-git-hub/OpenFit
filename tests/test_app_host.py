@@ -1655,6 +1655,21 @@ def test_strips_hours_are_a_day_unless_given():
             host.strips([HOME], hours=hours)
 
 
+def test_strips_cursor_is_the_middle_unless_ahead_says_how_many_hours_after_it():
+    # Not given (or None): no key, the cursor the viewport's middle as ever.
+    assert "ahead" not in host.strips([HOME]) and "ahead" not in host.strips([HOME], ahead=None)
+    # A whole number of hours, fewer than the viewport shows: a day's 1 to
+    # 23, three days' 1 to 71 - the sleep panel's 66 back and 6 to come.
+    assert [host.strips([HOME], ahead=h)["ahead"] for h in (1, 6, 23)] == [1, 6, 23]
+    spec = host.strips([HOME], sync="frms", hours=72, ahead=6)
+    assert (spec["hours"], spec["ahead"]) == (72, 6)
+    assert host.strips([HOME], hours=72, ahead=71)["ahead"] == 71
+    for hours, ahead, most in ((None, 24, 23), (None, 0, 23), (72, 72, 71), (72, -6, 71), (12, 12, 11),
+                               (None, True, 23), (72, 6.0, 71), (72, "6", 71)):
+        with pytest.raises(ValueError, match=f"a strips spec's ahead must be a whole number of hours from 1 to {most}"):
+            host.strips([HOME], hours=hours, ahead=ahead)
+
+
 def sleep_span(**more):
     return {"start": "2026-10-20T14:00:00Z", "end": "2026-10-20T14:25:00Z", "tone": "in", "stage": "deep", **more}
 

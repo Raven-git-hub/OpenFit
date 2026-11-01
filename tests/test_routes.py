@@ -6733,6 +6733,55 @@ def test_strips_draw_sleep_stages_the_rest_window_and_disturbed_ticks_three_days
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
+def test_strips_with_ahead_put_their_cursor_that_many_hours_from_the_right(client):
+    page = _page(client)
+    r = _node(_strips_script(page, f"""
+        const H = 3600000;
+        // The sleep panel's: three days across, six hours after the cursor.
+        const box = renderSpec({json.dumps({**SLEEP_STRIPS, "ahead": 6})}, 'FRMS', 'frms');
+        const view = box.querySelector('.st-view'), track = box.querySelector('.st-track');
+        r.cursor = view.querySelector('.st-cursor').style.left;
+        showStrips(box, 480, 200);
+        const t0 = Date.parse('2026-10-19T00:00:00Z'), t1 = Date.parse('2026-10-22T12:00:00Z'), sx = 480 / (72 * H);
+        // Padded 66 hours' worth before the axis and 6 after: the track a
+        // viewport wider than the axis, as a centred one's.
+        r.width = [parseFloat(track.style.width), 480 + (t1 - t0) * sx];
+        const lanes = kids(track, 'st-lane');
+        r.body = [parseFloat(lanes[1].children[0].style.left), 480 * 66 / 72];
+        const light = lanes[0].children.find(c => c.className.includes('st-span'));
+        r.light = [parseFloat(light.style.left), 480 * 66 / 72 + (Date.parse('2026-10-20T13:30:00Z') - t0) * sx];
+        // The group's time under the cursor, where it now is: scrollLeft
+        // that time's offset on the axis, as ever.
+        const g = focusGroups.get('frms'), sc = box.querySelector('.st-scroll');
+        setFocus(g, Date.parse('2026-10-20T18:00:00Z'), false);
+        r.atCursor = new Date(t0 + sc.scrollLeft / sx).toISOString();
+        r.readout = box.querySelector('.tl-readout').textContent;
+        // Scrolled by hand: the time under the moved cursor is the group's.
+        scrollStrips(box, (Date.parse('2026-10-21T06:00:00Z') - t0) * sx);
+        r.byHand = new Date(g.focusMs).toISOString();
+
+        // A day across with a curve: the cursor and its dot 18 hours in.
+        const day = renderSpec({json.dumps({**STRIPS, "sync": "day", "ahead": 6})}, 'FRMS', 'frms');
+        r.day = [day.querySelector('.st-cursor').style.left, day.querySelector('.st-dot').style.left];
+        // Not given, or not one it can take - none, a whole viewport, part
+        // of an hour, text - the middle, the CSS's: no left of its own.
+        r.middle = [undefined, 0, 24, 6.5, '6'].map(a => {{
+          const b = renderSpec({{...{json.dumps(STRIPS)}, sync: 'mid', ahead: a}}, 'X', 'x');
+          return [b.querySelector('.st-cursor').style.left, b.querySelector('.st-dot').style.left];
+        }});
+    """))
+
+    assert r["cursor"].endswith("%") and abs(float(r["cursor"][:-1]) - 100 * 66 / 72) < 1e-9
+    assert abs(r["width"][0] - r["width"][1]) < 0.01
+    assert abs(r["body"][0] - r["body"][1]) < 0.001
+    assert abs(r["light"][0] - r["light"][1]) < 0.001
+    assert r["atCursor"] == "2026-10-20T18:00:00.000Z" and r["readout"] == "Tue 20 Oct 18:00Z"
+    assert r["byHand"] == "2026-10-21T06:00:00.000Z"
+    assert r["day"] == ["75%", "75%"]
+    assert r["middle"] == [[None, None]] * 5
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
 def test_strips_and_a_timeline_of_one_group_scroll_each_other_by_time(client):
     page = _page(client)
     r = _node(_strips_script(page, f"""

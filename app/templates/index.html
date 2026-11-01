@@ -5088,8 +5088,12 @@ h5 + .dnote{margin-top:0;}
      it (.tl-focus - the readout, the time under the cursor, and a Now
      button while the group isn't following), a fixed cursor down the
      middle of the viewport (.st-cursor, over it in .st-view: the track
-     scrolls under it), the track padded half a viewport at each end so
-     scrollLeft is the focus time's offset on the axis. The group's time
+     scrolls under it) - or, with s.ahead (whole hours, fewer than the
+     viewport shows), that many hours in from its right edge, for strips
+     that look back - the track padded before its start as far as the
+     cursor is from the viewport's left, and after its end the rest, so
+     scrollLeft is the focus time's offset on the axis wherever the
+     cursor is. The group's time
      is what's shared, never a scroll position: the strips' day across
      and a timeline's week down scroll to one time, each by its own
      scale. Scrolled by hand, it moves the group's focus to the time
@@ -5125,6 +5129,9 @@ h5 + .dnote{margin-top:0;}
     // most, a span without both ends, in order, left out.
     // How much of the axis one viewport shows: a day, unless it says.
     const viewMs = Number.isInteger(s.hours) && s.hours >= 12 && s.hours <= 168 ? s.hours * 3600000 : ST_VIEW_MS;
+    // Where the cursor sits across the viewport, a fraction from its left:
+    // the middle, unless it says how many hours to show after it.
+    const at = Number.isInteger(s.ahead) && s.ahead >= 1 && s.ahead * 3600000 < viewMs ? 1 - s.ahead * 3600000 / viewMs : 0.5;
     const lanes = (Array.isArray(s.lanes) ? s.lanes : []).slice(0, ST_MAX_LANES).map(l => ({
       kind: l && ST_KINDS.includes(l.kind) ? l.kind : 'sky',
       label: l && typeof l.label==='string' ? l.label : '', clock: l && l.clock==='date' ? 'date' : l && l.clock ? 'place' : '',
@@ -5219,7 +5226,9 @@ h5 + .dnote{margin-top:0;}
     });
     const line = now!==null ? track.appendChild(el('div','st-now')) : null;
     if(line){ const t = line.appendChild(el('div','st-now-tag')); t.textContent = 'Now'; }
-    if(group) view.appendChild(el('div','st-cursor'));
+    // The cursor, and the curve's dot on it, at the middle (the CSS's) or where `at` puts them.
+    const atCursor = e => { if(at!==0.5) e.style.left = (at * 100)+'%'; return e; };
+    if(group) atCursor(view.appendChild(el('div','st-cursor')));
     // A faint line at each midnight, UTC, as the timeline's - and, as
     // its, none on an axis of more than TL_MAX_DAY_LINES days.
     const mids = [];
@@ -5227,7 +5236,7 @@ h5 + .dnote{margin-top:0;}
     if(mids.length > TL_MAX_DAY_LINES) mids.length = 0;
     const midEls = mids.map(() => track.appendChild(el('div','st-mid')));
     const curved = rows.find(r => r.svg);
-    const dot = group && curved ? view.appendChild(el('div','st-dot')) : null;
+    const dot = group && curved ? atCursor(view.appendChild(el('div','st-dot'))) : null;
     let curveGeom = null;   // {m, amp} the curve was last drawn at
     // The curve at t: -1 at a trough, +1 midway to the next; null off them.
     const curveAt = (lows, t) => {
@@ -5245,11 +5254,12 @@ h5 + .dnote{margin-top:0;}
       // The tags' rows level with the lanes': clear of the scrollbar under
       // the track, where the browser draws one that takes room.
       tags.style.bottom = Math.max(0, (scroll.offsetHeight - scroll.clientHeight) || 0)+'px';
-      // Half a viewport of axis past each end, so the cursor - its middle
-      // - can reach every time on it.
-      const viewW = w || 480, px = viewW / viewMs, pad = viewW / 2;
+      // As much axis before the start as the cursor is from the viewport's
+      // left (`pad`), and the rest of a viewport past the end, so the
+      // cursor - the middle, or where `at` puts it - can reach every time.
+      const viewW = w || 480, px = viewW / viewMs, pad = viewW * at;
       if(viewW!==laidW || h!==laidH){
-        const width = pad * 2 + (t1 - t0) * px;
+        const width = viewW + (t1 - t0) * px;
         track.style.width = width+'px';
         rows.forEach(r => {
           r.l.spans.forEach((x, i) => {
@@ -5324,7 +5334,7 @@ h5 + .dnote{margin-top:0;}
     };
     // A scroll to where it last put itself (`ours`, read back) is its own.
     const own = () => { const mine = ours!==null && Math.abs(scroll.scrollLeft - ours) < 1; ours = null; return mine; };
-    // The time at the cursor - the viewport's middle - and the 6h mark
+    // The time at the cursor - the viewport's middle, or where `at` puts it - and the 6h mark
     // that is, within half a pixel (and a hair, for the sums), else null.
     const midMs = () => t0 + scroll.scrollLeft / laidPx;
     const onMark = v => { const m = Math.round(v / TL_MARK_MS) * TL_MARK_MS; return Math.abs(v - m) * laidPx < 0.501 ? m : null; };
