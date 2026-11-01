@@ -135,13 +135,19 @@ broken, and the app doesn't load; `GET /api/apps` lists none of them):
 - **`requires`**: the **app level** the app needs, a whole number from 1 (not
   a bool, not `"2"`), 1 when it doesn't say. `APP_LEVEL` in `app/apps.py` is
   the app contract this OpenFit provides, raised when apps gain something an
-  older OpenFit lacks. It's **2**: level 1 was the first contract, and level 2
+  older OpenFit lacks. It's **4**: level 1 was the first contract; level 2
   (TZ1) added `ctx.timezone()` and made `ctx.today()` the user's date rather
-  than the server's. An app that calls `ctx.timezone()` says `requires: 2`;
-  one that says nothing is level 1 and loads as it always did. An app needing
-  more doesn't load (the scanner skips it: `needs OpenFit app level 3; this
-  OpenFit is level 2`), and an install or update refuses it with those words
-  (`check_app()`, 400). It's checked first, before any other field: a
+  than the server's; level 3 added a tile's view (`ctx.switch()`,
+  `ctx.toggle()`, `ctx.pager()`, `ctx.choose()`), a chart's hint and a
+  donut's control, the `wocl` tone, a strips lane's `ahead` and bands on a
+  sleep lane; and level 4 (C1) added
+  [`ctx.delete_sessions()`](#writing-apps-as-sources), an app removing
+  its own sessions over a time span (`handle()` only). An app that calls
+  `ctx.timezone()` says `requires: 2`, one that calls `ctx.delete_sessions()`
+  `requires: 4`; one that says nothing is level 1 and loads as it always did.
+  An app needing more doesn't load (the scanner skips it: `needs OpenFit app
+  level 5; this OpenFit is level 4`), and an install or update refuses it with
+  those words (`check_app()`, 400). It's checked first, before any other field: a
   higher-level app may mean something by a field that this OpenFit can't
   read.
 - **`replaces`**: a library app's, the app ids it takes over, such as
@@ -1172,11 +1178,12 @@ read as in `render()`), plus
 ```python
 ctx.write_metric(metric, value, date=None)                  # files one reading, under ctx.source
 ctx.write_session(kind, start, end=None, summary=None)      # files one session, under ctx.source
+ctx.delete_sessions(kind, since, until)                     # removes ctx.source's sessions starting in [since, until): how many
 ```
 
 - **The source is the ctx's, never the app's.** It's fixed when the ctx is
-  made, `ctx.source`, and no writer takes one. So an app can only ever create
-  or overwrite its own rows: an app installed with the id `garmin` writes
+  made, `ctx.source`, and no writer takes one. So an app can only ever create,
+  overwrite or remove its own rows: an app installed with the id `garmin` writes
   `app:garmin`, beside Garmin's rows, never over them. Structural scoping, not
   a sandbox: the app is trusted code, as its `render()` is.
 - **`metric`** is a canonical key (`METRICS`) or a key the app declares in its
@@ -1246,6 +1253,73 @@ returns nothing:
   is read back with `ctx.sessions(kind)`, or through `GET
   /api/sessions/<kind>`, alongside every other source's and tagged
   `app:<id>`: a passthrough, no pick.
+
+**`ctx.delete_sessions(kind, since, until)`** (app level 4, C1) removes the
+app's own sessions of `kind` whose start is in `[since, until)`, and returns
+how many it removed (an `int`, 0 for none). `ctx.write_session()` can add a
+session or replace one (same kind and start), but never remove one, so
+without it a session the app no longer has — a flight taken off a
+re-uploaded roster — keeps its row and still counts.
+
+- **Its own sessions only.** The delete is scoped to `ctx.source`
+  (`app:<id>`), as every write is, and no argument names a source: a device's
+  sessions, or another app's, are out of reach even when they're of the same
+  kind and start. An app installed as `garmin` reaches `app:garmin`, never
+  `garmin`.
+- **`handle()` only.** It's on the `WriteCtx`, not the `Ctx`, so `render()`
+  can't call it, just as it can't write.
+- **`kind`** is one of `SESSION_KINDS`, as for `ctx.write_session()`;
+  anything else is `ValueError("unknown session kind: '<kind>'")`, checked
+  first.
+- **`since` and `until` are instants, not days** — unlike `ctx.sessions()`'s
+  `since`/`until`, which are days — because the span an app replaces needn't
+  be whole days (a roster runs from one report time to another). Each is a
+  `datetime` or ISO-8601 text, read exactly as `ctx.write_session()` reads a
+  start (`_session_instant()`): converted to UTC and cut to the whole
+  second, a naive time taken to be UTC — so `"2026-11-01T08:00:00+08:00"`
+  is `2026-11-01T00:00:00Z`, while a naive `"2026-11-01T08:00:00"` is 08:00
+  UTC. Anything else (a `date`, a number, text that won't parse) is
+  `ValueError("since must be a datetime or ISO-8601 timestamp: <repr>")`
+  (or `until ...`).
+- **Both bounds are required**: `None` for either is
+  `ValueError("delete_sessions needs a since: a delete can't be open-ended")`
+  (or `an until`), so a delete never runs to the start or end of time.
+  **`until` must be after `since`** once both are normalised; an equal or
+  earlier one is `ValueError("delete_sessions' until must be after its
+  since")`.
+- **Matched on the start alone**, half open: `since <= start < until`,
+  compared as stored — `iso_utc()` text, which sorts as time. A session
+  starting exactly at `until` stays; so does one that starts a second before
+  `since`, however far into the span it ends. Its end is never looked at.
+- **One transaction with the rest of the action.** Nothing is committed by
+  `ctx.delete_sessions()`: the action route commits `handle()`'s work once
+  it returns, and rolls all of it back if it raises. So an action that
+  clears a span and then refuses its upload removes nothing, and one that
+  clears a span and writes sessions of the same kind and starts back ends
+  with exactly those (the upsert re-creates their rows, under the same ids).
+- **Nothing is re-derived**: sessions feed no derived value, so no day is
+  noted in `ctx.written`.
+
+The roster replace it was made for — clear what the old roster said about the
+new roster's span, then file what the new one has, all or nothing:
+
+```python
+def handle(ctx, action, payload):
+    duties = parse(payload["file"].text())       # [(start, end, summary)], the app's own parser
+    if not duties:
+        raise ValueError("No duties found")      # refused: nothing removed, nothing written
+    since = min(d[0] for d in duties)
+    until = max(d[0] for d in duties) + timedelta(seconds=1)   # past the last start: the range is half open
+    ctx.delete_sessions("duties_rostered", since, until)
+    for start, end, summary in duties:
+        ctx.write_session("duties_rostered", start, end, summary)
+```
+
+A duty the new roster dropped is gone; a duty it kept is written back under
+its old id; a duty outside the span, or filed by another source, is
+untouched. The span is the app's to choose — here the new duties' own, from
+the first start to just past the last. An app using it says `requires: 4` in its `app.yaml`, so an older
+OpenFit refuses it rather than failing on the first upload.
 
 `render()`'s plain `Ctx` has no writer, so a render can't write.
 
@@ -2547,8 +2621,10 @@ saved positions and gives `paintTiles` start cells. The sizes, the CSS grid,
   detector's kind) and series — it writes sessions of
   OpenFit's kinds only (`ctx.write_session()`), and its own metrics are
   `daily`/`instant` only — a trailing `days=` window on `ctx.sessions()`,
-  reading another app's metrics, and timestamped weigh-ins more than one a
-  day. (The day a write lands on follows the user's timezone since TZ1.)
+  reading another app's metrics, timestamped weigh-ins more than one a
+  day, and removing its own metrics or samples over a range (its own
+  sessions it can remove since C1, `ctx.delete_sessions()`). (The day a
+  write lands on follows the user's timezone since TZ1.)
 - **Enforcing `reads`:** it's recorded, but `ctx.metric()` serves any
   canonical key, and the app's own, and `ctx.sessions()` serves any session
   kind.

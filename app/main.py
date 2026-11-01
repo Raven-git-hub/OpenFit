@@ -1173,10 +1173,11 @@ def act_on_app(app_id):
     one place an app writes. The app's handle(ctx, action, payload) runs
     with a WriteCtx (host.py) whose source is the app's own, app:<id>:
     the ctx injects it, and no writer takes one, so an app can only ever
-    create or overwrite its own rows - never a device's, nor another
-    app's. It writes canonical metrics and the ones its manifest declares
-    (as app:<id>:<key>), never another app's, and sessions of OpenFit's
-    kinds (ctx.write_session()). payload is the app's to
+    create, overwrite or remove its own rows - never a device's, nor
+    another app's. It writes canonical metrics and the ones its manifest
+    declares (as app:<id>:<key>), never another app's, and sessions of
+    OpenFit's kinds (ctx.write_session()), and removes its own sessions
+    over a span (ctx.delete_sessions()). payload is the app's to
     interpret: a mapping, {key: value}
     from the input, {} if absent. cfg is the instance's config, for the
     render after; one that isn't a mapping is {}.

@@ -980,7 +980,9 @@ daily total beside it (schema v2 retired the old `sleep_minutes` metric). A
 its `type` (the device's activity type, lowercased), `duration_minutes`,
 `distance_m`, `avg_hr_bpm` and `calories_kcal`, whichever the device reports.
 An app can file sessions of these kinds too, under its own source
-(`ctx.write_session()`, above). Two more kinds, `duties_rostered` and
+(`ctx.write_session()`, above), and remove its own over a span of start
+times (`ctx.delete_sessions()`, app level 4) — a roster app replacing a
+re-uploaded roster's duties. Two more kinds, `duties_rostered` and
 `duties_complete`, hold work duties off a roster — each the duty's report to
 release, in UTC — filed by a roster app (the FRMS app, above), never a device.
 A third table, `samples`, is the series (intraday) grain: one row per

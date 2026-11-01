@@ -246,11 +246,13 @@ own calls to its device API. Full direction:
   `check_app()` doesn't check it), `description` (text ≤
   `MAX_DESCRIPTION` 300 once trimmed, blank none — what Browse shows),
   `requires` (the **app level** it needs, a whole number ≥ 1, not a bool,
-  default 1; `APP_LEVEL` = 2, "the app contract this OpenFit provides;
+  default 1; `APP_LEVEL` = 4, "the app contract this OpenFit provides;
   raised when apps gain something an older OpenFit lacks" — 1 the first
-  contract, 2 (TZ1) `ctx.timezone()` and `ctx.today()` the user's date;
-  checked first, an app needing more skipped: "needs OpenFit app level 3;
-  this OpenFit is level 2"; `manifest_requires()`, `level_problem()`) and `replaces` (a
+  contract, 2 (TZ1) `ctx.timezone()` and `ctx.today()` the user's date,
+  3 a tile's view, a chart's hint and a donut's control, the wocl tone,
+  strips `ahead` and a sleep lane's bands, 4 (C1) `ctx.delete_sessions()`;
+  checked first, an app needing more skipped: "needs OpenFit app level 5;
+  this OpenFit is level 4"; `manifest_requires()`, `level_problem()`) and `replaces` (a
   list of ≤ `MAX_REPLACES` 5 ids passing `is_app_id()`, none twice, never
   the library app's own full id — a custom app's own bare id isn't refused,
   its `replaces` never acted on, so FRMS's library files pasted in as
@@ -759,7 +761,7 @@ own calls to its device API. Full direction:
   `write_metric()`'s upsert with the unit given) under
   `ctx.source`, `app_source(id)` = `APP_SOURCE_PREFIX` `app:` + the id,
   fixed when the ctx is made: no writer takes a source, so an app can only
-  ever create or overwrite its own rows (an app whose id is `garmin`
+  ever create, overwrite or remove its own rows (an app whose id is `garmin`
   writes `app:garmin`). A canonical key is filed as itself, in its unit,
   held to the webhook's rule (`plausible_value()` in `app/metrics.py`: a
   finite non-bool number within `PLAUSIBLE_RANGES`); a key the app
@@ -793,7 +795,27 @@ own calls to its device API. Full direction:
   `ctx.written` — nothing derives from a session (read back through
   `ctx.sessions()` or `GET /api/sessions/<kind>`), so a session-only
   action re-derives nothing and
-  is still committed. The render
+  is still committed. And `ctx.delete_sessions(kind, since, until)`
+  (C1, app level 4; `docs/architecture/app-host.md`) removes the app's
+  own sessions of `kind` whose start is in `[since, until)` and returns
+  how many (the `DELETE`'s `rowcount`) — for a roster re-upload: clear
+  the span, then write what the new roster has, all or nothing. Scoped
+  to `source = ctx.source` in the `DELETE` itself, no argument widening
+  it (a device's or another app's sessions, of the same kind and start,
+  out of reach); `kind` in `SESSION_KINDS` (else `ValueError("unknown
+  session kind: <repr>")`, checked first); `since`/`until` instants, not
+  days (a roster's span isn't whole days — `ctx.sessions()`'s are days),
+  each through `_session_instant()` as a start is (naive = UTC, cut to
+  the second; else `ValueError("<since|until> must be a datetime or
+  ISO-8601 timestamp: <repr>")`), both required (`None` →
+  `ValueError("delete_sessions needs a <since|until>: a delete can't be
+  open-ended")`) and `until` after `since` once normalised (else
+  `ValueError("delete_sessions' until must be after its since")`); matched
+  on the stored start text, `"start" >= since AND "start" < until`, the end
+  never read. It commits nothing — the action's one transaction, so an
+  action that deletes and then raises removes nothing, and a delete then a
+  rewrite of some of the same starts leaves exactly those (the upsert) —
+  and notes no day in `ctx.written`. On the `WriteCtx` alone. The render
   path's `Ctx` has no writer. The app is trusted code, as its `render()`
   is: the scoping is the ctx, not a sandbox. **A file input's value**
   is a `FileUpload(path, name="", content_type="")`: `.name` the file's
@@ -2621,7 +2643,8 @@ own calls to its device API. Full direction:
   opt-in, no observed/computed flag. Sessions too, of an existing kind
   (`ctx.write_session()`, id `app:<id>:<kind>:<start>`), passed through by
   `GET /api/sessions/<kind>` beside every source's — no pick, nothing
-  derived. **An app's own metrics** (no
+  derived — and removed by the app over a span of starts
+  (`ctx.delete_sessions()`, its own source's only). **An app's own metrics** (no
   migration): declare what you invent, write what exists — a metric the
   app invents is declared in its manifest's `metrics` (see Layout:
   `app/apps.py`) and stored as `metric = app:<id>:<key>`, `source =
@@ -3411,8 +3434,15 @@ same PR:
   detail on click or hover, home-local day lines and WOCL shading on the
   axis, and reading the account's timezone (`ctx.timezone()`, TZ1) in
   place of its own `personal.timezone`.
-  Still to come for write-back: an app replacing its own sessions and
-  metrics over a date range (so a re-planned roster's dropped duties go),
+  Then C1 landed (no migration, no route change; item 1 of the OpenFit
+  core adjustments of 1 Nov 2026): `ctx.delete_sessions(kind, since,
+  until)` on the `WriteCtx` — the app's own sessions of a kind starting
+  in `[since, until)` removed, in the action's transaction, the count
+  returned — so a re-uploaded roster's dropped duties go; `APP_LEVEL` 4.
+  Deploy: merge it, Update OpenFit, and only then the FRMS change that
+  uses it (`requires: 4`).
+  Still to come for write-back: an app replacing its own
+  metrics (and samples) over a date range,
   the rostered↔flown per-duty matching (needs a derived duty key — the
   feed has no `UID`), an app's own session
   kinds and series (and, with them, own-only scoping of a kind's read),

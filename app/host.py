@@ -1693,12 +1693,13 @@ class WriteCtx(Ctx):
 
     One per action, for the app `app` (an InstalledApp). It writes
     readings (write_metric()) and sessions (write_session(), of an
-    existing kind). Its source is the app's own, app:<id>, fixed here -
-    none of its writers takes one - so whatever the app does, it can only
-    create or overwrite its own rows. It notes the days it wrote readings
-    to, for the action route to re-derive once the action has succeeded
-    (a session is derived into nothing, so it notes none); nothing is
-    committed here.
+    existing kind), and removes its own sessions over a span
+    (delete_sessions()). Its source is the app's own, app:<id>, fixed
+    here - none of its writers takes one - so whatever the app does, it
+    can only create, overwrite or remove its own rows. It notes the days
+    it wrote readings to, for the action route to re-derive once the
+    action has succeeded (a session is derived into nothing, so it notes
+    none); nothing is committed here.
     """
 
     def __init__(self, conn, app, today=None):
@@ -1793,6 +1794,56 @@ class WriteCtx(Ctx):
                 raise ValueError("a session's summary must be JSON") from None
         # write_session()'s upsert; its own kind check stays, a backstop.
         _write_session(self._conn, self._source, kind, start, end, summary)
+
+    def delete_sessions(self, kind, since, until):
+        """Remove the app's own sessions of `kind` that start in [since, until); how many.
+
+        For an app replacing what it filed over a span - a roster
+        re-uploaded, its rostered duties cleared and then written afresh,
+        so a flight taken off the roster goes - since write_session() can
+        add or replace a session but never remove one.
+
+        Only the app's own: the delete is scoped to this ctx's source,
+        app:<id>, and no argument widens it, so a device's sessions, or
+        another app's, can't be reached - even one of the same kind and
+        start. `kind` is one of SESSION_KINDS, as write_session() takes.
+
+        `since` and `until` are instants, not days (sessions() takes
+        days): a roster's span isn't whole days. Each is a datetime or
+        ISO-8601 text, read as write_session() reads a start - converted
+        to UTC and cut to the whole second, a naive time taken to be
+        UTC. Both are required, so a delete is never open-ended, and
+        `until` must be after `since`. A session is matched on its start
+        alone, since <= start < until: one starting at `until` stays, as
+        does one that starts before `since` and ends inside the span.
+
+        Nothing is committed here: the action's one transaction holds the
+        delete with the rest, so an action that deletes and then raises
+        removes nothing, and one that deletes a span and writes some of
+        the same kind and starts back ends with exactly those. Nothing is
+        re-derived either - a session feeds no derived value - so no day
+        is noted in `written`.
+
+        Raises ValueError, removing nothing, for a kind that isn't one, a
+        bound that's missing or isn't a time, or an until not after the
+        since. Returns the number of sessions removed (0 for none).
+        """
+        if not isinstance(kind, str) or kind not in SESSION_KINDS:
+            raise ValueError(f"unknown session kind: {kind!r}")
+        for field, raw in (("since", since), ("until", until)):
+            if raw is None:
+                raise ValueError(f"delete_sessions needs a {field}: a delete can't be open-ended")
+        since = _session_instant(since, "since")
+        until = _session_instant(until, "until")
+        # iso_utc()'s timestamps sort and compare as plain strings, as
+        # every stored start is one.
+        if until <= since:
+            raise ValueError("delete_sessions' until must be after its since")
+        cursor = self._conn.execute(
+            'DELETE FROM sessions WHERE source = ? AND kind = ? AND "start" >= ? AND "start" < ?',
+            (self._source, kind, since, until),
+        )
+        return cursor.rowcount
 
 
 def render_app(installed, conn, cfg=None, today=None):
