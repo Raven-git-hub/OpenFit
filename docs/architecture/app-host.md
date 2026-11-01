@@ -134,12 +134,16 @@ broken, and the app doesn't load; `GET /api/apps` lists none of them):
   at most 300 characters (`MAX_DESCRIPTION`) once trimmed; blank is none.
 - **`requires`**: the **app level** the app needs, a whole number from 1 (not
   a bool, not `"2"`), 1 when it doesn't say. `APP_LEVEL` in `app/apps.py` is
-  the app contract this OpenFit provides, 1 today, raised when apps gain
-  something an older OpenFit lacks. An app needing more doesn't load (the
-  scanner skips it: `needs OpenFit app level 2; this OpenFit is level 1`),
-  and an install or update refuses it with those words (`check_app()`, 400).
-  It's checked first, before any other field: a level-2 app may mean
-  something by a field that this OpenFit can't read.
+  the app contract this OpenFit provides, raised when apps gain something an
+  older OpenFit lacks. It's **2**: level 1 was the first contract, and level 2
+  (TZ1) added `ctx.timezone()` and made `ctx.today()` the user's date rather
+  than the server's. An app that calls `ctx.timezone()` says `requires: 2`;
+  one that says nothing is level 1 and loads as it always did. An app needing
+  more doesn't load (the scanner skips it: `needs OpenFit app level 3; this
+  OpenFit is level 2`), and an install or update refuses it with those words
+  (`check_app()`, 400). It's checked first, before any other field: a
+  higher-level app may mean something by a field that this OpenFit can't
+  read.
 - **`replaces`**: a library app's, the app ids it takes over, such as
   `openfit.frms`'s `replaces: [frms]` for the `frms` installed before the
   library. A list of at most 5 (`MAX_REPLACES`), each an id an app could have
@@ -270,7 +274,7 @@ function in `app/derived.py` (`derived_points()`, `session_rows()`).
   `GET /api/metric/<key>` serves, so an app never sees raw per-source
   readings. There's one point per day that has a value; a day with no value
   is missing from the list, never a zero. `days` keeps the trailing N days:
-  today and the N − 1 days before it. `None` returns the whole history. A
+  today (the user's, as `ctx.today()`) and the N − 1 days before it. `None` returns the whole history. A
   key that's neither canonical nor the app's own, or a `days` that isn't a
   whole number ≥ 1, raises `ValueError`, which the app's tile shows as an
   error.
@@ -321,7 +325,18 @@ function in `app/derived.py` (`derived_points()`, `session_rows()`).
   sees sessions written earlier in the same action, which aren't committed
   yet.
 - **`ctx.today()`** returns today as `YYYY-MM-DD`, the format points' dates
-  use. It's the server's local date until a `base_tz` setting lands.
+  use. It's the user's local date: their timezone setting (Settings → Your
+  account, stored as `profile.timezone` and set through `PUT /api/profile`),
+  UTC if unset. The container's own clock is UTC, so before TZ1 someone in
+  Hong Kong was still on yesterday until 08:00. It's read once per ctx, the
+  first time it's asked for (`app/clock.py`).
+- **`ctx.timezone()`** returns the user's timezone as its IANA name
+  (`"Asia/Hong_Kong"`; `"UTC"` if unset), for an app that needs local times
+  rather than only today's date, such as placing a duty on a body clock:
+  `zoneinfo.ZoneInfo(ctx.timezone())`. It's app level 2: an app that calls
+  it says `requires: 2`, so an older OpenFit, which lacks it, skips the app
+  rather than half-running it. On the base `Ctx`, so `render()` and
+  `handle()` both have it.
 - **The spec builders**, also importable from `host`, are described in the
   next section.
 
@@ -1172,8 +1187,8 @@ ctx.write_session(kind, start, end=None, summary=None)      # files one session,
   never a bool, within the metric's plausible range, both ends included. For
   the app's own: a finite number, never a bool (`finite_number()`), within its
   declared `range` if it has one.
-- **`date`** is `YYYY-MM-DD` (or a `date`), today (`ctx.today()`, the server's
-  local date until `base_tz` lands) by default. One reading per
+- **`date`** is `YYYY-MM-DD` (or a `date`), today (`ctx.today()`, the user's
+  local date) by default. One reading per
   `(date, source, metric)`: writing a day again replaces it.
 - A refused write raises `ValueError` and writes nothing. The ctx commits
   nothing; it notes the days it wrote readings to (`ctx.written`) for the
@@ -2527,8 +2542,8 @@ saved positions and gives `paintTiles` start cells. The sizes, the CSS grid,
   detector's kind) and series — it writes sessions of
   OpenFit's kinds only (`ctx.write_session()`), and its own metrics are
   `daily`/`instant` only — a trailing `days=` window on `ctx.sessions()`,
-  reading another app's metrics, timestamped weigh-ins more than one a day, and a
-  `base_tz` setting for the day a write lands on.
+  reading another app's metrics, and timestamped weigh-ins more than one a
+  day. (The day a write lands on follows the user's timezone since TZ1.)
 - **Enforcing `reads`:** it's recorded, but `ctx.metric()` serves any
   canonical key, and the app's own, and `ctx.sessions()` serves any session
   kind.

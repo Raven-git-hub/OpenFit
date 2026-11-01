@@ -32,8 +32,9 @@ import sqlite3
 import subprocess
 import sys
 import threading
+import time
 from collections import namedtuple
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -44,6 +45,13 @@ ADMIN_DIR = os.path.join(ROOT, "admin")
 for _path in (ADMIN_DIR, APP_DIR):
     if _path not in sys.path:
         sys.path.insert(0, _path)
+
+# The suite runs on UTC, as the container does. OpenFit's today is the
+# user's (clock.py) - UTC while no timezone is set, whatever the machine's
+# own zone - so a test saying date.today() for it means the UTC date.
+os.environ["TZ"] = "UTC"
+if hasattr(time, "tzset"):
+    time.tzset()
 
 import auth as openfit_auth  # noqa: E402
 import crypto as openfit_crypto  # noqa: E402
@@ -84,6 +92,25 @@ def auth_files(tmp_path, monkeypatch):
     monkeypatch.setattr(main, "_fails", openfit_auth.Fails())
     monkeypatch.setattr(shelf, "_settled", {})
     return files
+
+
+@pytest.fixture
+def pin_clock(monkeypatch):
+    """pin_clock(moment): clock.now_utc() - the one "now" in app/, so every
+    today (clock.user_today(), in the user's timezone) and the Google
+    series' current minute - held at `moment` for the test: an aware
+    datetime, or a date (noon UTC that day). Returns the moment."""
+    import clock
+
+    def pin(moment):
+        if not isinstance(moment, datetime):
+            assert isinstance(moment, date), moment
+            moment = datetime(moment.year, moment.month, moment.day, 12, tzinfo=timezone.utc)
+        assert moment.tzinfo is not None, "an aware moment"
+        monkeypatch.setattr(clock, "now_utc", lambda: moment)
+        return moment
+
+    return pin
 
 
 # The shared client's password. Its hash is made once for the whole run:

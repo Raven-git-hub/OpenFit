@@ -112,7 +112,8 @@ curl -X POST http://<your-server-ip>:8080/api/webhook/<token> \
   `visceral_fat`), fitness (`vo2_max`), nutrition & hydration
   (`hydration_ml`, `calories_in`, `carbs_g`, `protein_g`, `fat_g`) and
   `mood` (1–5). There is no daily sleep metric: sleep is sessions only.
-- `date` (`YYYY-MM-DD`) is optional and defaults to today; `source` is optional
+- `date` (`YYYY-MM-DD`) is optional and defaults to today, in your
+  [timezone](#settings); `source` is optional
   and defaults to `webhook`. Name your device (`"eufy"`) and it takes part in
   source roles like any other source — make it a metric's primary and it wins.
   A pull plugin's id (`garmin`, `google_health`) is refused: its syncs own those
@@ -266,8 +267,8 @@ here, like any unknown metric; a known one with no samples has `"points": []`.
 `from` and `to` are optional and inclusive; leave one out for an open end. For
 sessions they match the start's UTC date, and for series the sample's; coverage
 filters each of its dates the same way. A malformed date, or `from` after `to`,
-is a 400. Instead of them, `?days=N` keeps the trailing N days — today (the
-server's date) and the N − 1 before it — so `GET /api/metric/steps?days=7` is
+is a 400. Instead of them, `?days=N` keeps the trailing N days — today (in
+your [timezone](#settings)) and the N − 1 before it — so `GET /api/metric/steps?days=7` is
 this week's steps, at most seven points; `days` with `from` or `to`, or one
 that isn't a whole number from 1 up, is a 400.
 
@@ -682,6 +683,23 @@ the webhook answers 401.
 
 The design, and why the cookie isn't `Secure`:
 [docs/architecture/auth.md](docs/architecture/auth.md).
+
+### Settings
+
+**settings** (top right) has two sections. **This browser** is the tab the
+page opens on, kept in this browser alone. **Your account** is the same on
+every device you sign in from:
+
+- **Timezone** is which day is today for everything in OpenFit and its apps:
+  Home's tiles (`ctx.today()`, and `ctx.timezone()` for an app that needs local
+  times), the webhook's default date, the "last N days" reads (`?days=`), and
+  the days Garmin and Google Health sync. Pick it from the list (type to
+  search), or **Use this device's timezone** when the browser's own differs.
+  Until it's set it's UTC (the container's clock), so in Hong Kong today
+  would start at 08:00. Saving a new one reloads the page onto the new today.
+  Stored data doesn't move: dates stay dates and timestamps UTC. Read and set
+  through `GET`/`PUT /api/profile` (`{timezone}`, an IANA name such as
+  `Asia/Hong_Kong`; anything else is a 400).
 
 ### Connecting a device
 

@@ -24,9 +24,11 @@ get_activities_by_date, each activity a workout session.
 import math
 import os
 import shutil
-from datetime import date, datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 
 from garminconnect import Garmin, GarminConnectAuthenticationError
+
+from clock import user_today
 
 from metrics import (
     ACTIVE_KCAL,
@@ -253,7 +255,9 @@ class GarminPlugin(SyncPlugin):
     def sync(self, conn, days: int) -> int:
         client = self._get_client(conn)
         written = 0
-        today = date.today()
+        # Today where the user is (their timezone setting, UTC if unset):
+        # Garmin's days are calendar days as its own app shows them.
+        today = user_today(conn)
 
         for i in range(days):
             d = today - timedelta(days=i)

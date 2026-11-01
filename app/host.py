@@ -35,7 +35,10 @@ read a roster's duties, or a night's sleep, back:
 
     duties = ctx.sessions("duties_complete", since="2026-10-01")
 
-ctx.today() is the server's local date.
+ctx.today() is the user's local date (their timezone setting; UTC if
+unset), and ctx.timezone() that timezone's IANA name - for an app that
+places something in local time, as a duty on a body clock. Both are
+app level 2 (APP_LEVEL in apps.py).
 
 An app may also write, from an optional handle(ctx, action, payload)
 beside render() - what a tile's input element sends when its Save is
@@ -233,6 +236,7 @@ from datetime import date, datetime, timedelta
 from typing import NamedTuple
 
 from apps import scan_apps
+from clock import today_in, user_zone
 from derived import derived_points, session_rows
 from metrics import METRICS, SESSION_KINDS, finite_number, plausible_value
 from plugins.base import iso_utc, write_reading, write_session as _write_session
@@ -255,13 +259,13 @@ class Session(NamedTuple):
     summary: dict   # the kind's breakdown (beside SESSION_KINDS); {} for none
 
 
-def trailing_window(days, today=None):
-    """(since, until) for the trailing `days` days: today and the days - 1 before it.
+def trailing_window(days, today):
+    """(since, until) for the trailing `days` days: `today` (a date - the
+    user's, clock.user_today()) and the days - 1 before it.
 
     ISO dates, both inclusive - a sync's `days` counts the same way. A
     window reaching back before the calendar starts is open at that end.
     """
-    today = today or date.today()
     try:
         since = (today - timedelta(days=days - 1)).isoformat()
     except OverflowError:
@@ -1411,7 +1415,11 @@ class Ctx:
 
     def __init__(self, conn, today=None, app=None):
         self._conn = conn
-        self._today = today or date.today()
+        # The user's timezone (clock.py) and today's date in it, read the
+        # first time either is asked for, then kept for the ctx's life;
+        # a caller can give today instead.
+        self._zone = None
+        self._day = today
         self._app_id = None
         # Short key -> its CustomMetric: the only app metrics this ctx knows.
         self._own = {}
@@ -1429,9 +1437,27 @@ class Ctx:
             return None, None
         return custom_metric_key(self._app_id, key), own
 
+    def _user_zone(self):
+        if self._zone is None:
+            self._zone = user_zone(self._conn)
+        return self._zone
+
+    @property
+    def _today(self):
+        if self._day is None:
+            self._day = today_in(self._user_zone())
+        return self._day
+
     def today(self):
-        """The server's local date, as YYYY-MM-DD - the format points' dates are in."""
+        """The user's local date (their timezone setting; UTC if unset), as
+        YYYY-MM-DD - the format points' dates are in."""
         return self._today.isoformat()
+
+    def timezone(self):
+        """The user's timezone, as its IANA name ("Asia/Hong_Kong"; "UTC"
+        if unset) - for an app that needs local times, as placing a duty
+        on a body clock: zoneinfo.ZoneInfo(ctx.timezone()). App level 2."""
+        return self._user_zone().key
 
     def metric(self, key, days=None):
         """One metric's derived points: a list of Point(date, value, source).
