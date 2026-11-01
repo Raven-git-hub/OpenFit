@@ -229,7 +229,7 @@ until a move is needed.
 - **Host version.** A library app carries a host-version requirement, and
   the host refuses an install it isn't compatible with. Built in B1 as an
   **app level**: a manifest's `requires` (1 when it doesn't say) against the
-  user system's `APP_LEVEL` (2 since TZ1, below), raised when apps gain
+  user system's `APP_LEVEL` (4 since C1, below), raised when apps gain
   something an older OpenFit lacks. An app needing more doesn't load, won't install, and shows in
   Browse as needing a newer OpenFit. L4's host-version labels build on it.
 - **Library apps are the Admin's to update.** The Admin publishes a library
@@ -557,6 +557,17 @@ a second real person gets a container. Re-ordered 2026-10-27, after A1:
    own `personal.timezone` from its `config.json`; when FRMS work resumes
    it should switch to `ctx.timezone()` (and say `requires: 2`), so the
    body clock follows the account's setting. Nothing in the Admin changed.
+12. **The OpenFit core adjustments** (the brief of 1 Nov 2026; their status
+   page comes with the next slice, this line until then). **Item 1, C1:
+   `ctx.delete_sessions()`** (built; the user system, no migration): an
+   app's `handle()` removes its own sessions of a kind starting in a time
+   span, `[since, until)`, in the action's one transaction, and is told how
+   many - so a re-uploaded roster's dropped duties go (FRMS clears the
+   roster's span, then writes what the new roster has, all or nothing).
+   Scoped to the app's own source by construction; `APP_LEVEL` 4, which an
+   app using it declares ([app-host.md](app-host.md#writing-apps-as-sources)).
+   Deploy: merge it, Update OpenFit, and only then the FRMS change that uses
+   it (`requires: 4`). Item 2, the report store, and the rest are to come.
 
 ### Parked
 

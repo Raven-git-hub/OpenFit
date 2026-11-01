@@ -154,36 +154,36 @@ def test_requires_is_a_whole_number_from_one(tmp_path, value):
         load(tmp_path, f"id: a\nrequires: {value}\n" + SIZE)
 
 
-def test_requires_defaults_to_one_and_this_openfit_is_level_three(tmp_path):
-    assert apps.APP_LEVEL == 3
+def test_requires_defaults_to_one_and_this_openfit_is_level_four(tmp_path):
+    assert apps.APP_LEVEL == 4
     assert load(tmp_path, "id: a\n" + SIZE, "a").requires == 1
     assert load(tmp_path, "id: b\nrequires: 1\n" + SIZE, "b").requires == 1
 
 
-LEVEL_4 = "needs OpenFit app level 4; this OpenFit is level 3"
+LEVEL_5 = "needs OpenFit app level 5; this OpenFit is level 4"
 
 
 def test_an_app_needing_a_newer_openfit_is_skipped_by_the_scanner(apps_dir, capsys):
-    write(apps_dir / "newer", {"app.yaml": "id: newer\nrequires: 4\n" + SIZE})
+    write(apps_dir / "newer", {"app.yaml": "id: newer\nrequires: 5\n" + SIZE})
     write(apps_dir / "fine", {"app.yaml": "id: fine\nrequires: 1\n" + SIZE})
 
     assert [a.id for a in apps.scan_apps(apps_dir)] == ["fine"]
-    assert f"[apps] skipping {apps_dir / 'newer'}: {LEVEL_4}" in capsys.readouterr().out
+    assert f"[apps] skipping {apps_dir / 'newer'}: {LEVEL_5}" in capsys.readouterr().out
     # Said first, whatever else a level-2 manifest has that this one can't read.
-    with pytest.raises(apps.AppError, match=f"^{LEVEL_4}$"):
-        load(apps_dir.parent, "id: newer2\nrequires: 4\nsizes: a new shape\n", "newer2")
+    with pytest.raises(apps.AppError, match=f"^{LEVEL_5}$"):
+        load(apps_dir.parent, "id: newer2\nrequires: 5\nsizes: a new shape\n", "newer2")
 
 
 def test_install_refuses_an_app_needing_a_newer_openfit(client, apps_dir):
-    files = {"app.yaml": "id: newer\nrequires: 4\n" + SIZE}
+    files = {"app.yaml": "id: newer\nrequires: 5\n" + SIZE}
 
     resp = client.post("/api/apps", json={"files": files})
 
     assert resp.status_code == 400
-    assert resp.get_json() == {"ok": False, "error": LEVEL_4}
+    assert resp.get_json() == {"ok": False, "error": LEVEL_5}
     with pytest.raises(apps.InstallError) as refused:
         apps.install_library_app(apps_dir, "openfit", files)
-    assert (refused.value.status, str(refused.value)) == (400, LEVEL_4)
+    assert (refused.value.status, str(refused.value)) == (400, LEVEL_5)
     bad = client.post("/api/apps", json={"files": {"app.yaml": "id: bad\nrequires: true\n" + SIZE}})
     assert bad.status_code == 400 and "requires must be a whole number" in bad.get_json()["error"]
     assert tree(apps_dir) == []
@@ -192,9 +192,9 @@ def test_install_refuses_an_app_needing_a_newer_openfit(client, apps_dir):
 def test_an_update_to_an_app_needing_a_newer_openfit_is_refused(client, apps_dir):
     assert client.post("/api/apps", json={"files": {"app.yaml": "id: a\n" + SIZE}}).status_code == 201
 
-    resp = client.put("/api/apps/a", json={"files": {"app.yaml": "id: a\nrequires: 4\n" + SIZE}})
+    resp = client.put("/api/apps/a", json={"files": {"app.yaml": "id: a\nrequires: 5\n" + SIZE}})
 
-    assert resp.status_code == 400 and resp.get_json()["error"] == LEVEL_4
+    assert resp.status_code == 400 and resp.get_json()["error"] == LEVEL_5
     assert (apps_dir / "a" / "app.yaml").read_text() == "id: a\n" + SIZE
 
 
@@ -327,12 +327,12 @@ def test_each_state_is_the_first_that_applies(tmp_path, conn, apps_dir):
         "fresh": app("fresh"),
         "mine": app("mine"),
         "nested": app("nested", **{"assets/logo.txt": "x"}),
-        "newer": app("newer", extra="requires: 4\n"),
+        "newer": app("newer", extra="requires: 5\n"),
         "heir": app("heir", extra="replaces: [old]\n"),
         "heir2": app("heir2", extra="replaces: [gone]\n"),
         # Installed already beats everything after it: folders, a level,
         # a replacement still pending.
-        "both": app("both", extra="requires: 4\nreplaces: [old]\n", **{"sub/x.txt": "x"}),
+        "both": app("both", extra="requires: 5\nreplaces: [old]\n", **{"sub/x.txt": "x"}),
     }})
     # Installed: from the library, as Browse installs it - and a library
     # app hand-placed on the volume counts too.
@@ -683,7 +683,7 @@ def test_install_from_the_library_refuses_each_state_but_available(client, conn,
     publish(library, {"openfit": {
         "mine": app("mine", "Mine"),
         "nested": app("nested", **{"assets/x.txt": "x"}),
-        "newer": app("newer", extra="requires: 4\n"),
+        "newer": app("newer", extra="requires: 5\n"),
         "heir": app("heir", "Heir", extra="replaces: [old]\n"),
         "heir2": app("heir2", "Heir 2", extra="replaces: [gone]\n"),
     }})

@@ -135,7 +135,9 @@ class AppError(Exception):
 #   3  a tile's view - ctx.switch(), ctx.toggle(), ctx.pager(), ctx.choose() -
 #      a chart's hint and a donut's control, the wocl tone, a strips lane's
 #      ahead, and bands on a sleep lane
-APP_LEVEL = 3
+#   4  ctx.delete_sessions(): an app removes its own sessions in a time
+#      range (handle() only)
+APP_LEVEL = 4
 
 # The most a description says, trimmed: a line or two in Browse.
 MAX_DESCRIPTION = 300
