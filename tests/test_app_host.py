@@ -1578,7 +1578,7 @@ def span(tone="day", **more):
         ([sky(span(tz=10))], TypeError, "a strips span's tz must be text: 10"),
         # Bands: a duty lane's, a list of spans {start, end, label}, both
         # ends, in order.
-        ([sky(bands=[band()])], ValueError, "a strips lane takes bands only if it's a duty lane, not a sky"),
+        ([sky(bands=[band()])], ValueError, "a strips lane takes bands only if it's a duty or sleep lane, not a sky"),
         ([duty_lane(bands=band())], TypeError, "a strips lane's bands must be a list"),
         ([duty_lane(bands="LHR")], TypeError, "a strips lane's bands must be a list: 'LHR'"),
         ([duty_lane(bands=["LHR"])], TypeError, "a strips band must be a mapping"),
@@ -1646,6 +1646,13 @@ def test_strips_draw_sleep_stages_the_rest_window_and_disturbed_ticks():
     assert "stage" not in spec["lanes"][1]["spans"][0] and "stage" not in spec["lanes"][2]["spans"][0]
 
 
+def test_a_sleep_lane_takes_bands_its_layovers():
+    lane = {**SLEEP_LANE, "bands": [{"start": "2026-10-20T06:00:00Z", "end": "2026-10-21T02:00:00Z", "label": "BLR"}]}
+    spec = host.strips([lane], sync="frms", hours=72)
+    assert spec["lanes"][0]["bands"] == [
+        {"start": "2026-10-20T06:00:00Z", "end": "2026-10-21T02:00:00Z", "label": "BLR"}]
+
+
 def test_strips_hours_are_a_day_unless_given():
     # Not given (or None): no key, the spec as a day's always was.
     assert "hours" not in host.strips([HOME]) and "hours" not in host.strips([HOME], hours=None)
@@ -1695,7 +1702,7 @@ def sleep_span(**more):
         ([{"kind": "sleep", "spans": [sleep_span()], "wocl": [wocl()]}], ValueError,
          "a strips lane takes wocl only if it's a sky lane, not a sleep"),
         ([{"kind": "ticks", "spans": [], "bands": [band()]}], ValueError,
-         "a strips lane takes bands only if it's a duty lane, not a ticks"),
+         "a strips lane takes bands only if it's a duty or sleep lane, not a ticks"),
     ],
 )
 def test_strips_refuse_a_sleep_or_ticks_lane_they_cant_draw(lanes, error, says):

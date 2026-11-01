@@ -895,17 +895,19 @@ def _strip_wocl(raw):
 
 
 def _strip_list(raw, field, kind, only, item):
-    """A lane's `field`, a list of `item`s that only an `only` lane takes:
-    [] when not given - none, None or [], on any lane, so a lane as the
-    spec carries it is one strips() takes back."""
+    """A lane's `field`, a list of `item`s that only an `only` lane (a
+    kind, or a tuple of kinds) takes: [] when not given - none, None or
+    [], on any lane, so a lane as the spec carries it is one strips()
+    takes back."""
+    only = (only,) if isinstance(only, str) else tuple(only)
     what = "a strips lane"
     value = raw.get(field)
     if value is None:
         return []
     if not isinstance(value, (list, tuple)):
         raise TypeError(f"{what}'s {field} must be a list: {value!r}")
-    if value and kind != only:
-        raise ValueError(f"{what} takes {field} only if it's a {only} lane, not a {kind}: {value!r}")
+    if value and kind not in only:
+        raise ValueError(f"{what} takes {field} only if it's a {' or '.join(only)} lane, not a {kind}: {value!r}")
     return [item(x) for x in value]
 
 
@@ -938,7 +940,7 @@ def _strip_lane(raw):
         "clock": clock,
         "spans": [_strip_span(span, kind) for span in spans],
         "troughs": [_session_instant(t, f"{what}'s trough") for t in troughs],
-        "bands": _strip_list(raw, "bands", kind, "duty", _strip_band),
+        "bands": _strip_list(raw, "bands", kind, ("duty", "sleep"), _strip_band),
         "wocl": _strip_list(raw, "wocl", kind, "sky", _strip_wocl),
     }
 
@@ -965,11 +967,13 @@ def strips(lanes, now=None, sync=None, hours=None, ahead=None):
     absent) for none, True or "place" for the span there's `place` (text)
     and its local time in `tz` (an IANA name), "LHR 01:00 UTC+1", and
     "date" for the date and its local time there, "Fri 23 Oct 20:00" -
-    with a `label` too, the label over the clock. `bands`, on a duty lane
-    only, optional: a list of {start, end, label} - a trip away from
-    base, its ends as a span's - each a bar behind the lane's spans,
-    showing between the flight out and the flight home, its label (the
-    port, text or None) in it past the flight out. `wocl`, on a sky lane
+    with a `label` too, the label over the clock. `bands`, on a duty or a
+    sleep lane only, optional: a list of {start, end, label}, its ends as
+    a span's - on a duty lane a trip away from base, each a bar behind
+    the lane's spans, showing between the flight out and the flight
+    home, its label (the port, text or None) in it past the flight out;
+    on a sleep lane a layover, a soft amber tint the lane's full height
+    behind its stages, its label at its foot, from its start. `wocl`, on a sky lane
     only, optional: a list of {start, end} - the window of circadian low -
     under which the lane's curve is marked red (drawn only where there's
     a curve). `now` and `sync` are a timeline's: where the now line is

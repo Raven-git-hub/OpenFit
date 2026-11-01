@@ -1961,7 +1961,13 @@ own calls to its device API. Full direction:
   `defs` — an id of its own a strips (`st-wocl-<n>`, `stWoclIds`), its
   stops `.st-wocl-a` (`--duty-wocl` at .55) and `.st-wocl-b` (at 0) — so
   red hangs under the curve and fades out, lined up with the duty
-  strip's WOCL pieces; no `wocl`, no gradient or extra path. A lane's
+  strip's WOCL pieces; no `wocl`, no gradient or extra path. A sleep
+  lane's `bands` (layovers, as FRMS's sleep panel sends them) are the
+  same `.st-band`s and labels, drawn the lane's full height (`top:0;
+  bottom:0`), borderless, `--layover` at 14%, behind its stages, each
+  label at the foot and from the band's start (a duty lane's is past
+  the spans over its start); the host takes bands on a duty or a sleep
+  lane (`_strip_list()`'s `only` a kind or a tuple of them). A lane's
   `bands` (a duty lane's, as FRMS sends them) are `.st-band`s, first in
   the lane after the hour grid, so behind its spans: the duty bar's
   height and place (`top: 24px`, 14px), `--layover` at 18% with a dashed
@@ -3583,7 +3589,13 @@ same PR:
   raised `APP_LEVEL` to 2. FRMS keeps its own config timezone until its
   work resumes, then switches to `ctx.timezone()`; per-app settings stay
   parked. Deploy: rebuild the image; set the timezone in settings, then
-  Sync now. Still to come, in order: L4;
+  Sync now. Then layover bands on a sleep lane (no migration, no route
+  change): `strips()` takes `bands` on a sleep lane as well as a duty
+  lane, and the page draws them full height and soft behind the stages,
+  their port at the foot - FRMS's sleep panel shading each layover's
+  ground time. Deploy: rebuild the image first, then Update FRMS (on the
+  old image the sleep panel errors - bands refused on a sleep lane).
+  Still to come, in order: L4;
   non-GitHub hosts, HTTPS or token access, and per-user repo visibility
   are out; installing an app with folders
   inside it is out; scheduled updates are SU1's weekly schedule (built:
