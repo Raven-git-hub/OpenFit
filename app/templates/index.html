@@ -971,9 +971,9 @@ h5 + .dnote{margin-top:0;}
 .st-sleep .st-t-in{background:var(--sleep-in);}
 .st-sleep .st-t-out{background:var(--sleep-out);}
 /* a sleep lane's bands - layovers - a soft tint of the layover amber the
-   lane's full height, behind its stages, their port at the foot */
+   lane's full height, behind its stages, their port top left */
 .st-sleep .st-band{top:0;bottom:0;height:auto;border:0;border-radius:0;background:color-mix(in srgb, var(--layover) 14%, transparent);}
-.st-sleep .st-band-label{top:auto;bottom:2px;}
+.st-sleep .st-band-label{top:4px;}
 .st-lvl{position:absolute;left:0;right:0;height:0;border-top:1px solid var(--grid);pointer-events:none;}
 .st-hours.st-hours-v{background-image:linear-gradient(90deg, var(--grid) 1px, transparent 1px);}
 .st-tag.st-tag-sleep{position:relative;}
@@ -1113,6 +1113,14 @@ h5 + .dnote{margin-top:0;}
 .spec-switch.on::after{left:18px;background:var(--surface);}
 .spec-switch:focus-visible{outline:2px solid var(--accent);outline-offset:2px;}
 .spec-donut .mid .spec-switch{margin-top:8px;}
+/* a toggle: a track a stop wide each (the stops its buttons, no text), a
+   knob that slides to the stop it's on, in that stop's tone (muted, none) */
+.spec-toggle{position:relative;flex:none;display:flex;height:18px;padding:0;border-radius:9px;border:1px solid var(--border-strong);background:var(--surface-2);pointer-events:auto;}
+.spec-toggle .stop{flex:none;width:17px;height:100%;padding:0;border:0;background:none;cursor:pointer;}
+.spec-toggle .stop:focus-visible{outline:2px solid var(--accent);outline-offset:-2px;border-radius:9px;}
+.spec-toggle .knob{position:absolute;top:2px;left:2px;width:12px;height:12px;border-radius:50%;background:var(--muted);transition:left .15s;pointer-events:none;}
+.spec-toggle .knob[class*=" ch-"]{background:var(--ch);}
+.spec-donut .mid .spec-toggle{margin-top:8px;}
 .spec-pager{display:grid;grid-template-columns:repeat(3, minmax(0, 1fr));gap:6px;}
 .spec-row > .spec-pager, .spec-column > .spec-pager{flex:none !important;}
 .spec-pager .btn{justify-content:center;white-space:nowrap;}
@@ -4351,6 +4359,7 @@ h5 + .dnote{margin-top:0;}
     donut: (s, name, appId) => donutSpec(s, appId),
     bars: s => barsSpec(s),
     switch: (s, name, appId) => switchSpec(s, appId),
+    toggle: (s, name, appId) => toggleSpec(s, appId),
     pager: (s, name, appId) => pagerSpec(s, appId),
     choose: (s, name, appId) => chooseSpec(s, name, appId),
     image: s => imageSpec(s),
@@ -4646,6 +4655,7 @@ h5 + .dnote{margin-top:0;}
     if(text(s.label)){ const l = mid.appendChild(el('div','lab')); l.textContent = text(s.label); }
     // Its control - a switch, nothing else - under the label; its key on hover.
     if(s.control && s.control.type==='switch') mid.appendChild(switchSpec(s.control, appId));
+    else if(s.control && s.control.type==='toggle') mid.appendChild(toggleSpec(s.control, appId));
     if(s.hint) chHint(ring, s.hint, 'ring');
     if(text(s.caption)){ const c = box.appendChild(el('div','cap')); c.textContent = text(s.caption); }
     // A caption keeps its note's line, empty or not, so captioned donuts
@@ -4816,6 +4826,50 @@ h5 + .dnote{margin-top:0;}
       setView(view, key, view.values.get(key)==='on' ? 'off' : 'on');
     };
     return b;
+  }
+  /* toggle: a slider of two or three stops, no text of its own - a radio
+     group named by its label, each stop a radio named by its own - setting
+     its key to the stop's value; the knob on that stop, in its tone. A
+     press on a stop moves it there, as do the arrow keys from the stop
+     with the focus; a press is its own, as a switch's. A value its key
+     holds that isn't a stop's is taken as its start. */
+  function toggleSpec(s, appId){
+    const view = tileView(appId), key = typeof s.key==='string' ? s.key : '';
+    const stops = (Array.isArray(s.stops) ? s.stops : []).filter(x => x && typeof x.value==='string');
+    const box = el('div','spec-toggle');
+    box.setAttribute('role','radiogroup');
+    box.setAttribute('aria-label', typeof s.label==='string' ? s.label : '');
+    if(!stops.length) return box;
+    const values = stops.map(x => x.value);
+    const start = values.includes(s.start) ? s.start : values[0];
+    const set = (v, e) => { if(e && typeof e.stopPropagation==='function') e.stopPropagation(); setView(view, key, v); };
+    const buttons = stops.map((x, i) => {
+      const b = box.appendChild(el('button','stop'));
+      b.type = 'button';
+      b.setAttribute('role','radio');
+      b.setAttribute('aria-label', typeof x.label==='string' ? x.label : x.value);
+      b.onclick = e => set(x.value, e);
+      b.onkeydown = e => {
+        const step = e.key==='ArrowLeft' || e.key==='ArrowUp' ? -1 : e.key==='ArrowRight' || e.key==='ArrowDown' ? 1 : 0;
+        if(!step) return;
+        if(typeof e.preventDefault==='function') e.preventDefault();
+        const j = Math.max(0, Math.min(stops.length - 1, i + step));
+        set(values[j], e);
+        if(typeof buttons[j].focus==='function') buttons[j].focus();
+      };
+      return b;
+    });
+    const knob = box.appendChild(el('div','knob'));
+    const show = v => {
+      const i = values.includes(v) ? values.indexOf(v) : values.indexOf(start);
+      knob.style.left = (2 + 17 * i) + 'px';
+      knob.className = 'knob' + (CH_TONES.includes(stops[i].tone) ? ' ch-' + stops[i].tone : '');
+      buttons.forEach((b, j) => { b.setAttribute('aria-checked', j===i ? 'true' : 'false'); b.tabIndex = j===i ? 0 : -1; });
+    };
+    if(!values.includes(viewValue(view, key, start))) view.values.set(key, start);
+    show(view.values.get(key));
+    onView(view, key, box, show);
+    return box;
   }
   /* pager: Previous, Current and Next, stepping its key through its
      values in order from its start, which Current goes back to; one with

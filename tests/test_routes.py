@@ -6231,7 +6231,7 @@ def test_bars_stack_each_bars_segments_from_the_foot_on_one_scale(client):
     assert r["empty"] == ["plot", "ticks"]
 
 
-VIEW_PARTS = CHART_PARTS + ["openHint", "chHint", "HINT_GAP", "HINT_BESIDE", "HINT_OVER", "hintPlace", "tileViews",
+VIEW_PARTS = CHART_PARTS + ["openHint", "chHint", "HINT_GAP", "HINT_BESIDE", "HINT_OVER", "hintPlace", "tileViews", "toggleSpec",
                             "tileView", "viewValue", "setView", "onView", "switchSpec", "pagerSpec", "chooseSpec"]
 
 VIEW_HARNESS = r"""
@@ -6326,6 +6326,51 @@ def test_a_switch_and_a_pager_flip_a_tiles_chooses_in_the_page(client):
     assert r["plain"] == "spec-switch plain"
     assert r["none"] == "Nothing to show" and r["bare"] == 0
     assert r["unknown"] == "B"
+
+
+TOGGLE = {"type": "toggle", "key": "view", "label": "Rest budget view", "start": "all", "stops": [
+    {"value": "disturbed", "label": "Disturbed", "tone": "wocl"}, {"value": "all", "label": "All", "tone": None},
+    {"value": "phase", "label": "Out of phase", "tone": "warn"}]}
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
+def test_a_toggle_slides_between_its_stops_setting_the_tiles_view(client):
+    page = _page(client)
+    spec = {"type": "column", "heights": None, "children": [
+        {"type": "choose", "key": "view", "default": "all", "options": [
+            {"value": v, "spec": _msg(v)} for v in ("disturbed", "all", "phase")]},
+        {"type": "donut", "segments": [], "figure": "22%", "label": "November", "caption": None, "note": None,
+         "key": None, "control": TOGGLE},
+    ]}
+    r = _views(page, f"""
+        const box = renderSpec({json.dumps(spec)}, 'FRMS', 'frms');
+        const choose = box.children[0], t = box.querySelector('.spec-toggle');
+        const [left, mid, right] = t.querySelectorAll('.stop'), knob = t.querySelector('.knob');
+        const state = () => [shown(choose), knob.style.left, knob.className,
+                             [left, mid, right].map(b => [b.getAttribute('aria-checked'), b.tabIndex])];
+        r.parts = [t.getAttribute('role'), t.getAttribute('aria-label'), t.parent.className,
+                   [left, mid, right].map(b => [b.tag, b.getAttribute('role'), b.getAttribute('aria-label'), b.textContent])];
+        r.start = state();
+        right.onclick({{stopPropagation(){{ r.stopped = true; }}}}); r.right = state();
+        // The arrow keys, from the stop with the focus: left twice, then past the end.
+        right.onkeydown({{key: 'ArrowLeft', preventDefault(){{}}}}); r.back = state();
+        mid.onkeydown({{key: 'ArrowLeft', preventDefault(){{}}}}); r.left = state();
+        left.onkeydown({{key: 'ArrowLeft', preventDefault(){{}}}}); r.stays = state();
+        left.onkeydown({{key: 'Enter'}}); r.other = state();
+        // A value its key holds that isn't a stop's (a view from before): its start.
+        setView(tileView('old'), 'view', 'on');
+        const old = renderSpec({json.dumps(TOGGLE)}, 'X', 'old');
+        r.old = [old.querySelector('.knob').style.left, tileView('old').values.get('view')];
+    """)
+    assert r["parts"] == ["radiogroup", "Rest budget view", "mid", [
+        ["button", "radio", "Disturbed", ""], ["button", "radio", "All", ""], ["button", "radio", "Out of phase", ""]]]
+    # On its start, the middle: the knob muted, the middle stop the one the tab key reaches.
+    assert r["start"] == ["all", "19px", "knob", [["false", -1], ["true", 0], ["false", -1]]]
+    assert r["right"] == ["phase", "36px", "knob ch-warn", [["false", -1], ["false", -1], ["true", 0]]] and r["stopped"]
+    assert r["back"][:3] == ["all", "19px", "knob"]
+    assert r["left"][:3] == ["disturbed", "2px", "knob ch-wocl"]
+    assert r["stays"] == r["left"] and r["other"] == r["left"]
+    assert r["old"] == ["19px", "all"]
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
@@ -7464,7 +7509,7 @@ def test_a_sleep_lanes_layovers_tint_it_full_height_behind_its_stages_the_port_a
     # Full height, soft, borderless; the label at the foot.
     assert (".st-sleep .st-band{top:0;bottom:0;height:auto;border:0;border-radius:0;"
             "background:color-mix(in srgb, var(--layover) 14%, transparent);}") in css
-    assert ".st-sleep .st-band-label{top:auto;bottom:2px;}" in css
+    assert ".st-sleep .st-band-label{top:4px;}" in css
 
 
 # The first lane's curve, as FRMS draws it - the troughs at 20:00Z, 04:00

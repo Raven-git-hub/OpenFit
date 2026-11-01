@@ -1964,9 +1964,9 @@ def test_a_hint_it_cant_draw_is_refused(hint, error, says):
         host.donut([], hint=hint)
 
 
-def test_a_donuts_control_is_a_switch_only():
+def test_a_donuts_control_is_a_switch_or_a_toggle_only():
     for control in ({"type": "pager", "key": "m", "values": ["a"], "start": "a"}, "switch", {"key": "view"}):
-        with pytest.raises(ValueError, match="a donut's control must be a switch spec"):
+        with pytest.raises(ValueError, match="a donut's control must be a switch or toggle spec"):
             host.donut([], control=control)
 
 
@@ -1985,6 +1985,42 @@ def test_a_switch_a_pager_and_a_choose_set_and_read_the_tiles_view():
     assert host.choose("view", [("off", a), ("on", b)], default="on")["default"] == "on"
     # Bound on the ctx with the other builders.
     assert host.Ctx.switch is host.switch and host.Ctx.pager is host.pager and host.Ctx.choose is host.choose
+
+
+def test_a_toggle_has_two_or_three_stops_each_its_value_name_and_tone():
+    stops = [("disturbed", "Disturbed", "wocl"), ("all", "All", None), {"value": "phase", "label": "Out of phase",
+                                                                        "tone": "warn"}]
+    assert host.toggle("view", "Rest budget view", stops, start="all") == {
+        "type": "toggle", "key": "view", "label": "Rest budget view", "start": "all", "stops": [
+            {"value": "disturbed", "label": "Disturbed", "tone": "wocl"},
+            {"value": "all", "label": "All", "tone": None},
+            {"value": "phase", "label": "Out of phase", "tone": "warn"}]}
+    # Two stops; its start the first unless given.
+    assert host.toggle("view", "X", [("a", "A", None), ("b", "B", "good")])["start"] == "a"
+    # A donut's control, as a switch is; bound on the ctx.
+    assert host.donut([], control=host.toggle("view", "X", stops))["control"]["type"] == "toggle"
+    assert host.Ctx.toggle is host.toggle
+
+
+@pytest.mark.parametrize("build, error, says", [
+    (lambda: host.toggle("View", "X", [("a", "A", None), ("b", "B", None)]), ValueError, "a toggle's key must be a view key"),
+    (lambda: host.toggle("view", "", [("a", "A", None), ("b", "B", None)]), ValueError, "a toggle's label must be text"),
+    (lambda: host.toggle("view", "X", "ab"), TypeError, "a toggle's stops must be a list"),
+    (lambda: host.toggle("view", "X", [("a", "A", None)]), ValueError, "a toggle has 2 or 3 stops, not 1"),
+    (lambda: host.toggle("view", "X", [("a", "A", None)] * 4), ValueError, "a toggle has 2 or 3 stops, not 4"),
+    (lambda: host.toggle("view", "X", [("a", "A"), ("b", "B")]), TypeError, "a toggle's stop must be a (value, label, tone) triple"),
+    (lambda: host.toggle("view", "X", [("a", "", None), ("b", "B", None)]), ValueError, "a toggle's stop's label must be text"),
+    (lambda: host.toggle("view", "X", [("a", "A", "pink"), ("b", "B", None)]), ValueError, "a toggle's stop's tone is one of"),
+    (lambda: host.toggle("view", "X", [("", "A", None), ("b", "B", None)]), ValueError, "a toggle's stop's value must be text"),
+    (lambda: host.toggle("view", "X", [("a", "A", None), ("a", "B", None)]), ValueError, "a toggle's values must not repeat"),
+    (lambda: host.toggle("view", "X", [("a", "A", None), ("b", "B", None)], start="c"), ValueError,
+     "a toggle's start must be one of its values"),
+    (lambda: host.toggle("view", "X", [{"value": "a", "label": "A", "x": 1}, ("b", "B", None)]), ValueError,
+     "a toggle's stop takes value, label, tone"),
+])
+def test_a_toggle_it_cant_draw_is_refused(build, error, says):
+    with pytest.raises(error, match=re.escape(says)):
+        build()
 
 
 @pytest.mark.parametrize("build, error, says", [
