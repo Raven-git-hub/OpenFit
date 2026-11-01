@@ -616,15 +616,29 @@ own calls to its device API. Full direction:
   "row"|"column", children, widths|heights}` (children side by side or
   stacked, each its share by weight — `None` equal; one spec or more,
   one weight a child, each above 0, else `TypeError`/`ValueError`),
-  `donut(segments, figure, label, caption, note, key)` → every key,
-  `None` where not given (a ring of `{value, tone, planned}` segments,
-  `SEGMENT_FIELDS`, clockwise from twelve; `value` ≥ 0, `tone` in
-  `CHART_TONES` good/warn/crit/neutral, `planned` hatched; `key`
-  `[solid, hatched]`), `bars(bars, max=None, title=None, now=None)` →
-  `{"type": "bars", title, max, now, bars: [{segments, label}]}` (each
-  bar's segments stacked from the foot, `BAR_FIELDS`; `max` > 0 and no bar
-  over it; `now` 0..len(bars), the now line before that bar) — the
-  dashboard builders, knowing nothing of what they show,
+  `donut(segments, figure, label, caption, note, key, hint=None,
+  control=None)` → every key, `None` where not given — but `hint` and
+  `control`, keys only when given (a ring of `{value, tone, planned}`
+  segments, `SEGMENT_FIELDS`, clockwise from twelve; `value` ≥ 0, `tone` in
+  `CHART_TONES` good/warn/crit/wocl/neutral — `wocl` the WOCL's purple,
+  `--wocl` — `planned` hatched; `key` `[solid, hatched]`; `hint` a hover
+  key `{text, items: [{tone, planned, label}]}` (`_hint()`,
+  `HINT_FIELDS`/`HINT_ITEM_FIELDS`, a text or an item, at most
+  `HINT_ITEMS` 8 lines); `control` a switch spec, nothing else),
+  `bars(bars, max=None, title=None, now=None, hint=None)` →
+  `{"type": "bars", title, max, now, bars: [{segments, label}]}` + `hint`
+  when given (each bar's segments stacked from the foot, `BAR_FIELDS`;
+  `max` > 0 and no bar over it; `now` 0..len(bars), the now line before
+  that bar) — the dashboard builders, knowing nothing of what they show —
+  and the tile's view: `switch(key, label, tone=None)` → `{"type":
+  "switch", key, label, tone}` ("on"/"off", `label` its accessible name
+  only), `pager(key, values, start)` → `{"type": "pager", key, values,
+  start}` (1–60 texts, `VIEW_OPTIONS`, none repeated, ≤ 64 characters
+  `VIEW_VALUE_MAX`, `start` one of them) and `choose(key, options,
+  default=None)` → `{"type": "choose", key, options: [{value, spec}],
+  default}` (pairs or dicts, 1–60, values unique, `default` one of them,
+  the first when `None`); a view key `VIEW_KEY` (a lowercase letter, then
+  up to 31 of a–z, 0–9, _ or -),
   `image(src, alt=None, dark=None, position="center")` → `{"type": "image",
   src, dark, alt, position}` (a picture carried in the spec, never
   fetched: `src`/`dark` a `data:` URI of a PNG, JPEG or WebP, base64
@@ -3485,7 +3499,18 @@ same PR:
   gridlines ahead); the circadian panel stays centred, and the FRMS
   fixture here is unchanged (still the A6 copy). Deploy: rebuild the
   image first, then Update FRMS (on the old image `strips()` refuses
-  `ahead`, an error in the sleep panel only). Still to come, in order: L4;
+  `ahead`, an error in the sleep panel only). Then the tile's view (no
+  migration, no route change): `ctx.switch()`, `ctx.pager()` and
+  `ctx.choose()` - an app sends every view at once and the page flips
+  between them (`tileView()`, kept per app while the page is open,
+  forgotten on a reload, never sent to the app); a donut's or bars'
+  `hint`, a hover key opened beside a ring (`hintPlace()`, never over its
+  middle) or over bars, on hover, focus or a tap; a donut's `control`, a
+  switch in its middle; and the `wocl` tone, `--wocl` purple. First user:
+  FRMS's rest budget (aviation repo) - month paging, the WOCL purple, a
+  switch narrowing to the disturbed slots. Deploy: rebuild the image
+  first, then Update FRMS (on the old image the budget panel errors - an
+  unknown `ctx.switch`). Still to come, in order: L4;
   non-GitHub hosts, HTTPS or token access, and per-user repo visibility
   are out; installing an app with folders
   inside it is out; scheduled updates are SU1's weekly schedule (built:

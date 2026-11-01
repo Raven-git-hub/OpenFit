@@ -49,6 +49,7 @@
   --good:#2f9e5b;
   --warn:#c08a1a;
   --crit:#c94f4a;
+  --wocl:#6f5fd6;       /* the window of circadian low - FRMS's purple */
 
   /* data console - the continuity marks (rhombuses + 5-week grid).
      Source-agnostic, so one colour; built from the tokens above, so
@@ -140,6 +141,7 @@
     --good:#46c06e;
     --warn:#e0a83a;
     --crit:#ea6a63;
+    --wocl:#9b8cf2;
     --timeline-a:#b3a9f4;
     --timeline-a-ink:var(--accent-ink);
     --timeline-b:#5d4ecc;
@@ -177,6 +179,7 @@
   --good:#46c06e;
   --warn:#e0a83a;
   --crit:#ea6a63;
+  --wocl:#9b8cf2;
   --timeline-a:#b3a9f4;
   --timeline-a-ink:var(--accent-ink);
   --timeline-b:#5d4ecc;
@@ -1031,6 +1034,7 @@ h5 + .dnote{margin-top:0;}
 .ch-good{--ch:var(--good);}
 .ch-warn{--ch:var(--warn);}
 .ch-crit{--ch:var(--crit);}
+.ch-wocl{--ch:var(--wocl);}
 .ch-neutral{--ch:var(--muted);}
 /* donut: a ring fitting its box - the figure in the middle scaling with
    it (the ring a size container), the label small under it - a caption
@@ -1069,6 +1073,34 @@ h5 + .dnote{margin-top:0;}
 .spec-bars .now{position:absolute;top:-6px;bottom:0;width:0;margin-left:-1px;border-left:2px solid var(--accent);z-index:1;pointer-events:none;}
 .spec-bars .now::before{content:"";position:absolute;top:0;left:-4px;width:6px;height:6px;border-radius:50%;background:var(--accent);}
 .spec-bars .now-tag{position:absolute;bottom:2px;left:4px;font:700 9px/14px var(--font-mono);letter-spacing:.6px;text-transform:uppercase;color:var(--accent-ink);background:var(--accent);padding:0 4px;border-radius:3px;}
+/* a chart's hover key (.spec-hint): on the page over everything, placed
+   beside a donut's ring or over a bars' frame by hintPlace(), never
+   taking the pointer - a sentence over a swatch a line. A chart with one
+   takes focus, its outline the accent's. */
+.ch-hintable:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:var(--radius-sm);}
+.spec-hint{position:fixed;z-index:60;max-width:240px;padding:8px 10px;display:grid;gap:4px;background:var(--surface);border:1px solid var(--border-strong);border-radius:var(--radius-sm);box-shadow:var(--shadow);font:400 12px/16px var(--font-body);color:var(--ink-2);pointer-events:none;}
+.spec-hint p{margin:0 0 2px;color:var(--ink);}
+.spec-hint .row{display:flex;align-items:center;gap:6px;}
+.spec-hint .sw{flex:none;width:10px;height:10px;border-radius:2px;background:var(--ch);}
+.spec-hint .sw.ch-planned{background:repeating-linear-gradient(135deg, var(--ch) 0 2px, color-mix(in srgb, var(--ch) 22%, transparent) 2px 5px);}
+/* the view's controls and its choose: a switch with no text of its own -
+   a knob that slides over, the track its tone (the accent, plain) when on;
+   a pager's three buttons across its width, at their own height in a
+   column; a choose drawing the one option shown as it would alone. */
+.spec-switch{position:relative;flex:none;width:34px;height:18px;padding:0;border-radius:9px;border:1px solid var(--border-strong);background:var(--surface-2);cursor:pointer;pointer-events:auto;}
+.spec-switch.plain{--ch:var(--accent);}
+.spec-switch::after{content:"";position:absolute;top:2px;left:2px;width:12px;height:12px;border-radius:50%;background:var(--muted);transition:left .15s;}
+.spec-switch.on{background:var(--ch);border-color:var(--ch);}
+.spec-switch.on::after{left:18px;background:var(--surface);}
+.spec-switch:focus-visible{outline:2px solid var(--accent);outline-offset:2px;}
+.spec-donut .mid .spec-switch{margin-top:8px;}
+.spec-pager{display:grid;grid-template-columns:repeat(3, minmax(0, 1fr));gap:6px;}
+.spec-row > .spec-pager, .spec-column > .spec-pager{flex:none !important;}
+.spec-pager .btn{justify-content:center;white-space:nowrap;}
+.spec-pager .btn:disabled{opacity:.45;cursor:default;}
+.spec-choose{display:flex;flex-direction:column;min-width:0;min-height:0;}
+.spec-choose > *{flex:1 1 0;min-width:0;min-height:0;}
+.spec-choose > [hidden]{display:none !important;}
 .spec-msg{display:grid;place-content:center;gap:4px;text-align:center;color:var(--muted);font-size:13px;padding:4px;}
 .spec-msg b{color:var(--ink-2);font-weight:600;font-size:13.5px;}
 .spec-msg code{font-family:var(--font-mono);font-size:11px;overflow-wrap:anywhere;}
@@ -4292,8 +4324,11 @@ h5 + .dnote{margin-top:0;}
     strips: s => stripsSpec(s),
     row: (s, name, appId) => splitSpec(s, name, appId, 'spec-row', 'widths'),
     column: (s, name, appId) => splitSpec(s, name, appId, 'spec-column', 'heights'),
-    donut: s => donutSpec(s),
+    donut: (s, name, appId) => donutSpec(s, appId),
     bars: s => barsSpec(s),
+    switch: (s, name, appId) => switchSpec(s, appId),
+    pager: (s, name, appId) => pagerSpec(s, appId),
+    choose: (s, name, appId) => chooseSpec(s, name, appId),
     image: s => imageSpec(s),
     grid: (s, name, appId) => {
       const box = el('div','spec-grid');
@@ -4516,7 +4551,7 @@ h5 + .dnote{margin-top:0;}
      drawn as nothing. The ring is CH_W wide about radius CH_R, in a 100
      square, its segments CH_GAP apart, a hatch's stripes CH_HATCH apart.
      Everything an app sent is set as text. */
-  const CH_TONES = ['good', 'warn', 'crit', 'neutral'];
+  const CH_TONES = ['good', 'warn', 'crit', 'wocl', 'neutral'];
   const CH_NS = 'http://www.w3.org/2000/svg';
   const CH_R = 42, CH_W = 14, CH_GAP = 1, CH_HATCH = 2.4;
   let chHatches = 0;   // hatch patterns made, for ids unique on the page
@@ -4545,7 +4580,7 @@ h5 + .dnote{margin-top:0;}
      one that's all of it a whole ring - a planned one filled with its
      tone's hatch (made once a tone, in the ring's own defs); the figure
      and label in the middle; caption, note and key under it. */
-  function donutSpec(s){
+  function donutSpec(s, appId){
     const box = el('div','spec-donut');
     const ring = box.appendChild(el('div','ring'));
     const text = v => v!=null && v!=='' ? String(v) : '';
@@ -4585,6 +4620,9 @@ h5 + .dnote{margin-top:0;}
     const mid = ring.appendChild(el('div','mid'));
     if(text(s.figure)){ const f = mid.appendChild(el('div','fig')); f.textContent = text(s.figure); }
     if(text(s.label)){ const l = mid.appendChild(el('div','lab')); l.textContent = text(s.label); }
+    // Its control - a switch, nothing else - under the label; its key on hover.
+    if(s.control && s.control.type==='switch') mid.appendChild(switchSpec(s.control, appId));
+    if(s.hint) chHint(ring, s.hint, 'ring');
     if(text(s.caption)){ const c = box.appendChild(el('div','cap')); c.textContent = text(s.caption); }
     // A caption keeps its note's line, empty or not, so captioned donuts
     // side by side keep rings of one size.
@@ -4632,6 +4670,165 @@ h5 + .dnote{margin-top:0;}
       now.style.left = (s.now * 100 / n) + '%';
       now.appendChild(el('div','now-tag')).textContent = 'Now';
     }
+    if(s.hint) chHint(box, s.hint, 'box');
+    return box;
+  }
+  /* A chart's hover key (s.hint, {text, items}): opened while a mouse is
+     over its anchor - a donut's ring, a bars' frame - or the anchor has
+     the keyboard's focus, or by a tap (closed by another, or a tap
+     anywhere else); one open at a time. Drawn on the page, over
+     everything, where hintPlace() puts it: beside a ring, so it never
+     covers the figure or a switch in its middle; over bars. Its text
+     over a swatch a line, each as a segment's - its tone, hatched when
+     planned - all set as text. */
+  let openHint = null;      // {anchor, close}: the key open now, or null
+  function chHint(anchor, h, shape){
+    const text = h && typeof h.text==='string' ? h.text : '';
+    const items = (h && Array.isArray(h.items) ? h.items : []).filter(x => x && typeof x.label==='string' && x.label);
+    if(!text && !items.length) return;
+    anchor.tabIndex = 0;
+    anchor.classList.toggle('ch-hintable', true);
+    let pop = null, touch = false, pressed = false;
+    const close = () => {
+      if(pop){ pop.remove(); pop = null; }
+      if(openHint && openHint.anchor===anchor) openHint = null;
+    };
+    const open = () => {
+      if(pop) return;
+      if(openHint) openHint.close();
+      pop = document.body.appendChild(el('div','spec-hint'));
+      pop.setAttribute('role','tooltip');
+      if(text) pop.appendChild(el('p')).textContent = text;
+      items.forEach(x => {
+        const row = pop.appendChild(el('div','row'));
+        row.appendChild(el('span', 'sw ch-' + chTone(x.tone) + (x.planned===true ? ' ch-planned' : '')));
+        row.appendChild(el('span')).textContent = x.label;
+      });
+      if(typeof anchor.getBoundingClientRect==='function'){
+        const r = anchor.getBoundingClientRect(), side = Math.min(r.width, r.height);
+        // A ring is the square it's drawn in, in the middle of its box.
+        const a = shape==='ring'
+          ? {left: r.left + (r.width - side) / 2, top: r.top + (r.height - side) / 2,
+             right: r.left + (r.width + side) / 2, bottom: r.top + (r.height + side) / 2}
+          : {left: r.left, top: r.top, right: r.right, bottom: r.bottom};
+        const p = pop.getBoundingClientRect();
+        const at = hintPlace(a, p.width, p.height, window.innerWidth, window.innerHeight,
+                             shape==='ring' ? HINT_BESIDE : HINT_OVER);
+        pop.style.left = at.x + 'px';
+        pop.style.top = at.y + 'px';
+      }
+      openHint = {anchor, close};
+    };
+    anchor.addEventListener('pointerenter', e => { touch = !!e && !!e.pointerType && e.pointerType!=='mouse'; if(!touch) open(); });
+    anchor.addEventListener('pointerleave', e => { if(!(e && e.pointerType && e.pointerType!=='mouse')) close(); });
+    anchor.addEventListener('pointerdown', e => { pressed = true; touch = !!e && !!e.pointerType && e.pointerType!=='mouse'; });
+    anchor.addEventListener('click', () => { pressed = false; if(touch){ if(pop) close(); else open(); } });
+    // Focus by the keyboard opens it; a press's focus is the press's to decide.
+    anchor.addEventListener('focus', () => { if(!pressed) open(); });
+    anchor.addEventListener('blur', () => { pressed = false; close(); });
+  }
+  /* Where a hover key of w x h goes by its anchor's box `a` in a viewport
+     vw x vh: the first side in `order` it fits on whole, HINT_GAP clear of
+     the anchor and the viewport's edges, centred on the anchor along that
+     side (kept inside the viewport); fitting nowhere, the side with the
+     most room, kept inside as far as it goes. {x, y, side}, whole px. */
+  const HINT_GAP = 8;
+  const HINT_BESIDE = ['left', 'right', 'below', 'above'];   // a ring's: beside it first
+  const HINT_OVER = ['above', 'below', 'left', 'right'];     // a bars' frame's: over it first
+  function hintPlace(a, w, h, vw, vh, order){
+    const g = HINT_GAP, clamp = (v, lo, hi) => Math.max(lo, Math.min(v, hi));
+    const cx = (a.left + a.right) / 2, cy = (a.top + a.bottom) / 2;
+    const at = {
+      left: {x: a.left - g - w, y: clamp(cy - h / 2, g, vh - g - h), room: a.left - g - w - g},
+      right: {x: a.right + g, y: clamp(cy - h / 2, g, vh - g - h), room: vw - g - (a.right + g + w)},
+      below: {x: clamp(cx - w / 2, g, vw - g - w), y: a.bottom + g, room: vh - g - (a.bottom + g + h)},
+      above: {x: clamp(cx - w / 2, g, vw - g - w), y: a.top - g - h, room: a.top - g - h - g},
+    };
+    let side = order.find(k => at[k].room >= 0);
+    if(!side) side = order.reduce((b, k) => at[k].room > at[b].room ? k : b, order[0]);
+    return {x: Math.round(clamp(at[side].x, g, Math.max(g, vw - g - w))),
+            y: Math.round(clamp(at[side].y, g, Math.max(g, vh - g - h))), side};
+  }
+  /* A tile's view: the values its switches and pagers set and its
+     chooses read, by key - kept for each app while the page is open, so a
+     redrawn tile keeps them, and forgotten on a reload; never sent to the
+     app. A key's first value is the first that reads it: a pager's start,
+     a switch's "off", a choose's default. Every switch, pager and choose
+     drawn is told of a change to its key; one no longer on the page is
+     let go of then. */
+  const tileViews = new Map();
+  function tileView(appId){
+    const id = appId || '';
+    if(!tileViews.has(id)) tileViews.set(id, {values: new Map(), subs: []});
+    return tileViews.get(id);
+  }
+  function viewValue(view, key, first){
+    if(!view.values.has(key)) view.values.set(key, first);
+    return view.values.get(key);
+  }
+  function setView(view, key, value){
+    view.values.set(key, value);
+    view.subs = view.subs.filter(x => x.node.isConnected!==false);
+    view.subs.slice().forEach(x => { if(x.key===key) x.show(value); });
+  }
+  function onView(view, key, node, show){
+    view.subs.push({key, node, show});
+  }
+  /* switch: on/off, no text of its own - its label is its accessible
+     name - setting its key "on" or "off". A press on it is its own: it
+     neither opens nor closes a hover key around it. */
+  function switchSpec(s, appId){
+    const view = tileView(appId), key = typeof s.key==='string' ? s.key : '';
+    const toned = CH_TONES.includes(s.tone);
+    const b = el('button', 'spec-switch ' + (toned ? 'ch-' + s.tone : 'plain'));
+    b.type = 'button';
+    b.setAttribute('role','switch');
+    b.setAttribute('aria-label', typeof s.label==='string' ? s.label : '');
+    const show = v => { b.classList.toggle('on', v==='on'); b.setAttribute('aria-checked', v==='on' ? 'true' : 'false'); };
+    show(viewValue(view, key, 'off'));
+    onView(view, key, b, show);
+    b.onclick = e => {
+      if(e && typeof e.stopPropagation==='function') e.stopPropagation();
+      setView(view, key, view.values.get(key)==='on' ? 'off' : 'on');
+    };
+    return b;
+  }
+  /* pager: Previous, Current and Next, stepping its key through its
+     values in order from its start, which Current goes back to; one with
+     nowhere to go disabled. A value its key holds that isn't one of its
+     values (the app's months moved on) is taken as its start. */
+  function pagerSpec(s, appId){
+    const view = tileView(appId), key = typeof s.key==='string' ? s.key : '';
+    const values = (Array.isArray(s.values) ? s.values : []).filter(v => typeof v==='string');
+    const box = el('div','spec-pager');
+    if(!values.length) return box;
+    const start = values.includes(s.start) ? s.start : values[values.length-1];
+    const btn = text => { const b = box.appendChild(el('button','btn sm')); b.type = 'button'; b.textContent = text; return b; };
+    const prev = btn('\u2039 Previous'), cur = btn('Current'), next = btn('Next \u203a');
+    const at = () => { const i = values.indexOf(view.values.get(key)); return i < 0 ? values.indexOf(start) : i; };
+    const show = () => { const i = at(); prev.disabled = i <= 0; next.disabled = i >= values.length-1; cur.disabled = values[i]===start; };
+    if(!values.includes(viewValue(view, key, start))) view.values.set(key, start);
+    show();
+    onView(view, key, box, show);
+    prev.onclick = () => { const i = at(); if(i > 0) setView(view, key, values[i-1]); };
+    next.onclick = () => { const i = at(); if(i < values.length-1) setView(view, key, values[i+1]); };
+    cur.onclick = () => setView(view, key, start);
+    return box;
+  }
+  /* choose: every option drawn, for its app, the one its key holds shown
+     and the others hidden - its default while the key holds none of
+     them. With no option, said. */
+  function chooseSpec(s, name, appId){
+    const view = tileView(appId), key = typeof s.key==='string' ? s.key : '';
+    const options = (Array.isArray(s.options) ? s.options : []).filter(o => o && typeof o.value==='string');
+    if(!options.length) return specMsg(null, 'Nothing to show');
+    const values = options.map(o => o.value);
+    const fallback = values.includes(s.default) ? s.default : values[0];
+    const box = el('div','spec-choose');
+    const kids = options.map(o => box.appendChild(renderSpec(o.spec, name, appId)));
+    const show = v => { const i = values.includes(v) ? values.indexOf(v) : values.indexOf(fallback); kids.forEach((k, j) => { k.hidden = j!==i; }); };
+    show(viewValue(view, key, fallback));
+    onView(view, key, box, show);
     return box;
   }
   /* image: carried in the spec as a data: URI - a PNG, JPEG or WebP,
@@ -5734,6 +5931,10 @@ h5 + .dnote{margin-top:0;}
   window.addEventListener('resize', closeFloating);
   window.addEventListener('scroll', closeFloating, {passive:true, capture:true});
   document.addEventListener('keydown', e => { if(e.key==='Escape') closeFloating(); });
+  // A hover key opened by a tap closes on a press anywhere but its chart.
+  document.addEventListener('pointerdown', e => {
+    if(openHint && !(openHint.anchor.contains && openHint.anchor.contains(e.target))) openHint.close();
+  });
 
   showTab(openingTab());
   paintDate();

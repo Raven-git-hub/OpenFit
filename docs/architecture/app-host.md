@@ -343,8 +343,11 @@ the dicts itself.
 | `ctx.strips(lanes, now=None, sync=None, hours=None)` | `{"type": "strips", "now", "lanes": [{"kind", "label", "clock", "spans": [{"start", "end", "tone", "label", "place", "tz"}, ...], "troughs", "bands": [{"start", "end", "label"}, ...], "wocl": [{"start", "end"}, ...]}, ...]}`, plus `"sync"` and `"hours"` only when given, and a sleep lane's spans each a `"stage"` too | One lane to three of tinted spans on one horizontal time axis, a day across the frame and the rest a scroll away — the first lane taking the height the others leave, on an hour grid, each after it a 45px row: a `"sky"` lane's day, night or not known (hatched), faded from the top, a `"duty"` lane's day, night and WOCL pieces a slim bar butting square, a span's label once above its start, a duty lane's bands (trips away) amber bars behind its pieces, each port in it past the flight out, a lane's troughs a solid curve over it, a sky lane's WOCL red under the curve, a tag top-left of each lane — its label, over a clock lane's time under the cursor: the place and its local time (`"place"`), or the date and its local time (`"date"`). A `"sky"` lane's span may also be `"rest"` (the body's rest window, a green tint); a `"sleep"` lane's spans are sleep stages, each a bar rising to its stage's level, `"in"` (green) or `"out"` (red) of the rest window; a `"ticks"` lane's are `"disturbed"` stretches, red ticks. `hours` (12 to 168) sets how many hours the frame's width shows. With `sync`, drawn around the group's focus clock as a synced timeline is, on its side, and scrolled with it both ways. See [the strips builder](#the-strips-builder), below. |
 | `ctx.row(children, widths=None)` | `{"type": "row", "children": [...], "widths"}` | Its children side by side, left to right, each the row's full height and its share of the width by its weight in `widths` (`null`: equal shares). See [the dashboard builders](#the-dashboard-builders-row-column-donut-and-bars), below. |
 | `ctx.column(children, heights=None)` | `{"type": "column", "children": [...], "heights"}` | Its children stacked, each the column's full width and its share of the height by its weight in `heights` — unlike `panel`, which gives each child its own height. |
-| `ctx.donut(segments, figure=None, label=None, caption=None, note=None, key=None)` | `{"type": "donut", "segments": [{"value", "tone", "planned"}, ...], "figure", "label", "caption", "note", "key"}` | A ring of segments clockwise from twelve o'clock, each its share of the total, in the status colours (`good`, `warn`, `crit`, `neutral`), a planned one hatched; `figure` big in the middle, `label` small under it; `caption`, `note` and a solid/hatched `key` under the ring. It fits its box, the figure scaling with it. |
-| `ctx.bars(bars, max=None, title=None, now=None)` | `{"type": "bars", "title", "max", "now", "bars": [{"segments": [...], "label"}, ...]}` | Bars side by side in an inset frame, each its segments (a donut's) stacked from the foot on one scale, 0 to `max` (`null`: the tallest bar's total), a bar's `label` under it where given, `title` the tag top-left, the now line before bar `now`. |
+| `ctx.donut(segments, figure=None, label=None, caption=None, note=None, key=None, hint=None, control=None)` | `{"type": "donut", "segments": [{"value", "tone", "planned"}, ...], "figure", "label", "caption", "note", "key"}`, plus `"hint"` and `"control"` when given | A ring of segments clockwise from twelve o'clock, each its share of the total, in the status colours (`good`, `warn`, `crit`, `neutral`) or the WOCL's purple (`wocl`), a planned one hatched; `figure` big in the middle, `label` small under it; `caption`, `note` and a solid/hatched `key` under the ring. It fits its box, the figure scaling with it. `hint`, a hover key, opens beside the ring; `control`, a switch, sits in the middle. See [the tile's view](#the-tiles-view-switch-pager-choose-and-hover-keys). |
+| `ctx.bars(bars, max=None, title=None, now=None, hint=None)` | `{"type": "bars", "title", "max", "now", "bars": [{"segments": [...], "label"}, ...]}`, plus `"hint"` when given | Bars side by side in an inset frame, each its segments (a donut's) stacked from the foot on one scale, 0 to `max` (`null`: the tallest bar's total), a bar's `label` under it where given, `title` the tag top-left, the now line before bar `now`; `hint` a hover key over them. |
+| `ctx.switch(key, label, tone=None)` | `{"type": "switch", "key", "label", "tone"}` | An on/off switch with no text, setting the tile's view value `key` to `"on"` or `"off"`; `label` its accessible name, `tone` its colour when on (`null`: the accent). |
+| `ctx.pager(key, values, start)` | `{"type": "pager", "key", "values", "start"}` | Previous, Current and Next across its width, stepping `key` through `values` from `start`. |
+| `ctx.choose(key, options, default=None)` | `{"type": "choose", "key", "options": [{"value", "spec"}, ...], "default"}` | Shows the option whose value `key` holds, the others drawn and hidden. |
 | `ctx.image(src, alt=None, dark=None, position="center")` | `{"type": "image", "src", "dark", "alt", "position"}` | A picture carried in the spec itself — a `data:` URI of a PNG, JPEG or WebP, never a web address, so the page fetches nothing — drawn whole (contained) at `position`, `dark` in its place in the dark themes. Alone in a grid's sub-panel it's drawn bare, on the page. See [the image builder](#the-image-builder), below. |
 | `ctx.empty(message=None)` | `{"type": "empty", "message"}` | Muted, centred text (default "No data yet"). |
 | `ctx.error(message)` — the host's, or an app's for a part that failed | `{"type": "error", "message"}` | Muted, centred: "Couldn't render <app name>" over the message. The host's when a render fails; an app may return one for a part of its tile — a sub-panel — so the rest is drawn (the FRMS app's `_panel()`). |
@@ -1060,6 +1063,38 @@ title top-left, each bar an even share of the width, each segment its value
 over the scale's top as a share of the height — 2px between, taken from the
 one above — a label under its bar, centred, and the now line (and its Now
 tag, as the strips') before bar `now`.
+
+### The tile's view: switch, pager, choose and hover keys
+
+An app's `render()` runs once per request and remembers nothing, so a tile
+that pages or switches between views sends every view at once, and the page
+flips between them with no request:
+
+    month = ctx.pager("month", ["2026-09", "2026-10", "2026-11"], start="2026-11")
+    view = ctx.switch("view", "Disturbed rest only", tone="wocl")
+    ctx.choose("month", [(m, ctx.choose("view", [("off", all_of(m)), ("on", disturbed_of(m))]))
+                         for m in months], default="2026-11")
+
+The **view** is a set of text values by key, kept by the page for each
+app while it's open — a redrawn tile keeps it, a reload forgets it — and
+never sent to the app. A **switch** sets its key `"on"` or `"off"` (`"off"`
+first); a **pager** steps its key through its `values` in order, from
+`start`, which Current goes back to, greying a button with nowhere to go;
+a **choose** draws every option and shows the one whose value its key
+holds — `default` until a control sets it, so it should be the pager's
+`start`, or `"off"` for a switch. One control can drive chooses anywhere in
+the tile. A key is `VIEW_KEY` (a lowercase letter, then up to 31 of a–z,
+0–9, `_` or `-`); a value text of 1 to 64 characters; a pager's values and
+a choose's options 1 to 60 (`VIEW_OPTIONS`), none repeated. In a row or
+column, a pager keeps its own height whatever its weight.
+
+A donut or bars' **hint** is a hover key, `{text, items: [{tone, planned,
+label}]}` — a sentence, then a swatch a line (up to 8) — opened while a
+mouse is over the chart, by keyboard focus, or by a tap (closed by another
+tap, or one anywhere else); one open at a time, drawn over the page. A
+donut's opens beside its ring — left, right, below, above, the first it
+fits — so it never covers the figure or a switch in the middle (a donut's
+`control`, a switch, nothing else); bars' over them first.
 
 ## Writing: apps as sources
 
