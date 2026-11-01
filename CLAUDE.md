@@ -8,6 +8,10 @@ data lives on your own hardware, nothing leaves your network except a plugin's
 own calls to its device API. Full direction:
 `docs/architecture/openfit-overview-and-design-pathway.md`.
 
+**Read `STATUS.md` first** for where things stand: what's built, how work
+happens now, the standing rules (the app level and the deploy order among
+them), what's next and what's parked.
+
 ## Stack (keep it lightweight — no frameworks without a real reason)
 - Python + Flask, raw `sqlite3` (NOT SQLAlchemy/an ORM); PyYAML only to read
   an installed app's `app.yaml`; `tzdata` (the IANA time-zone database as a
@@ -252,7 +256,15 @@ own calls to its device API. Full direction:
   3 a tile's view, a chart's hint and a donut's control, the wocl tone,
   strips `ahead` and a sleep lane's bands, 4 (C1) `ctx.delete_sessions()`;
   checked first, an app needing more skipped: "needs OpenFit app level 5;
-  this OpenFit is level 4"; `manifest_requires()`, `level_problem()`) and `replaces` (a
+  this OpenFit is level 4"; `manifest_requires()`, `level_problem()`.
+  **The standing rule** (`STATUS.md`): every app-facing addition to core
+  raises `APP_LEVEL`, adds a line to the list above it in `app/apps.py`,
+  and an app that uses it declares `requires:` that level. **The deploy
+  order** for an app-facing change: merge OpenFit, run Update OpenFit,
+  then push the app change; an app pushed too early waits safely
+  ("waiting for a newer OpenFit"), its installed copy unchanged, and
+  that version isn't tried again, so the app's next push brings it in)
+  and `replaces` (a
   list of ≤ `MAX_REPLACES` 5 ids passing `is_app_id()`, none twice, never
   the library app's own full id — a custom app's own bare id isn't refused,
   its `replaces` never acted on, so FRMS's library files pasted in as
@@ -924,11 +936,12 @@ own calls to its device API. Full direction:
   "manual", "duration_minutes": minutes})`, `end` now
   (`datetime.now(timezone.utc)`) and `start` that many minutes before —
   each log its own session. And the first to file duties: `frms`
-  (`tests/fixtures/apps/frms/`, a frozen sample - FRMS as it left
+  (`tests/fixtures/apps/frms/`, a frozen sample pinned by
+  `FRMS_FINGERPRINT` (`tests/test_library.py`) - FRMS as it left
   `library/` in A6 for the aviation repo, which publishes it as
   `openfitavi.frms` and has moved on; the Roster app until it became FRMS.
-  FRMS's own tests live with it in the aviation repo; here it's only a
-  real-shaped app for OpenFit's tests - the round trip by
+  FRMS's own tests (in the openfit-aviation repo) live with it there; here
+  it's only a real-shaped app for OpenFit's tests - the round trip by
   `tests/test_app_actions.py`,
   against the synthetic `tests/fixtures/rosters/sample.ics` — fake
   flights and ports). The whole FRMS suite is this one app: one tile, one
@@ -938,17 +951,20 @@ own calls to its device API. Full direction:
   strips — below), the sleep panel top-right (x 3, y 0, 3×2,
   `_sleep(ctx)`: strips three days across - stages, the body's rest
   window, disturbed cycles; its engine rest_windows(), rest_strip(),
-  sleep_nights(), stage_pieces(), disturbed_slots(), tested in
-  `tests/test_frms_sleep.py`), the roster panel bottom-left (x 0, y 2, 2×2,
+  sleep_nights(), stage_pieces(), disturbed_slots(), tested by FRMS's
+  own tests (in the openfit-aviation repo, `test_frms_sleep.py`)), the
+  roster panel bottom-left (x 0, y 2, 2×2,
   `_roster(ctx)`) and the rest budget beside it (x 2, y 2, 4×2,
   `_budget(ctx)`: three rolling donuts over a month's bars, the month's
   donut beside them; its engine budget_slots(), rolling_share(),
-  month_share(), tested in `tests/test_frms_budget.py`): `render()` is the layout, `_roster()` the
+  month_share(), tested by FRMS's own tests (in the openfit-aviation
+  repo, `test_frms_budget.py`)): `render()` is the layout, `_roster()` the
   roster panel — the timeline and its rails — its spec the one the whole
-  tile was before the grid; the tests read it at x 0, y 2
-  (`_roster_cell()`) and the circadian panel at x 0, y 0
-  (`_circadian_cell()`). Each panel is built through `_panel(ctx,
-  build)`: `build(ctx)`, or — should it raise — `[apps] frms: the
+  tile was before the grid; OpenFit's tests read it at x 0, y 2
+  (`_roster_cell()`, `tests/test_app_actions.py`), and FRMS's own tests
+  (in the openfit-aviation repo) the circadian panel at x 0, y 0
+  (`_circadian_cell()`, `test_frms_app.py`). Each panel is built through
+  `_panel(ctx, build)`: `build(ctx)`, or — should it raise — `[apps] frms: the
   <panel> panel failed` and the traceback printed, as the host logs a
   failed render, and `ctx.error(str(e))` (its type's name for an
   exception with no message) in its place: a fault in one panel is an
@@ -1109,7 +1125,8 @@ own calls to its device API. Full direction:
   scrolls — Plan ahead of the cursor, Report back — the compact card in
   its 2×2 sub-panel, as in a 2×2 tile (the rails dropped, the timeline
   alone, when a small screen shrinks the cells under 310px inside).
-  **The circadian panel** (`_circadian(ctx)`, `tests/test_frms_app.py`):
+  **The circadian panel** (`_circadian(ctx)`; FRMS's own tests, in the
+  openfit-aviation repo, `test_frms_app.py`):
   `empty(CONFIG_ERROR)` with no config; both kinds read back as the
   roster panel reads them (`since` 183 days before `ctx.today()`) and,
   none, `empty("Upload your roster .ics")`; else `circadian(rostered,
@@ -1145,7 +1162,8 @@ own calls to its device API. Full direction:
   The fixture's config has no positions, so its circadian
   panel is the engine's `ValueError` ("home base ZZA needs a lat and lon
   in config.json's destinations") as an error in its sub-panel.
-  **The circadian engine** (`tests/test_frms_circadian.py`), the panel
+  **The circadian engine** (FRMS's own tests, in the openfit-aviation
+  repo, `test_frms_circadian.py`), the panel
   top-left's calculations, pure module functions after the trip cards,
   called by `_circadian()`. Stdlib (`math`, `zoneinfo`, `bisect`); each public
   one takes `config=None` → `CONFIG` (`_config()`: neither a dict →
@@ -3043,7 +3061,9 @@ own calls to its device API. Full direction:
 - Run `pytest` before opening a PR.
 
 ## Direction (in progress — not all built yet)
-See `docs/architecture/openfit-overview-and-design-pathway.md` and `ROADMAP.md`.
+See `docs/architecture/openfit-overview-and-design-pathway.md` and `STATUS.md`
+(what's next and what's parked; the old phase plan is archived at
+`docs/history/roadmap.md`).
 These are NOT yet in the code — don't assume they exist until a PR lands them, and
 when you implement one, update the Data model section above and the README in the
 same PR:
@@ -3319,8 +3339,9 @@ same PR:
   fault in one an error in its own sub-panel (`ctx.error`, now on the
   ctx). With it, the #79 follow-ups: the grid's tile drops its border
   (`border-width: 0`), so the sub-panels sit exactly on Home's cells; a
-  grid cell refuses an unknown key; and `test_frms_app.py` reads its
-  sample without 3.13's `Path.read_text(newline=)`, so the suite runs
+  grid cell refuses an unknown key; and `test_frms_app.py` (then in
+  OpenFit; FRMS's own tests are in the openfit-aviation repo since the
+  FRMS split) reads its sample without 3.13's `Path.read_text(newline=)`, so the suite runs
   on the image's 3.12. Purely additive in the page: nothing in the
   timeline, rails or focus clock changed. Deploy: rebuild the image
   first, then Update FRMS (on the old image the circadian panel draws
@@ -3643,7 +3664,7 @@ same PR:
   errors - an unknown `ctx.toggle`).
   Then the FRMS split and update pruning (no migration, no route change):
   FRMS's own tests (`test_frms_app.py`, `_budget`, `_circadian`,
-  `_sleep`) moved to the aviation repo, which tests the live FRMS against
+  `_sleep`) moved to the openfit-aviation repo, which tests the live FRMS against
   an OpenFit clone; the fixture stays, frozen, as a sample app for the
   library, Admin, Browse and app-action tests. `APP_LEVEL` 3 - a tile's
   view, a chart's hint and a donut's control, the wocl tone, strips

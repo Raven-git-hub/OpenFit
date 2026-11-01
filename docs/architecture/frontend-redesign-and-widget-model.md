@@ -374,6 +374,7 @@ the app host: a folder in `/data/apps` whose `render(ctx, cfg)` returns a
 display spec the Home tab draws as a tile, reading the derived profile through
 `ctx.metric()` ([app-host.md](app-host.md)). Either way an app reads the
 derived profile and never reconciles sources itself. This first host slice
-runs apps as trusted code. Phase 4 of `ROADMAP.md` sandboxes it (no build, no
-network beyond the contract). The console stays a verification view: what is
-there, how continuous it is, and who wins.
+runs apps as trusted code. A sandbox (no build, no network beyond the
+contract) was Phase 4 of the old phase plan, now archived at
+[docs/history/roadmap.md](../history/roadmap.md). The console stays a
+verification view: what is there, how continuous it is, and who wins.

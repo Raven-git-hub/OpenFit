@@ -1531,10 +1531,13 @@ watch's, and nothing is derived from it.
 ### The FRMS app
 
 The first app to file duties, published from the aviation repo as
-`openfitavi.frms` (A6; its copy here `tests/fixtures/apps/frms/`) and
-run by `test_frms_app.py` (its parsing on its own, the module loaded by
-path as the host loads it) and `test_app_actions.py` (the round trip), against
-a synthetic roster, `tests/fixtures/rosters/sample.ics`. It was the Roster
+`openfitavi.frms` (A6). FRMS's own tests (in the openfit-aviation repo)
+test the live FRMS there: `test_frms_app.py`, for one, its parsing on its
+own, the module loaded by path as the host loads it. Its copy here,
+`tests/fixtures/apps/frms/`, is a frozen sample app pinned by
+`FRMS_FINGERPRINT` (`tests/test_library.py`), run by `test_app_actions.py`
+(the round trip) against a synthetic roster,
+`tests/fixtures/rosters/sample.ics`. It was the Roster
 app until it became FRMS: the whole FRMS suite as one app, with one tile and
 one `config.json`, drawn as four sub-panels on a 6×5 grid (`ctx.grid()`,
 above): the circadian panel top-left (3×2) — three strips, below — the roster
@@ -1658,7 +1661,8 @@ A roster that's all over six months old is filed but draws as the empty state.
 **The circadian panel** (`_circadian(ctx)`) draws the circadian engine
 (`circadian()` and the functions under it: sun times, where you are, home's
 day and night and WOCL, each duty cut against the body clock, the curve's
-troughs — pure, and tested on their own in `test_frms_circadian.py`) as three
+troughs — pure, and tested alone in FRMS's own tests, in the
+openfit-aviation repo, `test_frms_circadian.py`) as three
 strips (`ctx.strips()`, above), in the `"frms"` focus group — so **scrolling
 the strips scrolls the roster's timeline and rails, and the other way
 round**, to one time. Over the roster panel's window: from midnight UTC 183
@@ -2629,5 +2633,6 @@ saved positions and gives `paintTiles` start cells. The sizes, the CSS grid,
   canonical key, and the app's own, and `ctx.sessions()` serves any session
   kind.
 - **A sandbox:** an app is trusted Python running in the server's process.
-  The sandboxed host (no network beyond the contract) is Phase 4 of
-  `ROADMAP.md`.
+  The sandboxed host (no network beyond the contract) was Phase 4 of the
+  old phase plan, now archived at
+  [docs/history/roadmap.md](../history/roadmap.md).

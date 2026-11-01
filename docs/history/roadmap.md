@@ -1,3 +1,5 @@
+Archived 2 Nov 2026: the phase plan is done. Current state: `STATUS.md`.
+
 # OpenFit Roadmap
 
 > Architecture direction and reasoning:
