@@ -655,7 +655,7 @@ def test_the_activity_is_every_kept_op_newest_first_with_its_log(admin_env):
     assert [o["id"] for o in activity] == [added["id"], first["id"]]
     assert activity[0]["log"] == added["log"] and activity[0]["user"] == {"name": "sam", "port": 8101}
     assert set(activity[1]) == {"id", "kind", "outcome", "summary", "started_at", "finished_at", "log", "user",
-                                "repo"}
+                                "repo", "steps"}
 
 
 def test_each_backup_names_the_update_it_was_taken_by(admin_env):
@@ -690,12 +690,14 @@ def test_the_header_has_admin_portal_the_date_pill_and_both_chips(logged_in):
     assert '<button class="bar-btn" id="themeToggle" type="button">theme <span id="themeState">auto</span></button>' in header
 
 
-def test_the_left_column_has_its_four_panels_in_order(logged_in):
+def test_the_left_column_has_its_five_panels_in_order(logged_in):
     html = logged_in.get("/").get_data(as_text=True)
     left = html.split('id="leftCol"', 1)[1].split("</aside>", 1)[0]
     cards = re.findall(r'<section class="card" id="(\w+)">\s*<div class="card-title"><h3>([^<]+)</h3>', left)
     assert cards == [("systemCard", "System information"), ("versionsCard", "Versions"),
-                     ("reposCard", "Repos"), ("activityCard", "Activity log")]
+                     ("scheduleCard", "Schedule"), ("reposCard", "Repos"), ("activityCard", "Activity log")]
+    # Over them, first, a failed or missed scheduled run's notice (SU1), hidden until there's one.
+    assert left.split("<section", 2)[1].startswith(' class="card notice" id="runNotice" role="alert" hidden>')
     right = html.split('id="rightCol"', 1)[1]
     assert re.findall(r'<button class="tab[^"]*" id="tab-(\w+)"', right) == ["users", "repo"]
 
@@ -874,7 +876,8 @@ def run_page(client, status, scenario):
     html = client.get("/").get_data(as_text=True)
     script = (HARNESS.replace("__HTML__", json.dumps(html)).replace("__STATUS__", json.dumps(status))
               .replace("__SCENARIO__", scenario))
-    done = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=60)
+    # On stdin, not -e: the page and its status are more than one argument may hold (128 KB).
+    done = subprocess.run(["node", "-"], input=script, capture_output=True, text=True, timeout=60)
     assert done.returncode == 0, done.stderr
     result = json.loads(done.stdout.strip().splitlines()[-1])
     assert "error" not in result, result["error"]

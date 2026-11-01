@@ -52,6 +52,12 @@ Their git runs only through org_git(): as root, in that clone, with the
 repo's own pinned GIT_SSH_COMMAND, and only the commands org_git_allowed()
 names. The private key is never read, returned or logged.
 
+The schedule (SU1) is the one thing the Admin runs by itself: once a week,
+at the day, time and timezone /data/schedule.json names, a check - or a
+check and then whatever's waiting, the apps, OpenFit, then the Admin, each
+through the same steps its button runs, under one hold of the lock. It runs
+whatever the users are doing; nothing else is ever run unasked.
+
 Git runs as the repo's owner (the uid and gid that own OPENFIT_REPO), so
 the files it writes stay the owner's and git never refuses the repo as
 someone else's - all but an organisation repo's, above. Docker runs as
@@ -60,6 +66,7 @@ root, for the socket.
 
 import contextlib
 import errno
+import functools
 import hashlib
 import json
 import os
@@ -70,10 +77,13 @@ import subprocess
 import shutil
 import sqlite3
 import tarfile
+import tempfile
 import threading
 import time
 import zlib
-from datetime import datetime, timezone
+import zoneinfo
+from datetime import datetime, timedelta, timezone
+from datetime import time as dtime
 from typing import NamedTuple
 from urllib.parse import quote, urlsplit
 
@@ -271,8 +281,7 @@ DOCKER_INFO_ARGS = ("info", "--format", "{{json .}}")
 DOCKER_INFO_EVERY = 60
 SERVER_FIELDS = ("Name", "ServerVersion", "NCPU", "MemTotal")
 
-CHECK_EVERY = 7 * 24 * 3600  # an automatic check, a week after the last
-TICK_EVERY = 3600  # how often the background thread looks
+TICK_EVERY = 60  # how often the background thread looks for the schedule's run (SU1)
 HEALTH_EVERY = 2
 HEALTH_FOR = 60
 KEEP_BACKUPS = 3
@@ -340,6 +349,49 @@ _MEMBER_KINDS = {
     tarfile.SYMTYPE: "a symbolic link", tarfile.LNKTYPE: "a hard link", tarfile.CHRTYPE: "a device",
     tarfile.BLKTYPE: "a device", tarfile.FIFOTYPE: "a FIFO",
 }
+
+# The schedule (SU1): one weekly run, at a day, time and timezone the
+# admin picks, in one of two modes - check, or check and then install what's
+# waiting. /data/schedule.json holds the schedule (the default until it's
+# saved) and /data/schedule_state.json what the runs have done: the due time
+# last handled, so no due time is ever run twice, and the last run.
+SCHEDULE_FILE = "schedule.json"
+SCHEDULE_STATE_FILE = "schedule_state.json"
+DAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")  # date.weekday()'s order
+SCHEDULE_MODES = ("check", "update")
+SCHEDULE_KEYS = ("day", "time", "timezone", "mode")
+DEFAULT_SCHEDULE = {"day": "sun", "time": "03:00", "timezone": "UTC", "mode": "check"}
+_TIME = re.compile(r"([01][0-9]|2[0-3]):([0-5][0-9])\Z")  # ASCII digits: \d takes any script's
+# In the system's zone files, but not a place's time: the host's own zone
+# (a link that differs per server) and the database's placeholder.
+NOT_ZONES = frozenset({"localtime", "Factory"})
+SCHEDULE_PROBLEMS = {
+    "day": "The day is one of mon, tue, wed, thu, fri, sat or sun.",
+    "time": "The time is HH:MM, on the 24-hour clock: 00:00 to 23:59.",
+    "timezone": "Choose a timezone from the list, such as Asia/Hong_Kong.",
+    "mode": "The mode is check (Check only) or update (Check and update).",
+}
+# A run that starts more than this long after its due time (the Admin was
+# down, or an operation held the lock) is late: it checks, and installs nothing.
+LATE_AFTER = 3600
+RUN_KIND = "scheduled_run"
+RUN_OUTCOMES = ("running", "ok", "failed", "rolled_back", "interrupted", "missed_update")
+# A run the page puts a red notice up for, until it's dismissed.
+NOTICE_OUTCOMES = ("failed", "rolled_back", "interrupted", "missed_update")
+# A run's steps, in the order they run: the check, then the apps (the
+# official library, then each organisation repo), then OpenFit, then the
+# Admin. Each but the check is its own op, as its button's is.
+STEP_KINDS = ("check", "update_apps", "repo_update", "update", "admin_update")
+# A step's outcome: an op's, "handed_over" for the Admin's (its op finishes
+# under the Admin that comes up), or "refused" for one that couldn't start.
+STEP_OUTCOMES = ("running", "ok", "failed", "rolled_back", "interrupted", "handed_over", "refused")
+OP_ID = re.compile(r"\d{8}T\d{6}Z-[a-z_]{1,30}(?:-\d{1,3})?\Z")
+RUN_OP_ID = re.compile(r"\d{8}T\d{6}Z-scheduled_run(?:-\d{1,3})?\Z")
+_RUN_KEYS = ("id", "due", "started_at", "finished_at", "mode", "outcome", "summary", "steps", "dismissed")
+MAX_RUN_SUMMARY = 2000
+MAX_RUN_STEPS = 64
+# How a step ended, in a run's log.
+OUTCOME_WORDS = {"ok": "done", "failed": "failed", "rolled_back": "rolled back", "interrupted": "interrupted"}
 
 
 class Runner:
@@ -462,6 +514,15 @@ class Refused(Exception):
 class Busy(Refused):
     def __init__(self):
         super().__init__("Something else is running. Wait for it to finish, then try again.")
+
+
+class BadSchedule(Refused):
+    """A schedule that can't be saved: a 400, and the field that's wrong
+    (None for the body as a whole)."""
+
+    def __init__(self, message, field):
+        super().__init__(message, 400)
+        self.field = field
 
 
 def _tail(out, err, lines=12):
@@ -700,6 +761,187 @@ def server_fields(raw):
 
     return {"Name": text(raw.get("Name"), 255), "ServerVersion": text(raw.get("ServerVersion"), 64),
             "NCPU": count(raw.get("NCPU")), "MemTotal": count(raw.get("MemTotal"))}
+
+
+# --- the schedule (SU1) ----------------------------------------------------------
+
+
+@functools.lru_cache(maxsize=1)
+def timezones():
+    """The timezones a schedule can name, sorted: the IANA database's, as
+    zoneinfo finds it (the tzdata package's, and the system's), less
+    NOT_ZONES. Read once: the page's list and the check of a saved one."""
+    return tuple(sorted(zoneinfo.available_timezones() - NOT_ZONES))
+
+
+def schedule_problem(key, value):
+    """Why `value` can't be the schedule's `key`, or None."""
+    if key == "day":
+        ok = isinstance(value, str) and value in DAYS
+    elif key == "time":
+        ok = isinstance(value, str) and _TIME.match(value) is not None
+    elif key == "timezone":
+        ok = isinstance(value, str) and value in timezones()
+        if ok:
+            try:
+                zoneinfo.ZoneInfo(value)
+            except (zoneinfo.ZoneInfoNotFoundError, ValueError, OSError):
+                ok = False
+    elif key == "mode":
+        ok = isinstance(value, str) and value in SCHEDULE_MODES
+    else:
+        return f"{key!r} isn't part of a schedule."
+    return None if ok else SCHEDULE_PROBLEMS[key]
+
+
+def load_schedule(data_dir):
+    """/data/schedule.json: {day, time, timezone, mode} - DEFAULT_SCHEDULE
+    while there's none. Checked strictly on every read, like users.json:
+    anything that isn't exactly right is a ValueError naming the file and
+    the key, so a bad file stops the Admin starting."""
+    path = os.path.join(data_dir, SCHEDULE_FILE)
+    if not os.path.exists(path):
+        return dict(DEFAULT_SCHEDULE)
+    raw = _read_json(path, None)
+    if not isinstance(raw, dict):
+        raise ValueError(f"{path} isn't a JSON object")
+    for key in raw:
+        if key not in SCHEDULE_KEYS:
+            raise ValueError(f"{path}: {key!r} isn't a key schedule.json has")
+    for key in SCHEDULE_KEYS:
+        if key not in raw:
+            raise ValueError(f"{path}: {key} is missing")
+        if schedule_problem(key, raw[key]):
+            raise ValueError(f"{path}: {key} isn't valid: {raw[key]!r}")
+    return {key: raw[key] for key in SCHEDULE_KEYS}
+
+
+def _stamp_or_none(value, where, key, none_ok=True):
+    if value is None and none_ok:
+        return
+    if not isinstance(value, str) or not _STAMP.match(value):
+        raise ValueError(f"{where}.{key} isn't valid: {value!r}")
+
+
+def load_schedule_state(data_dir):
+    """/data/schedule_state.json: {last_due, last_run} - None while there's
+    none. `last_due` the due time last handled (UTC), `last_run` {id, due,
+    started_at, finished_at, mode, outcome, summary, steps: [{kind, op_id,
+    outcome}], dismissed}, or None before the first run. Only the Admin
+    writes it; checked strictly all the same, like users.json."""
+    path = os.path.join(data_dir, SCHEDULE_STATE_FILE)
+    if not os.path.exists(path):
+        return None
+    raw = _read_json(path, None)
+    if not isinstance(raw, dict) or set(raw) != {"last_due", "last_run"}:
+        raise ValueError(f"{path} isn't exactly {{last_due, last_run}}")
+    _stamp_or_none(raw["last_due"], path, "last_due")
+    run = raw["last_run"]
+    if run is None:
+        return raw
+    where = f"{path}: last_run"
+    if not isinstance(run, dict) or set(run) != set(_RUN_KEYS):
+        raise ValueError(f"{where} isn't exactly {{{', '.join(sorted(_RUN_KEYS))}}}")
+    if not isinstance(run["id"], str) or not RUN_OP_ID.match(run["id"]):
+        raise ValueError(f"{where}.id isn't valid: {run['id']!r}")
+    for key in ("due", "started_at"):
+        _stamp_or_none(run[key], where, key, none_ok=False)
+    _stamp_or_none(run["finished_at"], where, "finished_at")
+    checks = (("mode", SCHEDULE_MODES), ("outcome", RUN_OUTCOMES))
+    for key, allowed in checks:
+        if run[key] not in allowed:
+            raise ValueError(f"{where}.{key} isn't valid: {run[key]!r}")
+    if not isinstance(run["summary"], str) or len(run["summary"]) > MAX_RUN_SUMMARY:
+        raise ValueError(f"{where}.summary isn't valid")
+    if type(run["dismissed"]) is not bool:
+        raise ValueError(f"{where}.dismissed isn't valid: {run['dismissed']!r}")
+    if not isinstance(run["steps"], list) or len(run["steps"]) > MAX_RUN_STEPS:
+        raise ValueError(f"{where}.steps isn't a list of at most {MAX_RUN_STEPS}")
+    for i, step in enumerate(run["steps"]):
+        here = f"{where}.steps[{i}]"
+        if not isinstance(step, dict) or set(step) != {"kind", "op_id", "outcome"}:
+            raise ValueError(f"{here} isn't exactly {{kind, op_id, outcome}}")
+        if step["kind"] not in STEP_KINDS or step["outcome"] not in STEP_OUTCOMES:
+            raise ValueError(f"{here} isn't valid: {step!r}")
+        if step["op_id"] is not None and not (isinstance(step["op_id"], str) and OP_ID.match(step["op_id"])):
+            raise ValueError(f"{here}.op_id isn't valid: {step['op_id']!r}")
+    return raw
+
+
+def _wall_instant(day, at, tz):
+    """The instant, a UTC datetime, the clocks in `tz` say `at` (a time) on
+    `day` (a date): the first time, where the clocks go back through it; the
+    first minute after it that exists, where they go forward over it."""
+    wall = datetime.combine(day, at)
+    for _ in range(2 * 24 * 60):
+        local = wall.replace(tzinfo=tz)  # fold 0: the first, if it comes round twice
+        utc = local.astimezone(timezone.utc)
+        if utc.astimezone(tz).replace(tzinfo=None) == wall:
+            return utc
+        wall += timedelta(minutes=1)
+    raise ValueError(f"{day} {at} never comes in {tz.key}")
+
+
+def _instants(schedule, ts):
+    """The schedule's due times, as UTC timestamps, ascending: one a week,
+    on each of its days from eight days before the local date at `ts` to
+    eight after."""
+    tz = zoneinfo.ZoneInfo(schedule["timezone"])
+    hours, minutes = map(int, schedule["time"].split(":"))
+    at = dtime(hours, minutes)
+    weekday = DAYS.index(schedule["day"])
+    today = datetime.fromtimestamp(ts, tz).date()
+    days = (today + timedelta(days=i) for i in range(-8, 9))
+    return [_wall_instant(d, at, tz).timestamp() for d in days if d.weekday() == weekday]
+
+
+def next_run(schedule, after):
+    """The schedule's first due time at or after `after` (a timestamp)."""
+    return next(t for t in _instants(schedule, after) if t >= after)
+
+
+def last_due(schedule, now):
+    """The schedule's latest due time at or before `now` (a timestamp)."""
+    return max(t for t in _instants(schedule, now) if t <= now)
+
+
+def local_time(ts, zone):
+    """`ts` as the clocks in `zone` show it: Sun 2 Nov, 03:00."""
+    d = datetime.fromtimestamp(ts, zoneinfo.ZoneInfo(zone))
+    return f"{DAY_LABELS[d.weekday()]} {d.day} {MONTH_LABELS[d.month - 1]}, {d:%H:%M}"
+
+
+DAY_LABELS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+MONTH_LABELS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+
+
+def _timestamp(stamp):
+    """A UTC stamp (YYYY-MM-DDTHH:MM:SSZ) as a timestamp, or None."""
+    if not isinstance(stamp, str) or not _STAMP.match(stamp):
+        return None
+    return datetime.strptime(stamp, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc).timestamp()
+
+
+def _write_atomic(path, data):
+    """JSON written whole, or not at all: a file of its own beside `path`,
+    flushed to disk, then renamed over it in one step."""
+    fd, tmp = tempfile.mkstemp(prefix=f".{os.path.basename(path)}.", dir=os.path.dirname(path))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.remove(tmp)
+        raise
+
+
+def _and(items):
+    """a, b and c."""
+    items = list(items)
+    return items[0] if len(items) == 1 else ", ".join(items[:-1]) + " and " + items[-1]
 
 
 # --- the app shelf -------------------------------------------------------------
@@ -1749,7 +1991,7 @@ def registry_people(reg):
 class Admin:
     """The OpenFit users the Admin manages, and the operations on them.
 
-    One operation at a time (`lock`): a check, an update, an undo, adding,
+    One operation at a time (`lock`): a check, a scheduled run, an update, an undo, adding,
     restoring, starting, stopping, restarting or removing a user, making a
     setup link, deleting a removed user's data or a backup, starting a
     download, updating the apps, publishing them again, updating the Admin
@@ -1763,10 +2005,16 @@ class Admin:
     after its thread has handed over to the helper, until the helper has
     gone (`_settle`). A restore's upload arrives before the lock is taken.
 
+    The schedule's run (SU1) holds the lock from its check to its last
+    step, and runs every step in its own thread - the scheduler's - one
+    after another, each its own op as its button's would be: nothing else
+    starts in between.
+
     Constructing one deletes what an interrupted restore left in
     /data/restore-uploads/, writes the users' mounts of the app shelf
-    (write_mounts()) and nothing else; publish_at_startup() is serve()'s
-    to call.
+    (write_mounts()), marks a scheduled run the Admin stopped in the middle
+    of as interrupted, and nothing else; publish_at_startup() and
+    start_schedule() are serve()'s to call.
     """
 
     def __init__(
@@ -1803,11 +2051,15 @@ class Admin:
         self.repos_path = os.path.join(data_dir, REPOS_FILE)
         self.repo_checks_path = os.path.join(data_dir, "repo_checks.json")
         self.restore_dir = os.path.join(data_dir, RESTORE_DIR)
+        self.schedule_path = os.path.join(data_dir, SCHEDULE_FILE)
+        self.schedule_state_path = os.path.join(data_dir, SCHEDULE_STATE_FILE)
         self.library_dir = library_dir
         self.library_error = None  # the last publish's failure, until one succeeds
         self.lock = threading.Lock()
         self._op_lock = threading.Lock()
         self._settle_lock = threading.Lock()
+        self._schedule_lock = threading.Lock()  # every read-modify-write of the schedule's two files
+        self._waiting_due = None  # a due time whose run waits for the lock: said once
         self.op = None
         self.thread = None
         self._awaiting = None  # an Admin update the helper has: (op, "handover" or "startup")
@@ -1818,7 +2070,10 @@ class Admin:
         self._clear_restores()  # left from a restore the Admin was stopped in the middle of
         self.registry()  # a bad users.json stops the Admin starting
         self.repos_registry()  # and so does a bad repos.json
+        self.schedule()  # and a bad schedule.json
+        self.schedule_state()  # or schedule_state.json
         self._mark_interrupted(keep=self._pick_up_swap())
+        self._interrupted_run()
         self.write_mounts()
 
     # --- the users --------------------------------------------------------
@@ -2106,40 +2361,358 @@ class Admin:
             "groups": [groups[key] for key, _title, _folder in GROUPS],
         }
 
-    def check_due(self):
-        last = self.last_check() or {}
-        at = last.get("checked_at")
-        if not at:
-            return True
-        try:
-            then = datetime.strptime(at, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc).timestamp()
-        except (TypeError, ValueError):
-            return True
-        return self.clock() - then >= CHECK_EVERY
+    # --- the schedule (SU1) ------------------------------------------------
+
+    def schedule(self):
+        return load_schedule(self.data_dir)
+
+    def schedule_state(self):
+        return load_schedule_state(self.data_dir)
+
+    def _save_schedule_state(self, state):
+        _write_atomic(self.schedule_state_path, state)
+
+    def _handled(self, state):
+        """The due time last handled, as a timestamp, or None for none yet."""
+        return _timestamp(state["last_due"]) if state else None
+
+    def _upcoming(self, schedule, state):
+        """When the schedule's next run is: its due time, if that's come and
+        its run hasn't started yet (it waits for the lock, or the next tick);
+        else its first due time from now on that isn't handled already."""
+        now = self.clock()
+        handled = self._handled(state)
+        due = last_due(schedule, now)
+        if handled is not None and due > handled:
+            return due
+        handled = due if handled is None else handled  # none noted yet: the first tick notes this one
+        upcoming = next_run(schedule, now)
+        return upcoming if upcoming > handled else next_run(schedule, handled + 1)
+
+    def schedule_view(self):
+        """The page's: the schedule, its next run (UTC, and as its own
+        timezone's clocks show it) and the last run, as the state has it."""
+        schedule, state = self.schedule(), self.schedule_state()
+        upcoming = self._upcoming(schedule, state)
+        return {**schedule, "next_run": iso(upcoming), "next_run_local": local_time(upcoming, schedule["timezone"]),
+                "last_run": state["last_run"] if state else None}
+
+    def save_schedule(self, data):
+        """PUT /api/schedule: {day, time, timezone, mode}, each checked (a
+        BadSchedule, 400, naming the field), then schedule.json written
+        whole. A schedule that differs from the saved one runs from its first
+        due time after now: its latest one before now is noted as handled,
+        so a save never sets off a catch-up. Not under the lock: a run going
+        meanwhile keeps the schedule it started with. schedule_view()."""
+        if not isinstance(data, dict):
+            raise BadSchedule("Send the schedule as {day, time, timezone, mode}.", None)
+        for key in data:
+            if key not in SCHEDULE_KEYS:
+                raise BadSchedule(f"{key!r} isn't part of a schedule.", None)
+        for key in SCHEDULE_KEYS:
+            problem = schedule_problem(key, data.get(key))
+            if problem:
+                raise BadSchedule(problem, key)
+        new = {key: data[key] for key in SCHEDULE_KEYS}
+        with self._schedule_lock:
+            old = self.schedule()
+            _write_atomic(self.schedule_path, new)
+            if new != old:
+                state = self.schedule_state() or {"last_due": None, "last_run": None}
+                due, handled = last_due(new, self.clock()), self._handled(state)
+                if handled is None or due > handled:
+                    state["last_due"] = iso(due)
+                self._save_schedule_state(state)
+        view = self.schedule_view()
+        print(f"[admin] schedule: {new['day']} {new['time']} ({new['timezone']}), "
+              f"{'check and update' if new['mode'] == 'update' else 'check only'}; next run {view['next_run']}",
+              flush=True)
+        return view
+
+    def dismiss_run(self):
+        """POST /api/schedule/dismiss: the last run's notice put away. 409
+        with none, or while it's going."""
+        with self._schedule_lock:
+            state = self.schedule_state()
+            last = state["last_run"] if state else None
+            if last is None:
+                raise Refused("There's no scheduled run to dismiss.", 409)
+            if last["outcome"] == "running":
+                raise Refused("The scheduled run is still going.", 409)
+            last["dismissed"] = True
+            self._save_schedule_state(state)
+        return self.schedule_view()
+
+    def _interrupted_run(self):
+        """At startup: a scheduled run still "running" in the state is one
+        the Admin stopped in the middle of (its op, and its step's, are marked
+        by _mark_interrupted()), so it's interrupted - and its notice up."""
+        with self._schedule_lock:
+            state = self.schedule_state()
+            last = state["last_run"] if state else None
+            if last is None or last["outcome"] != "running":
+                return
+            last.update(outcome="interrupted", finished_at=self._iso(),
+                        summary="The Admin stopped while this was running.")
+            for step in last["steps"]:
+                if step["outcome"] == "running":
+                    step["outcome"] = "interrupted"
+            self._save_schedule_state(state)
 
     def tick(self):
-        """The background thread's hourly look: a check if one is due. Only ever a check."""
-        if not self.check_due():
-            return False
-        try:
-            result = self.check()
-            print(f"[admin] automatic check: {result['behind']} new commit(s)", flush=True)
-        except Busy:
-            print("[admin] automatic check: something else is running, trying again later", flush=True)
-        except OpError as e:
-            print(f"[admin] automatic check failed: {e.message} {e.detail}", flush=True)
-        return True
+        """The background thread's look, once a minute: the schedule's run, if
+        its latest due time has come and isn't handled. Nothing else is ever
+        run from here.
 
-    def start_auto_checks(self):
+        No state yet (the first tick after SU1 arrives) notes that due time
+        as handled and runs nothing. A run that can't take the lock (an
+        operation is going) waits, tried again each minute; once it starts,
+        it's late if that's more than LATE_AFTER after its due time - it
+        checks and installs nothing - and its due time is handled, so it
+        never runs twice. Returns None for nothing run, "waiting", or the
+        run's outcome."""
+        try:
+            schedule, state = self.schedule(), self.schedule_state()
+        except ValueError as e:
+            print(f"[admin] schedule: no run: {e}", flush=True)
+            return None
+        now = self.clock()
+        due = last_due(schedule, now)
+        if state is None or state["last_due"] is None:
+            with self._schedule_lock:
+                state = self.schedule_state() or {"last_due": None, "last_run": None}
+                if state["last_due"] is None:
+                    state["last_due"] = iso(due)
+                    self._save_schedule_state(state)
+            return None
+        if due <= self._handled(state):
+            return None
+        try:
+            self._take_lock()
+        except Busy:
+            if self._waiting_due != due:
+                self._waiting_due = due
+                print(f"[admin] schedule: the run due at {iso(due)} waits: something else is running", flush=True)
+            return "waiting"
+        handed_over, run = False, None
+        try:
+            # Again, under the lock: a save may have moved things on meanwhile.
+            schedule, state = self.schedule(), self.schedule_state()
+            now = self.clock()
+            due = last_due(schedule, now)
+            if due <= self._handled(state):
+                return None
+            late = now - due > LATE_AFTER
+            run = self._begin(RUN_KIND, mode=schedule["mode"], due=iso(due), steps=[])
+            with self._schedule_lock:
+                state = self.schedule_state()
+                state["last_due"] = iso(due)
+                state["last_run"] = {"id": run["id"], "due": iso(due), "started_at": run["started_at"],
+                                     "finished_at": None, "mode": schedule["mode"], "outcome": "running",
+                                     "summary": "", "steps": [], "dismissed": False}
+                self._save_schedule_state(state)
+            self._waiting_due = None
+            handed_over = self._run(run, self._scheduled_run, schedule, due, late)
+        finally:
+            if run is not None:
+                self._sync_last_run(run)  # however it ended: a bug's failure too
+            if not handed_over:  # else the op and the lock are _settle's
+                with self._op_lock:
+                    self.op = None
+                self.lock.release()
+        return run["outcome"]
+
+    def start_schedule(self):
+        """serve()'s: the background thread, ticking at once - a run missed
+        while the Admin was down catches up now - then once a minute."""
         stop = threading.Event()
 
         def loop():
-            self.tick()
-            while not stop.wait(TICK_EVERY):
-                self.tick()
+            while True:
+                try:
+                    self.tick()
+                except Exception as e:  # a bug: said, and the thread goes on
+                    print(f"[admin] schedule: the tick failed: {e}", flush=True)
+                if stop.wait(TICK_EVERY):
+                    return
 
-        threading.Thread(target=loop, name="admin-auto-check", daemon=True).start()
+        threading.Thread(target=loop, name="admin-schedule", daemon=True).start()
         return stop
+
+    def _scheduled_run(self, run, schedule, due, late):
+        """The run, under the lock, in this thread: the check, and - in
+        update mode, on time - whatever is waiting, in the order the brief
+        pins and the code needs: the apps (the official library's Update
+        apps, then each organisation repo's update), OpenFit, then the Admin,
+        last, since its update hands over to the helper and this Admin goes.
+        Each step is begun as its button begins it and run as its thread
+        would run it; the first that doesn't end ok stops the run, with what
+        came before it left done. Whatever the users are doing."""
+        at, zone = schedule["time"], schedule["timezone"]
+        why = "the Admin wasn't running" if iso(due) < self.started_at else "something else was running"
+        if late:
+            self.say(run, f"This run is late: it was due at {at} ({zone}), when {why}.")
+
+        self.say(run, "Checking for updates…")
+        self._note_step(run, "check", None, "running")
+        try:
+            self._check()
+        except OpError as e:
+            self.say(run, f"The check failed: {e.message}", e.detail)
+            self._note_step(run, "check", None, "failed")
+            return self._finish_run(run, "failed", f"Stopped at the check: {e.message} Nothing was installed.")
+        self._note_step(run, "check", None, "ok")
+        waiting = self._waiting_updates()
+        self.say(run, f"Waiting: {_and(label for label, _ in waiting)}." if waiting else "Nothing is waiting.")
+
+        if schedule["mode"] == "check":
+            return self._finish_run(run, "ok", (f"Checked for updates: {_and(label for label, _ in waiting)} "
+                                                + ("has an update" if len(waiting) == 1 else "have updates")
+                                                + " waiting. Check only, so nothing was installed.") if waiting
+                                    else "Checked for updates: everything is up to date.")
+        if late:
+            return self._finish_run(run, "missed_update", f"The update was skipped: {why} at {at}. "
+                                                          "Next week's run will catch up.")
+
+        done = []
+
+        def stopped(label, op):
+            return self._finish_run(run, op["outcome"], f"Stopped at {label}: {op['summary']}"
+                                    + (" Earlier steps stayed done." if done else ""))
+
+        # The apps: the official library's (only when Update apps is on
+        # offer: otherwise its changes come with Update OpenFit), then each
+        # repo's, in the order they were added.
+        apps = 0
+        if update_apps_offered(self.last_check()):
+            apps += 1
+            op = self._step(run, "update_apps", "Update apps", self._begin_update_apps, self._update_apps)
+            if op["outcome"] != "ok":
+                return stopped("Update apps", op)
+            done.append("the apps")
+        for entry in self.repos_registry()["repos"]:
+            name = f"{entry['owner']}/{entry['repo']}"
+            view = self._repo_view(entry, self.repo_checks().get(entry["slug"]))
+            if not view["behind"]:
+                continue
+            if not view["can_update"]:
+                self.say(run, f"{name} has new commits that can't be applied: {view['problem']['text']}")
+                continue
+            apps += 1
+            op = self._step(run, "repo_update", f"Update {name}", lambda slug=entry["slug"]: self._begin_repo_update(slug),
+                            self._repo_update)
+            if op["outcome"] != "ok":
+                return stopped(f"Update {name}", op)
+            done.append(name)
+        if not apps:
+            self.say(run, "Nothing waiting for apps.")
+
+        if update_offered(self.last_check()):
+            op = self._step(run, "update", "Update OpenFit", self._begin_update, self._update)
+            if op["outcome"] != "ok":
+                return stopped("Update OpenFit", op)
+            done.append("OpenFit")
+        else:
+            self.say(run, "Nothing waiting for OpenFit.")
+
+        au = self.admin_update(self.last_check())
+        if not au["can_self_update"]:
+            self.say(run, "Nothing waiting for the Admin." if not au["available"] else
+                     "The Admin has changes waiting that Update OpenFit brings first, so it isn't updated in this run.")
+            return self._finish_run(run, "ok", f"Updated {_and(done)}." if done else "Up to date.")
+
+        def handing_over():
+            self._note_step(run, "admin_update", None, "handed_over")
+            self._finish_run(run, "ok", f"{'Updated ' + _and(done) if done else 'Checked'}, "
+                                        "then the Admin updated itself: see its own entry.")
+
+        op = self._step(run, "admin_update", "Update the Admin", self._begin_admin_update, self._admin_update,
+                        handing_over=handing_over)
+        if op is HANDED_OVER:
+            return HANDED_OVER
+        return stopped("Update the Admin", op)
+
+    def _waiting_updates(self):
+        """What a run in update mode would install, as the last check (and
+        each repo's) has it: [(label, step kind)], in its order."""
+        check, waiting = self.last_check(), []
+        if update_apps_offered(check):
+            waiting.append(("the apps", "update_apps"))
+        try:
+            entries = self.repos_registry()["repos"]
+        except ValueError:
+            entries = []
+        checks = self.repo_checks()
+        for entry in entries:
+            if self._repo_view(entry, checks.get(entry["slug"]))["can_update"]:
+                waiting.append((f"{entry['owner']}/{entry['repo']}", "repo_update"))
+        if update_offered(check):
+            waiting.append(("OpenFit", "update"))
+        if self.admin_update(check)["available"]:
+            waiting.append(("the Admin", "admin_update"))
+        return waiting
+
+    def _step(self, run, kind, label, begin, step, **kwargs):
+        """One of a run's steps, here, in the run's thread and under its lock:
+        begin() - the step's refusals and its op, as its button's route has
+        them - then step(op, ...), as that route's background thread runs
+        it. Its op once it's finished, None if begin() refused it, or
+        HANDED_OVER (the Admin's: the op and the lock then _settle's). One
+        that begin() refused stands for itself as a failed op with no id,
+        its refusal its summary."""
+        self.say(run, f"{label}…")
+        try:
+            op, args = begin()
+        except Refused as e:
+            self.say(run, f"{label} didn't start: {e.message}")
+            self._note_step(run, kind, None, "refused")
+            return {"id": None, "outcome": "failed", "summary": f"it didn't start: {e.message}"}
+        self._note_step(run, kind, op["id"], "running")
+        if self._run(op, step, *args, **kwargs):
+            return HANDED_OVER
+        with self._op_lock:
+            self.op = run  # the run is what's going again, between steps
+        self._note_step(run, kind, op["id"], op["outcome"])
+        self.say(run, f"{label}: {OUTCOME_WORDS.get(op['outcome'], op['outcome'])}. {op['summary']}")
+        return op
+
+    def _note_step(self, run, kind, op_id, outcome):
+        """A step begun, or how it ended, in the run's own record and the
+        state's last run."""
+        with self._op_lock:
+            steps = run["steps"]
+            last = steps[-1] if steps else None
+            if (last and last["kind"] == kind and last["outcome"] == "running"
+                    and (op_id is None or last["op_id"] in (None, op_id))):
+                last["outcome"] = outcome
+                if op_id is not None:
+                    last["op_id"] = op_id
+            else:
+                steps.append({"kind": kind, "op_id": op_id, "outcome": outcome})
+        self._save_op(run)
+        self._sync_last_run(run)
+
+    def _finish_run(self, run, outcome, summary):
+        self._finish(run, outcome, summary[:MAX_RUN_SUMMARY])
+        self._sync_last_run(run)
+
+    def _sync_last_run(self, run):
+        """The state's last run brought up to date with its op: its outcome,
+        summary, steps and when it finished."""
+        with self._op_lock:
+            snap = json.loads(json.dumps(run))
+        with self._schedule_lock:
+            try:
+                state = self.schedule_state()
+            except ValueError as e:
+                print(f"[admin] schedule: the last run isn't recorded: {e}", flush=True)
+                return
+            last = state["last_run"] if state else None
+            if last is None or last["id"] != snap["id"]:
+                return
+            last.update(outcome=snap["outcome"], summary=snap["summary"][:MAX_RUN_SUMMARY],
+                        finished_at=snap["finished_at"], steps=snap["steps"][:MAX_RUN_STEPS])
+            self._save_schedule_state(state)
 
     # --- the Admin's own update ------------------------------------------
 
@@ -2169,23 +2742,24 @@ class Admin:
     def start_admin_update(self):
         """The lock and the offer here, so a refusal is a 409 with nothing
         done; the rest (an op with a log) in the background."""
-        self._take_lock()
-        try:
-            au = self.admin_update(self.last_check())
-            if not au["can_self_update"]:
-                raise Refused("Update OpenFit first: it brings the Admin's new code with it."
-                              if au["available"] else "The Admin is up to date.")
-            op = self._begin("admin_update")
-        except BaseException:
-            self.lock.release()
-            raise
-        self._spawn(op, self._admin_update)
-        return self.current_op()
+        return self._start(self._begin_admin_update, self._admin_update)
 
-    def _admin_update(self, op):
+    def _begin_admin_update(self):
+        """Update the Admin's refusal, then its op: (op, its step's
+        arguments). The caller holds the lock."""
+        au = self.admin_update(self.last_check())
+        if not au["can_self_update"]:
+            raise Refused("Update OpenFit first: it brings the Admin's new code with it."
+                          if au["available"] else "The Admin is up to date.")
+        return self._begin("admin_update"), ()
+
+    def _admin_update(self, op, handing_over=None):
         """Build the new Admin while this one runs, then hand the swap to the
         helper - which runs the image this Admin is running now, kept as
-        openfit-admin:prev, never the new one."""
+        openfit-admin:prev, never the new one. `handing_over`, a scheduled
+        run's, is called once the helper has started and before the log is
+        saved for it: the run finished first, so the log the helper may put
+        back already has it done."""
         try:
             self._note_admin_range(op)
             self.say(op, "Finding the Admin's own container…")
@@ -2223,6 +2797,11 @@ class Admin:
         if rc != 0:
             self.say(op, "The helper didn't start.", _tail(out, err))
             return self._finish(op, "failed", "The helper didn't start, so the Admin wasn't swapped. It's still on its old version.")
+        if handing_over is not None:
+            try:
+                handing_over()
+            except Exception as e:  # never in the way of the hand-over: the helper is at work already
+                print(f"[admin] admin_update: the scheduled run wasn't finished before the hand-over: {e}", flush=True)
         self.say(op, "Handing over to the helper. The Admin restarts in a moment, and this page reconnects by itself.")
         # The log so far, for whichever Admin finishes the op: saved, and in
         # the snapshot too, which a rollback puts back. The helper waits a
@@ -2722,22 +3301,20 @@ class Admin:
     def start_update_apps(self):
         """Update apps: the refusals here, so one is a 409 with nothing done;
         the rest (an op with a log) in the background."""
-        self._take_lock()
+        return self._start(self._begin_update_apps, self._update_apps)
+
+    def _begin_update_apps(self):
+        """Update apps' refusals, then its op: (op, its step's arguments).
+        The caller holds the lock."""
+        check = self.last_check()
+        if not update_apps_offered(check):
+            raise Refused("OpenFit itself changed too, so use Update OpenFit: it updates the apps as well."
+                          if update_offered(check) else "There's no app update to apply. Check for updates first.")
         try:
-            check = self.last_check()
-            if not update_apps_offered(check):
-                raise Refused("OpenFit itself changed too, so use Update OpenFit: it updates the apps as well."
-                              if update_offered(check) else "There's no app update to apply. Check for updates first.")
             self._refuse_unless_ready()
-            op = self._begin("update_apps")
         except OpError as e:
-            self.lock.release()
             raise Refused(e.message, 500)
-        except BaseException:
-            self.lock.release()
-            raise
-        self._spawn(op, self._update_apps)
-        return self.current_op()
+        return self._begin("update_apps"), ()
 
     def _update_apps(self, op):
         """Pull, check that only apps (and docs and the rest) arrived, publish.
@@ -3084,23 +3661,21 @@ class Admin:
         """A connected repo's update, as the last check found it on GitHub:
         the refusals here (404, 409), the rest in the background."""
         self._known_repo(slug)
-        self._take_lock()
-        try:
-            entry = self._known_repo(slug)
-            name = f"{entry['owner']}/{entry['repo']}"
-            view = self._repo_view(entry, self.repo_checks().get(slug))
-            if entry["state"] != "connected":
-                raise Refused(f"{name} isn't connected yet: add its deploy key on GitHub, then Connect.", 409)
-            if view["behind"] and view["problem"]:
-                raise Refused(view["problem"]["text"], 409)
-            if not view["can_update"]:
-                raise Refused(f"There's no update for {name} to apply. Check for updates first.", 409)
-            op = self._begin("repo_update", repo={"slug": slug, "owner": entry["owner"], "repo": entry["repo"]})
-        except BaseException:
-            self.lock.release()
-            raise
-        self._spawn(op, self._repo_update, slug)
-        return self.current_op()
+        return self._start(lambda: self._begin_repo_update(slug), self._repo_update)
+
+    def _begin_repo_update(self, slug):
+        """A repo update's refusals, then its op: (op, its step's
+        arguments). The caller holds the lock."""
+        entry = self._known_repo(slug)
+        name = f"{entry['owner']}/{entry['repo']}"
+        view = self._repo_view(entry, self.repo_checks().get(slug))
+        if entry["state"] != "connected":
+            raise Refused(f"{name} isn't connected yet: add its deploy key on GitHub, then Connect.", 409)
+        if view["behind"] and view["problem"]:
+            raise Refused(view["problem"]["text"], 409)
+        if not view["can_update"]:
+            raise Refused(f"There's no update for {name} to apply. Check for updates first.", 409)
+        return self._begin("repo_update", repo={"slug": slug, "owner": entry["owner"], "repo": entry["repo"]}), (slug,)
 
     def _repo_update(self, op, slug):
         """Merge what the last check fetched (a fast-forward, never anything
@@ -3281,8 +3856,19 @@ class Admin:
             op["log"].append({"t": self._iso(), "text": line})
 
     def _begin(self, kind, **extra):
+        # An id of its own, even for two ops of a kind begun in one second (a
+        # scheduled run's two repo updates): -2, -3 after the first.
+        base = f"{self._stamp()}-{kind}"
+        taken = {o.get("id") for o in self.history()}
+        with self._op_lock:
+            if self.op is not None:
+                taken.add(self.op["id"])
+        op_id, n = base, 1
+        while op_id in taken:
+            n += 1
+            op_id = f"{base}-{n}"
         op = {
-            "id": f"{self._stamp()}-{kind}",
+            "id": op_id,
             "kind": kind,
             "started_at": self._iso(),
             "finished_at": None,
@@ -3309,13 +3895,34 @@ class Admin:
         self.say(op, summary)
         self._save_op(op)
 
+    def _start(self, begin, step):
+        """An operation's button: the lock, then begin() - its refusals,
+        then its op and its step's arguments - so a refusal comes back with
+        nothing done and the lock let go; then the step in the background."""
+        self._take_lock()
+        try:
+            op, args = begin()
+        except BaseException:
+            self.lock.release()
+            raise
+        self._spawn(op, step, *args)
+        return self.current_op()
+
+    def _run(self, op, step, *args, **kwargs):
+        """step(op, ...) in this thread: True if it handed over to the swap
+        helper (the op and the lock then _settle's). A bug, not a failed
+        step, is said and the op failed - never left "running"."""
+        try:
+            return step(op, *args, **kwargs) is HANDED_OVER
+        except Exception as e:
+            self._finish(op, "failed", f"Stopped on an unexpected error: {e}")
+            return False
+
     def _spawn(self, op, step, *args):
         def body():
             handed_over = False
             try:
-                handed_over = step(op, *args) is HANDED_OVER
-            except Exception as e:  # a bug, not a failed step: say so, never leave it "running"
-                self._finish(op, "failed", f"Stopped on an unexpected error: {e}")
+                handed_over = self._run(op, step, *args)
             finally:
                 if not handed_over:  # else the op and the lock are _settle's
                     with self._op_lock:
@@ -3481,7 +4088,11 @@ class Admin:
 
     def start_update(self):
         """Step 1 here, so a refusal is a 409; the rest in the background."""
-        self._take_lock()
+        return self._start(self._begin_update, self._update)
+
+    def _begin_update(self):
+        """Update OpenFit's refusals, then its op: (op, its step's
+        arguments - the users it updates). The caller holds the lock."""
         try:
             check = self.last_check()
             if not update_offered(check):
@@ -3493,15 +4104,9 @@ class Admin:
             except ValueError as e:
                 raise Refused(f"{e}. Nothing was changed.", 500)
             self._shelf_ready()
-            op = self._begin("update")
         except OpError as e:
-            self.lock.release()
             raise Refused(e.message, 500)
-        except BaseException:
-            self.lock.release()
-            raise
-        self._spawn(op, self._update, users)
-        return self.current_op()
+        return self._begin("update"), (users,)
 
     def _refuse_unless_ready(self):
         """Refused unless the server's copy of OpenFit is clean and on the
@@ -4604,7 +5209,10 @@ class Admin:
             "system": self.system(users, views, backups),
             "versions": self.versions(head, check, au, ops),
             "repos": self.repos(library, check),
-            # Every op the history keeps, newest first, each with its log.
+            # The schedule (SU1): when it runs, how, and how its last run went.
+            "schedule": self.schedule_view(),
+            # Every op the history keeps, newest first, each with its log (and
+            # a scheduled run its steps).
             "activity": [{k: o.get(k) for k in ("id", "kind", "outcome", "summary", "started_at", "finished_at",
-                                                 "log", "user", "repo")} for o in reversed(ops)],
+                                                 "log", "user", "repo", "steps")} for o in reversed(ops)],
         }

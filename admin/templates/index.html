@@ -238,7 +238,7 @@ button{font-family:inherit;cursor:pointer;}
 /* ---------- the Admin's own ----------
    Desktop only: under the portal's min-width the page scrolls sideways.
    The header is OpenFit's, with ADMIN PORTAL after the brand; under it
-   two columns - the four persistent panels on the left (about 40%), the
+   two columns - the five persistent panels on the left (about 40%), the
    Users and Repo tabs on the right (about 60%). */
 .app{min-width:1180px;min-height:100vh;}
 .portal-name{
@@ -353,6 +353,17 @@ pre.cmd{margin:6px 0 0;padding:10px 12px;background:var(--inset);border:1px soli
 .restore-panel .install-warn[hidden]{display:none;}
 .foot-line{display:flex;align-items:center;gap:10px;margin-top:12px;font-size:12.5px;color:var(--muted);}
 .foot-line .lead{margin-right:auto;}
+/* the schedule (SU1): its form, its next run; a failed or missed run's red
+   notice at the top of the left column, the danger panel's colours */
+.sched-row{display:grid;grid-template-columns:minmax(0,3fr) minmax(0,2fr) minmax(0,4fr);gap:12px;align-items:end;}
+.sched-row .input{height:41px;}  /* a select's height, so the three line up */
+.sched-zone{margin-top:12px;}
+#schedNote{margin-top:12px;}
+.foot-line .linkbtn{font-weight:400;color:var(--ink-2);}
+.card.notice{border-color:color-mix(in srgb,var(--crit) 45%,var(--border));
+  background:color-mix(in srgb,var(--crit) 7%,var(--surface));padding:16px 18px;}
+.card.notice h3{color:var(--crit);font-size:15px;}
+.card.notice p{font-size:13px;color:var(--ink-2);margin:4px 0 12px;white-space:pre-wrap;}
 /* a download, without the password: its warning, then the link itself, as a button */
 .install-warn p{margin:0;}
 a.btn{display:inline-block;text-decoration:none;}
@@ -426,8 +437,15 @@ ol.steps li{padding:2px 0;}
   </section>
 
   <div class="portal">
-    <!-- Left: the four persistent panels, always shown -->
+    <!-- Left: the five persistent panels, always shown - and over them a
+         failed or missed scheduled run's notice, until it's dismissed -->
     <aside class="col" id="leftCol" aria-label="The server">
+      <section class="card notice" id="runNotice" role="alert" hidden>
+        <h3 id="noticeTitle"></h3>
+        <p id="noticeText"></p>
+        <div class="acts"><button class="btn sm" id="noticeOpen" type="button">Open in the Activity log</button><button class="btn sm danger" id="noticeDismiss" type="button">Dismiss</button></div>
+        <div class="form-msg" id="noticeMsg"></div>
+      </section>
       <section class="card" id="systemCard">
         <div class="card-title"><h3>System information</h3><button class="fold-btn" id="systemFold" type="button" aria-expanded="true" aria-controls="systemBody" aria-label="Fold System information"></button></div>
         <div class="card-body" id="systemBody"><dl class="info" id="systemInfo"></dl></div>
@@ -437,8 +455,25 @@ ol.steps li{padding:2px 0;}
         <div class="card-body" id="versionsBody">
           <div class="box" style="--rows:2" id="versionRows"></div>
           <div class="foot-line"><span class="lead" id="checkedAt"></span><button class="btn sm" id="checkBtn" type="button">Check now</button></div>
+          <div class="foot-line" id="lastRunLine"></div>
           <div class="form-msg bad" id="checkErr"></div>
           <div class="form-msg" id="versionsMsg"></div>
+        </div>
+      </section>
+      <section class="card" id="scheduleCard">
+        <div class="card-title"><h3>Schedule</h3><button class="fold-btn" id="scheduleFold" type="button" aria-expanded="true" aria-controls="scheduleBody" aria-label="Fold Schedule"></button></div>
+        <div class="card-body" id="scheduleBody">
+          <form id="scheduleForm">
+            <div class="sched-row">
+              <div class="field"><label for="schedDay">Day</label><select class="input" id="schedDay"></select></div>
+              <div class="field"><label for="schedTime">Time</label><input class="input" id="schedTime" type="text" inputmode="numeric" maxlength="5" placeholder="HH:MM" pattern="([01][0-9]|2[0-3]):[0-5][0-9]" title="HH:MM, on the 24-hour clock" autocomplete="off" required></div>
+              <div class="field"><label for="schedMode">Mode</label><select class="input" id="schedMode"></select></div>
+            </div>
+            <div class="field sched-zone"><label for="schedZone">Timezone</label><select class="input" id="schedZone"></select></div>
+            <p class="install-warn" id="schedNote" hidden></p>
+            <div class="foot-line"><span class="lead" id="nextRun"></span><button class="btn sm primary" type="submit" id="schedSave">Save</button></div>
+            <div class="form-msg" id="schedMsg"></div>
+          </form>
         </div>
       </section>
       <section class="card" id="reposCard">
@@ -551,15 +586,29 @@ const $ = (id) => document.getElementById(id);
 // This browser's own choices, and nothing else: the theme and the tab.
 const STORE = { theme: "openfit-admin-theme", tab: "openfit-admin-tab" };
 const TABS = ["users", "repo"];
-const PANELS = ["system", "versions", "repos", "activity", "users", "add", "data", "userVersion", "repoTab"];
+const PANELS = ["system", "versions", "schedule", "repos", "activity", "users", "add", "data", "userVersion", "repoTab"];
 const OUTCOMES = {
   running: ["Running", "wait"], ok: ["Done", "ok"], failed: ["Failed", "bad"],
-  rolled_back: ["Rolled back", "wait"], interrupted: ["Interrupted", "bad"],
+  rolled_back: ["Rolled back", "wait"], interrupted: ["Interrupted", "bad"], missed_update: ["Update missed", "bad"],
 };
 const KINDS = {
   update: "Update OpenFit", undo: "Undo last update", add_user: "Add user", restore_user: "Restore user",
   admin_update: "Update the Admin",
   update_apps: "Update apps", admin_revert: "Revert the Admin", repo_connect: "Connect", repo_update: "Update",
+  scheduled_run: "Scheduled run",
+};
+// The schedule (SU1): its days and modes; the timezones a schedule can be
+// saved with, as the server lists them; what Check and update does; and the
+// notice a failed or missed run puts up, by its outcome.
+const DAYS = [["mon", "Monday"], ["tue", "Tuesday"], ["wed", "Wednesday"], ["thu", "Thursday"], ["fri", "Friday"],
+  ["sat", "Saturday"], ["sun", "Sunday"]];
+const MODES = [["check", "Check only"], ["update", "Check and update"]];
+const TIMEZONES = {{ timezones|tojson }};
+const MODE_NOTE = "Installs waiting updates in this order: apps, OpenFit, then the Admin. Each rolls back on failure. "
+  + "Runs whether or not anyone is using OpenFit.";
+const NOTICES = {
+  failed: "The scheduled run failed", rolled_back: "The scheduled update was rolled back",
+  interrupted: "The scheduled run was interrupted", missed_update: "The scheduled update was missed",
 };
 // The Admin's own operations: while one runs, a request that fails is the Admin restarting.
 const SELF = ["admin_update", "admin_revert"];
@@ -620,6 +669,7 @@ let restoreFile = null;  // the backup chosen in Add user: it restores that file
 let removing = null;  // the user whose Remove asks to be sure
 let watching = null;  // the running op's id, opened in the list once it's done
 let removingRepo = null;  // the repo whose Remove asks to be sure
+let scheduleTouched = false;  // the Schedule panel edited, not saved: a repaint leaves it as it is
 const open = { users: new Set(), activity: new Set(), sources: new Set(), apps: new Set(), keys: new Set() };
 
 // --- small helpers ------------------------------------------------------
@@ -771,11 +821,12 @@ function emptyBox(box, text) {
 
 // Every request carries the header the server checks, and a body as JSON -
 // or, for a restore's upload, a FormData, sent as multipart (the browser
-// sets that Content-Type itself, with its boundary).
-async function api(path, data) {
+// sets that Content-Type itself, with its boundary). A body is POSTed,
+// unless `method` says otherwise (the schedule's PUT).
+async function api(path, data, method) {
   const opts = { credentials: "same-origin", headers: { "X-OpenFit-Admin": "1" } };
   if (data !== undefined) {
-    opts.method = "POST";
+    opts.method = method || "POST";
     if (typeof FormData !== "undefined" && data instanceof FormData) {
       opts.body = data;
     } else {
@@ -1194,6 +1245,73 @@ function paintVersions(s, isBusy) {
   $("checkedAt").textContent = (check && check.checked_at ? "Last checked " + when(check.checked_at) : "Not checked yet") + behind;
   $("checkErr").textContent = check && check.error ? `The check at ${when(check.error.at)} failed: ${check.error.text}` : "";
   $("checkBtn").disabled = isBusy;
+  paintLastRun(s);
+}
+
+// Under the check: the last scheduled run, when and how it went, its words
+// a link to its entry in the Activity log.
+function paintLastRun(s) {
+  const last = s.schedule && s.schedule.last_run, line = $("lastRunLine");
+  if (!last) return line.replaceChildren(el("span", "Last scheduled run: none yet."));
+  const word = (OUTCOMES[last.outcome] || [last.outcome])[0].toLowerCase();
+  const link = button(`${when(last.started_at)}, ${word}`, "linkbtn", () => showRun(last.id));
+  link.dataset.run = last.id;
+  line.replaceChildren(el("span", "Last scheduled run:"), link);
+}
+
+// An op's entry in the Activity log, opened and in view (the panel unfolded).
+function showRun(id) {
+  open.activity.add(id);
+  if ($("activityCard").classList.contains("folded")) fold("activity");
+  if (S) paintActivity(S);
+  const item = Array.from($("activityRows").children).find((r) => r.dataset.id === id);
+  if (item && item.scrollIntoView) item.scrollIntoView({ block: "nearest" });
+}
+
+// --- the schedule (SU1) ---------------------------------------------------------
+
+// Once, at boot: the days, the modes and every timezone, as text.
+function fillSchedule() {
+  const fill = (select, pairs) => {
+    for (const [value, text] of pairs) {
+      const o = el("option", text);
+      o.value = value;
+      select.append(o);
+    }
+  };
+  fill($("schedDay"), DAYS);
+  fill($("schedMode"), MODES);
+  fill($("schedZone"), TIMEZONES.map((z) => [z, z]));
+  $("schedNote").textContent = MODE_NOTE;
+}
+
+// The saved schedule in its controls - unless they're being edited - and
+// when it runs next, as its own timezone's clocks show it.
+function paintSchedule(s) {
+  const sc = s.schedule;
+  if (!scheduleTouched) {
+    $("schedDay").value = sc.day;
+    $("schedTime").value = sc.time;
+    $("schedZone").value = sc.timezone;
+    $("schedMode").value = sc.mode;
+  }
+  paintModeNote();
+  $("nextRun").textContent = `Next run: ${sc.next_run_local} (${sc.timezone}).`;
+  paintNotice(sc.last_run);
+}
+
+function paintModeNote() {
+  $("schedNote").hidden = $("schedMode").value !== "update";
+}
+
+// The red notice at the top of the left column: a failed, rolled back,
+// interrupted or missed run, until it's dismissed.
+function paintNotice(last) {
+  const shown = !!(last && NOTICES[last.outcome] && !last.dismissed);
+  $("runNotice").hidden = !shown;
+  if (!shown) return;
+  $("noticeTitle").textContent = NOTICES[last.outcome];
+  $("noticeText").textContent = `${when(last.started_at)}: ${last.summary}`;
 }
 
 function paintRepos(s, isBusy) {
@@ -1293,6 +1411,18 @@ function paintActivity(s) {
         acts.style.marginTop = "10px";
         acts.append(button("Setup link", "btn sm primary", (b) => makeLink(restored.name, b),
           busy() || restored.state !== "running"));
+        panel.append(acts);
+      }
+      const steps = (op.steps || []).filter((st) => st.op_id);
+      if (steps.length) {
+        // A scheduled run's steps, each its own entry.
+        const acts = el("div", null, "acts");
+        acts.style.marginTop = "10px";
+        acts.append(el("span", "Steps:", "r-sub"));
+        for (const st of steps) {
+          const stepOp = s.activity.find((o) => o.id === st.op_id);
+          acts.append(button(stepOp ? opWhat(stepOp) : (KINDS[st.kind] || st.kind), "btn sm", () => showRun(st.op_id)));
+        }
         panel.append(acts);
       }
       panel.append(logLines(el("div", null, "log"), op.log));
@@ -1782,6 +1912,7 @@ function paint(s) {
   const isBusy = busy();
   paintSystem(s);
   paintVersions(s, isBusy);
+  paintSchedule(s);
   paintRepos(s, isBusy);
   paintActivity(s);
   paintUsers(s, isBusy);
@@ -1818,6 +1949,39 @@ $("checkBtn").addEventListener("click", async () => {
   btn.disabled = false;
   btn.textContent = "Check now";
   say($("versionsMsg"), r.status === 200 ? "" : (r.data.error || "The check didn't run."), r.status === 200 ? "" : "bad");
+  await loadStatus();
+});
+
+// The schedule: saved whole, each field checked by the server.
+$("scheduleForm").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  const msg = $("schedMsg");
+  say(msg, "");
+  const body = { day: $("schedDay").value, time: $("schedTime").value, timezone: $("schedZone").value,
+                 mode: $("schedMode").value };
+  $("schedSave").disabled = true;
+  const r = await api("/api/schedule", body, "PUT");
+  $("schedSave").disabled = false;
+  if (r.status !== 200) return say(msg, r.data.error || "The schedule wasn't saved.", "bad");
+  scheduleTouched = false;
+  say(msg, "Saved.", "ok");
+  await loadStatus();
+});
+for (const id of ["schedDay", "schedTime", "schedZone", "schedMode"]) {
+  $(id).addEventListener("input", () => { scheduleTouched = true; });
+  $(id).addEventListener("change", () => { scheduleTouched = true; paintModeNote(); });
+}
+$("noticeOpen").addEventListener("click", () => {
+  const last = S && S.schedule.last_run;
+  if (last) showRun(last.id);
+});
+$("noticeDismiss").addEventListener("click", async () => {
+  const btn = $("noticeDismiss");
+  btn.disabled = true;
+  const r = await api("/api/schedule/dismiss", {});
+  btn.disabled = false;
+  if (r.status !== 200) return say($("noticeMsg"), r.data.error || "That didn't work.", "bad");
+  say($("noticeMsg"), "");
   await loadStatus();
 });
 
@@ -1904,6 +2068,7 @@ $("addRepoBtn").addEventListener("click", openAddRepo);
 
 setTheme(curTheme());
 paintDate();
+fillSchedule();
 showTab(stored(STORE.tab) || "users", false);
 show(document.body.dataset.state || "login");
 </script>

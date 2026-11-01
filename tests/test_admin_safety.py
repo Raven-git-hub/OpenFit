@@ -471,6 +471,42 @@ def scenario_admin_build_fails(env):
     return {"admin": True}
 
 
+def at_the_schedule(env, **fields):
+    """The schedule saved, its baseline ticked, then the clock at its next
+    due time: the run's outcome."""
+    env.admin.save_schedule({"day": "sun", "time": "03:00", "timezone": "Asia/Hong_Kong", "mode": "check", **fields})
+    assert env.admin.tick() is None
+    env.clock.now = admin_ops.next_run(env.admin.schedule(), env.clock())
+    return env.admin.tick()
+
+
+def scenario_scheduled_check(env):
+    three_users(env)
+    env.repos.push({"app/main.py": "print('new')\n", "admin/admin_server.py": "print('admin 2')\n"}, "Both")
+    assert at_the_schedule(env) == "ok"
+    env.admin.status()
+
+
+def scenario_scheduled_apps(env):
+    three_users(env)
+    env.repos.push({"library/caffeine/app.yaml": "id: caffeine\n"}, "New app")
+    assert at_the_schedule(env, mode="update") == "ok"
+    env.admin.status()
+
+
+def scenario_admin_scheduled_update(env):
+    """A scheduled run that updates everyone, then hands over to the Admin's
+    own update, and the helper's swap."""
+    three_users(env)
+    env.repos.push({"app/main.py": "print('new')\n", "admin/admin_server.py": "print('admin 2')\n"}, "Both")
+    assert at_the_schedule(env, mode="update") == "ok"
+    run = env.fake.commands()[-1]
+    assert admin_swap.swap(env.fake, env.repos.repo, str(env.data), run[-2], run[-1], env.clock, env.clock.sleep) == "ok"
+    env.fake.helper = False
+    env.admin.status()
+    return {"admin": True}
+
+
 def scenario_repo_add(env):
     env.admin.add_repo(AVI_URL)
     env.admin.status()
@@ -556,6 +592,9 @@ SCENARIOS = [
     scenario_restore_from_kept,
     scenario_restore_fails,
     scenario_restore_refused,
+    scenario_scheduled_check,
+    scenario_scheduled_apps,
+    scenario_admin_scheduled_update,
     scenario_repo_add,
     scenario_repo_connect,
     scenario_repo_key_refused,
@@ -898,7 +937,8 @@ def test_publishing_runs_no_docker_command(admin_env, scenario):
         if call.args[0] == "docker":
             assert not PUBLISHING & set(frames), (call.args, frames)
     # Where a scenario publishes, it really did: the check isn't vacuous.
-    if scenario in (scenario_update_apps, scenario_update_publishes, scenario_publish_again):
+    if scenario in (scenario_update_apps, scenario_update_publishes, scenario_publish_again, scenario_scheduled_apps,
+                    scenario_admin_scheduled_update):
         assert admin_ops.shelf_source(admin_ops.read_shelf(str(admin_env.library)), "openfit")
     if scenario in REPO_SCENARIOS and scenario is not scenario_repo_remove:
         assert admin_ops.shelf_source(admin_ops.read_shelf(str(admin_env.library)), "openfitavi")
