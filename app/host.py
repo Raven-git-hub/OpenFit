@@ -185,8 +185,8 @@ the dicts directly):
         The ring fits its box, and the figure scales with it. hint and
         control only when given: hint {"text", "items": [{"tone",
         "planned", "label"}, ...]} a key opened on hover (or a tap, or
-        focus) beside the ring, never over its middle; control a switch
-        spec, drawn in the middle under the label
+        focus) beside the ring, never over its middle; control a switch or
+        toggle spec, drawn in the middle under the label
     {"type": "bars", "title", "max", "now",
      "bars": [{"segments": [{"value", "tone", "planned"}, ...], "label"}, ...],
      "hint"}
@@ -201,6 +201,11 @@ the dicts directly):
         name only - setting the tile's view value `key` to "on" or "off"
         ("off" at first); tone, null for the accent, the colour it shows
         when on
+    {"type": "toggle", "key", "label", "stops": [{"value", "label", "tone"}, ...], "start"}
+        a slider of two or three stops with no text of its own, setting the
+        tile's view value `key` to the stop's value (start at first); a
+        stop's label its accessible name only, its tone the knob's colour
+        there (null: muted). Drawn alone, or as a donut's control
     {"type": "pager", "key", "values", "start"}
         Previous, Current and Next across its width, stepping the tile's
         view value `key` through values (in order); it starts on start,
@@ -973,7 +978,7 @@ def strips(lanes, now=None, sync=None, hours=None, ahead=None):
     the lane's spans, showing between the flight out and the flight
     home, its label (the port, text or None) in it past the flight out;
     on a sleep lane a layover, a soft amber tint the lane's full height
-    behind its stages, its label at its foot, from its start. `wocl`, on a sky lane
+    behind its stages, its label at its top left, from its start. `wocl`, on a sky lane
     only, optional: a list of {start, end} - the window of circadian low -
     under which the lane's curve is marked red (drawn only where there's
     a curve). `now` and `sync` are a timeline's: where the now line is
@@ -1160,7 +1165,8 @@ def donut(segments, figure=None, label=None, caption=None, note=None, key=None, 
     middle: {text, items}, `text` a sentence (or None) over `items`, a
     list of up to HINT_ITEMS lines {tone, planned, label}, each a swatch
     in its tone (hatched, planned) and its label. `control` optional, a
-    switch spec (switch()), drawn in the middle under the label. Raises
+    switch or toggle spec (switch(), toggle()), drawn in the middle under
+    the label. Raises
     TypeError or ValueError for anything it can't draw.
 
     In the spec every key is there, None where not given - but `hint`
@@ -1169,8 +1175,8 @@ def donut(segments, figure=None, label=None, caption=None, note=None, key=None, 
     planned False unless given.
     """
     what = "a donut"
-    if control is not None and (not isinstance(control, dict) or control.get("type") != "switch"):
-        raise ValueError(f"{what}'s control must be a switch spec: {control!r}")
+    if control is not None and (not isinstance(control, dict) or control.get("type") not in ("switch", "toggle")):
+        raise ValueError(f"{what}'s control must be a switch or toggle spec: {control!r}")
     if key is not None:
         if (not isinstance(key, (list, tuple)) or len(key) != 2
                 or not all(isinstance(k, str) and k for k in key)):
@@ -1270,6 +1276,55 @@ def switch(key, label, tone=None):
     if tone is not None and tone not in CHART_TONES:
         raise ValueError(f"{what}'s tone is one of {', '.join(CHART_TONES)}, not {tone!r}")
     return {"type": "switch", "key": _view_key(key, what), "label": label, "tone": tone}
+
+
+TOGGLE_STOPS = (2, 3)      # a toggle's stops: two or three
+
+
+def toggle(key, label, stops, start=None):
+    """A slider of two or three stops, with no text of its own, setting
+    the tile's view value `key` to the value of the stop it's on - `start`
+    until it's moved (None for the first stop). `label` is its accessible
+    name (text, not drawn); `stops` a list of 2 or 3 (value, label, tone)
+    triples, or {value, label, tone} dicts, left to right - `value` a view
+    value, none repeated; `label` the stop's accessible name; `tone` one
+    of CHART_TONES, the knob's colour on that stop, or None for muted.
+    Moved by a press on a stop, or the arrow keys. Drawn alone, or as a
+    donut's control. Raises TypeError or ValueError for anything it can't
+    draw.
+
+    In the spec {type, key, label, stops: [{value, label, tone}], start},
+    start always a value."""
+    what = "a toggle"
+    _view_key(key, what)
+    if not isinstance(label, str) or not label:
+        raise ValueError(f"{what}'s label must be text, its accessible name: {label!r}")
+    if not isinstance(stops, (list, tuple)):
+        raise TypeError(f"{what}'s stops must be a list: {stops!r}")
+    if not TOGGLE_STOPS[0] <= len(stops) <= TOGGLE_STOPS[1]:
+        raise ValueError(f"{what} has {TOGGLE_STOPS[0]} or {TOGGLE_STOPS[1]} stops, not {len(stops)}")
+    out = []
+    for raw in stops:
+        if isinstance(raw, dict):
+            _fields(raw, ("value", "label", "tone"), f"{what}'s stop")
+            value, name, tone = raw.get("value"), raw.get("label"), raw.get("tone")
+        elif isinstance(raw, (list, tuple)) and len(raw) == 3:
+            value, name, tone = raw
+        else:
+            raise TypeError(f"{what}'s stop must be a (value, label, tone) triple: {raw!r}")
+        if not isinstance(name, str) or not name:
+            raise ValueError(f"{what}'s stop's label must be text, its accessible name: {name!r}")
+        if tone is not None and tone not in CHART_TONES:
+            raise ValueError(f"{what}'s stop's tone is one of {', '.join(CHART_TONES)}, not {tone!r}")
+        out.append({"value": _view_value(value, f"{what}'s stop's value"), "label": name, "tone": tone})
+    values = [x["value"] for x in out]
+    if len(set(values)) != len(values):
+        raise ValueError(f"{what}'s values must not repeat: {values!r}")
+    if start is None:
+        start = values[0]
+    elif start not in values:
+        raise ValueError(f"{what}'s start must be one of its values: {start!r}")
+    return {"type": "toggle", "key": key, "label": label, "stops": out, "start": start}
 
 
 def pager(key, values, start):
@@ -1411,6 +1466,7 @@ class Ctx:
     donut = staticmethod(donut)
     bars = staticmethod(bars)
     switch = staticmethod(switch)
+    toggle = staticmethod(toggle)
     pager = staticmethod(pager)
     choose = staticmethod(choose)
     image = staticmethod(image)

@@ -667,7 +667,12 @@ own calls to its device API. Full direction:
   that bar) — the dashboard builders, knowing nothing of what they show —
   and the tile's view: `switch(key, label, tone=None)` → `{"type":
   "switch", key, label, tone}` ("on"/"off", `label` its accessible name
-  only), `pager(key, values, start)` → `{"type": "pager", key, values,
+  only), `toggle(key, label, stops, start=None)` → `{"type": "toggle",
+  key, label, stops: [{value, label, tone}], start}` (2 or 3 stops,
+  `TOGGLE_STOPS`, as triples or dicts, values unique, each label its
+  accessible name, tone a `CHART_TONES` or `None`, `start` the first
+  when `None`; a donut's `control` too), `pager(key, values, start)` →
+  `{"type": "pager", key, values,
   start}` (1–60 texts, `VIEW_OPTIONS`, none repeated, ≤ 64 characters
   `VIEW_VALUE_MAX`, `start` one of them) and `choose(key, options,
   default=None)` → `{"type": "choose", key, options: [{value, spec}],
@@ -1965,7 +1970,7 @@ own calls to its device API. Full direction:
   lane's `bands` (layovers, as FRMS's sleep panel sends them) are the
   same `.st-band`s and labels, drawn the lane's full height (`top:0;
   bottom:0`), borderless, `--layover` at 14%, behind its stages, each
-  label at the foot and from the band's start (a duty lane's is past
+  label 4px from the top and from the band's start (a duty lane's is past
   the spans over its start); the host takes bands on a duty or a sleep
   lane (`_strip_list()`'s `only` a kind or a tuple of them). A lane's
   `bands` (a duty lane's, as FRMS sends them) are `.st-band`s, first in
@@ -3595,6 +3600,14 @@ same PR:
   their port at the foot - FRMS's sleep panel shading each layover's
   ground time. Deploy: rebuild the image first, then Update FRMS (on the
   old image the sleep panel errors - bands refused on a sleep lane).
+  Then the toggle (no migration, no route change): `ctx.toggle()`, a
+  labelless slider of two or three stops setting a view key - a radio
+  group of its stops' buttons, the knob in the stop's tone, moved by a
+  press or the arrow keys (`toggleSpec()`) - also a donut's `control`;
+  and a sleep lane's layover label moved to its top left. First user:
+  FRMS's rest budget, Disturbed / All / Out of phase. Deploy: rebuild
+  the image first, then Update FRMS (on the old image the budget panel
+  errors - an unknown `ctx.toggle`).
   Still to come, in order: L4;
   non-GitHub hosts, HTTPS or token access, and per-user repo visibility
   are out; installing an app with folders
