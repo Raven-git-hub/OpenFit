@@ -123,44 +123,4 @@ def test_a_failed_check_is_shown_by_the_route(admin_client, admin_env):
     assert "Couldn't reach GitHub" in status["check"]["error"]["text"]
 
 
-# --- the automatic check -------------------------------------------------------
-
-
-def test_the_automatic_check_only_fetches(admin_env):
-    r = admin_env.repos
-    admin_env.admin.check()
-    r.push({"app/main.py": "print('new')\n"}, "New OpenFit")
-    head = r.head()
-    admin_env.fake.clear()
-
-    admin_env.clock.advance(6 * 24 * 3600)
-    assert admin_env.admin.tick() is False
-    assert admin_env.fake.calls == []
-
-    admin_env.clock.advance(2 * 24 * 3600)  # 8 days on
-    assert admin_env.admin.tick() is True
-
-    commands = admin_env.fake.commands()
-    assert ["git", "fetch", "origin", "main"] in commands
-    assert all(c[0] == "git" and c[1] in READ_ONLY_GIT for c in commands), commands
-    assert not any(word in c for c in commands for word in ("merge", "build", "compose", "reset", "stop", "up"))
-    # It found the update and left it for a person to apply.
-    assert admin_env.admin.last_check()["behind"] == 1
-    assert admin_env.admin.last_check()["checked_at"] == "2026-11-04T12:00:00Z"
-    assert r.head() == head
-
-
-def test_the_automatic_check_runs_when_never_checked(admin_env):
-    assert admin_env.admin.tick() is True
-    assert admin_env.admin.last_check()["checked_at"] == "2026-10-27T12:00:00Z"
-    assert admin_env.admin.tick() is False
-
-
-def test_the_automatic_check_waits_for_a_running_operation(admin_env):
-    assert admin_env.admin.lock.acquire(blocking=False)
-    try:
-        assert admin_env.admin.tick() is True
-    finally:
-        admin_env.admin.lock.release()
-    assert admin_env.fake.calls == []
-    assert admin_env.admin.last_check() is None
+# The automatic check is the schedule's now (SU1): tests/test_admin_schedule.py.

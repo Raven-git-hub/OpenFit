@@ -539,7 +539,7 @@ def test_a_startup_publish_that_fails_is_logged_and_shown(admin_env, monkeypatch
     assert lib["current"] is False and lib["commit"] is None and "disk full" in lib["error"]["detail"]
 
 
-def test_serve_publishes_before_the_checks_and_the_server_start(monkeypatch, tmp_path):
+def test_serve_publishes_before_the_schedule_and_the_server_start(monkeypatch, tmp_path):
     order = []
     (tmp_path / "repo" / ".git").mkdir(parents=True)
 
@@ -550,8 +550,8 @@ def test_serve_publishes_before_the_checks_and_the_server_start(monkeypatch, tmp
         def publish_at_startup(self):
             order.append("publish")
 
-        def start_auto_checks(self):
-            order.append("checks")
+        def start_schedule(self):
+            order.append("schedule")
 
     class FakeAuth:
         setup_code = None
@@ -570,7 +570,7 @@ def test_serve_publishes_before_the_checks_and_the_server_start(monkeypatch, tmp
     monkeypatch.setattr(admin_server, "load_secret_key", lambda d: b"k" * 32)
     monkeypatch.setattr(admin_server, "create_app", lambda *a: FakeApp())
     admin_server.serve()
-    assert order == ["admin", "publish", "checks", "server"]
+    assert order == ["admin", "publish", "schedule", "server"]
 
 
 # --- 4. Update OpenFit, undo and rollback ---------------------------------------------

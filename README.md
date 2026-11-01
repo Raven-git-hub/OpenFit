@@ -737,9 +737,9 @@ authorization returns a fresh refresh token.
 
 The **OpenFit Admin** is a small web admin, in its own container on port 8090,
 that adds users and updates OpenFit for everyone. Its page is the **Admin
-Portal**, in OpenFit's own style: the server, versions, the app library's
-sources and the activity log down the left, and the Users and Repo tabs on
-the right. It replaces SSHing in to run
+Portal**, in OpenFit's own style: the server, versions, the schedule, the
+app library's sources and the activity log down the left, and the Users and
+Repo tabs on the right. It replaces SSHing in to run
 `git pull && docker compose up -d --build`, and adds the safety nets the command
 line never had:
 
@@ -753,11 +753,17 @@ line never had:
   on a user's row makes a one-time link that sets it (or resets a forgotten
   one), shown once for you to send: it works for 24 hours, and a new one
   replaces it. The Admin keeps no copy.
-- **Check now**, and a check by itself every week. **Update available**
+- **Check now**, and the weekly **Schedule** (below). **Update available**
   beside a version opens what's new on GitHub, grouped as user system, Admin,
   app library and other, with the merged PRs linked, and **Proceed** runs the
   update. A version's name opens its last update: when, how it went, and what
   it brought.
+- **Schedule**: once a week, at the day, time and timezone you choose, the
+  Admin checks for updates (**Check only**) or checks and installs what's
+  waiting (**Check and update**): the apps, then OpenFit, then the Admin
+  itself, each the same update as its button, with its backups and its
+  rollback. It runs whether or not anyone is using OpenFit, so pick a time
+  they're asleep.
 - **System information**: the server's name, Docker version, CPUs and memory
   (and nothing else Docker says about the host), the free disk, the backups,
   the users and when the Admin started.
@@ -816,6 +822,32 @@ by itself. (The Admin installed before this has no helper yet, so install
 this one with the command its note shows,
 `docker compose -f admin/docker-compose.yml -p openfit-admin up -d --build`
 from the repo, once.)
+
+### Setting the schedule
+
+The **Schedule** panel, under Versions, sets when the Admin runs by itself:
+a day, a time (`HH:MM`, 24-hour), a timezone (type in the list to find
+yours, such as `Asia/Hong_Kong`) and a mode, then **Save**. "Next run: Sun 2
+Nov, 03:00 (Asia/Hong_Kong)." says when, in that timezone's own clock. Until
+you save one it's Sunday 03:00 UTC, Check only. Nothing else runs by itself
+(the old check, a week after the last, is gone).
+
+- **Check only** checks GitHub (and each organisation repo) and leaves what
+  it finds for you, as Check now does.
+- **Check and update** then installs whatever's waiting, in this order:
+  the apps (Update apps, then each organisation repo's update), OpenFit
+  (Update OpenFit: everyone backed up, moved together, rolled back if
+  anyone doesn't come up), then the Admin (Update the Admin, last: the page
+  reconnects by itself). The first step that fails or rolls back stops the
+  run; what came before it stays done. Undo works on its OpenFit update as
+  on any.
+
+If the Admin was down (or busy) at that time, a run that can start within
+the hour runs as normal; later than that it only checks, and a Check and
+update run is recorded as missed: next week's catches up. Versions says
+when the last scheduled run was and how it went, and one that failed, rolled
+back, was interrupted or missed shows a red notice at the top of the page
+until you **Dismiss** it.
 
 ### Moving a user between servers
 

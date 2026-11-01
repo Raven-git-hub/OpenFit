@@ -11,7 +11,8 @@ they need (its cookie is SameSite=Strict, so another site can't send it).
 A body is at most 1 MB, an upload's 2 GB. Nothing
 runs on import: serve() reads the environment, publishes the app shelf if
 it's behind the code, prints the setup code if there's no password yet,
-starts the weekly check and the server.
+starts the schedule (SU1: the only thing that ever runs by itself) and the
+server.
 """
 
 import os
@@ -23,7 +24,7 @@ from werkzeug.exceptions import ClientDisconnected, RequestEntityTooLarge
 from werkzeug.formparser import parse_form_data
 
 from admin_auth import Auth, AuthError, load_secret_key
-from admin_ops import Admin, OpError, Refused
+from admin_ops import Admin, BadSchedule, OpError, Refused, timezones
 
 PORT = 8090
 OPEN_ENDPOINTS = {"index", "api_setup", "api_login", "static"}
@@ -119,7 +120,9 @@ def create_app(admin, auth, secret_key):
     @app.get("/")
     def index():
         state = "setup" if not auth.password_set() else ("app" if logged_in() else "login")
-        return render_template("index.html", state=state)
+        # The Schedule panel's timezones: the names a schedule can be saved
+        # with, written into the page's script as JSON.
+        return render_template("index.html", state=state, timezones=list(timezones()))
 
     @app.post("/api/setup")
     def api_setup():
@@ -179,6 +182,23 @@ def create_app(admin, auth, secret_key):
     def api_undo():
         try:
             return jsonify(ok=True, op=admin.start_undo()), 202
+        except Refused as e:
+            return _fail(e.message, e.status)
+
+    # The schedule (SU1): saved whole, each field checked (400 naming it);
+    # the reply its next run. Dismiss puts a failed or missed run's notice away.
+    @app.put("/api/schedule")
+    def api_schedule():
+        try:
+            view = admin.save_schedule(request.get_json(silent=True))
+        except BadSchedule as e:
+            return _fail(e.message, e.status, field=e.field)
+        return jsonify(ok=True, next_run=view["next_run"], next_run_local=view["next_run_local"], schedule=view)
+
+    @app.post("/api/schedule/dismiss")
+    def api_schedule_dismiss():
+        try:
+            return jsonify(ok=True, schedule=admin.dismiss_run())
         except Refused as e:
             return _fail(e.message, e.status)
 
@@ -375,7 +395,7 @@ def serve():
     auth = Auth(data_dir)
     if auth.setup_code:
         print(f"[admin] No password yet. Open http://<server IP>:{PORT} and use this setup code: {auth.setup_code}", flush=True)
-    admin.start_auto_checks()
+    admin.start_schedule()
     create_app(admin, auth, load_secret_key(data_dir)).run(host="0.0.0.0", port=PORT, threaded=True)
 
 
