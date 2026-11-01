@@ -368,15 +368,15 @@ def test_ctx_today_given_by_the_caller_stands(conn):
 RENDER = "def render(ctx, cfg):\n    return ctx.empty('x')\n"
 
 
-def test_this_openfit_is_app_level_two_and_an_app_saying_nothing_still_loads(tmp_path):
-    assert apps.APP_LEVEL == 2
+def test_this_openfit_is_app_level_two_or_more_and_an_app_saying_nothing_still_loads(tmp_path):
+    assert apps.APP_LEVEL >= 2
     plain = make_app(tmp_path, "plain", RENDER)
     needs = make_app(tmp_path, "needs", RENDER, requires=2)
 
     assert [a.id for a in apps.scan_apps(str(tmp_path))] == ["needs", "plain"]
     assert (plain.requires, needs.requires) == (1, 2)
     assert apps.level_problem(2) is None
-    assert apps.level_problem(3) == "needs OpenFit app level 3; this OpenFit is level 2"
+    assert apps.level_problem(4) == "needs OpenFit app level 4; this OpenFit is level 3"
 
 
 def test_an_app_reads_the_timezone_through_its_ctx(conn, tmp_path, pin_clock):

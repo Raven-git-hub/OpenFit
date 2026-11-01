@@ -132,7 +132,10 @@ class AppError(Exception):
 # OpenFit never half-runs on this one.
 #   1  the first contract
 #   2  ctx.timezone(), and ctx.today() the user's date, not the server's (TZ1)
-APP_LEVEL = 2
+#   3  a tile's view - ctx.switch(), ctx.toggle(), ctx.pager(), ctx.choose() -
+#      a chart's hint and a donut's control, the wocl tone, a strips lane's
+#      ahead, and bands on a sleep lane
+APP_LEVEL = 3
 
 # The most a description says, trimmed: a line or two in Browse.
 MAX_DESCRIPTION = 300

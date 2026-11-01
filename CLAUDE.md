@@ -902,11 +902,12 @@ own calls to its device API. Full direction:
   "manual", "duration_minutes": minutes})`, `end` now
   (`datetime.now(timezone.utc)`) and `start` that many minutes before —
   each log its own session. And the first to file duties: `frms`
-  (`tests/fixtures/apps/frms/`, byte for byte what the aviation repo
-  publishes as `openfitavi.frms` - it left `library/` in A6 - the Roster
-  app until it became FRMS; its
-  pure functions run by `tests/test_frms_app.py`, loaded by path as the
-  host loads it, and the round trip by `tests/test_app_actions.py`,
+  (`tests/fixtures/apps/frms/`, a frozen sample - FRMS as it left
+  `library/` in A6 for the aviation repo, which publishes it as
+  `openfitavi.frms` and has moved on; the Roster app until it became FRMS.
+  FRMS's own tests live with it in the aviation repo; here it's only a
+  real-shaped app for OpenFit's tests - the round trip by
+  `tests/test_app_actions.py`,
   against the synthetic `tests/fixtures/rosters/sample.ics` — fake
   flights and ports). The whole FRMS suite is this one app: one tile, one
   `config.json`, drawn as four sub-panels on a 6×5 `ctx.grid()` (and,
@@ -2077,7 +2078,9 @@ own calls to its device API. Full direction:
   to that: the folder outside the build context, every folder its app's
   id (`load_app(folder).id`), every app installing through `install_app()`
   from its files as text, the library `repo.yaml` alone, and the FRMS
-  fixture byte-identical to what left (`FRMS_FINGERPRINT`). The seven test
+  fixture byte-identical to what left (`FRMS_FINGERPRINT`) - a frozen
+  sample now, not a mirror: the aviation repo's FRMS has moved on, with
+  its own tests. The seven test
   apps L1 put there (`caffeine`, `import`, `mood`, `steps`, `steps-metres`,
   `weight`, `workout-log`) were never official: B1 moved them,
   byte-identical, to `tests/fixtures/apps/`. Not `apps/`, so it can't be
@@ -3608,6 +3611,20 @@ same PR:
   FRMS's rest budget, Disturbed / All / Out of phase. Deploy: rebuild
   the image first, then Update FRMS (on the old image the budget panel
   errors - an unknown `ctx.toggle`).
+  Then the FRMS split and update pruning (no migration, no route change):
+  FRMS's own tests (`test_frms_app.py`, `_budget`, `_circadian`,
+  `_sleep`) moved to the aviation repo, which tests the live FRMS against
+  an OpenFit clone; the fixture stays, frozen, as a sample app for the
+  library, Admin, Browse and app-action tests. `APP_LEVEL` 3 - a tile's
+  view, a chart's hint and a donut's control, the wocl tone, strips
+  `ahead` and a sleep lane's bands - so an app needing them (FRMS,
+  `requires: 3`) is refused by an older OpenFit instead of breaking. And
+  a good Update OpenFit ends with `prune_images()`: OpenFit's own unnamed
+  images by `IMAGE_LABEL` (`LABEL org.openfit.image` in both Dockerfiles;
+  never a named one, so `:latest` and `:prev` stay) and build cache unused
+  for `BUILD_CACHE_KEEP` (a week), never a volume, a failure only said.
+  Deploy: rebuild the image (Update OpenFit); images built before the
+  label aren't cleared by it - `docker image prune` once, by hand.
   Still to come, in order: L4;
   non-GitHub hosts, HTTPS or token access, and per-user repo visibility
   are out; installing an app with folders

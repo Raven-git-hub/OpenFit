@@ -3121,7 +3121,7 @@ def browse_shelf(tmp_path, monkeypatch):
                      "app.py": "def render(ctx, cfg):\n    return ctx.empty('<i>hi</i>')\n",
                      "notes.txt": "stride: 0.75 m\n"},
             "added": {"app.yaml": "id: added\nname: Added\nsizes: [{w: 1, h: 1}]\n"},
-            "newer": {"app.yaml": "id: newer\nname: Newer\nrequires: 3\nsizes: [{w: 1, h: 1}]\n"},
+            "newer": {"app.yaml": "id: newer\nname: Newer\nrequires: 4\nsizes: [{w: 1, h: 1}]\n"},
             "heir": {"app.yaml": "id: heir\nname: Heir\nreplaces: [old]\nsizes: [{w: 1, h: 1}]\n"},
             "deep": {"app.yaml": "id: deep\nname: Deep\nsizes: [{w: 1, h: 1}]\n", "assets/x.txt": "x"},
         },

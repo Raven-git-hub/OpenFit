@@ -1,5 +1,8 @@
 FROM python:3.12-slim
 
+# An update clears OpenFit's own unnamed images by this label (admin_ops.IMAGE_LABEL).
+LABEL org.openfit.image=admin
+
 # git to pull the OpenFit repo, and openssh-client for git to clone an
 # organisation repo over SSH with its deploy key; the docker CLI and
 # compose plugin to drive the user system's compose project through the
