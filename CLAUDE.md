@@ -633,11 +633,12 @@ own calls to its device API. Full direction:
   the dark themes', `position` one of `IMAGE_POSITIONS`; drawn
   contained, the dark one switched in as the tokens are, bare alone in
   a sub-panel — `.spec-cell:has(> .spec-image)`),
-  `strips(lanes, now=None, sync=None, hours=None)` → `{"type": "strips", now, lanes:
+  `strips(lanes, now=None, sync=None, hours=None, ahead=None)` → `{"type": "strips", now, lanes:
   [{kind, label, clock, spans: [{start, end, tone, label, place, tz}],
   troughs, bands: [{start, end, label}], wocl: [{start, end}]}]}`, plus
-  `sync` and `hours` only when given (`hours` 12 to 168, the hours the
-  frame's width shows, a day by default; kinds `sky` - tones day, night,
+  `sync`, `hours` and `ahead` only when given (`hours` 12 to 168, the hours the
+  frame's width shows, a day by default; `ahead` the hours of it after
+  the cursor, 1 to one less than `hours`, the cursor the middle by default; kinds `sky` - tones day, night,
   none, rest - `duty`, `sleep` - tones in, out, each span a `stage`,
   light, deep or rem, the only span with one - and `ticks` - tone
   disturbed; `STRIP_KINDS`, `STRIP_STAGES`, `STRIP_HOURS`) (lanes of tinted spans on one
@@ -680,7 +681,11 @@ own calls to its device API. Full direction:
   `now` normalised the same way or `None`; `sync` a focus group's name,
   text or `None` (else `TypeError`), `None`/`""` no key — a timeline's
   rules; `hours` a whole number 12–168 (`STRIP_HOURS`; a bool, a float
-  or text `ValueError`), `None` no key — a day across),
+  or text `ValueError`), `None` no key — a day across; `ahead` a whole
+  number from 1 to one less than `hours` (`STRIP_DAY_HOURS` 24 when
+  `hours` isn't given; a bool, a float, text or out of range
+  `ValueError` "a strips spec's ahead must be a whole number of hours
+  from 1 to <n>"), `None` no key — the cursor the frame's middle),
   `empty(message)`, and `error(message)` → `{"type": "error",
   "message"}` — the host's own for a render that fails, and an app's
   (`ctx.error`, bound on `Ctx` with the builders) for a part of its tile
@@ -1862,9 +1867,14 @@ own calls to its device API. Full direction:
   `.st-dot` (below). The axis runs from the
   earliest span's start to the latest end, or `now`; `ST_VIEW_MS`, a
   day — or `s.hours` hours, a whole number 12–168 (`viewMs`) — fills
-  the viewport's width (`px = width / viewMs`), the track padded
-  half a viewport each end, so `scrollLeft = (focusMs − t0)·px` puts the
-  focus under the cursor. A lane (`.st-lane st-<kind>`, three at most,
+  the viewport's width (`px = width / viewMs`). The cursor sits at
+  `at`, a fraction of the viewport from its left: ½ (the CSS's
+  `left:50%`), or, with `s.ahead` — whole hours, at least 1, fewer than
+  `viewMs` — `1 − ahead/viewMs`, set as the cursor's and the dot's
+  inline `left` (`atCursor()`; nothing set at the middle). The track is
+  padded `pad = width·at` before the axis and the rest of a viewport
+  after it (its width `width + (t1 − t0)·px`), so `scrollLeft =
+  (focusMs − t0)·px` puts the focus under the cursor wherever it is. A lane (`.st-lane st-<kind>`, three at most,
   `ST_MAX_LANES`) holds its spans (`.st-span st-t-<tone>`, `ST_TONES`,
   an unknown tone `none`; placed `left`/`width`, no text), a duty
   span's label a `.st-code` of its own (mono, `--duty-ink`) above the
@@ -1962,7 +1972,7 @@ own calls to its device API. Full direction:
   kind not in `ST_KINDS` a sky, a span without both ends in order
   dropped, a sleep span without a stage in `ST_STAGES` dropped (a stage
   on another lane's span ignored), `hours` not a whole number 12–168 a
-  day;
+  day, `ahead` not a whole number of hours inside the view the middle;
   nothing → "Nothing to draw yet"; a band or wocl span without both
   ends in order dropped, a lane's bands drawn on any kind it's handed
   (the host refuses them on a sky lane). Its CSS a commented block after
@@ -3465,7 +3475,17 @@ same PR:
   last; an update run installs the apps, OpenFit, then the Admin, each its
   existing op and rollback, under one hold of the lock, stopping at the
   first not ok; over an hour late, the check alone (`missed_update`); a
-  failed or missed run a red notice until dismissed. Still to come, in order: L4;
+  failed or missed run a red notice until dismissed. Then strips `ahead`
+  (no migration, no route change): `strips(..., ahead=N)` puts a strip's
+  cursor N hours in from the viewport's right edge instead of its middle,
+  the track padded to match, so a history view shows mostly the past;
+  the group still shares the time under each cursor, so a centred member
+  and an `ahead` one scroll together. Its first user is FRMS's sleep
+  panel (`hours=72, ahead=6` in the aviation repo: 66 hours back, two
+  gridlines ahead); the circadian panel stays centred, and the FRMS
+  fixture here is unchanged (still the A6 copy). Deploy: rebuild the
+  image first, then Update FRMS (on the old image `strips()` refuses
+  `ahead`, an error in the sleep panel only). Still to come, in order: L4;
   non-GitHub hosts, HTTPS or token access, and per-user repo visibility
   are out; installing an app with folders
   inside it is out; scheduled updates are SU1's weekly schedule (built:

@@ -148,7 +148,7 @@ the dicts directly):
                                          "troughs": [instant, ...],
                                          "bands": [{"start", "end", "label"}, ...],
                                          "wocl": [{"start", "end"}, ...]}, ...],
-     "sync"}
+     "sync", "hours", "ahead"}
         one lane to three of tinted spans, stacked on one horizontal time
         axis - a day across the frame, the rest a scroll away - the
         first lane taking the height the others leave, each after it a
@@ -162,8 +162,10 @@ the dicts directly):
         clock lane, the time under the cursor: `clock` "place" the place
         there and its local time, "date" the date and its local time
         (false for none). `now` and `sync` as a timeline's: synced, the
-        page keeps a cursor at the frame's middle and scrolls every
-        member of the group to one time
+        page keeps a cursor at the frame's middle - or, with `ahead`,
+        that many hours in from its right edge - and scrolls every member
+        of the group to one time. `hours` is how many hours the frame's
+        width shows (a day when absent)
     {"type": "row", "children": [spec, ...], "widths"}
     {"type": "column", "children": [spec, ...], "heights"}
         children side by side, left to right (a row), or stacked, top
@@ -812,6 +814,7 @@ STRIP_SPAN_FIELDS = ("start", "end", "tone", "label", "place", "tz", "stage")
 # How many hours one viewport's width shows: a day unless the spec says,
 # and never less than half a day or more than a week.
 STRIP_HOURS = (12, 168)
+STRIP_DAY_HOURS = 24
 STRIP_BAND_FIELDS = ("start", "end", "label")
 STRIP_CLOCKS = ("place", "date")
 
@@ -916,7 +919,7 @@ def _strip_lane(raw):
     }
 
 
-def strips(lanes, now=None, sync=None, hours=None):
+def strips(lanes, now=None, sync=None, hours=None, ahead=None):
     """Lanes of tinted spans on one horizontal time axis - a day across
     the viewport (or `hours` across), the rest a scroll away - the first
     lane filling the height the others leave, each after it a slim row.
@@ -964,7 +967,14 @@ def strips(lanes, now=None, sync=None, hours=None):
     and no other span takes one. `hours` is how many hours one viewport's
     width shows, a whole number from 12 to 168 - 24, a day, when not
     given; the spec carries it only when given (None adds no key), so a
-    day's strips are as before.
+    day's strips are as before. `ahead` is how many of those hours the
+    viewport shows after the cursor - a whole number from 1 to one less
+    than `hours` (23 for a day) - so a strip looking back puts its cursor
+    near its right edge: `hours=72, ahead=6` shows 66 hours of history
+    and 6 to come. Not given, the cursor is the viewport's middle, as a
+    timeline's; the spec carries it only when given (None adds no key).
+    It moves only where this strip's cursor is drawn: the group's time
+    under it is shared as ever.
     """
     if not isinstance(lanes, (list, tuple)):
         raise TypeError(f"a strips spec's lanes must be a list of one to three lanes: {lanes!r}")
@@ -976,6 +986,9 @@ def strips(lanes, now=None, sync=None, hours=None):
                               or not STRIP_HOURS[0] <= hours <= STRIP_HOURS[1]):
         raise ValueError(f"a strips spec's hours must be a whole number from {STRIP_HOURS[0]} "
                          f"to {STRIP_HOURS[1]}: {hours!r}")
+    view = STRIP_DAY_HOURS if hours is None else hours
+    if ahead is not None and (not isinstance(ahead, int) or isinstance(ahead, bool) or not 1 <= ahead < view):
+        raise ValueError(f"a strips spec's ahead must be a whole number of hours from 1 to {view - 1}: {ahead!r}")
     spec = {
         "type": "strips",
         "now": None if now is None else _session_instant(now, "a strips spec's now"),
@@ -985,6 +998,8 @@ def strips(lanes, now=None, sync=None, hours=None):
         spec["sync"] = sync
     if hours is not None:
         spec["hours"] = hours
+    if ahead is not None:
+        spec["ahead"] = ahead
     return spec
 
 
