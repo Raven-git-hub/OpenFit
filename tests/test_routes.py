@@ -6228,14 +6228,190 @@ def test_bars_stack_each_bars_segments_from_the_foot_on_one_scale(client):
     assert r["empty"] == ["plot", "ticks"]
 
 
+VIEW_PARTS = CHART_PARTS + ["openHint", "chHint", "HINT_GAP", "HINT_BESIDE", "HINT_OVER", "hintPlace", "tileViews",
+                            "tileView", "viewValue", "setView", "onView", "switchSpec", "pagerSpec", "chooseSpec"]
+
+VIEW_HARNESS = r"""
+    // A page to open keys on, a viewport, and every element a box of its own
+    // (a key 200 x 120) - the anchors' set by each test.
+    document.body = mk('body');
+    const window = {innerWidth: 1000, innerHeight: 800};
+    document.createElement = tag => {
+      const n = mk(tag);
+      n.getBoundingClientRect = () => ({left: 0, top: 0, right: 200, bottom: 120, width: 200, height: 120});
+      return n;
+    };
+    const fire = (n, type, e) => (n.listeners[type] || []).forEach(l => l.f(e || {}));
+    // What a drawn spec shows: its text, its hidden parts left out.
+    const shown = n => n.hidden ? '' : n.children.length ? n.children.map(shown).join('') : n.textContent;
+"""
+
+
+def _views(page, scenario):
+    return _node(MINI_DOM + "\n".join(_js(page, n) for n in VIEW_PARTS) + TIMELINE_HARNESS + CHART_HARNESS
+                 + VIEW_HARNESS + scenario + "\nconsole.log(JSON.stringify(r));")
+
+
+def _msg(text):
+    return {"type": "empty", "message": text}
+
+
+MONTHS3 = ["2026-09", "2026-10", "2026-11"]
+VIEWS_SPEC = {"type": "column", "heights": None, "children": [
+    {"type": "choose", "key": "month", "default": "2026-11", "options": [
+        {"value": m, "spec": {"type": "choose", "key": "view", "default": "off", "options": [
+            {"value": "off", "spec": _msg(f"all {m}")}, {"value": "on", "spec": _msg(f"disturbed {m}")}]}}
+        for m in MONTHS3]},
+    {"type": "pager", "key": "month", "values": MONTHS3, "start": "2026-11"},
+    {"type": "switch", "key": "view", "label": "Disturbed rest only", "tone": "wocl"},
+]}
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
+def test_a_switch_and_a_pager_flip_a_tiles_chooses_in_the_page(client):
+    page = _page(client)
+    r = _views(page, f"""
+        const box = renderSpec({json.dumps(VIEWS_SPEC)}, 'FRMS', 'frms');
+        const [choose, pager, sw] = box.children;
+        const [prev, cur, next] = pager.children;
+        const state = () => [shown(choose), prev.disabled, cur.disabled, next.disabled,
+                             sw.getAttribute('aria-checked'), sw.className];
+        r.kinds = [choose.className, pager.className, pager.children.map(b => [b.tag, b.className, b.textContent]),
+                   sw.tag, sw.getAttribute('role'), sw.getAttribute('aria-label'), sw.textContent];
+        r.start = state();
+        prev.onclick(); r.back = state();
+        prev.onclick(); r.first = state();
+        prev.onclick(); r.stays = state();
+        sw.onclick({{stopPropagation(){{ r.stopped = true; }}}}); r.on = state();
+        next.onclick(); r.onward = state();
+        cur.onclick(); r.current = state();
+        // Its tile drawn afresh: the view kept - another app's its own.
+        sw.isConnected = false;
+        const again = renderSpec({json.dumps(VIEWS_SPEC)}, 'FRMS', 'frms');
+        r.redrawn = shown(again.children[0]);
+        r.other = shown(renderSpec({json.dumps(VIEWS_SPEC)}, 'Other', 'other').children[0]);
+        // The redrawn switch turned off: the old one, off the page, let go of.
+        again.children[2].onclick();
+        r.after = [shown(again.children[0]), tileViews.get('frms').subs.some(x => x.node===sw)];
+        // A plain switch the accent's; a choose with nothing to show, said;
+        // a pager with no values, bare; a value its key holds that isn't one
+        // of a choose's, the default shown.
+        r.plain = renderSpec({{type: 'switch', key: 'x', label: 'X', tone: null}}, 'X', 'y').className;
+        r.none = renderSpec({{type: 'choose', key: 'x', options: []}}, 'X', 'y').textContent;
+        r.bare = renderSpec({{type: 'pager', key: 'x', values: [], start: 'a'}}, 'X', 'y').children.length;
+        setView(tileView('z'), 'k', 'gone');
+        r.unknown = shown(renderSpec({{type: 'choose', key: 'k', default: 'b',
+                                      options: [{{value: 'a', spec: {json.dumps(_msg("A"))}}},
+                                                {{value: 'b', spec: {json.dumps(_msg("B"))}}}]}}, 'X', 'z'));
+    """)
+
+    assert r["kinds"] == ["spec-choose", "spec-pager",
+                          [["button", "btn sm", "\u2039 Previous"], ["button", "btn sm", "Current"],
+                           ["button", "btn sm", "Next \u203a"]],
+                          "button", "switch", "Disturbed rest only", ""]
+    # On its start, All: Previous and Next open, Current where it is.
+    assert r["start"] == ["all 2026-11", False, True, True, "false", "spec-switch ch-wocl"]
+    assert r["back"] == ["all 2026-10", False, False, False, "false", "spec-switch ch-wocl"]
+    assert r["first"] == ["all 2026-09", True, False, False, "false", "spec-switch ch-wocl"]
+    assert r["stays"] == r["first"]
+    # The switch on: every choose of its key flips, and the press is its own.
+    assert r["on"] == ["disturbed 2026-09", True, False, False, "true", "spec-switch ch-wocl on"] and r["stopped"]
+    assert r["onward"][0] == "disturbed 2026-10"
+    assert r["current"] == ["disturbed 2026-11", False, True, True, "true", "spec-switch ch-wocl on"]
+    assert r["redrawn"] == "disturbed 2026-11" and r["other"] == "all 2026-11"
+    assert r["after"] == ["all 2026-11", False]
+    assert r["plain"] == "spec-switch plain"
+    assert r["none"] == "Nothing to show" and r["bare"] == 0
+    assert r["unknown"] == "B"
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
+def test_a_charts_hover_key_opens_beside_a_ring_never_over_its_middle(client):
+    page = _page(client)
+    hint = {"text": "Share of this month's sleep cycles disturbed by your roster.",
+            "items": [{"tone": "good", "planned": False, "label": "Undisturbed"},
+                      {"tone": "wocl", "planned": False, "label": "Disturbed WOCL"},
+                      {"tone": "neutral", "planned": True, "label": "Rostered"}]}
+    donut = {"type": "donut", "segments": [_seg(5), _seg(2, "wocl")], "figure": "29%", "label": "November",
+             "caption": None, "note": None, "key": None, "hint": hint,
+             "control": {"type": "switch", "key": "view", "label": "Disturbed rest only", "tone": "wocl"}}
+    bars = {"type": "bars", "title": None, "max": 7, "now": None,
+            "bars": [{"segments": [_seg(2, "wocl")], "label": "1"}], "hint": {"text": "Night by night.", "items": []}}
+    r = _views(page, f"""
+        const d = renderSpec({json.dumps(donut)}, 'FRMS', 'frms');
+        const ring = d.querySelector('.ring');
+        r.mid = d.querySelector('.mid').children.map(c => c.className);
+        r.anchor = [ring.tabIndex, ring.className];
+        // A ring 260px square in a 300 x 260 box, on the right of the page.
+        ring.getBoundingClientRect = () => ({{left: 600, top: 100, right: 900, bottom: 360, width: 300, height: 260}});
+        const open = () => document.body.children.map(p => [p.className, p.getAttribute('role'), p.style.left, p.style.top,
+                                                             p.children.map(c => [c.tag, c.className, c.textContent,
+                                                                                  c.children.map(x => x.className)])]);
+        fire(ring, 'pointerenter', {{pointerType: 'mouse'}}); r.hover = open();
+        fire(ring, 'pointerleave', {{pointerType: 'mouse'}}); r.left = open();
+        // A tap opens it, another closes it; a touch's enter and leave don't.
+        fire(ring, 'pointerenter', {{pointerType: 'touch'}}); fire(ring, 'pointerdown', {{pointerType: 'touch'}});
+        fire(ring, 'focus'); r.pressed = open().length;
+        fire(ring, 'click'); r.tapped = open().length;
+        fire(ring, 'pointerleave', {{pointerType: 'touch'}}); r.stays = open().length;
+        fire(ring, 'pointerdown', {{pointerType: 'touch'}}); fire(ring, 'click'); r.tappedOff = open().length;
+        // The keyboard's focus opens it, and leaving closes it.
+        fire(ring, 'blur'); fire(ring, 'focus'); r.focused = open().length; fire(ring, 'blur'); r.blurred = open().length;
+        // One open at a time: the bars' key closes the ring's.
+        const b = renderSpec({json.dumps(bars)}, 'FRMS', 'frms');
+        b.getBoundingClientRect = () => ({{left: 100, top: 400, right: 500, bottom: 500, width: 400, height: 100}});
+        fire(ring, 'pointerenter', {{pointerType: 'mouse'}});
+        fire(b, 'pointerenter', {{pointerType: 'mouse'}}); r.bars = [b.className.includes('ch-hintable'), open()];
+    """)
+
+    # The switch in the middle, under the figure and the label.
+    assert r["mid"] == ["fig", "lab", "spec-switch ch-wocl"]
+    assert r["anchor"] == [0, "ring ch-hintable"]
+    # Beside the ring - its 260px square from 620 to 880 - on the left, 8px
+    # clear, centred on it: the figure and the switch left uncovered.
+    assert r["hover"] == [["spec-hint", "tooltip", "412px", "170px", [
+        ["p", "", "Share of this month's sleep cycles disturbed by your roster.", []],
+        ["div", "row", "Undisturbed", ["sw ch-good", ""]],
+        ["div", "row", "Disturbed WOCL", ["sw ch-wocl", ""]],
+        ["div", "row", "Rostered", ["sw ch-neutral ch-planned", ""]]]]]
+    assert r["left"] == []
+    assert (r["pressed"], r["tapped"], r["stays"], r["tappedOff"]) == (0, 1, 1, 0)
+    assert (r["focused"], r["blurred"]) == (1, 0)
+    # Over the bars, centred on them.
+    assert r["bars"] == [True, [["spec-hint", "tooltip", "200px", "272px", [["p", "", "Night by night.", []]]]]]
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
+def test_a_hover_key_goes_on_the_first_side_it_fits_else_where_theres_most_room(client):
+    page = _page(client)
+    r = _views(page, """
+        const a = (left, top, right, bottom) => ({left, top, right, bottom});
+        const at = (box, order) => { const p = hintPlace(box, 200, 120, 1000, 800, order); return [p.side, p.x, p.y]; };
+        r.got = [
+          at(a(600, 100, 860, 360), HINT_BESIDE),     // room on the left
+          at(a(100, 100, 360, 360), HINT_BESIDE),     // none left: right
+          at(a(20, 100, 980, 360), HINT_BESIDE),      // neither side: below
+          at(a(20, 600, 980, 780), HINT_BESIDE),      // nor below: above
+          at(a(100, 400, 500, 500), HINT_OVER),       // bars: above
+          at(a(100, 50, 500, 150), HINT_OVER),        // no room above: below
+          at(a(0, 0, 1000, 800), HINT_BESIDE),        // nowhere: the most room, kept inside
+        ];
+    """)
+    assert r["got"] == [["left", 392, 170], ["right", 368, 170], ["below", 400, 368], ["above", 400, 472],
+                        ["above", 200, 272], ["below", 200, 158], ["below", 400, 672]]
+
+
 def test_the_charts_tones_are_the_status_tokens_in_every_theme(client):
     page = _page(client)
     css = page[: page.index("</style>")]
     block = css[css.index("/* charts - a donut's segments") : css.index(".spec-msg{display:grid;")]
     # Each tone its status token - the dark themes redefine the tokens, so
     # the charts follow - and nothing in the charts' rules a colour of its own.
-    for tone, token in (("good", "--good"), ("warn", "--warn"), ("crit", "--crit"), ("neutral", "--muted")):
+    for tone, token in (("good", "--good"), ("warn", "--warn"), ("crit", "--crit"), ("wocl", "--wocl"),
+                        ("neutral", "--muted")):
         assert f".ch-{tone}{{--ch:var({token});}}" in block
+    # The WOCL's purple a token of every theme, light and both darks.
+    assert css.count("--wocl:") == 3
     assert not re.search(r"#[0-9a-fA-F]{3,8}\b", block)
     # Solid in the tone; planned hatched in it over a tint of it, bar and ring alike.
     assert ".spec-donut .ch-seg{fill:var(--ch);}" in block

@@ -173,20 +173,40 @@ the dicts directly):
         height) by its weight in widths (heights) - null for equal shares -
         and the whole of the other way
     {"type": "donut", "segments": [{"value", "tone", "planned"}, ...],
-     "figure", "label", "caption", "note", "key"}
+     "figure", "label", "caption", "note", "key", "hint", "control"}
         a ring of segments, clockwise from twelve o'clock in order, each
-        its share of the total; tone good, warn, crit or neutral (the
-        status colours), a planned one hatched. figure big in the middle,
-        label small under it; caption and note under the ring; key
-        [solid, hatched] a legend under them. The ring fits its box, and
-        the figure scales with it
+        its share of the total; tone good, warn, crit, wocl or neutral
+        (the status colours, and the WOCL's purple), a planned one
+        hatched. figure big in the middle, label small under it; caption
+        and note under the ring; key [solid, hatched] a legend under them.
+        The ring fits its box, and the figure scales with it. hint and
+        control only when given: hint {"text", "items": [{"tone",
+        "planned", "label"}, ...]} a key opened on hover (or a tap, or
+        focus) beside the ring, never over its middle; control a switch
+        spec, drawn in the middle under the label
     {"type": "bars", "title", "max", "now",
-     "bars": [{"segments": [{"value", "tone", "planned"}, ...], "label"}, ...]}
+     "bars": [{"segments": [{"value", "tone", "planned"}, ...], "label"}, ...],
+     "hint"}
         bars side by side, each its segments stacked from the bottom in
         order, as a donut's are toned; the scale from 0 to max (null: the
         tallest bar's total). A bar's label is under it, only where
         given; title is the tag top-left; now, a whole number from 0 to
-        the bars' count, draws the now line before that bar
+        the bars' count, draws the now line before that bar; hint, only
+        when given, a donut's, opened over the bars
+    {"type": "switch", "key", "label", "tone"}
+        an on/off switch with no text of its own - label its accessible
+        name only - setting the tile's view value `key` to "on" or "off"
+        ("off" at first); tone, null for the accent, the colour it shows
+        when on
+    {"type": "pager", "key", "values", "start"}
+        Previous, Current and Next across its width, stepping the tile's
+        view value `key` through values (in order); it starts on start,
+        which Current goes back to; a button with nowhere to go greyed
+    {"type": "choose", "key", "options": [{"value", "spec"}, ...], "default"}
+        the option whose value is the tile's view value `key` - default
+        until a switch or pager sets it - the others kept, hidden. The
+        view is the page's: kept while the page is open (a redrawn tile
+        keeps it), forgotten on a reload, never sent to the app
     {"type": "image", "src", "dark", "alt", "position"}
         a picture fitting its box whole (contained), anchored at
         position - center, left, right, top, bottom or a corner, "bottom
@@ -1053,9 +1073,12 @@ def column(children, heights=None):
 # A chart's segment - a donut's, or one of a bar's - and its tones: the
 # status colours, so both themes carry them. A planned one is drawn
 # hatched: rostered, not yet happened.
-CHART_TONES = ("good", "warn", "crit", "neutral")
+CHART_TONES = ("good", "warn", "crit", "wocl", "neutral")
 SEGMENT_FIELDS = ("value", "tone", "planned")
 BAR_FIELDS = ("segments", "label")
+HINT_FIELDS = ("text", "items")
+HINT_ITEM_FIELDS = ("tone", "planned", "label")
+HINT_ITEMS = 8           # a hover key's lines, at most
 
 
 def _segment(raw, what):
@@ -1080,7 +1103,40 @@ def _segments(raw, what):
     return [_segment(x, f"{what}'s segment") for x in raw]
 
 
-def donut(segments, figure=None, label=None, caption=None, note=None, key=None):
+def _hint(raw, what):
+    """A chart's hover key, as the spec carries it: {text, items}, each item
+    {tone, planned, label} - a swatch in the tone (hatched, planned) and
+    its label - or None for none. A sentence, lines, or both."""
+    if raw is None:
+        return None
+    what = f"{what}'s hint"
+    _fields(raw, HINT_FIELDS, what)
+    text = _text_or_none(raw.get("text"), "text", f"{what}'s")
+    items = raw.get("items")
+    items = [] if items is None else items
+    if not isinstance(items, (list, tuple)):
+        raise TypeError(f"{what}'s items must be a list: {items!r}")
+    if len(items) > HINT_ITEMS:
+        raise ValueError(f"{what} has {HINT_ITEMS} lines at most, not {len(items)}")
+    out = []
+    for item in items:
+        _fields(item, HINT_ITEM_FIELDS, f"{what}'s item")
+        tone, planned = item.get("tone"), item.get("planned", False)
+        if tone not in CHART_TONES:
+            raise ValueError(f"{what}'s item's tone is one of {', '.join(CHART_TONES)}, not {tone!r}")
+        planned = False if planned is None else planned
+        if not isinstance(planned, bool):
+            raise TypeError(f"{what}'s item's planned must be true or false: {planned!r}")
+        label = item.get("label")
+        if not isinstance(label, str) or not label:
+            raise ValueError(f"{what}'s item's label must be text: {label!r}")
+        out.append({"tone": tone, "planned": planned, "label": label})
+    if text is None and not out:
+        raise ValueError(f"{what} needs a text or an item")
+    return {"text": text, "items": out}
+
+
+def donut(segments, figure=None, label=None, caption=None, note=None, key=None, hint=None, control=None):
     """A ring of `segments`, clockwise from twelve o'clock in the order
     given, each its share of their total.
 
@@ -1091,19 +1147,28 @@ def donut(segments, figure=None, label=None, caption=None, note=None, key=None):
     small under it; `caption` text under the ring, `note` text under
     that; `key` optional, [solid, hatched] - two texts, a legend of a
     solid swatch and a hatched one. Each text None for none. The ring
-    fits its box, the figure scaling with it. Raises TypeError or
-    ValueError for anything it can't draw.
+    fits its box, the figure scaling with it. `hint` optional, a key
+    opened on hover, a tap or focus, beside the ring - never over its
+    middle: {text, items}, `text` a sentence (or None) over `items`, a
+    list of up to HINT_ITEMS lines {tone, planned, label}, each a swatch
+    in its tone (hatched, planned) and its label. `control` optional, a
+    switch spec (switch()), drawn in the middle under the label. Raises
+    TypeError or ValueError for anything it can't draw.
 
-    In the spec every key is there, None where not given; each segment
-    {value, tone, planned}, planned False unless given.
+    In the spec every key is there, None where not given - but `hint`
+    and `control`, there only when given (None adds no key), so a donut
+    without them is as before; each segment {value, tone, planned},
+    planned False unless given.
     """
     what = "a donut"
+    if control is not None and (not isinstance(control, dict) or control.get("type") != "switch"):
+        raise ValueError(f"{what}'s control must be a switch spec: {control!r}")
     if key is not None:
         if (not isinstance(key, (list, tuple)) or len(key) != 2
                 or not all(isinstance(k, str) and k for k in key)):
             raise ValueError(f"{what}'s key must be two texts, [solid, hatched]: {key!r}")
         key = list(key)
-    return {
+    spec = {
         "type": "donut",
         "segments": _segments(segments, what),
         "figure": _text_or_none(figure, "figure", f"{what}'s"),
@@ -1112,9 +1177,15 @@ def donut(segments, figure=None, label=None, caption=None, note=None, key=None):
         "note": _text_or_none(note, "note", f"{what}'s"),
         "key": key,
     }
+    hint = _hint(hint, what)
+    if hint is not None:
+        spec["hint"] = hint
+    if control is not None:
+        spec["control"] = control
+    return spec
 
 
-def bars(bars, max=None, title=None, now=None):
+def bars(bars, max=None, title=None, now=None, hint=None):
     """Bars side by side, the first on the left, each its segments
     stacked from the bottom in the order given.
 
@@ -1125,11 +1196,12 @@ def bars(bars, max=None, title=None, now=None):
     the tallest bar's total; no bar may total more. `title` is text, the
     tag top-left, or None. `now`, a whole number from 0 to the number of
     bars, draws the now line before that bar - the first not over yet -
-    or None for none. Raises TypeError or ValueError for anything it
-    can't draw.
+    or None for none. `hint` optional, a donut's hover key, opened over
+    the bars. Raises TypeError or ValueError for anything it can't draw.
 
-    In the spec every key is there, None where not given; each bar
-    {segments, label}, each segment {value, tone, planned}.
+    In the spec every key is there, None where not given - but `hint`,
+    there only when given; each bar {segments, label}, each segment
+    {value, tone, planned}.
     """
     what = "a bars spec"
     if not isinstance(bars, (list, tuple)):
@@ -1148,7 +1220,109 @@ def bars(bars, max=None, title=None, now=None):
                 raise ValueError(f"{what}'s bar {i} totals {total}, over its max {max}")
     if now is not None and (isinstance(now, bool) or not isinstance(now, int) or not 0 <= now <= len(out)):
         raise ValueError(f"{what}'s now must be a whole number from 0 to {len(out)}: {now!r}")
-    return {"type": "bars", "title": _text_or_none(title, "title", f"{what}'s"), "max": max, "now": now, "bars": out}
+    spec = {"type": "bars", "title": _text_or_none(title, "title", f"{what}'s"), "max": max, "now": now, "bars": out}
+    hint = _hint(hint, what)
+    if hint is not None:
+        spec["hint"] = hint
+    return spec
+
+
+# A tile's view: values the page keeps for the tile while it's open, by
+# key, set by its switches and pagers and read by its chooses - so an
+# app sends every view at once, and the page flips between them without
+# asking it again. Never sent back to the app.
+VIEW_KEY = re.compile(r"[a-z][a-z0-9_-]{0,31}")
+VIEW_VALUE_MAX = 64        # a view value's characters, at most
+VIEW_OPTIONS = 60          # a pager's values, or a choose's options, at most
+
+
+def _view_key(key, what):
+    if not isinstance(key, str) or not VIEW_KEY.fullmatch(key):
+        raise ValueError(f"{what}'s key must be a view key - a lowercase letter, then up to 31 "
+                         f"lowercase letters, digits, _ or - : {key!r}")
+    return key
+
+
+def _view_value(value, what):
+    if not isinstance(value, str) or not value or len(value) > VIEW_VALUE_MAX:
+        raise ValueError(f"{what} must be text of 1 to {VIEW_VALUE_MAX} characters: {value!r}")
+    return value
+
+
+def switch(key, label, tone=None):
+    """An on/off switch, with no text of its own, setting the tile's view
+    value `key` to "on" or "off" - "off" until it's turned on. `label` is
+    its accessible name (text, not drawn); `tone` optional, one of
+    CHART_TONES, the colour it shows when on - None for the accent.
+    Drawn alone, or as a donut's control. Raises ValueError for anything
+    it can't draw."""
+    what = "a switch"
+    if not isinstance(label, str) or not label:
+        raise ValueError(f"{what}'s label must be text, its accessible name: {label!r}")
+    if tone is not None and tone not in CHART_TONES:
+        raise ValueError(f"{what}'s tone is one of {', '.join(CHART_TONES)}, not {tone!r}")
+    return {"type": "switch", "key": _view_key(key, what), "label": label, "tone": tone}
+
+
+def pager(key, values, start):
+    """Previous, Current and Next buttons stepping the tile's view value
+    `key` through `values` - a list of 1 to VIEW_OPTIONS texts, in order,
+    none repeated - starting on `start`, one of them, which Current goes
+    back to. A button with nowhere to go is greyed: Previous on the first,
+    Next on the last, Current on start. Raises TypeError or ValueError for
+    anything it can't draw."""
+    what = "a pager"
+    _view_key(key, what)
+    if not isinstance(values, (list, tuple)):
+        raise TypeError(f"{what}'s values must be a list: {values!r}")
+    if not 1 <= len(values) <= VIEW_OPTIONS:
+        raise ValueError(f"{what} has 1 to {VIEW_OPTIONS} values, not {len(values)}")
+    values = [_view_value(v, f"{what}'s value") for v in values]
+    if len(set(values)) != len(values):
+        raise ValueError(f"{what}'s values must not repeat: {values!r}")
+    if start not in values:
+        raise ValueError(f"{what}'s start must be one of its values: {start!r}")
+    return {"type": "pager", "key": key, "values": values, "start": start}
+
+
+def choose(key, options, default=None):
+    """The option whose value is the tile's view value `key`, the others
+    kept and hidden, so a switch or pager flips between them in the page.
+    `options` is a list of 1 to VIEW_OPTIONS (value, spec) pairs, or
+    {value, spec} dicts - a value text, none repeated, a spec a dict with
+    a type. `default`, one of the values, is shown until a switch or
+    pager sets the key (None for the first) - a pager's start and a
+    switch's "off", so they agree. Raises TypeError or ValueError for
+    anything it can't draw.
+
+    In the spec {type, key, options: [{value, spec}], default}, default
+    always a value."""
+    what = "a choose"
+    _view_key(key, what)
+    if not isinstance(options, (list, tuple)):
+        raise TypeError(f"{what}'s options must be a list: {options!r}")
+    if not 1 <= len(options) <= VIEW_OPTIONS:
+        raise ValueError(f"{what} has 1 to {VIEW_OPTIONS} options, not {len(options)}")
+    out = []
+    for raw in options:
+        if isinstance(raw, dict):
+            _fields(raw, ("value", "spec"), f"{what}'s option")
+            value, spec = raw.get("value"), raw.get("spec")
+        elif isinstance(raw, (list, tuple)) and len(raw) == 2:
+            value, spec = raw
+        else:
+            raise TypeError(f"{what}'s option must be a (value, spec) pair: {raw!r}")
+        if not isinstance(spec, dict) or not isinstance(spec.get("type"), str):
+            raise TypeError(f"{what}'s option's spec must be a spec: {spec!r}")
+        out.append({"value": _view_value(value, f"{what}'s option's value"), "spec": spec})
+    values = [x["value"] for x in out]
+    if len(set(values)) != len(values):
+        raise ValueError(f"{what}'s values must not repeat: {values!r}")
+    if default is None:
+        default = values[0]
+    elif default not in values:
+        raise ValueError(f"{what}'s default must be one of its values: {default!r}")
+    return {"type": "choose", "key": key, "options": out, "default": default}
 
 
 # An image is carried in the spec, never fetched: a data: URI of one of
@@ -1228,6 +1402,9 @@ class Ctx:
     column = staticmethod(column)
     donut = staticmethod(donut)
     bars = staticmethod(bars)
+    switch = staticmethod(switch)
+    pager = staticmethod(pager)
+    choose = staticmethod(choose)
     image = staticmethod(image)
     empty = staticmethod(empty)
     error = staticmethod(error)

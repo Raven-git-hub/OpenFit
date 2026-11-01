@@ -1851,7 +1851,7 @@ def test_a_donut_carries_every_key_and_its_segments_in_order():
     assert host.donut([]) == {"type": "donut", "segments": [], "figure": None, "label": None,
                               "caption": None, "note": None, "key": None}
     assert {t: host.donut([_seg(1, t)])["segments"][0]["tone"] for t in host.CHART_TONES} == {
-        "good": "good", "warn": "warn", "crit": "crit", "neutral": "neutral"}
+        "good": "good", "warn": "warn", "crit": "crit", "wocl": "wocl", "neutral": "neutral"}
 
 
 @pytest.mark.parametrize("args, error, says", [
@@ -1860,7 +1860,7 @@ def test_a_donut_carries_every_key_and_its_segments_in_order():
     (([_seg(True)],), ValueError, "value must be a number, 0 or more: True"),
     (([_seg(math.nan)],), ValueError, "value must be a number, 0 or more: nan"),
     (([_seg("3")],), ValueError, "value must be a number, 0 or more: '3'"),
-    (([_seg(1, "red")],), ValueError, "tone is one of good, warn, crit, neutral, not 'red'"),
+    (([_seg(1, "red")],), ValueError, "tone is one of good, warn, crit, wocl, neutral, not 'red'"),
     (([_seg(1, planned="yes")],), TypeError, "planned must be true or false: 'yes'"),
     (("x",), TypeError, "segments must be a list"),
     (([_seg(1)], 6), TypeError, "figure must be text: 6"),
@@ -1898,7 +1898,7 @@ def test_bars_carry_every_key_their_bars_and_segments_bottom_up():
     (([{"segments": [], "colour": 1}],), {}, ValueError, "a bar takes segments, label - not 'colour'"),
     (([5],), {}, TypeError, "a bar must be a mapping: 5"),
     (([{"segments": "x"}],), {}, TypeError, "segments must be a list"),
-    (([{"segments": [_seg(1, "red")]}],), {}, ValueError, "tone is one of good, warn, crit, neutral, not 'red'"),
+    (([{"segments": [_seg(1, "red")]}],), {}, ValueError, "tone is one of good, warn, crit, wocl, neutral, not 'red'"),
     (([{"segments": [], "label": 1}],), {}, TypeError, "a bar's label must be text: 1"),
     (([],), {"max": 0}, ValueError, "max must be a number above 0: 0"),
     (([],), {"max": True}, ValueError, "max must be a number above 0: True"),
@@ -1913,6 +1913,100 @@ def test_bars_carry_every_key_their_bars_and_segments_bottom_up():
 def test_bars_it_cant_draw_are_refused(args, kw, error, says):
     with pytest.raises(error, match=re.escape(says)):
         host.bars(*args, **kw)
+
+
+HINT = {"text": "Share of this month's sleep cycles disturbed by your roster.",
+        "items": [{"tone": "wocl", "label": "Disturbed WOCL"}, {"tone": "neutral", "planned": True, "label": "Rostered"}]}
+HINT_SPEC = {"text": HINT["text"], "items": [{"tone": "wocl", "planned": False, "label": "Disturbed WOCL"},
+                                             {"tone": "neutral", "planned": True, "label": "Rostered"}]}
+
+
+def test_wocl_is_a_chart_tone():
+    assert host.CHART_TONES == ("good", "warn", "crit", "wocl", "neutral")
+    assert host.donut([{"value": 2, "tone": "wocl", "planned": True}])["segments"] == [
+        {"value": 2, "tone": "wocl", "planned": True}]
+
+
+def test_a_donut_and_bars_carry_a_hint_and_a_donut_a_switch_only_when_given():
+    # Without them, no key: a chart as it always was.
+    for spec in (host.donut([]), host.donut([], hint=None, control=None), host.bars([]), host.bars([], hint=None)):
+        assert "hint" not in spec and "control" not in spec
+    sw = host.switch("view", "Disturbed rest only", tone="wocl")
+    spec = host.donut([], figure="12%", hint=HINT, control=sw)
+    assert (spec["hint"], spec["control"]) == (HINT_SPEC, sw)
+    assert host.bars([], hint=HINT)["hint"] == HINT_SPEC
+    # A sentence alone, or lines alone.
+    assert host.bars([], hint={"text": "Night by night."})["hint"] == {"text": "Night by night.", "items": []}
+    assert host.bars([], hint={"items": [{"tone": "good", "label": "Undisturbed"}]})["hint"]["text"] is None
+    assert json.loads(json.dumps(spec, allow_nan=False)) == spec
+
+
+@pytest.mark.parametrize("hint, error, says", [
+    ("hi", TypeError, "a donut's hint must be a mapping"),
+    ({"text": "x", "extra": 1}, ValueError, "a donut's hint takes text, items"),
+    ({}, ValueError, "a donut's hint needs a text or an item"),
+    ({"text": None, "items": []}, ValueError, "a donut's hint needs a text or an item"),
+    ({"items": "x"}, TypeError, "a donut's hint's items must be a list"),
+    ({"items": [{"tone": "pink", "label": "x"}]}, ValueError, "a donut's hint's item's tone is one of"),
+    ({"items": [{"tone": "good", "label": ""}]}, ValueError, "a donut's hint's item's label must be text"),
+    ({"items": [{"tone": "good", "label": "x", "planned": "yes"}]}, TypeError, "planned must be true or false"),
+    ({"items": [{"tone": "good", "label": "x"}] * 9}, ValueError, "a donut's hint has 8 lines at most, not 9"),
+])
+def test_a_hint_it_cant_draw_is_refused(hint, error, says):
+    with pytest.raises(error, match=re.escape(says)):
+        host.donut([], hint=hint)
+
+
+def test_a_donuts_control_is_a_switch_only():
+    for control in ({"type": "pager", "key": "m", "values": ["a"], "start": "a"}, "switch", {"key": "view"}):
+        with pytest.raises(ValueError, match="a donut's control must be a switch spec"):
+            host.donut([], control=control)
+
+
+def test_a_switch_a_pager_and_a_choose_set_and_read_the_tiles_view():
+    assert host.switch("view", "Disturbed rest only") == {
+        "type": "switch", "key": "view", "label": "Disturbed rest only", "tone": None}
+    assert host.switch("view", "X", tone="wocl")["tone"] == "wocl"
+    months = ["2026-09", "2026-10", "2026-11"]
+    assert host.pager("month", months, "2026-11") == {
+        "type": "pager", "key": "month", "values": months, "start": "2026-11"}
+    a, b = {"type": "empty", "message": "A"}, {"type": "empty", "message": "B"}
+    # Pairs or {value, spec}; the default its first unless given.
+    assert host.choose("view", [("off", a), {"value": "on", "spec": b}]) == {
+        "type": "choose", "key": "view", "default": "off",
+        "options": [{"value": "off", "spec": a}, {"value": "on", "spec": b}]}
+    assert host.choose("view", [("off", a), ("on", b)], default="on")["default"] == "on"
+    # Bound on the ctx with the other builders.
+    assert host.Ctx.switch is host.switch and host.Ctx.pager is host.pager and host.Ctx.choose is host.choose
+
+
+@pytest.mark.parametrize("build, error, says", [
+    (lambda: host.switch("View", "X"), ValueError, "a switch's key must be a view key"),
+    (lambda: host.switch("9a", "X"), ValueError, "a switch's key must be a view key"),
+    (lambda: host.switch("a" * 33, "X"), ValueError, "a switch's key must be a view key"),
+    (lambda: host.switch("view", ""), ValueError, "a switch's label must be text"),
+    (lambda: host.switch("view", "X", tone="pink"), ValueError, "a switch's tone is one of"),
+    (lambda: host.pager("month", "abc", "a"), TypeError, "a pager's values must be a list"),
+    (lambda: host.pager("month", [], "a"), ValueError, "a pager has 1 to 60 values, not 0"),
+    (lambda: host.pager("month", ["a"] * 61, "a"), ValueError, "a pager has 1 to 60 values, not 61"),
+    (lambda: host.pager("month", ["a", ""], "a"), ValueError, "a pager's value must be text of 1 to 64"),
+    (lambda: host.pager("month", ["a", "a"], "a"), ValueError, "a pager's values must not repeat"),
+    (lambda: host.pager("month", ["a", "b"], "c"), ValueError, "a pager's start must be one of its values"),
+    (lambda: host.choose("view", {}), TypeError, "a choose's options must be a list"),
+    (lambda: host.choose("view", []), ValueError, "a choose has 1 to 60 options, not 0"),
+    (lambda: host.choose("view", [("off",)]), TypeError, "a choose's option must be a (value, spec) pair"),
+    (lambda: host.choose("view", [("off", "x")]), TypeError, "a choose's option's spec must be a spec"),
+    (lambda: host.choose("view", [("off", {"type": "empty"}), ("off", {"type": "empty"})]), ValueError,
+     "a choose's values must not repeat"),
+    (lambda: host.choose("view", [(1, {"type": "empty"})]), ValueError, "a choose's option's value must be text"),
+    (lambda: host.choose("view", [{"value": "a", "spec": {"type": "x"}, "x": 1}]), ValueError,
+     "a choose's option takes value, spec"),
+    (lambda: host.choose("view", [("a", {"type": "empty"})], default="b"), ValueError,
+     "a choose's default must be one of its values"),
+])
+def test_a_view_control_or_choose_it_cant_draw_is_refused(build, error, says):
+    with pytest.raises(error, match=re.escape(says)):
+        build()
 
 
 # ---------- image: a picture carried in the spec ----------
