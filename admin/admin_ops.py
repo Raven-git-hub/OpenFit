@@ -149,6 +149,11 @@ ADMIN_SERVICE = "admin"
 # Its revert keeps the current image as :next, and its helper runs that
 # one, :local, the image the Admin runs now.
 ADMIN_PREV = "openfit-admin:prev"
+# OpenFit's images carry this label (app/Dockerfile, admin/Dockerfile), so
+# an update clears only its own unnamed ones; and the build cache it clears
+# is what's gone unused this long.
+IMAGE_LABEL = "org.openfit.image"
+BUILD_CACHE_KEEP = "168h"
 ADMIN_NEXT = "openfit-admin:next"
 SWAP_NAME = "openfit-admin-swap"
 SWAP_RESULT = "self_update_result.json"
@@ -3973,6 +3978,21 @@ class Admin:
             if b["created"] not in keep:
                 os.remove(os.path.join(self.backups_dir, b["name"]))
 
+    def prune_images(self, op):
+        """After a good update, the disk's share of it given back: OpenFit's
+        own images left with no name - each update's :prev takes the name
+        from the image before it - by IMAGE_LABEL, so another project's are
+        never touched, and never a named one, so :latest and :prev (Undo's)
+        stay; and Docker's build cache unused for BUILD_CACHE_KEEP, only
+        ever cache, any project's - it rebuilds, slower. Never a volume. A
+        failure only says so: the update is done either way."""
+        for args, what in ((("image", "prune", "--force", "--filter", f"label={IMAGE_LABEL}"), "old OpenFit images"),
+                           (("builder", "prune", "--force", "--filter", f"until={BUILD_CACHE_KEEP}"),
+                            "old build cache")):
+            rc, out, err = self.docker(*args)
+            if rc != 0:
+                self.say(op, f"Couldn't clear {what}. The update itself is done.", _tail(out, err))
+
     def _helper(self, *args):
         """A container of the Admin's own image, labelled as its helper and --rm."""
         return self.docker("run", "--rm", "--label", HELPER_LABEL, *args)
@@ -4234,6 +4254,7 @@ class Admin:
                 self.say(op, "The update itself is done. Use Publish again, under Repos, to try the app library "
                          "again.")
             self.prune_backups()
+            self.prune_images(op)
             self.refresh_check()
             return self._finish(op, "ok", f"Updated OpenFit to {op['new']['short']}: {op['new']['subject']}")
 

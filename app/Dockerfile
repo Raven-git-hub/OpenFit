@@ -1,5 +1,8 @@
 FROM python:3.12-slim
 
+# An update clears OpenFit's own unnamed images by this label (admin_ops.IMAGE_LABEL).
+LABEL org.openfit.image=tracker
+
 WORKDIR /app
 
 # Scheduler and sync print()s reach `docker logs` as they happen, not when

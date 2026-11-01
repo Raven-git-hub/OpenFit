@@ -620,6 +620,9 @@ def test_an_update_moves_everyone_together(admin_env):
         ps("openfit-sam"), health(sam(1)),
         # the apps published (file work), each one's change notes read
         git(env, *admin_ops.change_notes_args(env.repos.head(), "library/steps")),
+        # OpenFit's own unnamed images, and week-old build cache, cleared
+        docker("image", "prune", "--force", "--filter", "label=org.openfit.image"),
+        docker("builder", "prune", "--force", "--filter", "until=168h"),
         # the check brought up to date
         git(env, "log", "-1", "--format=%H%x09%h%x09%s", "HEAD"),
         git(env, "rev-list", "--count", "HEAD..origin/main"),

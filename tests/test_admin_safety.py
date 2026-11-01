@@ -821,6 +821,13 @@ def assert_in_lane(env, allow):
                 assert a == ["docker", "run", "--rm", "--label", "openfit.admin.helper=true", "--log-driver", "none",
                              "-v", f"openfit-{kept[0]}_tracker-data:/v:ro", "openfit-admin:local", "tar", "czf", "-",
                              "-C", "/v", *excluded, "."], a
+        elif sub == "image" and a[2] == "prune":
+            # After a good update: only unnamed images, only OpenFit's (by its
+            # label) - never --all, never a named one, never a volume.
+            assert a == ["docker", "image", "prune", "--force", "--filter", "label=org.openfit.image"], a
+        elif sub == "builder":
+            # ... and only build cache gone unused a week.
+            assert a == ["docker", "builder", "prune", "--force", "--filter", "until=168h"], a
         elif sub == "image":
             assert a == ["docker", "image", "inspect", "--format", "{{.Id}}", "openfit-tracker:latest"], a
         elif sub == "info":

@@ -132,6 +132,9 @@ def test_an_update_runs_in_the_exact_order(admin_env):
         docker("exec", C1, "python", "-c", admin_ops.HEALTH_CODE),
         # 9. the apps published (file work), each one's change notes read
         git(env, *admin_ops.change_notes_args(env.repos.head(), "library/steps")),
+        # 10. OpenFit's own unnamed images, and week-old build cache, cleared
+        docker("image", "prune", "--force", "--filter", "label=org.openfit.image"),
+        docker("builder", "prune", "--force", "--filter", "until=168h"),
         # the check brought up to date, no fetch
         git(env, *HEAD_LOG[1:]),
         git(env, "rev-list", "--count", "HEAD..origin/main"),
@@ -148,6 +151,21 @@ def test_an_update_runs_in_the_exact_order(admin_env):
     assert all(set(line) == {"t", "text"} for line in op["log"])
     assert env.admin.last_check()["behind"] == 0
     assert env.admin.history()[-1]["id"] == op["id"]
+
+
+def test_a_prune_that_fails_only_says_so_the_update_is_done(admin_env):
+    env = admin_env
+    pending(env)
+    env.fake.rules.append((lambda a: a[:3] == ["docker", "image", "prune"], (1, "", "daemon busy")))
+    op = run_update(env)
+    assert op["outcome"] == "ok"
+    texts = [line["text"] for line in op["log"]]
+    assert "Couldn't clear old OpenFit images. The update itself is done.\ndaemon busy" in texts
+    # The build cache still cleared; never a volume, never a named image.
+    pruned = [c for c in env.fake.calls if "prune" in getattr(c, "args", c)]
+    assert any("builder" in getattr(c, "args", c) for c in pruned)
+    assert not any("volume" in getattr(c, "args", c) or "--all" in getattr(c, "args", c) or "-a" in getattr(c, "args", c)
+                   for c in pruned)
 
 
 def test_a_dirty_repo_is_refused_and_nothing_runs(logged_in, admin_env):

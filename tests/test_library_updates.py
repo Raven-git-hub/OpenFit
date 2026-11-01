@@ -383,13 +383,13 @@ def test_a_version_needing_a_newer_openfit_waits_and_isnt_tried_again(env, monke
     publish(env, {"hello": hello(1)})
     install(env)
     copy = installed(env)
-    publish(env, {"hello": hello(2, "requires: 3\nsomething_new: {x: 1}\n")})
+    publish(env, {"hello": hello(2, "requires: 4\nsomething_new: {x: 1}\n")})
     waiting = listed_sha(env)
     capsys.readouterr()
 
     result = sync(env)
 
-    reason = "needs OpenFit app level 3; this OpenFit is level 2"
+    reason = "needs OpenFit app level 4; this OpenFit is level 3"
     note = {"state": "waiting", "at": LATER, "sha256": waiting, "changes": [], "reason": reason}
     assert result == {HELLO: note} and notes(env) == {HELLO: note}
     assert installed(env) == copy
@@ -553,7 +553,7 @@ def test_an_app_whose_source_left_the_shelf_is_removed(env):
 def test_a_warning_goes_once_the_app_is_current_again(env):
     publish(env, {"hello": hello(1)})
     install(env)
-    publish(env, {"hello": hello(2, "requires: 3\n")})
+    publish(env, {"hello": hello(2, "requires: 4\n")})
     assert sync(env)[HELLO]["state"] == "waiting"
     # The Admin put the shelf back on the version installed.
     publish(env, {"hello": hello(1)})
@@ -980,7 +980,7 @@ def test_the_waiting_failed_and_removed_sentences(client):
     r = _note_script(client, """
         const say = (state, reason) => noteSentence({state, at:'2026-10-29T09:00:00Z', changes:[], reason});
         r.said = [
-          say('waiting', 'needs OpenFit app level 3; this OpenFit is level 2'),
+          say('waiting', 'needs OpenFit app level 4; this OpenFit is level 3'),
           say('failed', "the update doesn't load, so 'openfitavi.hello' is unchanged: app.py failed to import"),
           say('failed', 'It has folders inside it, which this OpenFit can\\'t install yet.'),
           say('failed', null),
@@ -1075,7 +1075,7 @@ def test_an_update_fourteen_days_old_and_custom_apps_look_as_ever(client):
 
 @needs_node
 @pytest.mark.parametrize("state, reason, said", [
-    ("waiting", "needs OpenFit app level 3; this OpenFit is level 2", "An update is waiting for a newer OpenFit."),
+    ("waiting", "needs OpenFit app level 4; this OpenFit is level 3", "An update is waiting for a newer OpenFit."),
     ("failed", "<i>it</i> doesn't load", "An update couldn't be installed: <i>it</i> doesn't load."),
     ("removed", None, "No longer in the app library, so it won't be updated."),
 ])
