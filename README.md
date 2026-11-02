@@ -783,11 +783,17 @@ line never had:
   rollback. It runs whether or not anyone is using OpenFit, so pick a time
   they're asleep.
 - **System information**: the server's name, Docker version, CPUs and memory
-  (and nothing else Docker says about the host), the free disk, the backups,
-  the users and when the Admin started.
+  (and nothing else Docker says about the host), the free disk and how full
+  it is, how busy it is (its I/O wait), the backups, the users and when the
+  Admin started. An amber or red line on top warns when the disk is nearly
+  full or very busy, and so does the update popup ("Heads up: …"), though
+  Proceed still works. A step that fails because the disk is full says
+  "The server's disk is full", not something vaguer.
 - **Update OpenFit** moves everyone together: one version on the server at a
   time. It refuses a server copy with local changes, keeps the current image,
-  pulls and builds while everyone keeps running, then stops everyone who was
+  pulls and builds while everyone keeps running (the build's steps in the
+  activity log as they happen; a build that runs 15 minutes, or shows nothing
+  new for 5, is stopped and nothing changes), then stops everyone who was
   running, **backs up everyone's data**, puts everyone on the new version (a
   stopped user stays stopped) and checks they answer. If anyone doesn't come
   up, the Admin puts everyone's data, the image and the code back by itself.

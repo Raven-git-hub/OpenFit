@@ -50,6 +50,7 @@ HELPER_PS = docker("ps", "-a", "--no-trunc", "--filter", "name=^openfit-admin-sw
 RETAG = docker("tag", "openfit-admin:prev", "openfit-admin:local")
 UP = ("up", "-d", "--no-build", "--force-recreate", "admin")
 STOP = ("stop", "admin")
+BUILD = ("--progress", "plain", "build", "admin")  # A7: its plain progress, into the log
 
 
 def admin_cid(n):
@@ -273,7 +274,7 @@ def test_the_admin_runs_its_steps_in_the_exact_order(admin_env):
         # 3. the image it runs now kept as :prev  (4. its settings snapshot: files, no command)
         docker("tag", ADMIN_IMAGE_ID, "openfit-admin:prev"),
         # 5. the new Admin built, while this one keeps running
-        acompose(env, "build", "admin"),
+        acompose(env, "--progress", "plain", "build", "admin"),
         # 6. the helper, on the old image
         helper_run(env),
     ]
@@ -343,7 +344,7 @@ def test_a_failed_build_starts_no_helper(admin_env):
     env.admin.wait(10)
 
     commands = env.fake.commands()
-    assert commands[-1] == acompose(env, "build", "admin").args
+    assert commands[-1] == acompose(env, "--progress", "plain", "build", "admin").args
     assert not any(c[:2] == ["docker", "run"] for c in commands)
     op = env.admin.current_op()
     assert op["outcome"] == "failed"
@@ -737,19 +738,22 @@ def test_the_admins_own_project_only_through_admin_compose(admin_env):
         assert a[:4] == ["docker", "compose", "-p", "openfit-admin"], a
         assert "admin_compose" in frames, (a, frames)
         assert a[4:6] == ["-f", os.path.join(env.repos.repo, "admin", "docker-compose.yml")], a
-        assert tuple(a[6:]) in (("build", "admin"), UP, STOP), a
+        assert tuple(a[6:]) in (BUILD, UP, STOP), a
         seen.add(tuple(a[6:]))
-    assert seen == {("build", "admin"), UP, STOP}
+    assert seen == {BUILD, UP, STOP}
 
 
 def test_admin_compose_runs_only_its_three_commands(admin_env):
     for args in (("down",), ("down", "-v"), ("build",), ("up", "-d"), ("build", "admin", "--no-cache"),
+                 ("build", "admin"), ("--progress", "tty", "build", "admin"), ("--progress", "plain", "build"),
+                 ("--progress", "plain", "up", "-d", "--no-build", "--force-recreate", "admin"),
+                 ("build", "--progress", "plain", "admin"),
                  ("up", "-d", "--no-build", "--force-recreate"), ("rm", "-f", "admin"), ("stop",),
                  ("stop", "admin", "-t", "0"), ("stop", "tracker"), ("kill", "admin"), ("restart", "admin")):
         with pytest.raises(ValueError):
             admin_ops.admin_compose(admin_env.fake, admin_env.repos.repo, *args)
     assert admin_env.fake.calls == []
-    assert admin_ops.ADMIN_COMPOSE_ARGS == (("build", "admin"), UP, STOP)
+    assert admin_ops.ADMIN_COMPOSE_ARGS == (BUILD, UP, STOP)
 
 
 def test_admin_compose_is_called_from_exactly_three_places():

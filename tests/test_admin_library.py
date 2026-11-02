@@ -295,7 +295,7 @@ def test_a_publish_that_fails_part_way_leaves_the_shelf_as_it_was(admin_env, mon
     def copy(src, dst):  # what a reader sees while the new set is copied
         seen.append(snapshot(env)[:2])
         if len(seen) == 2:
-            raise OSError("No space left on device")
+            raise OSError("Input/output error")
         return real(src, dst)
 
     monkeypatch.setattr(admin_ops, "_copy_file", copy)
@@ -304,7 +304,7 @@ def test_a_publish_that_fails_part_way_leaves_the_shelf_as_it_was(admin_env, mon
         env.admin.publish_official()
 
     assert e.value.message == "The app library couldn't be updated. It's as it was."
-    assert "No space left on device" in e.value.detail
+    assert "Input/output error" in e.value.detail
     assert seen == [before[:2]] * 2  # the old set and the old index, all along
     assert snapshot(env) == before  # no new set, nothing hidden left behind
     assert (env.library / "openfit" / "steps" / "app.yaml").read_text() == "id: steps\n"
@@ -609,7 +609,7 @@ def test_a_publish_that_fails_in_an_update_leaves_it_ok_with_publish_again(logge
     both_pending(env)
 
     def broken(*args, **kw):
-        raise admin_ops.OpError("The app library couldn't be updated. It's as it was.", "No space left on device")
+        raise admin_ops.OpError("The app library couldn't be updated. It's as it was.", "Input/output error")
 
     monkeypatch.setattr(admin_ops, "publish_set", broken)
     op = run_op(env, env.admin.start_update)
@@ -617,11 +617,11 @@ def test_a_publish_that_fails_in_an_update_leaves_it_ok_with_publish_again(logge
     assert op["outcome"] == "ok"
     assert op["summary"].startswith("Updated OpenFit to")
     log = texts(op)
-    assert "The app library couldn't be updated. It's as it was.\nNo space left on device" in log
+    assert "The app library couldn't be updated. It's as it was.\nInput/output error" in log
     assert "The update itself is done. Use Publish again, under Repos, to try the app library again." in log
     lib = logged_in.get("/api/status").get_json()["library"]
     assert lib["current"] is False and lib["commit"] == old
-    assert lib["error"]["detail"] == "No space left on device"
+    assert lib["error"]["detail"] == "Input/output error"
 
     monkeypatch.undo()
     env.fake.clear()
@@ -830,7 +830,7 @@ def test_update_apps_puts_the_code_back_when_the_publish_fails(admin_env, monkey
     before = snapshot(env)
 
     def copy(src, dst):
-        raise OSError("No space left on device")
+        raise OSError("Input/output error")
 
     monkeypatch.setattr(admin_ops, "_copy_file", copy)
     env.fake.clear()

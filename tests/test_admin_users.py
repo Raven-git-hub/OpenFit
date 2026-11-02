@@ -599,7 +599,7 @@ def test_an_update_moves_everyone_together(admin_env):
     op = run_update(env)
 
     calls = env.fake.calls
-    build = calls.index(pcompose(env, "build", "tracker"))
+    build = calls.index(pcompose(env, "--progress", "plain", "build", "tracker"))
     assert sum(1 for c in calls if "build" in c.args) == 1
     assert calls[build + 1:] == [
         # who's running, primary first, then the added users in order

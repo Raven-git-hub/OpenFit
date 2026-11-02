@@ -1,11 +1,12 @@
-# The OpenFit Admin (A1, A2, A4, A5, A6, U1, S1, S2, R1, SU1): updates behind buttons, users, its own update and revert, the app shelf, organisation repos, setup links, the Admin Portal, downloads and restore, and scheduled updates
+# The OpenFit Admin (A1, A2, A4, A5, A6, U1, S1, S2, R1, SU1, A7): updates behind buttons, users, its own update and revert, the app shelf, organisation repos, setup links, the Admin Portal, downloads and restore, scheduled updates, and a slow or full disk made obvious
 
 _Built: A1, A2, A4, A5 and A6, slices of the Admin in
 [distribution.md](distribution.md), U1's setup links (the user login,
 [auth.md](auth.md)), S1, the Admin Portal: the page in OpenFit's style,
 S2: reverting the Admin, downloads without the password and deleting a
-backup, R1: restoring a backup as a new user, and SU1: scheduled updates.
-The code is `admin/`; the tests are `tests/test_admin_*.py`._
+backup, R1: restoring a backup as a new user, SU1: scheduled updates, and
+A7: a slow or full disk made obvious. The code is `admin/`; the tests are
+`tests/test_admin_*.py`._
 
 Until A1, OpenFit was updated by SSHing to the docker host and running:
 
@@ -74,6 +75,15 @@ operation its button runs, with that operation's backups and rollback. It
 replaces the old automatic check, a week after the last: the schedule is
 now the only thing the Admin runs by itself.
 
+A7 makes a **slow or full disk** obvious, after two real incidents: a full
+disk that a check reported as "Couldn't reach GitHub", and a RAID check on
+the host that held Update OpenFit on "Building the new version…" for half
+an hour with nothing to show why. A command that failed for a full disk now
+says so; the build's progress goes into the update's log as it happens, and
+a build that stops making progress is stopped; and System information, the
+update popup and a scheduled run's log warn when the disk is nearly full or
+very busy.
+
 ## What the Admin doesn't do yet
 
 - Rename a user, or change a user's port after it's added. Users on
@@ -107,6 +117,9 @@ now the only thing the Admin runs by itself.
   before its last update, and no further.
 - A phone layout: the portal is for a desktop browser, and scrolls sideways
   under 1180px.
+- Free space by itself, or put a scheduled run off while the disk is busy
+  (A7): it warns, and a scheduled run's log starts with the warning, but the
+  run goes ahead at its time and nothing is deleted to make room.
 
 ## Install
 
@@ -383,7 +396,9 @@ SU1) - nowhere else: the old automatic check, a week after `checked_at`, is
 gone. A check that fails (no network, say) keeps the last good result and
 records the error and its time, which the page shows; the schedule's run
 then ends failed, and the next check is the next Check now or the next
-week's run.
+week's run. A fetch that fails because the disk is full says so - "The
+server's disk is full (… free)" - not "Couldn't reach GitHub" (A7,
+[below](#a-slow-or-full-disk-made-obvious-a7)).
 
 ## Updating OpenFit, for everyone
 
@@ -406,10 +421,13 @@ runs in a background thread, in this order:
    by its compose labels, and its image is tagged `openfit-tracker:prev`.
 2. **Pull and build.** `git merge --ff-only origin/main` (if it can't
    fast-forward, it stops: nothing changed), then `docker compose -p openfit …
-   build tracker`. **One build, for everyone**: an added user's compose file
-   names the image the primary's project builds. Everyone is still running
-   the old version. If the build fails, `git reset --hard <old>`, report, and
-   stop; nobody was stopped.
+   --progress plain build tracker`. **One build, for everyone**: an added
+   user's compose file names the image the primary's project builds.
+   Everyone is still running the old version. The build's steps reach the
+   log as they happen, and a build that runs 15 minutes, or prints nothing
+   for 5, is stopped (A7, [below](#a-slow-or-full-disk-made-obvious-a7)). If
+   the build fails, `git reset --hard <old>`, report, and stop; nobody was
+   stopped.
 3. **Who's running.** For each user, primary first, then the added users in
    order, their container is found and whether it's running recorded
    (`was_running`). A user with no container is skipped, and the log says so.
@@ -770,7 +788,9 @@ The left column:
 
 - **System information**: Server (Docker's name for the host), Docker (its
   version), CPU and memory, Disk free (`os.statvfs` of the Admin's `/data`,
-  where the backups are kept), Backups (their total size, and how many),
+  where the backups are kept, and how full that disk is: "12.3 GB (85%
+  used)"), Disk busy ("4% I/O wait", A7: the latest minute's, left out until
+  it's been read twice), Backups (their total size, and how many),
   Users ("2 running · 1 stopped", and how many aren't found, if any) and
   Admin up since (when this Admin process started). The first three come
   from `docker info --format '{{json .}}'`, run at most once a minute (its
@@ -780,7 +800,9 @@ The left column:
   null). It deliberately leaves the rest out, never showing or storing it:
   how many containers and images the host has, their names, the host's id,
   network, plugins, labels and warnings. The Admin keeps to its own users,
-  and doesn't report on what else the server runs.
+  and doesn't report on what else the server runs. Over the rows, an amber
+  or red line when the disk is nearly full or very busy (A7,
+  [below](#a-slow-or-full-disk-made-obvious-a7)).
 - **Versions**: a row for the **Admin** and one for the **User** (every
   user's OpenFit), each its version, when it was last updated and **Update
   available** when there's one. The User's version is `HEAD`'s short sha and
@@ -814,7 +836,8 @@ The left column:
   again** when the shelf is behind the code, with why under the box. A
   repo's row offers **Update available** when it's behind (its popup's
   Proceed `repo_update`), and says "Couldn't reach GitHub" when its last
-  fetch failed, and its state when it isn't connected and published. The
+  fetch failed ("Disk full" when that's why, A7), and its state when it
+  isn't connected and published. The
   name opens its **last publish**: when, the commit, and the apps
   published (and, for a repo, where it's from).
 - **Activity log**: the running operation's log, live, at the top (polled
@@ -995,9 +1018,10 @@ runs, and 409 when there's nothing to apply ("Update OpenFit first: …", or
    This is what lets a rollback undo anything a new version might change in
    the Admin's own files.
 5. **Build the new Admin**: `docker compose -p openfit-admin -f
-   <OPENFIT_REPO>/admin/docker-compose.yml build admin`. The old Admin keeps
-   running. If the build fails: reported, and nothing changed (the `:prev`
-   tag is harmless).
+   <OPENFIT_REPO>/admin/docker-compose.yml --progress plain build admin`. The
+   old Admin keeps running. Its steps reach the log, and it has the user
+   system's build's limits (A7). If the build fails: reported, and nothing
+   changed (the `:prev` tag is harmless).
 6. **Start the helper**, detached, with exactly:
 
    ```
@@ -1017,8 +1041,9 @@ runs, and 409 when there's nothing to apply ("Update OpenFit first: …", or
    held: the helper finishes it (below).
 
 Every compose command on the Admin's own project goes through one function,
-`admin_compose()` (`admin_ops.py`), which runs only `build admin`, `stop
-admin` and `up -d --no-build --force-recreate admin` and refuses anything
+`admin_compose()` (`admin_ops.py`), which runs only `--progress plain build
+admin` (a line at a time, A7), `stop admin` and `up -d --no-build
+--force-recreate admin` and refuses anything
 else, and it's called from exactly three places: step 5 (the build), and the
 helper's `stop()` and `recreate()`. The Admin's own steps never stop it:
 only the helper does, and every stop is followed by an `up`.
@@ -1803,6 +1828,131 @@ the run's summary, with **Open in the Activity log** and **Dismiss**
 (**`POST /api/schedule/dismiss`**, which sets `dismissed`; 409 with no run,
 or while one is going). The next run's notice is its own again.
 
+## A slow or full disk made obvious (A7)
+
+Two incidents set this slice. A **full disk** made the update check say
+"Couldn't reach GitHub to check for updates": the real cause, `fatal:
+unable to write loose object file: No space left on device`, was only in
+the detail. And a **RAID consistency check** on the Proxmox host (I/O wait
+70–100% inside the VM) held Update OpenFit on "Building the new version…"
+for 30 minutes with nothing to show why; `docker pull` hung silently too.
+
+### The server's disk is full
+
+`out_of_space(out, err)` (`admin_ops.py`) says whether a command's output
+says the disk is full, from one table of patterns, `OUT_OF_SPACE` - each
+entry's words all in the output, case aside:
+
+- `no space left on device`
+- `enospc`
+- `disk quota exceeded`
+- `unable to write loose object`, beside `space` (git says the first for
+  more than a full disk)
+
+Wherever a command's failure becomes the step's words - the check (its
+fetch, and every git read after it), Update OpenFit (the merge, the build,
+a backup, bringing a user up, putting the code back), Update apps, an
+organisation repo's fetch, connect (its clone) and update (its merge), the
+Admin's build and its settings snapshot, a publish (a Python `OSError` too:
+`[Errno 28] No space left on device`), Undo putting a backup back, and a
+restore (packing kept data, checking and writing the clean archive, the
+compose file, creating and filling the user, starting them, and the upload
+itself: a 507) - a full disk says, in place of the step's own words:
+
+> The server's disk is full (1.2 GB free). Free some space, for example by
+> removing unused Docker images, then try again.
+
+The free space is `os.statvfs` of `/data`, said as the page says sizes (no
+figure when it can't be read); the command's output is kept as the detail,
+as before. Where the failure ends the operation, its summary starts with
+the same sentence, so a scheduled run's "Stopped at …" says it too. A
+network failure keeps its words: "Couldn't reach GitHub: <git's words>".
+`OpError` carries `disk_full`; an organisation repo's check error records
+it, and its row says **Disk full** instead of "Couldn't reach GitHub".
+
+### The build's progress, in the log
+
+Both builds, the user system's and the Admin's, run with compose's global
+`--progress plain` - placed just before the subcommand, `docker compose -p
+<project> -f <file>… --progress plain build <service>`, which compose
+v2.32.4 parses as a root flag there as anywhere before `build` - through
+`Runner.lines(args, cwd, on_line, timeout, idle)`. That runs the command
+(an argument list, never a shell, in a process group of its own) with
+stdout and stderr merged, hands each line to `on_line` as it arrives, and
+kills the group once it has run `timeout` seconds in all or `idle` seconds
+have passed with no new line: `(rc, tail, why)`, `tail` the last 40 lines,
+`why` None, `"timeout"` or `"idle"` (rc 124 then).
+
+The lines are BuildKit's plain progress, and noisy, so `BuildLog` keeps only
+each step's header (`#7 [tracker 3/6] RUN pip install …` - the image's
+metadata lookup among them, `[internal] load metadata for
+docker.io/library/python:3.12-slim`, where the RAID incident stalled), its
+`DONE`, `CACHED` or `ERROR`, and the final `naming to …`, said as plain
+words with the service's name, which compose puts in every bracket, left
+out:
+
+```
+Build: [internal] load metadata for docker.io/library/python:3.12-slim
+Build: [internal] load metadata for docker.io/library/python:3.12-slim done (1.4s)
+Build: [3/6] RUN pip install --no-cache-dir -r requirements.txt
+Build: [3/6] done (cached)
+Build: naming to docker.io/library/openfit-tracker
+```
+
+A header BuildKit prints again (it does, switching between steps) is said
+once. At most 60 build lines an operation, then one "… (more build output
+not shown)". A build that fails puts its tail in the step's detail, as
+before.
+
+### The build's limits
+
+A build is stopped after **15 minutes** in all (every other command keeps
+the Runner's 30), or **5 minutes** with no new line of output - either way
+an ordinary build failure: the code is put back, nobody was stopped, and
+the outcome is `failed`. The log, and the summary, say:
+
+> The build stopped making progress for 5 minutes, at: [internal] load
+> metadata for docker.io/library/python:3.12-slim. The server's disk or
+> network may be very slow; see System information.
+
+or "The build took longer than 15 minutes, and was stopped at: …", at the
+last build line seen. The Admin's own build has the same limits.
+
+### The warnings
+
+`status()["system"]` gains `disk_used_pct` (how full the disk under `/data`
+is, `os.statvfs`, in whole percent rounded up as `df` says it),
+`iowait_pct` and `disk_warning`, `{level: "amber" | "red", text}` or null:
+
+- **Full**: at **90%** or more, amber; at **97%**, red. "The server's disk
+  is 92% full (4.1 GB free). Updates need room to build; consider freeing
+  space."
+- **Busy**: once a minute, beside the schedule's tick (in a thread of its
+  own, since a scheduled run holds the tick's thread for as long as it
+  runs), the Admin reads the `cpu` line of `/proc/stat` - read-only, the
+  VM's own view of its CPUs, not the Proxmox host's - and keeps the last
+  read: the I/O wait is Δiowait / Δtotal over all its fields between two
+  reads a minute apart (`iowait_pct`, null until there are two). **30%** or
+  more for **two minutes in a row** is amber; **60%** or more in the latest
+  minute is red. "The server's disk is very busy (I/O wait 72%). Updates and
+  builds will be slow, and may fail." A busy minute alone isn't a warning:
+  a backup or a build is busy for a moment. Where `/proc/stat` can't be
+  read, or doesn't read as expected, the row and the warning are left out,
+  logged once; `status()` never fails over it.
+
+The worse of the two is `disk_warning` (full first, when they're as bad as
+each other). It's shown:
+
+- at the top of **System information**, amber or red, over the rows;
+- in the **update popup** - Update OpenFit, Update apps, a repo's update,
+  Update the Admin - above Proceed, as "Heads up: …". Proceed stays as it
+  was: it's information, not a block;
+- as the first line of a **scheduled run**'s log, when one is active as the
+  run starts. The run goes ahead regardless.
+
+Nothing new is written anywhere, and no docker command is added beyond the
+two builds' `--progress plain` form.
+
 ## The safety rules
 
 The Admin holds the docker socket, so it has full control of the host. A
@@ -1821,7 +1971,7 @@ Tailscale sidecars and more), and the Admin must never touch any of them.
 - **Its own project only to update itself.** The `openfit-admin` project is
   only ever `docker compose -p openfit-admin -f
   <OPENFIT_REPO>/admin/docker-compose.yml`, run in `<OPENFIT_REPO>/admin`,
-  and only `build admin` (the running Admin), or `stop admin` and `up -d
+  and only `--progress plain build admin` (the running Admin), or `stop admin` and `up -d
   --no-build --force-recreate admin` (the helper: a stop just before it puts
   settings back, always followed by the up that starts it again - the lane
   test holds a stop to the helper's swap or revert, and to an up after it),
@@ -1859,8 +2009,9 @@ Tailscale sidecars and more), and the Admin must never touch any of them.
   `openfit-tracker:latest`. Beside those, the System information panel's
   `docker info --format '{{json .}}'` (that format exactly; at most once a
   minute), of which only the server's name, Docker version, CPUs and memory
-  are kept. Nothing else is listed, inspected, stopped or removed; the Admin
-  doesn't list other containers, even to find free ports.
+  are kept; and, read-only and once a minute, `/proc/stat`'s `cpu` line, for
+  how busy the disk is (A7). Nothing else is listed, inspected, stopped or
+  removed; the Admin doesn't list other containers, even to find free ports.
 - **Data deleted in two places only.** `down -v` only in a failed add or a
   failed restore (R1), on a volume that operation made; `docker volume rm`
   only in Delete data. Remove is
@@ -1880,7 +2031,9 @@ Tailscale sidecars and more), and the Admin must never touch any of them.
   (checked before use). The one `sh -c` is Undo's restore helper's fixed
   string, inside a container. A test reads every `admin/*.py` for `shell=True` and
   `os.system`. A download's helper runs through `Runner.stream()`, an
-  argument list too.
+  argument list too, and the two builds through `Runner.lines()` (A7),
+  which kills what it started - the whole process group - when a build
+  goes quiet or runs too long.
 - **No archive extracted by the Admin** (R1). A restore reads an archive
   with `tarfile` and writes a clean copy of the members it checked; the
   Admin process never extracts one. Only the restore helper extracts, and

@@ -24,7 +24,7 @@ from werkzeug.exceptions import ClientDisconnected, RequestEntityTooLarge
 from werkzeug.formparser import parse_form_data
 
 from admin_auth import Auth, AuthError, load_secret_key
-from admin_ops import Admin, BadSchedule, OpError, Refused, timezones
+from admin_ops import Admin, BadSchedule, OpError, Refused, out_of_space, timezones
 
 PORT = 8090
 OPEN_ENDPOINTS = {"index", "api_setup", "api_login", "static"}
@@ -252,6 +252,10 @@ def create_app(admin, auth, secret_key):
                 return _fail("The upload was cut off. Try again.", 400)
             except ValueError:
                 return _fail("Send the form as the page does: a name, a port and one backup file.", 400)
+            except OSError as e:  # writing the file as it arrives
+                if out_of_space(str(e), ""):
+                    return _fail(admin.disk_full_message(), 507)
+                raise
             if files.get("file") is None or capped.size == 0:
                 return _fail("Choose a backup file to restore.", 400)
             op = admin.start_restore(form.get("name"), _form_port(form.get("port")),

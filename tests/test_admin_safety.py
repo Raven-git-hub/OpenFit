@@ -668,7 +668,7 @@ def known_names(env):
     return names
 
 
-def admin_lane(env, call, out, labelled, images, frames):
+def admin_lane(env, call, out, labelled, images, frames, kind="run"):
     """One of the Admin's own commands, in an Admin update or revert
     (`admin` allowed): True once it's held to its exact shape, False if it
     isn't one. Its own project only through admin_compose()'s three
@@ -683,8 +683,10 @@ def admin_lane(env, call, out, labelled, images, frames):
     folder = os.path.join(repo, "admin")
     if a[1:4] == ["compose", "-p", "openfit-admin"]:
         assert a[4:6] == ["-f", os.path.join(folder, "docker-compose.yml")] and call.cwd == folder, a
-        assert a[6:] in (["build", "admin"], ["up", "-d", "--no-build", "--force-recreate", "admin"],
-                         ["stop", "admin"]), a
+        assert a[6:] in (["--progress", "plain", "build", "admin"],
+                         ["up", "-d", "--no-build", "--force-recreate", "admin"], ["stop", "admin"]), a
+        # Its build's plain progress a line at a time (A7); the helper's two through run().
+        assert (kind == "lines") == ("build" in a), (a, kind)
         if a[6:] == ["stop", "admin"]:
             # The helper's swap or revert (admin_swap.py), never the Admin stopping itself.
             assert "admin_compose" in frames and {"_swap", "_revert"} & set(frames), (a, frames)
@@ -742,8 +744,11 @@ def assert_in_lane(env, allow):
     labelled = set()  # (id, project) for each container the labelled lookups gave back
     images = set()  # (image, project) for those containers
     docker_calls = 0
-    for call, (rc, out, _err), frames in zip(env.fake.calls, env.fake.results, env.fake.frames):
+    assert len(env.fake.kinds) == len(env.fake.calls)
+    for call, (rc, out, _err), frames, kind in zip(env.fake.calls, env.fake.results, env.fake.frames, env.fake.kinds):
         a = call.args
+        # A line at a time only for a build (A7); a download's stream checked below.
+        assert kind != "lines" or "build" in a, (a, kind)
         if a[0] == "git":
             if call.env is not None:
                 org_git_in_lane(env, call)
@@ -755,7 +760,7 @@ def assert_in_lane(env, allow):
             continue
         assert a[0] == "docker", a
         docker_calls += 1
-        if allow.get("admin") and admin_lane(env, call, out, labelled, images, frames):
+        if allow.get("admin") and admin_lane(env, call, out, labelled, images, frames, kind):
             continue
         ids = {cid for cid, project in labelled if project != "openfit-admin"}
         sub = a[1]
@@ -776,6 +781,10 @@ def assert_in_lane(env, allow):
             assert root_file not in a or project == "openfit", a  # the repo's file is the primary's alone
             if "-v" in rest:
                 assert rest == ["down", "-v"] and project != "openfit" and allow.get("down_v"), a
+            elif "build" in rest or "--progress" in rest:
+                # The one build, the primary's, its plain progress read a line at a time (A7).
+                assert rest == ["--progress", "plain", "build", "tracker"] and project == "openfit", a
+                assert kind == "lines", (a, kind)
             else:
                 assert rest[-1] == "tracker" or rest in (["down"], ["up", "-d", "--no-build"]) or (
                     rest == ["up", "--no-start", "--no-build"] and allow.get("restore")), a

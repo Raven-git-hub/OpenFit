@@ -1,0 +1,65 @@
+#0 building with "default" instance using docker driver
+
+#1 [tracker internal] load build definition from Dockerfile
+#1 transferring dockerfile: 1.21kB done
+#1 DONE 0.0s
+
+#2 [tracker internal] load metadata for docker.io/library/python:3.12-slim
+#2 DONE 1.4s
+
+#3 [tracker internal] load .dockerignore
+#3 transferring context: 2B done
+#3 DONE 0.0s
+
+#4 [tracker 1/10] FROM docker.io/library/python:3.12-slim@sha256:4c0ac1ec5bb4b6f6ae2bbd2b3e4e1b2f10e8a4ff0c4ba2ce1c4c36e7a05f8a1d
+#4 DONE 0.0s
+
+#5 [tracker internal] load build context
+#5 transferring context: 98.31kB 0.0s done
+#5 DONE 0.1s
+
+#6 [tracker 2/10] WORKDIR /app
+#6 CACHED
+
+#7 [tracker 3/10] COPY requirements.txt .
+#7 DONE 0.0s
+
+#8 [tracker 4/10] RUN pip install --no-cache-dir -r requirements.txt
+#8 0.734 Collecting flask==3.1.3 (from -r requirements.txt (line 1))
+#8 0.902   Downloading flask-3.1.3-py3-none-any.whl.metadata (3.2 kB)
+#8 1.215 Collecting garminconnect==0.3.11 (from -r requirements.txt (line 2))
+#8 6.004 Installing collected packages: tzdata, urllib3, six, PyYAML, idna, cryptography, flask, garminconnect
+#8 9.317 Successfully installed PyYAML-6.0.3 apscheduler-3.11.3 cryptography-50.0.1 flask-3.1.3
+#8 9.318 WARNING: Running pip as the 'root' user can result in broken permissions
+#8 9.402
+#8 9.402 [notice] A new release of pip is available: 25.0.1 -> 25.3
+#8 DONE 10.1s
+
+#9 [tracker 5/10] COPY main.py auth.py auth_cli.py clock.py crypto.py derived.py metrics.py first_login.py apps.py host.py home_layout.py shelf.py ./
+#9 DONE 0.0s
+
+#10 [tracker 6/10] COPY plugins ./plugins
+#10 DONE 0.0s
+
+#11 [tracker 7/10] COPY migrations ./migrations
+#11 DONE 0.0s
+
+#12 [tracker 8/10] COPY templates ./templates
+#12 DONE 0.1s
+
+#13 [tracker 9/10] COPY audio ./audio
+#13 DONE 0.1s
+
+#14 [tracker 10/10] RUN mkdir -p /data
+#14 DONE 0.3s
+
+#15 [tracker] exporting to image
+#15 exporting layers
+#15 exporting layers 0.6s done
+#15 writing image sha256:9d1f5c0a7b2e4f6a8c3d5e7f9a1b3c5d7e9f1a3b5c7d9e1f3a5b7c9d1e3f5a7b done
+#15 naming to docker.io/library/openfit-tracker done
+#15 DONE 0.6s
+
+#16 [tracker] resolving provenance for metadata file
+#16 DONE 0.0s
+ tracker  Built

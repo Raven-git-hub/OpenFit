@@ -2139,7 +2139,7 @@ them), what's next and what's parked.
   byte-identical, to `tests/fixtures/apps/`. Not `apps/`, so it can't be
   confused with `app/`. The distribution design it starts is
   `docs/architecture/distribution.md`.
-- `admin/` — the OpenFit Admin (A1, A2, A4, A5, A6, U1's setup links, S1's portal, S2, R1, SU1, `docs/architecture/admin.md`): its own
+- `admin/` — the OpenFit Admin (A1, A2, A4, A5, A6, U1's setup links, S1's portal, S2, R1, SU1, A7, `docs/architecture/admin.md`): its own
   image (`python:3.12-slim`, git and `openssh-client`, the docker CLI and
   compose plugin copied from pinned images, `github_known_hosts` -
   GitHub's three host keys - at `/app/github_known_hosts`) and compose file (`docker compose -f
@@ -2218,7 +2218,8 @@ them), what's next and what's parked.
   `admin_tag()` (the running id → `:prev`/`:next`, `:prev`/`:next` →
   `:local`), the helper's arguments only `swap_helper_args()`'s two forms.
   The `openfit-admin`
-  project only through `admin_compose()`: `build admin`, `stop admin` or
+  project only through `admin_compose()`: `--progress plain build admin`
+  (`ADMIN_BUILD`, through `Runner.lines()`, A7), `stop admin` or
   `up -d --no-build --force-recreate admin` (`ADMIN_COMPOSE_ARGS`), nothing
   else — the stop only ever the helper's, always followed by its up. Downloads (S2) never
   hold the password: `auth.json` and `.session_key` at the volume's root
@@ -2348,7 +2349,8 @@ them), what's next and what's parked.
   info --format '{{json .}}'`, `DOCKER_INFO_ARGS`, at most once a
   `DOCKER_INFO_EVERY` 60s, of which `server_fields()` keeps only `Name`,
   `ServerVersion`, `NCPU`, `MemTotal`; `statvfs` of `/data`, the backups'
-  bytes, users running/stopped/missing, `started_at`), `versions` (HEAD and
+  bytes, users running/stopped/missing, `started_at`; A7's
+  `disk_used_pct`, `iowait_pct` and `disk_warning`), `versions` (HEAD and
   the newest commit touching `admin/`, "older" by the fingerprint, last
   updated the newest ok op of the kind, `last`/`current` with `_range()`'s
   commits and PRs, cached), `repos` (the shelf's sources, OpenFit first, then
@@ -2490,7 +2492,50 @@ them), what's next and what's parked.
   its Activity entry (`showRun()`), a run's entry its steps as links, and
   the red `#runNotice` (failed, rolled_back, interrupted, missed_update,
   not dismissed) with Open and Dismiss; all text by `textContent`. Tests:
-  `tests/test_admin_schedule.py`. Modules prefixed
+  `tests/test_admin_schedule.py`. **A slow or full disk** (A7, `admin.md`'s
+  own section): `out_of_space(out, err)`, one table (`OUT_OF_SPACE`: `no
+  space left on device`, `enospc`, `disk quota exceeded`, `unable to write
+  loose object` beside `space`, case aside), and wherever a step's failure
+  is said - the check (its fetch, `_git_out()`), Update OpenFit, Update
+  apps, a repo's fetch, clone and merge, the Admin's build and snapshot, a
+  backup, a publish (`publish_source()`), Undo's put-back, a restore and
+  its upload (507) - `_error()`/`_disk()`/`_say_failure()` say `DISK_FULL`
+  ("The server's disk is full (<free> free). Free some space, for example
+  by removing unused Docker images, then try again.", `disk_free()` as the
+  page's `size()`, `size_words()`) in its place, the output still the
+  detail, and the op's summary leads with it (`OpError.disk_full`,
+  `_lead()`); a network failure keeps "Couldn't reach GitHub…", a repo's
+  check error records `disk_full` (its row's pill "Disk full"). The two
+  builds, the primary's (`compose()` allows `--progress plain build
+  tracker` for the primary alone, refusing any other build, `up --build`
+  or `--progress`) and the Admin's (`ADMIN_BUILD`), run through
+  `Runner.lines(args, cwd, on_line, timeout, idle)` -> `(rc, tail, why)`:
+  merged stdout and stderr a line at a time to `on_line`, its process
+  group killed past `BUILD_TIMEOUT` (900s) or `BUILD_IDLE` (300s) quiet,
+  `tail` its last 40 lines, `why` None/`"timeout"`/`"idle"` (rc 124), 127
+  for a command that can't start; `BuildLog(say, service)` boils BuildKit's
+  plain progress down to step headers (said once, the service's name left
+  out of the bracket), `DONE`/`CACHED`/`ERROR` and `naming to`, "Build:
+  [3/6] done (cached)", at most `BUILD_LOG_MAX` 60 then "… (more build
+  output not shown)"; a stopped build is an ordinary failure (code reset,
+  nobody stopped), its words `BuildLog.stalled()`'s ("The build stopped
+  making progress for 5 minutes, at: <last build line>. The server's disk
+  or network may be very slow; see System information."). The warnings:
+  `disk_used_pct()` (df's, rounded up), `sample_disk()` once a minute in a
+  thread of its own beside the tick (`start_schedule()`), the `cpu` line of
+  `/proc/stat` through the `proc_stat` seam (`cpu_times()`,
+  `iowait_between()`: Δiowait/Δtotal over every field; unreadable → no
+  figure, logged once), `iowait_pct()` (None until two reads),
+  `disk_warning()` the worse of full (`DISK_AMBER` 90, `DISK_RED` 97) and
+  busy (`IOWAIT_AMBER` 30 for `IOWAIT_AMBER_MINUTES` 2 in a row,
+  `IOWAIT_RED` 60 in the latest), full first on a tie; the page's
+  `#diskWarn` atop System information (`paintDiskWarn()`), a Disk busy row,
+  Disk free's "(N% used)", and the update popup's "Heads up: …" above a
+  Proceed left as it was; a scheduled run's first log line when one is
+  active. Tests: `tests/test_admin_visibility.py` (the transcript fixture
+  `tests/fixtures/buildkit/tracker-plain.txt`; conftest's `FakeRunner.lines()`
+  plays `Script`s on a clock of its own, records `limits` and each call's
+  `kinds`, and `admin_env` gives every test a half-full disk). Modules prefixed
   `admin_` so they never clash with `app/`'s on the test path:
   `admin_ops.py` (every command through one `Runner`, argument lists, never a
   shell; git as the repo's owner; compose only `-p openfit` with the repo's

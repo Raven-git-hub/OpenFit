@@ -220,6 +220,10 @@ def client(db_path):
 # env: the variables a command adds to its environment (an organisation
 # repo's GIT_SSH_COMMAND), or None.
 Call = namedtuple("Call", "args cwd as_owner env", defaults=(None,))
+# What FakeRunner.lines() plays for a command: `lines`, each (seconds after
+# the line before - or the start - text), then its exit code `rc`, `end`
+# seconds after its last line.
+Script = namedtuple("Script", "lines rc end", defaults=(0, 0.0))
 
 # The containers the fake hands out to the primary (project openfit): the
 # one running before an update, then a new one each time compose brings it
@@ -307,6 +311,17 @@ class FakeRunner:
     and yields `stream_out` (bytes), then raises an OpError if
     `stream_rc` isn't 0, its detail `stream_err`.
 
+    lines() is Runner.lines()'s, on a clock of its own - nothing sleeps:
+    it records the command as run() does, and plays the first of `scripts`
+    (a predicate on the argument list, and a Script) that matches - else
+    run()'s answer, out's lines then err's, all at once - each line to
+    on_line as it "arrives", stopping it as the real one would once it's
+    gone `timeout` seconds in all or `idle` with no line. Its result,
+    (rc, tail, why), in `results` as (rc, tail, ""); the limits it was
+    given in `limits`, one (timeout, idle) a call. A script of a docker
+    command that ends 0 has run()'s defaults' effect too (a build of the
+    Admin moves its :local).
+
     `frames` holds, for each call, the names of the functions it was made
     through (innermost first), so a test can tell which code ran it.
 
@@ -330,6 +345,9 @@ class FakeRunner:
         self.tags = {"openfit-admin:local": ADMIN_IMAGE_ID}
         self.builds = 0
         self.stream_out, self.stream_rc, self.stream_err = b"", 0, ""
+        self.scripts = []
+        self.limits = []
+        self.kinds = []  # which of run(), lines() and stream() each call came through
         self.helper = False
         self.volumes = {VOLUME, LIBRARY_VOLUME}
         self.images = {"openfit-tracker:latest"}
@@ -346,8 +364,45 @@ class FakeRunner:
         self.results.append(result)
         return result
 
-    def _record(self, args, cwd, as_owner, frame, env=None):
+    def lines(self, args, cwd=None, on_line=None, timeout=None, idle=None):
+        assert isinstance(args, list), f"a command must be a list, not {args!r}"
+        assert all(isinstance(a, str) for a in args), args
+        self._record(args, cwd, False, sys._getframe(1), kind="lines")
+        self.limits.append((timeout, idle))
+        script = next((s for matches, s in self.scripts if matches(args)), None)
+        if script is None:
+            rc, out, err = self._answer(args, cwd, False, timeout)
+            script = Script([(0, line) for line in (out.splitlines() + err.splitlines())], rc)
+        elif script.rc == 0 and args[0] == "docker":
+            self.docker(args)
+        tail, t, last, why = [], 0.0, 0.0, None
+        steps = [(delay, text) for delay, text in script.lines] + [(script.end, None)]
+        for delay, text in steps:
+            t += delay
+            trips = [(timeout, "timeout")] if timeout is not None else []
+            if idle is not None:
+                trips.append((last + idle, "idle"))
+            tripped = [(when, what) for when, what in trips if when < t]
+            if tripped:
+                why = min(tripped, key=lambda w: (w[0], w[1] != "timeout"))[1]  # a tie: the total's
+                break
+            if text is None:
+                break
+            last = t
+            tail = (tail + [text])[-40:]
+            if on_line is not None:
+                on_line(text)
+        result = (124 if why else script.rc, "\n".join(tail), why)
+        self.results.append((result[0], result[1], ""))
+        return result
+
+    def script(self, matches, lines, rc=0, end=0.0):
+        """lines() plays this for a command `matches` takes."""
+        self.scripts.append((matches, Script(list(lines), rc, end)))
+
+    def _record(self, args, cwd, as_owner, frame, env=None, kind="run"):
         self.calls.append(Call(list(args), cwd, as_owner, dict(env) if env is not None else None))
+        self.kinds.append(kind)
         names = []
         while frame is not None:
             names.append(frame.f_code.co_name)
@@ -359,7 +414,7 @@ class FakeRunner:
         import admin_ops
 
         assert isinstance(args, list) and all(isinstance(a, str) for a in args), args
-        self._record(args, None, False, sys._getframe(2))
+        self._record(args, None, False, sys._getframe(2), kind="stream")
         self.results.append((self.stream_rc, "", self.stream_err))
         yield io.BufferedReader(io.BytesIO(self.stream_out))
         if self.stream_rc != 0:
@@ -503,6 +558,8 @@ class FakeRunner:
         self.calls.clear()
         self.results.clear()
         self.frames.clear()
+        self.limits.clear()
+        self.kinds.clear()
 
     def fail(self, matches, rc=1, err="it went wrong"):
         self.rules.append((matches, (rc, "", err)))
@@ -668,6 +725,10 @@ def admin_env(tmp_path, monkeypatch):
     library.mkdir()
     clock = FakeClock()
     fake = FakeRunner(repos.repo, str(data / "backups"))
+    # A disk half full (A7) - 500 MB free - whatever the machine running the
+    # tests has: no disk warning, unless a test says otherwise.
+    monkeypatch.setattr(admin_ops.os, "statvfs", lambda path: SimpleNamespace(
+        f_blocks=1000, f_bfree=500, f_bavail=500, f_frsize=1 << 20))
 
     def make():
         return admin_ops.Admin(repos.repo, str(data), runner=fake, clock=clock,
