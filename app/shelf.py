@@ -47,6 +47,9 @@ from datetime import datetime, timezone
 
 import yaml
 
+# The module itself too, so APP_LEVEL is read as it is when a run asks, not
+# as it was at import (a test raises it, as an Update OpenFit does).
+import apps as _apps
 from apps import (
     INSTALL_ID,
     LIBRARY_APP_ID,
@@ -420,24 +423,29 @@ def _read_files(app_id, folder, names):
 #
 # What last happened to each is noted in the update record,
 # /data/app_updates.json (APP_UPDATES_PATH in main.py) - {<app id>:
-# {state, at, sha256, changes, reason}}, its latest event - and GET
-# /api/apps hands it to the page as the app's library_note:
+# {state, at, sha256, changes, reason[, level]}}, its latest event - and
+# GET /api/apps hands it to the page as the app's library_note:
 #
 # - updated: the version sha256 swapped in at `at`, with the change notes
 #   the index had for it (changes: up to MAX_CHANGES {sha, subject,
 #   date}, newest first);
 # - waiting: the version sha256 needs a newer OpenFit (requires above
-#   APP_LEVEL; reason level_problem()'s) - left alone;
+#   APP_LEVEL; reason level_problem()'s) - left alone; its `level` the
+#   APP_LEVEL it waited on (F1);
 # - failed: the version sha256 couldn't be installed (reason why: it
 #   doesn't read, has folders inside it, check_app() refuses it, or it
 #   doesn't load) - left alone, the old copy as it was;
 # - removed: the app, or its source, is no longer on the shelf - left as
 #   it is, never updated again until it's back.
 #
-# A version waiting or failed is never tried again: only a new version -
-# another sha256 on the shelf - is. And the shelf not being there (no
-# folder, no index that reads) is nothing to do: no app is marked
-# removed for it.
+# A version updated or failed is never tried again: only a new version -
+# another sha256 on the shelf - is. Nor is one waiting, but for this (F1):
+# once this OpenFit's APP_LEVEL is above the level it waited on - an Update
+# OpenFit since, which restarts the user system, so within a minute of it -
+# it's tried once more, and installs, or waits afresh on the new level, or
+# fails. A note from before F1 has no level, and is tried again once too.
+# And the shelf not being there (no folder, no index that reads) is
+# nothing to do: no app is marked removed for it.
 
 LIBRARY_SYNC_SECONDS = 60
 
@@ -447,6 +455,12 @@ FAILED = "failed"
 REMOVED = "removed"
 NOTE_STATES = (UPDATED, WAITING, FAILED, REMOVED)
 NOTE_FIELDS = ("state", "at", "sha256", "changes", "reason")
+# The one optional field (F1): a waiting note's APP_LEVEL when it was noted,
+# a whole number from 1 to MAX_NOTE_LEVEL. Absent (a note from before F1,
+# or any other state's) or null reads as None, and only a waiting note may
+# have a number.
+NOTE_LEVEL = "level"
+MAX_NOTE_LEVEL = 1000
 
 # The change notes an app's index entry carries, as the Admin writes them
 # (admin_ops' CHANGE_NOTES and MAX_SUBJECT).
@@ -515,9 +529,21 @@ def _changes(raw):
     return [{k: c[k] for k in CHANGE_FIELDS} for c in raw if _valid_change(c)][:MAX_CHANGES]
 
 
+def _valid_level(note):
+    """A note's level, if it has one, as NOTE_LEVEL says: absent or null on
+    any note, else a waiting note's whole number (not a bool) from 1 to
+    MAX_NOTE_LEVEL."""
+    level = note.get(NOTE_LEVEL)
+    if level is None:
+        return True
+    return (note["state"] == WAITING and isinstance(level, int) and not isinstance(level, bool)
+            and 1 <= level <= MAX_NOTE_LEVEL)
+
+
 def _valid_note(note):
-    return (isinstance(note, dict) and set(note) == set(NOTE_FIELDS)
+    return (isinstance(note, dict) and set(note) - {NOTE_LEVEL} == set(NOTE_FIELDS)
             and note["state"] in NOTE_STATES
+            and _valid_level(note)
             and isinstance(note["at"], str) and bool(_STAMP.match(note["at"]))
             and (note["sha256"] is None or (isinstance(note["sha256"], str) and bool(_SHA256.match(note["sha256"]))))
             and isinstance(note["changes"], list) and len(note["changes"]) <= MAX_CHANGES
@@ -532,11 +558,13 @@ _bad_notes = [None]
 
 def read_notes(path):
     """The update record at `path`, {<app id>: {state, at, sha256,
-    changes, reason}}, read strictly: a file that isn't JSON, isn't a
-    mapping of library app ids (LIBRARY_APP_ID) to entries of exactly
-    NOTE_FIELDS - each its type, as sync_library_apps() writes them - is
-    treated as empty, and logged (once per change to it). No file is
-    empty too."""
+    changes, reason[, level]}}, read strictly: a file that isn't JSON,
+    isn't a mapping of library app ids (LIBRARY_APP_ID) to entries of
+    exactly NOTE_FIELDS, and NOTE_LEVEL if it likes - each its type, as
+    sync_library_apps() writes them - is treated as empty, and logged
+    (once per change to it). No file is empty too. The notes come back as
+    written: one without a level hasn't one added (note.get() reads it as
+    None)."""
     try:
         data = _read_regular(path, MAX_NOTES_BYTES)
         st = os.stat(path)
@@ -666,10 +694,26 @@ def _installed_files(folder):
     return files
 
 
-def _note(state, sha256, now, changes=(), reason=None):
+def _note(state, sha256, now, changes=(), reason=None, level=None):
+    """A note for the record. `level`, a waiting note's alone, is the
+    APP_LEVEL it waited on; no other note has the field."""
     if reason is not None:
         reason = reason if len(reason) <= MAX_REASON else reason[:MAX_REASON - 1] + "…"
-    return {"state": state, "at": now, "sha256": sha256, "changes": list(changes), "reason": reason}
+    note = {"state": state, "at": now, "sha256": sha256, "changes": list(changes), "reason": reason}
+    if level is not None:
+        note[NOTE_LEVEL] = level
+    return note
+
+
+def _outgrown(note):
+    """Whether a waiting note's version is due another try (F1): this
+    OpenFit's APP_LEVEL is above the level it waited on - or the note,
+    from before F1, doesn't say which. Never an updated, failed or removed
+    one's."""
+    if note["state"] != WAITING:
+        return False
+    level = note.get(NOTE_LEVEL)
+    return level is None or level < _apps.APP_LEVEL
 
 
 # A version found already installed as far as this OpenFit installs one -
@@ -704,8 +748,13 @@ def _follow(apps_dir, root, index, installed, note, now):
     if sha is not None and old == sha:
         return _DROP if note and note["state"] != UPDATED else _KEEP
     # A version tried before - swapped in, waiting or failed - is never
-    # tried again: only another one is.
-    if (note and note["state"] != REMOVED and note["sha256"] == sha) or _settled.get(app_id) == (sha, old):
+    # tried again: only another one is. But for one waiting on a lower app
+    # level than this OpenFit's now (F1): that's tried once more, whatever
+    # _settled holds (it records only versions whose files were found in
+    # already, which a waiting one's never were).
+    tried = bool(note) and note["state"] != REMOVED and note["sha256"] == sha
+    retry = tried and _outgrown(note)
+    if not retry and (tried or _settled.get(app_id) == (sha, old)):
         return _KEEP
     if sha is None:
         reason = "the app library's index doesn't say which version it has"
@@ -725,11 +774,15 @@ def _follow(apps_dir, root, index, installed, note, now):
             files = _update_files(root, index, source, app)
             if files == _installed_files(current.path):
                 _settled[app_id] = (sha, old)
-                return _KEEP
+                # A waiting version tried again and found in already: its
+                # warning no longer holds, and it isn't tried again.
+                return _DROP if retry else _KEEP
             _replace_app(apps_dir, app_id, files)
         except _Waiting as e:
+            # The level it waits on, so it's tried again only once this
+            # OpenFit's is higher: one try a rise, never a loop.
             _log(f"{app_id}: an update is waiting for a newer OpenFit: {e}")
-            return _note(WAITING, sha, now, reason=str(e))
+            return _note(WAITING, sha, now, reason=str(e), level=_apps.APP_LEVEL)
         except (AppError, LibraryError) as e:
             _log(f"couldn't update {app_id}: {e}")
             return _note(FAILED, sha, now, reason=str(e))
@@ -754,10 +807,13 @@ def sync_library_apps(apps_dir, library_dir, notes_path, now=None):
 
     Each event - updated, waiting, failed, removed - is noted in the
     update record at `notes_path` (read_notes()) and logged, one line.
-    A version waiting or failed isn't tried again until the shelf has
-    another; a waiting, failed or removed note goes once the app is
-    current again, and any app's once it's no longer on the volume
-    (app_present()). `now`, a UTC stamp, for the record (the tests').
+    A version updated or failed isn't tried again until the shelf has
+    another; nor one waiting, until this OpenFit's APP_LEVEL is above the
+    level its note waited on (or the note doesn't say: F1) - then once,
+    its fresh note updated, waiting on the new level, or failed. A
+    waiting, failed or removed note goes once the app is current again,
+    and any app's once it's no longer on the volume (app_present()).
+    `now`, a UTC stamp, for the record (the tests').
 
     -> {<app id>: its new note, or None where one was dropped}, for what
     changed in the record this run. Never raises for one app: a failure
