@@ -16,12 +16,17 @@ page as each library app's library_note.
    touched; no shelf, nothing done.
 3. The guards: a version needing a newer OpenFit waits, one that doesn't
    install or load fails - the old copy kept, loading, and neither tried
-   again until the shelf has another; an app gone from the shelf is
-   removed, left as it is.
+   again until the shelf has another (or, for one waiting, this OpenFit's
+   app level rises: 9); an app gone from the shelf is removed, left as it
+   is.
 4. Data and Home: untouched by an update; the next render runs the new code.
 5. update_app() still refuses a library app; no route reaches _replace_app().
 6. The record: written whole, read strictly, a bad one empty; library_note.
 7. The scheduler: library-sync every 60 seconds, and one run at startup.
+8. The page: Updated, What's new, and the notes.
+9. A waiting version, once the app level rises (F1): tried once more - it
+   installs, or waits afresh on the new level, never in a loop - while a
+   failed one never is; the waiting note's level, read and written.
 
 Every shelf here is published by the Admin's own publish_set(), so its
 layout and fingerprints are exactly the Admin's; nothing reads /data or
@@ -390,14 +395,15 @@ def test_a_version_needing_a_newer_openfit_waits_and_isnt_tried_again(env, monke
     result = sync(env)
 
     reason = "needs OpenFit app level 5; this OpenFit is level 4"
-    note = {"state": "waiting", "at": LATER, "sha256": waiting, "changes": [], "reason": reason}
+    note = {"state": "waiting", "at": LATER, "sha256": waiting, "changes": [], "reason": reason, "level": 4}
     assert result == {HELLO: note} and notes(env) == {HELLO: note}
     assert installed(env) == copy
     assert rendered(env) == {"type": "empty", "message": "version 1"}
     assert capsys.readouterr().out.splitlines() == [
         f"[library] {HELLO}: an update is waiting for a newer OpenFit: {reason}"]
 
-    # Not tried again - not even read - while the shelf has the same one.
+    # Not tried again - not even read - while the shelf has the same one
+    # (and this OpenFit the same app level: section 9).
     with monkeypatch.context() as m:
         spy = Spy(m, "_update_files", "_replace_app")
         assert sync(env, now="2026-10-29T09:02:00Z") == {}
@@ -747,6 +753,18 @@ def _note(**over):
     json.dumps({HELLO: _note(reason="x" * 501)}),
     json.dumps({HELLO: "updated"}),
     json.dumps({HELLO: _note(), "openfit.walk": _note(state="later")}),  # one bad entry: the whole file
+    # A waiting note's level (F1): a whole number from 1 to 1000, or null.
+    json.dumps({HELLO: _note(state="waiting", level=0)}),
+    json.dumps({HELLO: _note(state="waiting", level=True)}),
+    json.dumps({HELLO: _note(state="waiting", level="4")}),
+    json.dumps({HELLO: _note(state="waiting", level=1001)}),
+    json.dumps({HELLO: _note(state="waiting", level=4.0)}),
+    json.dumps({HELLO: _note(state="waiting", level=[4])}),
+    # Any other note's only as null.
+    json.dumps({HELLO: _note(level=4)}),
+    json.dumps({HELLO: _note(state="failed", reason="x", level=3)}),
+    json.dumps({HELLO: _note(state="removed", sha256=None, changes=[], level=1)}),
+    json.dumps({HELLO: _note(), "openfit.walk": _note(state="waiting", level=0)}),  # the whole file
 ])
 def test_the_record_is_read_strictly_and_a_bad_one_is_empty_and_logged_once(env, capsys, text):
     env.notes.write_text(text)
@@ -1109,3 +1127,212 @@ def test_the_notes_reach_the_page_only_as_text(client):
     # The pill is beside the head, in a line expandable() holds in its place.
     assert "item.appendChild(o.line || head);" in _js_function(page, "expandable")
     assert ".pill.a-upd{" in page and ".a-libnote{" in page
+
+
+# ---------- 9. a waiting version, once the app level rises (F1) ----------
+#
+# A version noted waiting is tried once more when this OpenFit's APP_LEVEL
+# is above the level the note waited on - as after an Update OpenFit, which
+# brings the new level and restarts the user system, whose startup sync
+# then runs - and only then: one try a rise, never a loop. A failed version
+# is never tried again. Each test sets the app level itself, so they hold
+# whatever APP_LEVEL is next.
+
+RISEN = "2026-10-29T09:02:00Z"
+AFTER = "2026-10-29T09:03:00Z"
+WALK = hello("w", "", **{"app.yaml": "id: walk\nsizes: [{w: 1, h: 1}]\n"})
+
+
+def at_level(monkeypatch, level):
+    """This OpenFit at app level `level`, as an Update OpenFit leaves it."""
+    monkeypatch.setattr(apps, "APP_LEVEL", level)
+
+
+def untried(env, monkeypatch, now):
+    """A sync that mustn't try the app: nothing of the shelf's read but its
+    index (and the record beside it), nothing swapped. Its result."""
+    read = []
+    with monkeypatch.context() as m:
+        real = shelf._read_regular
+        m.setattr(shelf, "_read_regular", lambda path, limit: read.append(path) or real(path, limit))
+        spy = Spy(m, "_update_files", "_read_files", "_replace_app")
+        result = sync(env, now=now)
+    assert spy.calls == []
+    assert set(read) <= {os.path.join(os.path.realpath(env.library), "index.json"), str(env.notes)}
+    return result
+
+
+def test_a_version_that_waited_on_a_lower_level_installs_once_the_level_rises(env, monkeypatch, capsys):
+    at_level(monkeypatch, 3)
+    publish(env, {"hello": hello(1)})
+    install(env)
+    old = shelf.fingerprint(str(env.apps / HELLO))
+    publish(env, {"hello": hello(2, "requires: 4\n")}, changes={"hello": [CHANGE]})
+    waiting = listed_sha(env)
+    noted = sync(env)[HELLO]
+    assert noted == {"state": "waiting", "at": LATER, "sha256": waiting, "changes": [],
+                     "reason": "needs OpenFit app level 4; this OpenFit is level 3", "level": 3}
+
+    at_level(monkeypatch, 4)  # Update OpenFit
+    capsys.readouterr()
+    result = sync(env, now=RISEN)
+
+    # In, as any update: byte for byte the shelf's, with the index's notes.
+    note = {"state": "updated", "at": RISEN, "sha256": waiting, "changes": [CHANGE], "reason": None}
+    assert result == {HELLO: note} and notes(env) == {HELLO: note}
+    assert installed(env) == on_shelf(env)
+    assert shelf.fingerprint(str(env.apps / HELLO)) == waiting
+    assert rendered(env) == {"type": "empty", "message": "version 2"}
+    assert capsys.readouterr().out.splitlines() == [f"[library] updated {HELLO} ({old[:7]} → {waiting[:7]})"]
+    assert untried(env, monkeypatch, AFTER) == {}
+
+
+@pytest.mark.parametrize("noted_at, now_at", [(4, 4), (5, 4)], ids=["the same level", "a lower one (an Undo)"])
+def test_a_version_waiting_isnt_tried_again_until_the_level_is_above_its_own(env, monkeypatch, noted_at, now_at):
+    at_level(monkeypatch, noted_at)
+    publish(env, {"hello": hello(1)})
+    install(env)
+    copy = installed(env)
+    publish(env, {"hello": hello(2, f"requires: {noted_at + 1}\n")})
+    note = sync(env)[HELLO]
+    assert (note["state"], note["level"]) == ("waiting", noted_at)
+
+    at_level(monkeypatch, now_at)
+    assert untried(env, monkeypatch, RISEN) == {}
+    assert notes(env) == {HELLO: note}
+    assert installed(env) == copy
+    assert rendered(env) == {"type": "empty", "message": "version 1"}
+
+
+def test_a_version_still_too_new_after_the_rise_waits_afresh_and_once(env, monkeypatch, capsys):
+    at_level(monkeypatch, 3)
+    publish(env, {"hello": hello(1)})
+    install(env)
+    copy = installed(env)
+    publish(env, {"hello": hello(2, "requires: 5\n")})
+    waiting = listed_sha(env)
+    assert sync(env)[HELLO]["level"] == 3
+
+    at_level(monkeypatch, 4)
+    capsys.readouterr()
+    result = sync(env, now=RISEN)
+
+    reason = "needs OpenFit app level 5; this OpenFit is level 4"
+    note = {"state": "waiting", "at": RISEN, "sha256": waiting, "changes": [], "reason": reason, "level": 4}
+    assert result == {HELLO: note} and notes(env) == {HELLO: note}
+    assert installed(env) == copy
+    assert rendered(env) == {"type": "empty", "message": "version 1"}
+    assert capsys.readouterr().out.splitlines() == [
+        f"[library] {HELLO}: an update is waiting for a newer OpenFit: {reason}"]
+    # Waiting on level 4 now: not tried again at 4. No loop.
+    assert untried(env, monkeypatch, AFTER) == {}
+    assert notes(env) == {HELLO: note}
+
+
+@pytest.mark.parametrize("requires, state", [(4, "updated"), (5, "waiting")])
+def test_a_waiting_note_from_before_f1_reads_and_its_version_is_tried_again_once(env, monkeypatch, requires, state):
+    """A record written before F1: its waiting note has no level. It reads
+    - the other notes kept - and its version is tried once more."""
+    at_level(monkeypatch, 4)
+    publish(env, {"hello": hello(1), "walk": WALK})
+    install(env)
+    install(env, "walk")
+    copy = installed(env)
+    publish(env, {"hello": hello(2, f"requires: {requires}\n"), "walk": WALK})
+    waiting = listed_sha(env)
+    walk = {"state": "updated", "at": NOW, "sha256": listed_sha(env, "walk"), "changes": [CHANGE], "reason": None}
+    record = {
+        HELLO: {"state": "waiting", "at": NOW, "sha256": waiting, "changes": [],
+                "reason": f"needs OpenFit app level {requires}; this OpenFit is level 3"},
+        f"{SOURCE}.walk": walk,
+    }
+    env.notes.write_text(json.dumps(record))
+    assert shelf.read_notes(str(env.notes)) == record
+
+    result = sync(env, now=RISEN)
+
+    assert list(result) == [HELLO]
+    note = result[HELLO]
+    assert (note["state"], note["at"], note["sha256"]) == (state, RISEN, waiting)
+    assert notes(env) == {HELLO: note, f"{SOURCE}.walk": walk}
+    if state == "updated":
+        assert "level" not in note
+        assert installed(env) == on_shelf(env)
+    else:
+        assert note["level"] == 4
+        assert installed(env) == copy
+    assert untried(env, monkeypatch, AFTER) == {}
+
+
+def test_a_failed_version_is_never_tried_again_even_once_the_level_rises(env, monkeypatch):
+    at_level(monkeypatch, 3)
+    publish(env, {"hello": hello(1)})
+    install(env)
+    copy = installed(env)
+    broken = hello(2)
+    broken["app.py"] = "raise RuntimeError('broken at import')\n"
+    publish(env, {"hello": broken})
+    note = sync(env)[HELLO]
+    assert note["state"] == "failed" and "level" not in note
+
+    at_level(monkeypatch, 4)
+    assert untried(env, monkeypatch, RISEN) == {}
+    # A record that says level null on it, as allowed: still never.
+    env.notes.write_text(json.dumps({HELLO: {**note, "level": None}}))
+    assert untried(env, monkeypatch, AFTER) == {}
+    assert notes(env) == {HELLO: {**note, "level": None}}
+    assert installed(env) == copy
+    assert rendered(env) == {"type": "empty", "message": "version 1"}
+
+
+def test_a_level_reads_back_on_a_waiting_note_and_on_any_other_only_as_null(env):
+    record = {
+        HELLO: _note(state="waiting", changes=[], level=1),
+        "openfit.walk": _note(state="waiting", changes=[], level=1000),
+        "openfit.run": _note(state="waiting", changes=[], level=None),
+        "openfit.ride": _note(state="waiting", changes=[]),  # from before F1
+        "openfit.swim": _note(level=None),
+        "openfit.row": _note(state="failed", changes=[], reason="x", level=None),
+        "openfit.hike": _note(state="removed", sha256=None, changes=[], level=None),
+    }
+    shelf._write_notes(str(env.notes), record)
+    assert shelf.read_notes(str(env.notes)) == record
+
+
+def test_the_waiting_note_carries_the_app_level_it_waited_on_and_no_other_note_has_one(env, monkeypatch):
+    at_level(monkeypatch, 7)
+    publish(env, {"hello": hello(1)})
+    install(env)
+    publish(env, {"hello": hello(2, "requires: 8\n")})
+
+    note = sync(env)[HELLO]
+
+    assert note["state"] == "waiting" and note["level"] == apps.APP_LEVEL == 7
+    assert note["reason"] == "needs OpenFit app level 8; this OpenFit is level 7"
+    assert notes(env)[HELLO]["level"] == 7
+    # The page isn't told it: library_note is as ever.
+    assert shelf.library_note(note) == {"state": "waiting", "at": LATER, "changes": [], "reason": note["reason"]}
+    # Another version, and the update's note has none.
+    publish(env, {"hello": hello(3)})
+    assert "level" not in sync(env, now=RISEN)[HELLO]
+
+
+def test_a_waiting_version_found_in_already_when_tried_again_drops_its_note(env, monkeypatch):
+    """The version that waited is the installed one as far as an install
+    goes - the shelf has a file an install never takes, so the
+    fingerprints differ: tried again, its files are found in already and
+    the warning goes, not tried every minute after."""
+    at_level(monkeypatch, 4)
+    publish(env, {"hello": hello(2, "requires: 4\n", **{"notes..txt": "left out\n"})})
+    install(env)
+    waiting = listed_sha(env)
+    assert shelf.fingerprint(str(env.apps / HELLO)) != waiting
+    env.notes.write_text(json.dumps({HELLO: {
+        "state": "waiting", "at": NOW, "sha256": waiting, "changes": [],
+        "reason": "needs OpenFit app level 4; this OpenFit is level 3", "level": 3}}))
+    folder = os.stat(env.apps / HELLO).st_ino
+
+    assert sync(env, now=RISEN) == {HELLO: None}
+    assert notes(env) == {}
+    assert os.stat(env.apps / HELLO).st_ino == folder  # never swapped
+    assert untried(env, monkeypatch, AFTER) == {}

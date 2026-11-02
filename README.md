@@ -27,10 +27,9 @@ available to whatever apps you point at it, including ones you write yourself.
 
 ## Status
 
-Early, and the current focus is the **data engine**: ingestion plugins, a
-normalised derived dataset with per-source provenance, and the API that exposes
-it. The web UI in this repo is a data console — what the dataset holds, how
-continuous it is, and which source wins each metric — not the product.
+Built, and in testing-driven use: each thing testing turns up becomes a small
+slice of its own. [STATUS.md](STATUS.md) says what's built, what's next and
+what's parked.
 
 ## What's here today
 
@@ -389,10 +388,11 @@ takes it up within a minute (and at every start), no restart - the files
 swapped in as an Update swaps them, the app's data, tiles and settings
 untouched - and its row shows **Updated** for two weeks; click it for
 **What's new**, the commits that changed it. A new version this OpenFit
-can't run waits ("An update is waiting for a newer OpenFit."), one that
-won't install or load is skipped, the old copy kept running ("An update
-couldn't be installed: …"), and an app taken out of the library stays as
-it is, no longer updated.
+can't run waits ("An update is waiting for a newer OpenFit.") and installs
+itself within a minute of the next Update OpenFit, one that won't install
+or load is skipped, the old copy kept running ("An update couldn't be
+installed: …"), and an app taken out of the library stays as it is, no
+longer updated.
 
 **Browse**, beside Add Application, lists the apps in the libraries your admin
 publishes - OpenFit's own and any organisation repo's, each app tagged with

@@ -1,7 +1,8 @@
 # OpenFit status
 
-_Where things stand, as of 2 Nov 2026 (after C1, #112). The phase plan this
-replaces is archived at [docs/history/roadmap.md](docs/history/roadmap.md)._
+_Where things stand, as of 2 Nov 2026 (after F1, the waiting-update retry).
+The phase plan this replaces is archived at
+[docs/history/roadmap.md](docs/history/roadmap.md)._
 
 ## What OpenFit is
 
@@ -38,7 +39,8 @@ panels, inputs (field, dropdown, file), timelines and rails, grids, rows and
 columns, donuts and bars, images and strips, and a tile's views (switch,
 toggle, pager, choose) flip between versions of a tile without a round trip.
 Browse installs apps from the shelf, and an installed library app updates
-itself when its library publishes a new version. See
+itself when its library publishes a new version - one that needs a newer
+OpenFit waits, then installs itself once OpenFit is updated (F1). See
 [app-host.md](docs/architecture/app-host.md),
 [input-primitives.md](docs/architecture/input-primitives.md) and
 [app-authoring-lessons.md](docs/architecture/app-authoring-lessons.md).
@@ -87,8 +89,8 @@ published to the shelf as `openfitavi.frms`, with its own tests.
   addition declares `requires:` that level.
 - **Deploy order for app-facing changes.** Merge OpenFit, run Update OpenFit,
   then push the app change. An app pushed too early waits safely ("waiting
-  for a newer OpenFit"), its installed copy unchanged. That version isn't
-  tried again, so the app's next push brings it in.
+  for a newer OpenFit"), its installed copy unchanged, then installs by
+  itself within a minute of the next Update OpenFit.
 - **Privacy-first, no telemetry.** A user container reaches only its own
   device sources; the Admin is the only part that talks to GitHub.
 - **One account per container**, and still no `user_id`: more people means

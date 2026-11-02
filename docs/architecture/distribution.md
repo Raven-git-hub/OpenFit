@@ -373,9 +373,12 @@ within a minute every installed copy is the new one
   event, `updated` (with the change notes the index had), `waiting` (it
   needs a newer OpenFit), `failed` (why) or `removed` (it, or its source,
   left the shelf - the copy stays, no longer updated). A version waiting or
-  failed is never tried again: only another one is. `GET /api/apps` gives
-  each library app its `library_note`; the Applications card shows an
-  **Updated** pill for 14 days, opening What's new, or the note's sentence.
+  failed is never tried again: only another one is - but a waiting one is
+  tried once more when the app level rises past the one it waited on, so it
+  installs within a minute of the Update OpenFit it was waiting for (F1).
+  `GET /api/apps` gives each library app its `library_note`; the
+  Applications card shows an **Updated** pill for 14 days, opening What's
+  new, or the note's sentence.
 - **What changed** comes from the Admin: each app's index entry carries
   `changes`, the ten newest commits touching its folder, merges left out
   ([admin.md](admin.md#change-notes-b3)).

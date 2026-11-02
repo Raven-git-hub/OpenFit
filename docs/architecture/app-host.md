@@ -2030,21 +2030,32 @@ left alone without a note.)
 3. **Its cached load is dropped**, so the next render runs the new code.
 
 Its data, its Home tiles and their config are never touched: no database
-work, no layout change. A version `waiting` or `failed` is never tried
-again - not even read - until the shelf has another (a different
-`sha256`). An app the index no longer lists, or whose source has left the
-shelf, is `removed`: left exactly as it is, no longer updated; back on the
-shelf with a new version, it updates again.
+work, no layout change. A version `failed` is never tried again - not
+even read - until the shelf has another (a different `sha256`); nor is one
+`waiting`, but for one thing (F1): once this OpenFit's `APP_LEVEL` is above
+the `level` its note waited on - an Update OpenFit since, whose restart
+runs the sync, so within a minute of it - that version is tried once more,
+whatever the run has remembered of it. It goes in (`updated`, with the
+index's change notes), or waits afresh, its note's `level` the new one (so
+one try a rise, never a loop), or fails for another reason (`failed`,
+never tried again); its files found in already, the note goes. A note from
+before F1 has no `level`, and its version is tried once too. An app the
+index no longer lists, or whose source has left the shelf, is `removed`:
+left exactly as it is, no longer updated; back on the shelf with a new
+version, it updates again.
 
 **The record**, `/data/app_updates.json` (`APP_UPDATES_PATH`,
 `$OPENFIT_APP_UPDATES_PATH`): `{<app id>: {state, at, sha256, changes,
-reason}}`, each library app's latest event - `state` `updated`, `waiting`,
-`failed` or `removed`; `at` a UTC stamp; `sha256` the version it's about
-(`null` for removed); `changes` the change notes the index had for it at the
-update (the Admin's, below), `[]` otherwise; `reason` why it waits or
-failed. Written whole (a temp file, flushed, renamed over it) and read
-strictly (`read_notes()`): a file that isn't exactly that is taken as empty,
-logged once. A waiting, failed or removed note goes once the app is current
+reason[, level]}}`, each library app's latest event - `state` `updated`,
+`waiting`, `failed` or `removed`; `at` a UTC stamp; `sha256` the version
+it's about (`null` for removed); `changes` the change notes the index had
+for it at the update (the Admin's, below), `[]` otherwise; `reason` why it
+waits or failed; and, the one optional field, `level` (F1): a `waiting`
+note's `APP_LEVEL` when it was noted, a whole number from 1 to 1000 -
+absent or `null` on any other note, and on a note from before F1. Written
+whole (a temp file, flushed, renamed over it) and read strictly
+(`read_notes()`): a file that isn't exactly that is taken as empty, logged
+once. A waiting, failed or removed note goes once the app is current
 again, and any app's once it's no longer on the volume, so one installed
 again starts afresh. Each event is one line in the log, never a file's
 contents: `[library] updated openfitavi.frms (a1b2c3d → e4f5a6b)`, the

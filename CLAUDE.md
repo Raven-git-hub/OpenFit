@@ -262,8 +262,10 @@ them), what's next and what's parked.
   and an app that uses it declares `requires:` that level. **The deploy
   order** for an app-facing change: merge OpenFit, run Update OpenFit,
   then push the app change; an app pushed too early waits safely
-  ("waiting for a newer OpenFit"), its installed copy unchanged, and
-  that version isn't tried again, so the app's next push brings it in)
+  ("waiting for a newer OpenFit"), its installed copy unchanged, then
+  installs by itself within a minute of the next Update OpenFit (F1:
+  `shelf.py` tries a waiting version again once `APP_LEVEL` is above the
+  level it waited on)
   and `replaces` (a
   list of ≤ `MAX_REPLACES` 5 ids passing `is_app_id()`, none twice, never
   the library app's own full id — a custom app's own bare id isn't refused,
@@ -473,8 +475,14 @@ them), what's next and what's parked.
   source entry, or the app not in its `apps`) → `removed`, left as it
   is; current → nothing (a `waiting`/`failed`/`removed` note dropped);
   a version already noted (`updated`, `waiting`, `failed`: the same
-  `sha256`) → never tried again; else, under `_write_lock` (the app
-  found and hashed afresh), `_update_files()`: the folders as
+  `sha256`) → never tried again — but a `waiting` one whose `level` is
+  None (a note from before F1) or below `APP_LEVEL` now (`_outgrown()`,
+  read live from `apps`: an Update OpenFit since, its restart's sync
+  within a minute) is tried once more, whatever `_settled` holds: in it
+  goes (`updated`, the index's `changes`), or a fresh `waiting` on the new
+  level (one try a rise, never a loop), or `failed` (never retried); its
+  files found in already → the note dropped; else, under `_write_lock`
+  (the app found and hashed afresh), `_update_files()`: the folders as
   `list_shelf()` finds them, its `app.yaml` read — `requires` first,
   beyond `APP_LEVEL` → `waiting` (`_Waiting`, `level_problem()`'s
   words), its own id its bare name, no sub-folder (`HAS_FOLDERS`),
@@ -487,12 +495,16 @@ them), what's next and what's parked.
   Something unforeseen is that app's `failed`, never the others'. The
   update record, `/data/app_updates.json` (`APP_UPDATES_PATH`,
   `$OPENFIT_APP_UPDATES_PATH`; conftest's in `tmp_path`): `{<library app
-  id>: {state, at, sha256, changes, reason}}`, each app's latest event —
-  `state` in `NOTE_STATES` (`updated`/`waiting`/`failed`/`removed`), `at`
+  id>: {state, at, sha256, changes, reason[, level]}}`, each app's latest
+  event — `state` in `NOTE_STATES` (`updated`/`waiting`/`failed`/`removed`), `at`
   a UTC stamp, `sha256` the version (null for removed), `changes` the
   index entry's well-formed change notes at the update (≤ `MAX_CHANGES`
   10 `{sha: 12 hex, subject ≤ 200, date ISO}`; `[]` otherwise), `reason`
-  (≤ `MAX_REASON` 500); written whole (`_write_notes()`: `mkstemp` beside
+  (≤ `MAX_REASON` 500), and `level` (F1, `NOTE_LEVEL`, the one optional
+  field: a `waiting` note's `APP_LEVEL` when noted, a whole number 1–
+  `MAX_NOTE_LEVEL` 1000, not a bool; absent — any other state's, or a
+  note from before F1 — or null reads as None, and only a `waiting` note
+  may have a number); written whole (`_write_notes()`: `mkstemp` beside
   it, fsync, `os.replace`), read strictly (`read_notes()`: anything else
   → `{}`, logged once per change of the file); an app no longer on the
   volume (`app_present()`) loses its note. One log line an event, never
@@ -500,8 +512,9 @@ them), what's next and what's parked.
   <new fp7>)`, `… is waiting for a newer OpenFit: …`, `couldn't update
   …: …`, `… is no longer in the app library, so it won't be updated`.
   `library_note(note)` → `{state, at, changes, reason}` (less the
-  `sha256`), which `GET /api/apps` adds to each library app's summary
-  as `library_note` (null for none; a custom app has no such key).
+  `sha256` and any `level`), which `GET /api/apps` adds to each library
+  app's summary as `library_note` (null for none; a custom app has no
+  such key).
   Routes (`app/main.py`): `GET /api/library` → `list_shelf()`; `GET
   /api/library/<source>/<app>` → `{id, name, files: [{name, text}]}`,
   `app.yaml`, `app.py`, then the rest by name; `POST
@@ -3066,7 +3079,8 @@ See `docs/architecture/openfit-overview-and-design-pathway.md` and `STATUS.md`
 `docs/history/roadmap.md`).
 These are NOT yet in the code — don't assume they exist until a PR lands them, and
 when you implement one, update the Data model section above and the README in the
-same PR:
+same PR — and `STATUS.md` whenever a slice changes what's built, what's next or
+what's parked:
 - **The engine:** the `metrics` table + canonical vocabulary landed in migration
   `005`; weight folded in as `weight_kg` in `006`; `sessions` in `007` (sleep,
   then workouts with no further migration); the stored derived value in `008`
@@ -3676,6 +3690,14 @@ same PR:
   for `BUILD_CACHE_KEEP` (a week), never a volume, a failure only said.
   Deploy: rebuild the image (Update OpenFit); images built before the
   label aren't cleared by it - `docker image prune` once, by hand.
+  Then F1 (no migration, no route change; `app/shelf.py`): a waiting
+  library-app version installs after Update OpenFit - a `waiting` note
+  records the `level` it waited on, and `sync_library_apps()` tries that
+  version once more when `APP_LEVEL` is above it (or the note, from
+  before F1, has none): `updated`, a fresh `waiting` on the new level, or
+  `failed`, never a loop; `failed` and `updated` still never retried.
+  Deploy: Update OpenFit; a version already waiting installs within a
+  minute of it.
   Still to come, in order: L4;
   non-GitHub hosts, HTTPS or token access, and per-user repo visibility
   are out; installing an app with folders
