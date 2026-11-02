@@ -1,6 +1,6 @@
 # OpenFit status
 
-_Where things stand, as of 2 Nov 2026 (after C2, app records).
+_Where things stand, as of 2 Nov 2026 (after C3, report files).
 The phase plan this replaces is archived at
 [docs/history/roadmap.md](docs/history/roadmap.md)._
 
@@ -24,8 +24,8 @@ canonical vocabulary in `app/metrics.py`. Where sources overlap, a per-metric
 source role (or the default precedence) picks one stored derived value a day,
 tagged with its source; the raw rows stay. Beside them, each app's own
 records (C2): a private JSON store, `app_records`, in collections the app
-names. Schema changes are numbered, additive migrations (`app/migrations/`,
-at `011`); device credentials are encrypted at rest. See
+names; and the report files apps make (C3), `app_files`. Schema changes are
+numbered, additive migrations (`app/migrations/`, at `012`); device credentials are encrypted at rest. See
 [data-consolidation-model.md](docs/architecture/data-consolidation-model.md),
 [metric-schema-v2.md](docs/architecture/metric-schema-v2.md) and
 [apps-as-source.md](docs/architecture/apps-as-source.md).
@@ -34,13 +34,20 @@ at `011`); device credentials are encrypted at rest. See
 `app.py`: `render(ctx, cfg)` returns a display spec the page draws as a tile,
 and `handle(ctx, action, payload)` writes under the app's own source. The
 contract is versioned by the **app level**, `APP_LEVEL` in `app/apps.py`, now
-5; the list above it says what each level added, and an app declares the
+6; the list above it says what each level added, and an app declares the
 level it needs with `requires:`. Anything an app keeps that isn't a reading
 or a session - a report, a log, a saved list - is a record, in its own
 private JSON store (C2, level 5): read in `render()` and `handle()`, written
 in `handle()` inside the action's transaction, at most 256 KB a record and
-50 MB an app, kept at uninstall and shown, and removed, under Your data. The spec types cover numbers, lines,
-panels, inputs (field, dropdown, file), timelines and rails, grids, rows and
+50 MB an app, kept at uninstall and shown, and removed, under Your data.
+Documents the user keeps - a monthly report - are report files (C3, level
+6): HTML an app saves from `handle()` (often from a button input), lists with
+`ctx.files()` and offers with `ctx.download()`; always handed over as a
+download, never shown inside OpenFit, a PDF the browser's Print; 10 MB a
+file, 200 MB and 1000 files an app, kept at uninstall, and downloaded or
+removed under Your data. Records and files together resolve core item 2 (FRMS's report
+store), more generally than FRMS asked. The spec types cover numbers, lines,
+panels, inputs (field, dropdown, file, button), downloads, timelines and rails, grids, rows and
 columns, donuts and bars, images and strips, and a tile's views (switch,
 toggle, pager, choose) flip between versions of a tile without a round trip.
 Browse installs apps from the shelf, and an installed library app updates
@@ -110,10 +117,6 @@ published to the shelf as `openfitavi.frms`, with its own tests.
 
 ## Next
 
-- **C3, report files**: an app produces HTML reports, always served as a
-  download, never shown inside OpenFit, PDF by the browser's Print; privacy
-  inside a downloaded report is the app author's. With C2 it resolves core
-  item 2 (FRMS's report store), more generally than FRMS asked.
 - **C4, per-app settings**: an app's own app-wide settings, declared in its
   manifest and set from a settings form, kept in the reserved `_settings`
   records collection C2 left for it.

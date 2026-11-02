@@ -3121,7 +3121,7 @@ def browse_shelf(tmp_path, monkeypatch):
                      "app.py": "def render(ctx, cfg):\n    return ctx.empty('<i>hi</i>')\n",
                      "notes.txt": "stride: 0.75 m\n"},
             "added": {"app.yaml": "id: added\nname: Added\nsizes: [{w: 1, h: 1}]\n"},
-            "newer": {"app.yaml": "id: newer\nname: Newer\nrequires: 6\nsizes: [{w: 1, h: 1}]\n"},
+            "newer": {"app.yaml": "id: newer\nname: Newer\nrequires: 7\nsizes: [{w: 1, h: 1}]\n"},
             "heir": {"app.yaml": "id: heir\nname: Heir\nreplaces: [old]\nsizes: [{w: 1, h: 1}]\n"},
             "deep": {"app.yaml": "id: deep\nname: Deep\nsizes: [{w: 1, h: 1}]\n", "assets/x.txt": "x"},
         },
@@ -7624,6 +7624,7 @@ ORPHAN_PARTS = [
     "$", "el", "num", "orphans", "loadAppSources", "orphanRow", "orphanMetrics", "countOf",
     "appDataSummary", "appDataCounts", "recordsOf", "sizeText", "openRemoveAppData", "openModal",
     "paintSources", "orphanLines", "fillSources", "sourceList", "expandable",
+    "orphanPanel", "orphanFiles", "filesOf", "checkedDownload",
 ]
 
 ORPHAN_HARNESS = r"""
@@ -7640,6 +7641,17 @@ ORPHAN_HARNESS = r"""
         calls.push([id, metric]); listing = AFTER_; return copy(REPLY_);
       },
     };
+    // An uninstalled app's report files (C3): listed, each one's address,
+    // and one deleted - each call noted.
+    let FILES_ = [];
+    api.appFiles = async id => { calls.push(['files', id]); return {ok:true, id, files:copy(FILES_)}; };
+    api.appFileUrl = (id, name) => '/api/app/'+id+'/files/'+name;
+    api.removeAppFile = async (id, name) => {
+      calls.push(['delete-file', id, name]); FILES_ = FILES_.filter(f => f.name!==name); return {ok:true};
+    };
+    // A download's HEAD: the status the test says, noted.
+    let HEAD_STATUS = 200;
+    const apiFetch = async (url, opts) => { calls.push(['fetch', url, opts]); return {ok:HEAD_STATUS===200, status:HEAD_STATUS}; };
     const loadData = () => loads.push('data'), loadHome = () => loads.push('home');
     // The rest of the card, which these tests don't look at.
     const cardTitle = t => el('h3', null, esc(t));
@@ -7820,7 +7832,7 @@ def test_remove_data_confirms_what_goes_then_calls_the_route_and_refreshes(clien
     # the listing it refreshes to is the server's own.
     reply = _sent(client.delete("/api/app-sources/old"))
     after = client.get("/api/app-sources").get_json()
-    assert reply == {"ok": True, "removed": {"metrics": 3, "sessions": 0, "samples": 0, "records": 0}}
+    assert reply == {"ok": True, "removed": {"metrics": 3, "sessions": 0, "samples": 0, "records": 0, "files": 0}}
     assert [a["id"] for a in after] == ["steps"]
     conn = sqlite3.connect(main.app.config["DB_PATH"])
     assert conn.execute("SELECT COUNT(*) FROM metrics WHERE source = 'app:old'").fetchone()[0] == 0
@@ -7888,7 +7900,7 @@ def test_a_metrics_remove_data_in_the_orphan_row_takes_only_that_metric(client, 
     before = client.get("/api/app-sources").get_json()
     reply = _sent(client.delete("/api/app-sources/old/steps"))
     after = client.get("/api/app-sources").get_json()
-    assert reply == {"ok": True, "removed": {"metrics": 1, "sessions": 0, "samples": 0, "records": 0}}
+    assert reply == {"ok": True, "removed": {"metrics": 1, "sessions": 0, "samples": 0, "records": 0, "files": 0}}
     assert [(a["id"], a["metrics"]) for a in after] == [("old", ["weight_kg"]), ("steps", ["steps"])]
     conn = sqlite3.connect(main.app.config["DB_PATH"])
     assert conn.execute(
@@ -7929,7 +7941,7 @@ def test_your_datas_remove_data_takes_only_that_rows_metric(client, orphaned_app
     assert "app:old" in roles["weight_kg"]["sources"]
     reply = _sent(client.delete("/api/app-sources/old/weight_kg"))
     after = client.get("/api/app-sources").get_json()
-    assert reply == {"ok": True, "removed": {"metrics": 2, "sessions": 0, "samples": 0, "records": 0}}
+    assert reply == {"ok": True, "removed": {"metrics": 2, "sessions": 0, "samples": 0, "records": 0, "files": 0}}
     # Garmin's weigh-in, and old's steps, are still there.
     assert client.get("/api/source-roles").get_json()["weight_kg"]["sources"] == ["garmin"]
     assert [(a["id"], a["metrics"]) for a in after] == [("old", ["steps"]), ("steps", ["steps"])]
@@ -7983,7 +7995,7 @@ def test_an_orphan_with_no_readings_left_says_remove_all_data_takes_the_rest(cli
 @pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
 def test_the_summary_counts_every_kind_of_row(client):
     page = _page(client)
-    script = "\n".join(_js(page, n) for n in ["num", "countOf", "appDataSummary", "recordsOf", "sizeText"]) + """
+    script = "\n".join(_js(page, n) for n in ["num", "countOf", "appDataSummary", "recordsOf", "filesOf", "sizeText"]) + """
         const metricName = k => ({weight_kg:'Weight', steps:'Steps'})[k] || k;
         console.log(JSON.stringify([
           appDataSummary({metrics:['weight_kg'], readings:1, sessions:0, samples:0}),
@@ -8002,7 +8014,7 @@ def test_the_summary_counts_every_kind_of_row(client):
 def test_the_summary_counts_records_and_their_size(client):
     page = _page(client)
     script = "\n".join(_js(page, n) for n in
-                       ["num", "countOf", "appDataSummary", "appDataCounts", "recordsOf", "sizeText"]) + """
+                       ["num", "countOf", "appDataSummary", "appDataCounts", "recordsOf", "filesOf", "sizeText"]) + """
         const metricName = k => ({weight_kg:'Weight', steps:'Steps'})[k] || k;
         const rec = (count, bytes) => ({count, bytes});
         console.log(JSON.stringify({
@@ -8282,3 +8294,227 @@ def test_audio_404_when_the_clip_is_absent(client, tmp_path, monkeypatch):
     assert client.get("/audio/connected-sources.mp3").status_code == 404
     assert client.get("/audio/..%2Ftracker.db").status_code == 404
     assert client.get("/audio/../tracker.db").status_code == 404
+
+
+# ---------- report files (C3): the button, the download, Your data ----------
+#
+# An app makes a report from a button input (POST the action with {key:
+# true}), lists it as a download - an <a download> to its route, the
+# label as text - and an uninstalled app's files are listed in its opened
+# row, each with Download and Delete.
+
+BUTTON_PARTS = INPUT_PARTS + ["specButton", "downloadSpec", "checkedDownload"]
+
+BUTTON_HARNESS = r"""
+    api.appFileUrl = (id, name) => '/api/app/'+encodeURIComponent(id)+'/files/'+encodeURIComponent(name);
+    const fetches = [];
+    let headStatus = 200;
+    async function apiFetch(url, opts){ fetches.push([url, opts]); return {ok:headStatus===200, status:headStatus}; }
+"""
+
+
+def _button_script(page, scenario):
+    return (
+        MINI_DOM + "\n".join(_js(page, n) for n in BUTTON_PARTS) + INPUT_HARNESS + BUTTON_HARNESS
+        + "(async () => {\n" + scenario + "\nconsole.log(JSON.stringify(r));\n})()"
+        + ".catch(e => { console.error(e); process.exit(1); });"
+    )
+
+
+BUTTON = {"type": "input", "key": "make", "action": "report", "label": "Make <b>October</b>'s report",
+          "kind": "button", "unit": None, "options": None, "accept": None}
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
+def test_a_button_input_posts_key_true_to_the_action_route(client):
+    page = _page(client)
+    assert "if(s.kind==='button') return specButton(s, appId);" in page
+    assert "download: (s, name, appId) => downloadSpec(s, appId)," in page
+    script = _button_script(page, f"""
+        const box = renderSpec({json.dumps(BUTTON)}, 'Reports', 'reports');
+        const row = box.children.find(c => c.className==='row');
+        const btn = row.children[0];
+        const msg = box.children.find(c => c.className==='m');
+        r.drawn = {{cls:box.className, kids:box.children.map(c => c.className), row:row.children.map(c => c.tag),
+                   btn:[btn.className, btn.type, btn.textContent, !!btn.disabled],
+                   html:[box, ...box.querySelectorAll('*')].map(n => n._html).join(''), msg:msg.attrs.role}};
+        let pending = btn.onclick();
+        r.busy = !!btn.disabled;
+        release(); release = null;
+        await pending;
+        r.sent = calls.splice(0);
+        r.repaints = repaints.splice(0);
+        r.after = !!btn.disabled;
+        // A refusal shows under it, and nothing is redrawn.
+        reply = {{ok:false, error:'No duties to report on'}};
+        pending = btn.onclick();
+        release(); release = null;
+        await pending;
+        r.refused = [msg.textContent, repaints.length, !!btn.disabled];
+        calls.splice(0);
+        // Drawn for no app, it's off and sends nothing.
+        const none = renderSpec({json.dumps(BUTTON)}, 'Reports', null);
+        const off = none.children[0].children[0];
+        await off.onclick();
+        r.none = [!!off.disabled, calls.length];
+    """)
+    result = _node(script)
+
+    assert result["drawn"] == {
+        "cls": "spec-input", "kids": ["row", "m"], "row": ["button"],
+        "btn": ["btn sm press", "button", "Make <b>October</b>'s report", False], "html": "", "msg": "status"}
+    assert result["busy"] is True and result["after"] is False
+    assert result["sent"] == [["reports", "report", {"make": True}, {"for": "reports"}]]
+    assert result["repaints"] == [["reports", {"type": "empty", "message": "fresh"}]]
+    assert result["refused"] == ["No duties to report on", 0, False]
+    assert result["none"] == [True, 0]
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
+def test_a_download_is_an_a_download_to_its_route_with_its_label_as_text(client):
+    page = _page(client)
+    spec = {"type": "download", "name": "fatigue-2026-10.html", "label": "October <img src=x onerror=alert(1)>"}
+    script = _button_script(page, f"""
+        const look = box => {{
+          const a = box.children[0];
+          return {{cls:box.className, kids:box.children.map(c => c.tag + '.' + c.className),
+                  a:[a.tag, a.className, a.href || null, a.attrs.download || null, a.title, a.textContent,
+                     a.attrs['aria-disabled'] || null],
+                  html:[box, ...box.querySelectorAll('*')].map(n => n._html).join('')}};
+        }};
+        r.drawn = look(renderSpec({json.dumps(spec)}, 'Reports', 'reports.x'));
+        r.unlabelled = look(renderSpec({json.dumps({**spec, "label": None})}, 'Reports', 'reports'));
+        r.noApp = look(renderSpec({json.dumps(spec)}, 'Reports', null));
+    """)
+    result = _node(script)
+
+    assert result["drawn"] == {
+        "cls": "spec-download", "kids": ["a.btn sm", "div.m"],
+        "a": ["a", "btn sm", "/api/app/reports.x/files/fatigue-2026-10.html", "fatigue-2026-10.html",
+              "fatigue-2026-10.html", "October <img src=x onerror=alert(1)>", None],
+        "html": ""}
+    assert result["unlabelled"]["a"][5] == "fatigue-2026-10.html"
+    assert result["noApp"]["a"][2:4] == [None, None] and result["noApp"]["a"][6] == "true"
+    # The route it points at is the one that hands a file over.
+    assert client.get("/api/app/reports.x/files/fatigue-2026-10.html").status_code == 404
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
+def test_a_download_checks_the_file_is_there_first(client):
+    page = _page(client)
+    spec = {"type": "download", "name": "gone.html", "label": "Gone"}
+    script = _button_script(page, f"""
+        const box = renderSpec({json.dumps(spec)}, 'Reports', 'reports');
+        const a = box.children[0], msg = box.children[1];
+        let defaults = 0, clicks = 0;
+        const event = () => ({{preventDefault: () => {{ defaults++; }}}});
+        // A second click on the link - let through - is the browser's own download.
+        a.click = () => {{ clicks++; a.onclick(event()); }};
+        headStatus = 404;
+        await a.onclick(event());
+        r.gone = [msg.textContent, defaults, clicks, fetches.splice(0)];
+        headStatus = 200;
+        defaults = 0;
+        await a.onclick(event());
+        r.there = [msg.textContent, defaults, clicks, fetches.splice(0), a.dataset.checked || null];
+        headStatus = 500;
+        defaults = 0; clicks = 0;
+        await a.onclick(event());
+        r.broken = [msg.textContent, defaults, clicks];
+    """)
+    result = _node(script)
+
+    head = ["/api/app/reports/files/gone.html", {"method": "HEAD"}]
+    assert result["gone"] == ["That file isn't there any more.", 1, 0, [head]]
+    # There: the first click held for the check, the second let through.
+    assert result["there"] == ["", 1, 1, [head], None]
+    assert result["broken"] == ["Couldn't download that file.", 1, 0]
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
+def test_an_orphans_files_are_counted_listed_downloadable_and_deletable(client, orphaned_app):
+    import sqlite3
+
+    import host
+    import main
+
+    conn = sqlite3.connect(main.app.config["DB_PATH"])
+    ctx = host.WriteCtx(conn, apps.InstalledApp(
+        id="old", name="old", sizes=[{"w": 1, "h": 1}], default_size={"w": 1, "h": 1},
+        reads=[], config=[], path="/nowhere", render=None))
+    ctx.save_file("b-report.html", "x" * 2048)
+    ctx.save_file("a-report.html", "<p>a</p>")
+    conn.commit()
+    conn.close()
+    before = client.get("/api/app-sources").get_json()
+    files = client.get("/api/app/old/files").get_json()["files"]
+    assert [a["files"] for a in before] == [{"count": 2, "bytes": 2056}, {"count": 0, "bytes": 0}]
+    script = _orphan_script(_page(client), before, before, {"ok": True}, f"""
+        FILES_ = {json.dumps(files)};
+        await loadAppSources();
+        r.card = look();
+        openOrphan();
+        await settle();
+        const fileLines = () => card.querySelectorAll('.orphan-file').map(l => [
+          l.dataset.file, l.querySelector('[data-f="name"]').textContent,
+          l.querySelector('[data-act="download"]').href, l.querySelector('[data-act="download"]').getAttribute('download'),
+          l.querySelector('[data-act="delete-file"]').textContent, l.querySelector('[data-act="delete-file"]').className]);
+        r.lines = fileLines();
+        r.listed = calls.splice(0);
+        // Download: checked first, then the browser's own.
+        const a = card.querySelector('.orphan-file [data-act="download"]');
+        let clicks = 0;
+        a.click = () => {{ clicks++; }};
+        await a.onclick({{preventDefault: () => {{}}}});
+        r.download = [clicks, calls.splice(0)];
+        // Delete: that file, then the app sources read again.
+        await card.querySelector('.orphan-file [data-act="delete-file"]').onclick();
+        await settle();
+        r.deleted = calls.splice(0);
+        r.summary = appDataSummary(state.appSources[0]);
+    """)
+    result = _node(script)
+
+    assert result["card"][1]["text"] == "›oldapp:old3 readings · 2 files (2.0 KB)○ app uninstalledRemove all data"
+    assert result["lines"] == [
+        ["a-report.html", "a-report.html", "/api/app/old/files/a-report.html", "a-report.html", "Delete", "btn sm danger"],
+        ["b-report.html", "b-report.html", "/api/app/old/files/b-report.html", "b-report.html", "Delete", "btn sm danger"],
+    ]
+    assert result["listed"] == [["files", "old"]]
+    assert result["download"] == [1, [["fetch", "/api/app/old/files/a-report.html", {"method": "HEAD"}]]]
+    # The row, still open, lists the files afresh once the card is redrawn.
+    assert result["deleted"] == [["delete-file", "old", "a-report.html"], ["files", "old"]]
+    assert result["summary"] == "3 readings across 2 metrics (Steps, Weight) and 2 files (2.0 KB)"
+    # The routes those calls stand for: the delete, with the header, takes
+    # that one file; the listing then counts the other.
+    assert _sent(client.delete("/api/app/old/files/a-report.html")) == {"ok": True}
+    assert [a["files"] for a in client.get("/api/app-sources").get_json()][0] == {"count": 1, "bytes": 2048}
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
+def test_the_summary_and_counts_say_files(client):
+    page = _page(client)
+    script = "\n".join(_js(page, n) for n in
+                       ["num", "countOf", "appDataSummary", "appDataCounts", "recordsOf", "filesOf", "sizeText"]) + """
+        const metricName = k => k;
+        const n = (count, bytes) => ({count, bytes});
+        console.log(JSON.stringify([
+          appDataSummary({metrics:[], readings:0, sessions:0, samples:0, records:n(2, 100), files:n(1, 5000)}),
+          appDataSummary({metrics:[], readings:0, sessions:0, samples:0, files:n(3, 30000)}),
+          appDataCounts({readings:1, sessions:0, samples:0, records:n(0, 0), files:n(1, 1)}),
+          filesOf({}), filesOf({files:n(0, 0)}),
+        ]));
+    """
+    assert _node(script) == [
+        "2 records (0.1 KB) and 1 file (4.9 KB)",
+        "3 files (29 KB)",
+        "1 reading · 1 file (0.1 KB)",
+        "", "",
+    ]
+
+
+def test_remove_all_datas_confirm_names_the_files(client):
+    page = _page(client)
+    # Remove all data's words come from appDataSummary(), which names files.
+    assert "const files = filesOf(o);\n    if(files) parts.push(files);" in page
+    assert "removeAppFile: (id, name)    => send('/api/app/'+enc(id)+'/files/'+enc(name), 'DELETE')," in page

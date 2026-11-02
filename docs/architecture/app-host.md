@@ -1498,6 +1498,128 @@ def render(ctx, cfg):
 An app that keeps records says `requires: 5` in its `app.yaml`, so an older
 OpenFit refuses it rather than failing on the first save.
 
+### Report files: documents an app makes, for the user to download
+
+A report - a month's fatigue figures, a trip's rest - is a document the user
+keeps, prints or sends on. An app makes one as **HTML** (C3, app level 6):
+`handle()` builds the text and saves it under a name, and `render()` lists
+what's there and offers each as a download. OpenFit **never displays a
+report**: it always hands it over as a file, which the user opens on their
+own computer. For a PDF, they open the file and use the browser's **Print →
+Save as PDF** - there's no PDF generation on the server. Files live in
+`tracker.db`'s `app_files` table (migration `012`), not on disk: a file is
+saved inside the action's one transaction, and every backup, download and
+restore carries it.
+
+```python
+ctx.save_file(name, html)          # save it, replacing any             (handle() only)
+ctx.delete_file(name)              # remove it: True if one went        (handle() only)
+ctx.files()                        # [{name, size, updated_at}], by name (render() and handle())
+ctx.download(name, label=None)     # a spec: a button that downloads it
+ctx.input(key, action, label="...", kind="button")   # a spec: a button that sends an action
+```
+
+A button "Make October's report", the report made in `handle()`, and every
+report offered in `render()`:
+
+```python
+def handle(ctx, action, payload):
+    if action == "report":                       # payload == {"make": True}
+        month = ctx.today()[:7]                  # "2026-10"
+        duties = ctx.sessions("duties_complete", since=month + "-01")
+        rows = "".join(f"<tr><td>{d.start}</td><td>{d.summary.get('code', '')}</td></tr>" for d in duties)
+        ctx.save_file(f"fatigue-{month}.html", f"""<!doctype html>
+<html><head><meta charset="utf-8"><title>Fatigue {month}</title>
+<style>@media print {{ button {{ display: none }} }}</style></head>
+<body><h1>Fatigue report, {month}</h1><table>{rows}</table></body></html>""")
+
+def render(ctx, cfg):
+    return ctx.panel(
+        [ctx.input("make", "report", label="Make October's report", kind="button")]
+        + [ctx.download(f["name"]) for f in ctx.files()]
+    )
+```
+
+- **Only the app's own**, as records are: every call is scoped to the ctx's
+  app by its installed id, none takes an app, two apps may each have a
+  `report.html`, and a ctx made for no app has no files (`ValueError`).
+- **A name** is lowercase letters, digits, `.`, `_` or `-`, starting with a
+  letter or digit and ending `.html`, at most 100 characters in all
+  (`[a-z0-9][a-z0-9._-]{0,94}\.html`): `fatigue-2026-10.html`. No `/`, so
+  never a path. `Report.html`, `report.htm`, `../x.html` and `.html` are
+  refused.
+- **The content** is text (a `str`), stored as UTF-8, **exactly as given**:
+  OpenFit doesn't check it's HTML, change it, or add anything to it. Bytes
+  or anything else that isn't a `str` is refused.
+- **Writes, in `handle()` only.** `ctx.save_file()` replaces a file already
+  under that name, keeping when it was first saved (`created_at`) and moving
+  its `updated_at` to now; `ctx.delete_file()` says whether there was one to
+  remove. They're on the `WriteCtx` alone. `ctx.files()` and `ctx.download()`
+  are on every ctx.
+- **The limits**: a file at most **10 MB** (UTF-8 bytes), one app's files
+  at most **200 MB** in all and **1000** in number - counted with the save's
+  net change, as records are. So at the total, a save that adds a byte (or a
+  new file at the thousand) is refused, while one that replaces a file with
+  a smaller one (or one the same size) still goes in.
+- **Errors** are `ValueError`, naming the field (`name`, `html`), and a
+  refused call saves nothing.
+- **One transaction with the rest of the action**: neither writer commits,
+  so an action that saves a file and then raises leaves no file behind. A
+  file feeds no derived value, so no day is noted in `ctx.written`.
+
+**The button.** `ctx.input(key, action, label=..., kind="button")` is an
+input with no field: the page draws a button whose text is `label`
+(required), and pressing it posts `action` through the action route with the
+payload `{key: True}` - so `handle()` runs, makes the file in its
+transaction, and the tile is drawn afresh with the new download. `unit`,
+`options`, `accept` and `toggle` aren't for a button and are refused. There's
+no confirm.
+
+**The download.** `ctx.download(name, label=None)` → `{"type": "download",
+"name", "label"}` (the label the name when none is given; the name held to
+the same rule). The page draws a link-styled button, `<a
+href="/api/app/<id>/files/<name>" download="<name>">`, its label set as
+text, never markup. The host doesn't look for the file: pressed, the page
+asks the route first (a `HEAD`), and a file that's gone says "That file
+isn't there any more." - so list what's there with `ctx.files()`.
+
+**The route.** `GET /api/app/<id>/files/<name>` hands the file over, its
+bytes exactly as saved, always with:
+
+| Header | Value | Why |
+| --- | --- | --- |
+| `Content-Type` | `application/octet-stream` | no browser renders it |
+| `Content-Disposition` | `attachment; filename="<name>"` | it's saved, not opened |
+| `X-Content-Type-Options` | `nosniff` | the browser can't guess it's HTML |
+| `Content-Security-Policy` | `sandbox` | should anything render it all the same: no script, no same-origin |
+| `Cache-Control` | `no-store` | no copy kept in a cache |
+
+So even opened straight from its address, the browser downloads it. That's
+the point: a report's own script never runs inside OpenFit's pages, under
+its origin and the user's session. These headers protect OpenFit; they
+don't restrict the report. What the file does once the user opens it on
+their computer - scripts, links, a CDN - is the **app author's
+responsibility**, not OpenFit's (see `app-authoring-lessons.md`: make it
+self-contained). It needs a session, as every route does (a `GET`, so no
+`X-OpenFit`); downloading changes nothing, and nothing of the file is
+logged. 404 for an id no app could have, a name no file could have, or no
+such file; it serves an uninstalled app's files too. Beside it, `GET
+/api/app/<id>/files` lists them (`{id, files: [{name, size, updated_at}]}`)
+and `DELETE /api/app/<id>/files/<name>` (the session and `X-OpenFit`)
+deletes one of an **uninstalled** app's - 400 while the app is installed:
+its files are its own to delete.
+
+**Uninstall keeps them; Delete data removes them**, as records. An app
+installed again under the same id finds them, and an Update keeps them.
+`GET /api/app-sources` lists each app's `files: {count, bytes}`, an app with
+files alone included. Under Your data, an uninstalled app's row counts them
+("2 files (37 KB)"), its opened row lists each with **Download** and a red
+**Delete**, and its **Remove all data** (`DELETE /api/app-sources/<id>`)
+deletes them with the rest - its confirm names them; one metric's Remove
+data leaves them.
+
+An app that makes reports says `requires: 6` in its `app.yaml`.
+
 ### The weight app
 
 The first writer, committed in `tests/fixtures/apps/weight/` (deployed by
@@ -2457,6 +2579,14 @@ again, or uninstall the app, to see or remove it.
   404 for an unknown app or file, 413 for a file too big to show, 415 for one
   that isn't text. See
   [Showing a file](#showing-a-file-get-apiappidfilenamefile).
+- `GET /api/app/<id>/files/<name>` → one of the app's report files, its bytes
+  as saved, always as a download: `application/octet-stream`, `attachment;
+  filename="<name>"`, `nosniff`, `Content-Security-Policy: sandbox`,
+  `no-store`. Any app's, installed or not; 404 for an id or name no file
+  could have, or no such file. `GET /api/app/<id>/files` → `{id, files:
+  [{name, size, updated_at}]}`; `DELETE /api/app/<id>/files/<name>` → `{"ok":
+  true}`, an uninstalled app's only (400 while installed). See
+  [Report files](#report-files-documents-an-app-makes-for-the-user-to-download).
 - `GET /api/home-layout` → `{"tabs": [{id, name, mode: "flow", subtitle,
   items: [{instance_id, app_id, size: {w, h}, config}]}], "default_tab"}`,
   Home's layout squared with the apps installed now; `PUT /api/home-layout`

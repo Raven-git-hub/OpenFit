@@ -45,6 +45,7 @@ from migrations import run_migrations
 
 SIZE = "sizes: [{w: 1, h: 1}]\n"
 NO_RECORDS = {"count": 0, "bytes": 0}
+NO_FILES = {"count": 0, "bytes": 0}
 KB = 1024
 MB = 1024 * KB
 
@@ -772,13 +773,13 @@ def test_the_listing_counts_each_apps_records_and_their_bytes(client, conn, apps
     assert client.get("/api/app-sources").get_json() == [
         # Installed: listed live. Records alone list an app, as rows do.
         {"id": "notes", "source": "app:notes", "orphaned": False, "metrics": [],
-         "readings": 0, "sessions": 0, "samples": 0, "records": {"count": 2, "bytes": 12}},
+         "readings": 0, "sessions": 0, "samples": 0, "records": {"count": 2, "bytes": 12}, "files": NO_FILES},
         # A library app's id, its records alone, its app not here: orphaned.
         {"id": "openfitavi.frms", "source": "app:openfitavi.frms", "orphaned": True, "metrics": [],
-         "readings": 0, "sessions": 0, "samples": 0, "records": {"count": 1, "bytes": 7}},
+         "readings": 0, "sessions": 0, "samples": 0, "records": {"count": 1, "bytes": 7}, "files": NO_FILES},
         # Rows and no records: {0, 0}.
         {"id": "steps", "source": "app:steps", "orphaned": True, "metrics": ["steps"],
-         "readings": 1, "sessions": 0, "samples": 0, "records": NO_RECORDS},
+         "readings": 1, "sessions": 0, "samples": 0, "records": NO_RECORDS, "files": NO_FILES},
     ]
 
 
@@ -794,7 +795,7 @@ def test_an_uninstalled_apps_records_stay_listed_and_reinstalling_finds_them(cli
     assert stored(conn, "notes")[0][:4] == ("notes", "trips", "k", '{"v":1}')
     assert listing(client, "notes") == {
         "id": "notes", "source": "app:notes", "orphaned": True, "metrics": [],
-        "readings": 0, "sessions": 0, "samples": 0, "records": {"count": 1, "bytes": 7}}
+        "readings": 0, "sessions": 0, "samples": 0, "records": {"count": 1, "bytes": 7}, "files": NO_FILES}
 
     assert client.post("/api/apps", json={"files": files}).status_code == 201
 
@@ -816,7 +817,7 @@ def test_delete_data_removes_an_uninstalled_apps_records(client, conn, apps_dir)
 
     resp = client.delete("/api/app-sources/notes")
 
-    assert resp.get_json() == {"ok": True, "removed": {"metrics": 1, "sessions": 0, "samples": 0, "records": 2}}
+    assert resp.get_json() == {"ok": True, "removed": {"metrics": 1, "sessions": 0, "samples": 0, "records": 2, "files": 0}}
     # Another app's - with the same collection and key - stays.
     assert [r[:4] for r in stored(conn)] == [("frms", "trips", "a", '"theirs"')]
     assert [e["id"] for e in listing(client)] == ["frms"]
@@ -828,7 +829,7 @@ def test_delete_data_takes_an_app_with_only_records(client, conn, apps_dir):
 
     resp = client.delete("/api/app-sources/openfitavi.frms")
 
-    assert resp.get_json() == {"ok": True, "removed": {"metrics": 0, "sessions": 0, "samples": 0, "records": 1}}
+    assert resp.get_json() == {"ok": True, "removed": {"metrics": 0, "sessions": 0, "samples": 0, "records": 1, "files": 0}}
     assert stored(conn) == []
     assert listing(client) == []
     # Nothing left: a second go is the 404 any source with nothing gets.
@@ -855,7 +856,7 @@ def test_the_per_metric_delete_leaves_the_records(client, conn, apps_dir):
 
     resp = client.delete("/api/app-sources/notes/steps")
 
-    assert resp.get_json() == {"ok": True, "removed": {"metrics": 1, "sessions": 0, "samples": 0, "records": 0}}
+    assert resp.get_json() == {"ok": True, "removed": {"metrics": 1, "sessions": 0, "samples": 0, "records": 0, "files": 0}}
     assert [r[:4] for r in stored(conn)] == [("notes", "trips", "a", "1")]
     assert listing(client, "notes")["records"] == {"count": 1, "bytes": 1}
     # A metric the app has none of is still a 404: records aren't a metric.
@@ -892,7 +893,7 @@ def snapshot(conn):
     }
 
 
-def test_011_applies_on_a_database_as_f4ba68e_left_it(db_at_version):
+def test_011_applies_on_a_database_as_f4ba68e_left_it(db_at_version, migrations_upto):
     """f4ba68e's newest migration is 010: a database there, holding data,
     gets 011 alone - a table and its index - and nothing else changes."""
     conn = sqlite3.connect(db_at_version(10))
@@ -910,7 +911,8 @@ def test_011_applies_on_a_database_as_f4ba68e_left_it(db_at_version):
     before = snapshot(conn)
     assert "app_records" not in before
 
-    assert run_migrations(conn) == [11]
+    # Up to 011, and no further: 012 is C3's (tests/test_app_files.py).
+    assert run_migrations(conn, migrations_dir=migrations_upto(11)) == [11]
 
     columns = conn.execute("PRAGMA table_info(app_records)").fetchall()
     assert [c[1] for c in columns] == RECORD_COLUMNS
@@ -921,7 +923,7 @@ def test_011_applies_on_a_database_as_f4ba68e_left_it(db_at_version):
     after = snapshot(conn)
     assert {t: after[t] for t in before} == before
     # Applied once: a second run is a no-op.
-    assert run_migrations(conn) == []
+    assert run_migrations(conn, migrations_dir=migrations_upto(11)) == []
     assert conn.execute("SELECT COUNT(*) FROM schema_migrations WHERE version = 11").fetchone()[0] == 1
     conn.close()
 
@@ -953,28 +955,33 @@ def test_011_adopts_a_preexisting_table(tmp_path):
 
 
 # ---------- 10. app level 5 ----------
+#
+# Level 5 brought records; this OpenFit is that or newer (6 brought
+# report files, C3), so an app saying requires: 5 loads, and one a level
+# beyond this OpenFit's is skipped and refused.
 
 
-def test_this_openfit_is_app_level_five(client, apps_dir, capsys):
-    assert apps.APP_LEVEL == 5
+def test_an_app_needing_level_five_loads_on_this_openfit(client, apps_dir, capsys):
+    newer = apps.APP_LEVEL + 1
+    beyond = f"needs OpenFit app level {newer}; this OpenFit is level {apps.APP_LEVEL}"
+    assert apps.APP_LEVEL >= 5
     assert apps.level_problem(5) is None
-    six = "needs OpenFit app level 6; this OpenFit is level 5"
-    assert apps.level_problem(6) == six
+    assert apps.level_problem(newer) == beyond
     make_app(apps_dir, "notes", NOTES, extra="requires: 5\n")
-    make_app(apps_dir, "newer", NOTES, extra="requires: 6\n")
+    make_app(apps_dir, "newer", NOTES, extra=f"requires: {newer}\n")
 
-    # requires: 5 loads, and its records work; requires: 6 is skipped ...
+    # requires: 5 loads, and its records work; a level beyond is skipped ...
     assert [(a.id, a.requires) for a in apps.scan_apps(apps_dir)] == [("notes", 5)]
-    assert f"[apps] skipping {apps_dir / 'newer'}: {six}" in capsys.readouterr().out
+    assert f"[apps] skipping {apps_dir / 'newer'}: {beyond}" in capsys.readouterr().out
     assert act(client, "put", key="k", value=1).status_code == 200
     # ... and refused at install.
-    resp = client.post("/api/apps", json={"files": {"app.yaml": f"id: newest\nrequires: 6\n{SIZE}"}})
-    assert (resp.status_code, resp.get_json()) == (400, {"ok": False, "error": six})
+    resp = client.post("/api/apps", json={"files": {"app.yaml": f"id: newest\nrequires: {newer}\n{SIZE}"}})
+    assert (resp.status_code, resp.get_json()) == (400, {"ok": False, "error": beyond})
     resp = client.post("/api/apps", json={"files": {"app.yaml": f"id: fine\nrequires: 5\n{SIZE}"}})
     assert resp.status_code == 201
 
 
-def test_a_library_version_needing_level_six_waits(tmp_path, apps_dir, monkeypatch):
+def test_a_library_version_needing_a_newer_level_waits(tmp_path, apps_dir, monkeypatch):
     """A library app's next version that needs more than this OpenFit
     waits, its installed copy - at level 5, using records - kept."""
     import admin_ops
@@ -997,11 +1004,11 @@ def test_a_library_version_needing_level_six_waits(tmp_path, apps_dir, monkeypat
     apps.install_library_app(str(apps_dir), "openfitavi",
                              shelf.read_app_files(str(library), "openfitavi", "notes"))
     assert [(a.id, a.requires) for a in apps.scan_apps(apps_dir)] == [("openfitavi.notes", 5)]
-    publish(6, "2")
+    publish(apps.APP_LEVEL + 1, "2")
 
     result = shelf.sync_library_apps(str(apps_dir), str(library), str(notes_path), now="2026-11-02T09:01:00Z")
 
     note = result["openfitavi.notes"]
-    assert (note["state"], note["level"]) == ("waiting", 5)
-    assert note["reason"] == "needs OpenFit app level 6; this OpenFit is level 5"
+    assert (note["state"], note["level"]) == ("waiting", apps.APP_LEVEL)
+    assert note["reason"] == apps.level_problem(apps.APP_LEVEL + 1)
     assert "requires: 5" in (apps_dir / "openfitavi.notes" / "app.yaml").read_text()

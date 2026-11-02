@@ -80,6 +80,7 @@ from host import (
     WriteCtx,
     app_source,
     custom_metric_defs,
+    is_file_name,
     render_app,
     trailing_window,
 )
@@ -1097,6 +1098,119 @@ def app_file(app_id):
     return jsonify({"id": installed.id, "name": name, "text": text})
 
 
+# ---------- report files: what apps make, for the user to download ----------
+
+# An app's handle() saves a report as HTML (ctx.save_file(), host.py),
+# into app_files (migration 012). OpenFit never shows one: these routes
+# hand a file over as a download, or list or delete it - never a page
+# that renders it, so a report's own script can never run inside
+# OpenFit's pages, under its origin and session. What it does once the
+# user opens it on their computer is the app author's.
+
+# Every download goes with these headers: a type no browser renders, a
+# disposition that saves it, sniffing off (so the type holds), a sandbox
+# should anything render it all the same - no script, no same-origin -
+# and no cache keeping a copy.
+FILE_DOWNLOAD_HEADERS = {
+    "Content-Type": "application/octet-stream",
+    "X-Content-Type-Options": "nosniff",
+    "Content-Security-Policy": "sandbox",
+    "Cache-Control": "no-store",
+}
+
+
+def _no_file(app_id, name):
+    return jsonify({"ok": False, "error": f"no file {name!r} from {app_id!r}"}), 404
+
+
+@app.route("/api/app/<app_id>/files", methods=["GET"])
+def list_app_files(app_id):
+    """An app's report files: {id, files: [{name, size, updated_at}]}, by name.
+
+    What ctx.files() gives the app, for Your data's row of an
+    uninstalled app (a live app lists its own in its tile). Any app id,
+    installed or not - its files outlive it, as its records do; [] for
+    none. 404 for an id no app could have (is_app_id()).
+    """
+    if not is_app_id(app_id):
+        return jsonify({"ok": False, "error": f"'{app_id}' isn't an app id"}), 404
+    conn = get_conn()
+    try:
+        rows = conn.execute(
+            "SELECT name, size, updated_at FROM app_files WHERE app = ? ORDER BY name", (app_id,)
+        ).fetchall()
+    finally:
+        conn.close()
+    return jsonify({
+        "id": app_id,
+        "files": [{"name": r["name"], "size": r["size"], "updated_at": r["updated_at"]} for r in rows],
+    })
+
+
+@app.route("/api/app/<app_id>/files/<name>", methods=["GET"])
+def download_app_file(app_id, name):
+    """One of an app's report files, as a download: the bytes it saved, exactly.
+
+    Always a file to save, never a page: application/octet-stream, as an
+    attachment named `name`, nosniff, a CSP sandbox and no-store
+    (FILE_DOWNLOAD_HEADERS) - opened straight from its address, the
+    browser downloads it still. Any app's, installed or not (Your data
+    offers an uninstalled app's). Changes nothing; nothing of the file
+    is logged. 404 for an id no app could have, a name no file could
+    have (host.py's FILE_NAME), or no such file - only ever the app's
+    own: the query names both.
+    """
+    if not is_app_id(app_id) or not is_file_name(name):
+        return _no_file(app_id, name)
+    conn = get_conn()
+    try:
+        row = conn.execute(
+            "SELECT content FROM app_files WHERE app = ? AND name = ?", (app_id, name)
+        ).fetchone()
+    finally:
+        conn.close()
+    if row is None:
+        return _no_file(app_id, name)
+    resp = make_response(bytes(row["content"]))
+    for header, value in FILE_DOWNLOAD_HEADERS.items():
+        resp.headers[header] = value
+    # The name is FILE_NAME's - lowercase letters, digits, . _ - - so
+    # nothing in it needs quoting or escaping.
+    resp.headers["Content-Disposition"] = f'attachment; filename="{name}"'
+    return resp
+
+
+@app.route("/api/app/<app_id>/files/<name>", methods=["DELETE"])
+def delete_app_file(app_id, name):
+    """Delete one of an uninstalled app's report files: {ok: true}.
+
+    Your data's Delete beside an uninstalled app's file - the one-file
+    form of Remove all data, which takes them all. Refused, 400, while
+    the app is on the volume (app_present(), loading or not): a live
+    app's files are its own to delete (ctx.delete_file()), as its other
+    data is never removed under it. 404 for an id no app could have, a
+    name no file could have, or no such file. Nothing else changes.
+    """
+    if not is_app_id(app_id) or not is_file_name(name):
+        return _no_file(app_id, name)
+    if app_present(app.config["APPS_DIR"], app_id):
+        return jsonify({
+            "ok": False,
+            "error": f"'{app_id}' is present — its files are its own; uninstall it first to delete one here",
+        }), 400
+    conn = get_conn()
+    try:
+        gone = conn.execute(
+            "DELETE FROM app_files WHERE app = ? AND name = ?", (app_id, name)
+        ).rowcount
+        conn.commit()
+    finally:
+        conn.close()
+    if not gone:
+        return _no_file(app_id, name)
+    return jsonify({"ok": True})
+
+
 @app.route("/api/app/<app_id>/render", methods=["POST"])
 def render_installed_app(app_id):
     """One app's display spec, rendered now: {"cfg": {key: value}} -> the spec.
@@ -1177,8 +1291,10 @@ def act_on_app(app_id):
     another app's. It writes canonical metrics and the ones its manifest
     declares (as app:<id>:<key>), never another app's, and sessions of
     OpenFit's kinds (ctx.write_session()), removes its own sessions
-    over a span (ctx.delete_sessions()), and writes and removes its own
-    records (ctx.put_record(), ctx.delete_record()). payload is the
+    over a span (ctx.delete_sessions()), writes and removes its own
+    records (ctx.put_record(), ctx.delete_record()) and saves and
+    deletes its own report files (ctx.save_file(), ctx.delete_file()).
+    payload is the
     app's to interpret: a mapping, {key: value}
     from the input, {} if absent. cfg is the instance's config, for the
     render after; one that isn't a mapping is {}.
@@ -1197,8 +1313,8 @@ def act_on_app(app_id):
     is 400 {"ok": false, "error"}: unlike a render, a write fails
     visibly, and a ValueError's message is put as the app wrote it.
     Otherwise each day it wrote a reading to is re-derived, landing its
-    writes and their pick together (a session or a record is derived into
-    nothing, and is committed all the same), and the app is rendered
+    writes and their pick together (a session, a record or a file is
+    derived into nothing, and is committed all the same), and the app is rendered
     afresh (render_app(), which never raises) for the tile: 200 {"ok":
     true, "spec"}.
 
@@ -1272,8 +1388,8 @@ def act_on_app(app_id):
 # ---------- removing a source's data ----------
 
 # A source's data outlives it: disconnecting a device keeps what it
-# synced, and uninstalling an app keeps what it wrote, its records
-# included - hand-entered data can't be re-synced. Removing that is its
+# synced, and uninstalling an app keeps what it wrote, its records and
+# report files included - hand-entered data can't be re-synced. Removing that is its
 # own explicit step: a device's with DELETE /api/connectors/<id>?wipe=1,
 # an uninstalled app's with DELETE /api/app-sources/<id> - or one metric
 # of it with DELETE /api/app-sources/<id>/<metric>. All are
@@ -1287,8 +1403,9 @@ def purge_source(conn, source, metric=None, keep_roles=False):
     days its readings covered are re-derived, so each falls to whatever
     source is left or loses its derived row. The metrics themselves
     stay - only the readings go. An app's source, app:<id>, loses that
-    app's records too (app_records, keyed by the app's id: a device
-    whose id an app shares never reaches them). Every source role
+    app's records and report files too (app_records and app_files,
+    keyed by the app's id: a device whose id an app shares never
+    reaches them). Every source role
     naming it as a primary is cleared too (clear_source_roles()), so
     none is left pointing at data that's gone - unless `keep_roles`: a
     disconnected device keeps its roles, as it keeps its sync cadence,
@@ -1297,12 +1414,13 @@ def purge_source(conn, source, metric=None, keep_roles=False):
     With `metric`, only that metric's readings and samples from `source`
     go, and only its role is cleared, if it names `source`: the
     source's other metrics, and its roles for them, stay. Sessions are
-    keyed by kind, not metric, and records by collection, so none goes.
+    keyed by kind, not metric, records by collection and files by name,
+    so none goes.
 
     One transaction with whatever the caller has already done on `conn`:
     recompute_derived() commits it (this does, with no readings to
     re-derive), so a failure part way leaves every row and role as it
-    was. Returns {days, metrics, sessions, samples, records}: how many
+    was. Returns {days, metrics, sessions, samples, records, files}: how many
     distinct days its readings covered, and the rows deleted from each
     table.
     """
@@ -1316,14 +1434,14 @@ def purge_source(conn, source, metric=None, keep_roles=False):
         for row in conn.execute(f"DELETE FROM metrics WHERE {where} RETURNING date", args)
     ]
     samples = conn.execute(f"DELETE FROM samples WHERE {where}", args).rowcount
-    sessions = records = 0
+    sessions = records = files = 0
     if metric is None:
         sessions = conn.execute("DELETE FROM sessions WHERE source = ?", (source,)).rowcount
         if source.startswith(APP_SOURCE_PREFIX):
-            # Records are keyed by the app's id, not its source.
-            records = conn.execute(
-                "DELETE FROM app_records WHERE app = ?", (source[len(APP_SOURCE_PREFIX):],)
-            ).rowcount
+            # Records and files are keyed by the app's id, not its source.
+            app_id = source[len(APP_SOURCE_PREFIX):]
+            records = conn.execute("DELETE FROM app_records WHERE app = ?", (app_id,)).rowcount
+            files = conn.execute("DELETE FROM app_files WHERE app = ?", (app_id,)).rowcount
     if not keep_roles:
         # Inside the transaction the deletes opened, before the re-derive.
         clear_source_roles(conn, source, only=metric)
@@ -1341,20 +1459,22 @@ def purge_source(conn, source, metric=None, keep_roles=False):
         "sessions": sessions,
         "samples": samples,
         "records": records,
+        "files": files,
     }
 
 
 def _has_data(conn, source):
     """Whether `source` has a metric, session or sample row at all - or,
-    an app's source, a record."""
+    an app's source, a record or a report file."""
     if any(
         conn.execute(f"SELECT 1 FROM {table} WHERE source = ? LIMIT 1", (source,)).fetchone()
         for table in ("metrics", "sessions", "samples")
     ):
         return True
-    return source.startswith(APP_SOURCE_PREFIX) and conn.execute(
-        "SELECT 1 FROM app_records WHERE app = ? LIMIT 1", (source[len(APP_SOURCE_PREFIX):],)
-    ).fetchone() is not None
+    return source.startswith(APP_SOURCE_PREFIX) and any(
+        conn.execute(f"SELECT 1 FROM {table} WHERE app = ? LIMIT 1", (source[len(APP_SOURCE_PREFIX):],)).fetchone()
+        for table in ("app_records", "app_files")
+    )
 
 
 def _has_metric_data(conn, source, metric):
@@ -1371,9 +1491,9 @@ def _has_metric_data(conn, source, metric):
 @app.route("/api/app-sources", methods=["GET"])
 def list_app_sources():
     """What apps have written: [{id, source, orphaned, metrics, readings,
-    sessions, samples, records}].
+    sessions, samples, records, files}].
 
-    One entry per app source - app:<id> - that has any rows or records,
+    One entry per app source - app:<id> - that has any rows, records or files,
     by id: the app's id and its source; `orphaned` once its app is gone
     from the volume (app_present(): its folder is gone, and no other
     folder's app loads under the id) - an app whose folder is there but
@@ -1381,9 +1501,11 @@ def list_app_sources():
     could have (no folder to look for); the metrics it has readings of,
     in vocabulary order; how many readings, sessions and samples it
     holds; and its records, {count, bytes} ({0, 0} for none), bytes
-    their values' JSON in UTF-8 - an uninstalled app's listed as any, as
+    their values' JSON in UTF-8; and its report files, {count, bytes}
+    likewise, bytes their HTML - an uninstalled app's listed as any, as
     its readings are. An orphan's data can be removed (DELETE
-    /api/app-sources/<id>), all of it - its records with it - or one
+    /api/app-sources/<id>), all of it - its records and files with it -
+    or a file at a time (DELETE /api/app/<id>/files/<name>), or one
     metric's (DELETE /api/app-sources/<id>/<metric>); no other's can.
     Devices, the webhook's sources and manual aren't apps', so aren't
     listed.
@@ -1399,6 +1521,7 @@ def list_app_sources():
         return found.setdefault(source, {
             "metrics": set(), "readings": 0, "sessions": 0, "samples": 0,
             "records": {"count": 0, "bytes": 0},
+            "files": {"count": 0, "bytes": 0},
         })
 
     conn = get_conn()
@@ -1424,6 +1547,11 @@ def list_app_sources():
             "SELECT app, COUNT(*) AS n, COALESCE(SUM(size), 0) AS bytes FROM app_records GROUP BY app"
         ):
             entry(app_source(row["app"]))["records"] = {"count": row["n"], "bytes": row["bytes"]}
+        # Report files likewise, from idx_app_files_size (012).
+        for row in conn.execute(
+            "SELECT app, COUNT(*) AS n, COALESCE(SUM(size), 0) AS bytes FROM app_files GROUP BY app"
+        ):
+            entry(app_source(row["app"]))["files"] = {"count": row["n"], "bytes": row["bytes"]}
     finally:
         conn.close()
 
@@ -1442,6 +1570,7 @@ def list_app_sources():
             "sessions": got["sessions"],
             "samples": got["samples"],
             "records": got["records"],
+            "files": got["files"],
         })
     return jsonify(out)
 
@@ -1452,12 +1581,12 @@ def remove_app_source(app_id):
 
     The explicit step after Uninstall, which keeps it. Every metric,
     session and sample filed under app:<app_id>, and every one of the
-    app's records, is deleted, the days its readings covered re-derived,
+    app's records and report files, is deleted, the days its readings covered re-derived,
     and every source role naming it cleared - purge_source(), one
     transaction. The metrics stay: weight_kg without app:weight's
     readings is still weight_kg, empty or fed by another source. 200
-    {"ok": true, "removed": {metrics, sessions, samples, records}}, the
-    rows deleted from each.
+    {"ok": true, "removed": {metrics, sessions, samples, records, files}},
+    the rows deleted from each.
 
     Only ever an app's source: the id is always read as app:<id>, so
     this can't reach a device's data (DELETE /api/connectors/<id>?wipe=1
@@ -1466,7 +1595,7 @@ def remove_app_source(app_id):
     openfit.weight); 400 while the app is still on the
     volume (app_present()) - its folder there, even if what's in it
     fails to load: a live or broken app's data is never removed - and
-    404 when app:<id> has no rows and the app no records. None of those
+    404 when app:<id> has no rows and the app no records or files. None of those
     changes anything.
     """
     if not is_app_id(app_id):
@@ -1486,7 +1615,7 @@ def remove_app_source(app_id):
         conn.close()
     return jsonify({
         "ok": True,
-        "removed": {k: removed[k] for k in ("metrics", "sessions", "samples", "records")},
+        "removed": {k: removed[k] for k in ("metrics", "sessions", "samples", "records", "files")},
     })
 
 
@@ -1499,12 +1628,12 @@ def remove_app_source_metric(app_id, metric):
     under app:<app_id> are deleted, the days they covered re-derived -
     each falls to whatever source is left, or loses its derived row -
     and its source role cleared if it names the app; the app's other
-    metrics, its sessions, its records and its roles for anything else
-    stay - purge_source(metric=...), one transaction. `metric` is the key
+    metrics, its sessions, its records, its files and its roles for
+    anything else stay - purge_source(metric=...), one transaction. `metric` is the key
     as stored: a canonical one stays in the vocabulary, only the readings
     go; an app's own (app:<id>:<key>) already left it at uninstall. 200
-    {"ok": true, "removed": {metrics, sessions, samples, records}},
-    sessions and records always 0.
+    {"ok": true, "removed": {metrics, sessions, samples, records, files}},
+    sessions, records and files always 0.
 
     The guards are the whole-app route's: 404 for an id no app could
     have (is_app_id()); 400 while the app is still on the volume
@@ -1528,7 +1657,7 @@ def remove_app_source_metric(app_id, metric):
         conn.close()
     return jsonify({
         "ok": True,
-        "removed": {k: removed[k] for k in ("metrics", "sessions", "samples", "records")},
+        "removed": {k: removed[k] for k in ("metrics", "sessions", "samples", "records", "files")},
     })
 
 

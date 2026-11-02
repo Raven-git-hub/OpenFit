@@ -374,6 +374,27 @@ on the file input, not a second input or a second button:
   panel is `ctx.panel(timeline, picker)`, and its empty states keep the
   picker last too.
 
+## Reports: make them self-contained, and printable
+
+An app's report files (`ctx.save_file()`, app level 6; `app-host.md`'s
+Report files) are always downloaded, never shown inside OpenFit, and what a
+report does once the user opens it on their computer is the author's
+responsibility. So:
+
+- **Self-contained.** Put everything in the one `.html`: the CSS in a
+  `<style>`, any script in a `<script>` (bundle the library in, don't link
+  a CDN), any picture a `data:` URI. A report opened years later, offline,
+  on another computer, should still read.
+- **Printable.** A PDF is the browser's Print → Save as PDF from the
+  downloaded file, so give it a print stylesheet: `@media print { ... }`
+  hiding buttons and controls, `break-inside: avoid` on tables and cards,
+  `@page { size: A4; margin: 15mm }`.
+- **Named by what it covers**, lowercase, ending `.html`:
+  `fatigue-2026-10.html`. Names sort as text, so a date in them lists in time
+  order in `ctx.files()`; saving the same name again replaces it.
+- **Made on demand** from a button (`kind="button"`), inside the action: a
+  report that fails part way leaves no file.
+
 ## Known limitations (as of PR #43)
 
 - Mobile caption truncation hides the `via <source>` provenance on phone-width
