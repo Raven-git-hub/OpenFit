@@ -583,6 +583,7 @@ def test_the_weight_app_loads_as_written(client, apps_dir):
     assert client.get("/api/apps").get_json() == [
         {"id": "weight", "name": "Weight", "library": None, "default_size": {"w": 1, "h": 1},
          "sizes": [{"w": 1, "h": 1}, {"w": 2, "h": 1}], "reads": ["weight_kg"], "config": [], "metrics": [],
+         "settings": [],
          "files": ["app.py", "app.yaml"]},
     ]
 
@@ -701,6 +702,7 @@ def test_the_mood_app_installs_and_is_listed(client, apps_dir):
     assert client.get("/api/apps").get_json() == [
         {"id": "mood", "name": "Mood", "library": None, "default_size": {"w": 1, "h": 1},
          "sizes": [{"w": 1, "h": 1}, {"w": 2, "h": 1}], "reads": ["mood"], "config": [], "metrics": [],
+         "settings": [],
          "files": ["app.py", "app.yaml"]},
     ]
 
@@ -1025,6 +1027,7 @@ def test_the_import_app_installs_and_is_listed(client, apps_dir):
     assert client.get("/api/apps").get_json() == [
         {"id": "import", "name": "Import weigh-ins", "library": None, "default_size": {"w": 1, "h": 1},
          "sizes": [{"w": 1, "h": 1}, {"w": 2, "h": 1}], "reads": ["weight_kg"], "config": [], "metrics": [],
+         "settings": [],
          "files": ["app.py", "app.yaml"]},
     ]
 
@@ -1217,6 +1220,7 @@ def test_the_workout_log_app_installs_and_is_listed(client, apps_dir):
     assert client.get("/api/apps").get_json() == [
         {"id": "workout-log", "name": "Workout log", "library": None, "default_size": {"w": 1, "h": 1},
          "sizes": [{"w": 1, "h": 1}, {"w": 2, "h": 1}], "reads": [], "config": [], "metrics": [],
+         "settings": [],
          "files": ["app.py", "app.yaml"]},
     ]
     assert client.post("/api/app/workout-log/render").get_json() == WORKOUT_LOG_SPEC
@@ -1370,6 +1374,7 @@ def test_the_frms_app_installs_and_is_listed(client, apps_dir):
     assert client.get("/api/apps").get_json() == [
         {"id": "frms", "name": "FRMS", "library": None, "default_size": {"w": 6, "h": 5}, "sizes": [{"w": 6, "h": 5}],
          "reads": ["duties_rostered", "duties_complete", "sleep"], "config": [], "metrics": [],
+         "settings": [],
          "files": ["app.py", "app.yaml", "config.json", "flash-dark.txt", "flash-light.txt"]},
     ]
     # Nothing yet: it says so, over its picker.

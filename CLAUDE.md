@@ -247,10 +247,25 @@ them), what's next and what's parked.
   `series` refused — not yet); `range` `[low, high]`, finite non-bool
   numbers, low ≤ high, kept as written, or absent/null (any finite
   number); a bad block fails the load, as a bad `config` does — install's
-  `check_app()` doesn't check it), `description` (text ≤
+  `check_app()` doesn't check it), `settings` (C4, app level 7: the
+  user's **app-wide settings**, checked strictly by `_settings()` —
+  unlike `config` a bad field fails the load — an ordered list of ≤
+  `MAX_SETTINGS` 30 fields, each only its type's keys: `key`
+  `SETTING_KEY` `[a-z][a-z0-9_]{0,39}`, unique; `label` text 1–80
+  trimmed; `help` optional, 1–200; `type` in `SETTING_TYPES` — `text`
+  (`max_length` 1–500, default 200), `number` (`min`/`max` finite, `min
+  ≤ max`; `integer` a bool), `select` (`options` 1–50 unique strings of
+  1–80), `toggle`; `default` required and valid for its field.
+  `setting_problem(field, value)` is the one rule — text a printable
+  `str` ≤ `max_length`; a number finite, not a bool, within `min`/`max`,
+  whole if `integer`; a select one of its options; a toggle a bool — for
+  a default, a value sent and a value read back; `setting_value()` makes
+  an integer field's whole float an int. `InstalledApp.settings`, every
+  field filled in: `help` None, a number's `min`/`max` None and
+  `integer` False for none), `description` (text ≤
   `MAX_DESCRIPTION` 300 once trimmed, blank none — what Browse shows),
   `requires` (the **app level** it needs, a whole number ≥ 1, not a bool,
-  default 1; `APP_LEVEL` = 6, "the app contract this OpenFit provides;
+  default 1; `APP_LEVEL` = 7, "the app contract this OpenFit provides;
   raised when apps gain something an older OpenFit lacks" — 1 the first
   contract, 2 (TZ1) `ctx.timezone()` and `ctx.today()` the user's date,
   3 a tile's view, a chart's hint and a donut's control, the wocl tone,
@@ -258,8 +273,10 @@ them), what's next and what's parked.
   5 (C2) app records: `ctx.record()`, `ctx.records()`, `ctx.put_record()`,
   `ctx.delete_record()`, 6 (C3) report files: `ctx.save_file()`,
   `ctx.delete_file()`, `ctx.files()`, `ctx.download()` and a `"button"`
-  input; checked first, an app needing more skipped: "needs
-  OpenFit app level 7; this OpenFit is level 6"; `manifest_requires()`,
+  input, 7 (C4) app-wide settings: `settings:` in the manifest,
+  `ctx.settings()` / `ctx.setting()`, set by the user per app; checked
+  first, an app needing more skipped: "needs
+  OpenFit app level 8; this OpenFit is level 7"; `manifest_requires()`,
   `level_problem()`.
   **The standing rule** (`STATUS.md`): every app-facing addition to core
   raises `APP_LEVEL`, adds a line to the list above it in `app/apps.py`,
@@ -308,11 +325,12 @@ them), what's next and what's parked.
   an id failing `is_app_id()` → False — which decides whether its data is
   orphaned (`/api/app-sources`). `InstalledApp.summary()` is
   what `GET /api/apps` lists: `{id, name, library, default_size, sizes, reads,
-  config, metrics, files}` — `library` `library_of(id)` (`"openfit"`
+  config, metrics, settings, files}` — `library` `library_of(id)` (`"openfit"`
   for `openfit.frms`, None for a custom app); `default_size` the first of `sizes`; `config` the
   manifest's fields as written (the schema of a tile's settings form);
   `metrics` `InstalledApp.metrics`, the declared metrics by short key
-  (`range` a list or null, `[]` for none);
+  (`range` a list or null, `[]` for none); `settings` the app-wide
+  settings fields, checked and filled in (`[]` for none);
   `files` from `app_files(folder)`, the sorted names of the plain files
   directly in the folder (no sub-folder such as `__pycache__`, no link, no
   name `filename_problem()` refuses), so every name listed is one the file
@@ -918,7 +936,29 @@ them), what's next and what's parked.
   nor notes a day. `download(name, label=None)` (bound on `Ctx` as
   `ctx.download`) → `{"type": "download", name, label}`, the name held to
   `_file_name()`, `label` text or `None` (the name; not text `TypeError`,
-  `""` `ValueError`); the host never looks for the file. **A file input's value**
+  `""` `ValueError`); the host never looks for the file. **App-wide
+  settings** (C4, app level 7; `docs/architecture/app-host.md`'s
+  Settings): the user's, never the app's to write. On the base `Ctx`
+  (`render()` and `handle()`): `ctx.settings()` → every key the
+  manifest's `settings` declares, in its order, the stored value where
+  `setting_problem()` still takes it under the field as declared now,
+  else the field's `default` (`effective_settings()`: a key no longer
+  declared, an option gone, a number out of range, the wrong type —
+  passed over, never an error), read afresh each call;
+  `ctx.setting(key)` the same for one key, `KeyError` for an undeclared
+  one; a ctx for no app → `ValueError("settings belong to an app: …")`.
+  Stored as one record in OpenFit's own collection, `app_records` (app,
+  `SETTINGS_COLLECTION` `_settings`, `SETTINGS_KEY` `values`), a JSON
+  object of the keys set: `stored_settings(conn, app_id)` (`{}` for none
+  or a value that isn't an object), written only by `write_settings(conn,
+  installed, values)` — every key declared and every value valid, else
+  `SettingError(message, field)` (a `ValueError`: "<label> (<key>) must
+  be at most 24"), nothing written; then the declared keys' still-valid
+  stored values and those sent, a stale one dropped, through
+  `_store_record()` — `put_record()`'s upsert and limits, shared, so they
+  count toward the app's 50 MiB — committing nothing; → the effective
+  values. `put_record()`/`record()` keep refusing every `_` collection.
+  **A file input's value**
   is a `FileUpload(path, name="", content_type="")`: `.name` the file's
   name as the browser gave it (display only, never a path),
   `.content_type` the type it reported (`""` for none; informational),
@@ -1582,7 +1622,25 @@ them), what's next and what's parked.
   `aria-haspopup="dialog"`) and **Uninstall** (`btn sm danger`) — for a
   library app (`a.library` set) no Update: in its place a `.dnote.a-lib`
   "From the <library> library · updated by your admin" (the server 403s
-  its update anyway), Refresh, Duplicate and Uninstall as any. Update
+  its update anyway), Refresh, Duplicate and Uninstall as any. An app
+  declaring settings (its `settings` non-empty) has
+  **Settings** (`btn sm`, `aria-haspopup="dialog"`) beside Refresh:
+  `api.appSettings()` (`GET /api/app/<id>/settings`; "Couldn't read
+  <name>'s settings." in the row if it fails), then
+  `openAppSettings(a, got, saved)`: a `.modal` "<name> settings", the
+  hint "Applies to this app everywhere it appears, for you. A tile's own
+  settings are separate.", a field per `got.fields` (`settingField()`:
+  text `maxlength`, number `type="number"`, `step` 1 if `integer` else
+  `any`, `min`/`max`; select its options; toggle a checkbox before its
+  label; `help` under it; labels, help and options `esc()`d, values set
+  as `.value`/`.checked`), then a `.as-msg` line; Save (or Enter in a
+  text or number field) sends every field's value — a number field
+  blank or not one "Enter a number for <label>." and nothing sent — by
+  `api.saveAppSettings()` (`PUT`), a refusal the server's message in the
+  popup, kept open; saved, it closes, the row says "✓ Settings saved",
+  and the app's tile is rendered afresh (`api.renderApp(a.id,
+  tileCfg(a.id))`, `repaintTile()`). The tile config popup
+  (`openTileConfig()`) is unchanged. Update
   and Duplicate both start with `readBack(btn, verb)`: every file in
   `a.files` read back (`api.appFile()`, the button off meanwhile, one
   `Promise.all`; an empty file is read empty) — any read that fails
@@ -1738,7 +1796,8 @@ them), what's next and what's parked.
   `DELETE /api/connectors/<id>`,
   `/api/sync/<plugin>`), and the app routes (`/api/apps`, `POST /api/apps`,
   `PUT /api/apps/<id>`, `DELETE /api/apps/<id>`, `POST /api/app/<id>/render`, `POST
-  /api/app/<id>/action`, `/api/app/<id>/file`, `/api/app-sources`, `DELETE
+  /api/app/<id>/action`, `/api/app/<id>/file`, `GET`/`PUT
+  /api/app/<id>/settings`, `/api/app-sources`, `DELETE
   /api/app-sources/<id>`, `DELETE /api/app-sources/<id>/<metric>`, `GET
   /api/app/<id>/files`, `HEAD`/`DELETE /api/app/<id>/files/<name>` and the
   download links to its `GET`), the
@@ -3041,8 +3100,14 @@ them), what's next and what's parked.
   on its `app:` source — Your data's Remove all data, `DELETE
   /api/app-sources/<id>` — deletes them (the per-metric delete never). In
   `tracker.db`, so every backup, download and restore carries them.
-  Collections starting `_` are OpenFit's own (C4's `_settings`), out of
-  the ctx's reach.
+  Collections starting `_` are OpenFit's own, out of the ctx's reach:
+  C4's `_settings`, its one key `values` the app's app-wide settings
+  (`{key: value}`), written only by `PUT /api/app/<id>/settings` `{values}`
+  (→ `{ok, values}`, 400 `{ok: false, error, field}` naming a field that
+  won't do or isn't declared, nothing saved; a key left out kept) and read
+  back by `GET` as `{fields, values}`; both 404 for an app not installed
+  or with no settings, a library app's included. Counted in the app's
+  total, kept at uninstall, taken by Delete data.
 - `app_files(app, name, content, size, created_at, updated_at)` keyed
   `(app, name)` (migration `012`, purely additive; C3): the report files
   apps make, every column NOT NULL. `app` the app's installed id (as
@@ -3708,9 +3773,15 @@ what's parked:
   `files: {count, bytes}`, `purge_source()` takes them (the `removed`
   replies gain `files`); 10 MiB a file, 200 MiB and 1000 files an app;
   `APP_LEVEL` 6. Deploy: merge it, Update OpenFit (012 runs at startup),
-  then any app that makes reports (`requires: 6`). Next: C4, an app's own
-  settings on top of records (the manifest fields, a settings form,
-  `_settings`); timers and scheduled app jobs after it.
+  then any app that makes reports (`requires: 6`).
+  Then C4 landed (no migration; core item 2 complete with C2 and C3):
+  app-wide settings — `settings:` in the manifest, checked strictly,
+  `ctx.settings()`/`ctx.setting()` on the `Ctx`, a stale stored value
+  read as its default, set by the user through `GET`/`PUT
+  /api/app/<id>/settings` and the app row's Settings popup, stored as the
+  app's `_settings`/`values` record; per-tile `config:` unchanged;
+  `APP_LEVEL` 7. Deploy: merge it, Update OpenFit, then any app that
+  declares settings (`requires: 7`). Next: timers and scheduled app jobs.
   Still to come for write-back: an app replacing its own
   metrics (and samples) over a date range,
   the rostered↔flown per-duty matching (needs a derived duty key — the

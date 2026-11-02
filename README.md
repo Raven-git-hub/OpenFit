@@ -633,6 +633,13 @@ downloaded file and use your browser's Print → Save as PDF. A file is at most
 database too, uninstalling keeps them, and an uninstalled app's row in
 Connected sources lists each with Download and Delete.
 
+An app can also declare **settings** for the whole app (app level 7) — a
+home base, a preferred unit — in its manifest's `settings:`. You set them
+once, from the app's row in Data → Applications (**Settings**), and the app
+reads them in every tile and action (`ctx.settings()`); a tile's own
+settings, from Configure's gear, stay separate. They're kept like its
+records: through an uninstall, and removed with Delete data.
+
 Removing that data is its own, explicit step, once the app is gone. An
 uninstalled app's source shows in **Connected sources** with what it holds
 (its readings, sessions, samples, and records and files with their size) and a red

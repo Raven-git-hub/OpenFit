@@ -77,7 +77,11 @@ from metrics import (
 from host import (
     APP_SOURCE_PREFIX,
     FileUpload,
+    SettingError,
     WriteCtx,
+    effective_settings,
+    stored_settings,
+    write_settings,
     app_source,
     custom_metric_defs,
     is_file_name,
@@ -1096,6 +1100,73 @@ def app_file(app_id):
     except LibraryError as e:
         return jsonify({"ok": False, "error": str(e)}), e.status
     return jsonify({"id": installed.id, "name": name, "text": text})
+
+
+# ---------- app-wide settings (C4) ----------
+
+def _settings_app(app_id):
+    """The installed app whose settings the route reaches, or a 404 reply:
+    an id with no app that loads, or an app that declares no settings.
+    A library app's are the user's too, so it's set up like any."""
+    installed = find_app(app.config["APPS_DIR"], app_id)
+    if installed is None:
+        return None, (jsonify({"ok": False, "error": f"unknown app: {app_id}"}), 404)
+    if not installed.settings:
+        return None, (jsonify({"ok": False, "error": f"'{app_id}' has no settings"}), 404)
+    return installed, None
+
+
+@app.route("/api/app/<app_id>/settings", methods=["GET"])
+def get_app_settings(app_id):
+    """An app's app-wide settings: {fields, values}.
+
+    `fields` the manifest's settings fields, in order, as GET /api/apps
+    lists them - the form's schema; `values` what ctx.settings() gives
+    the app now: every declared key, the user's value where it's still
+    valid, else its default. 404 for an app not installed, or one that
+    declares no settings.
+    """
+    installed, refused = _settings_app(app_id)
+    if refused:
+        return refused
+    conn = get_conn()
+    try:
+        values = effective_settings(installed.settings, stored_settings(conn, installed.id))
+    finally:
+        conn.close()
+    return jsonify({"fields": installed.summary()["settings"], "values": values})
+
+
+@app.route("/api/app/<app_id>/settings", methods=["PUT"])
+def put_app_settings(app_id):
+    """Set an app's app-wide settings: {"values": {key: value}} -> {ok, values}.
+
+    The user's, from Data -> Applications -> Settings; never an app's
+    (no ctx writes them). Every key must be one the manifest declares,
+    every value valid for its field (apps.setting_problem()): else 400
+    naming the field ({ok: false, error, field}), nothing saved. A key
+    left out keeps its value; to reset one, send its default. Stored as
+    the app's _settings record (host.py's write_settings()); `values`
+    in the reply is what ctx.settings() now gives. 404 as GET's.
+    """
+    installed, refused = _settings_app(app_id)
+    if refused:
+        return refused
+    body = request.get_json(force=True, silent=True)
+    if not isinstance(body, dict) or not isinstance(body.get("values"), dict):
+        return jsonify({"ok": False, "error": "send {values: {setting key: value}}"}), 400
+    conn = get_conn()
+    try:
+        try:
+            values = write_settings(conn, installed, body["values"])
+        except SettingError as e:
+            conn.rollback()
+            return jsonify({"ok": False, "error": str(e), "field": e.field}), 400
+        conn.commit()
+    finally:
+        conn.close()
+    return jsonify({"ok": True, "values": values})
+
 
 
 # ---------- report files: what apps make, for the user to download ----------

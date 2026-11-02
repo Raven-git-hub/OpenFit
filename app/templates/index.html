@@ -484,6 +484,12 @@ a.btn{display:inline-block;text-decoration:none;}
 .modal .field{margin-bottom:12px;}
 .modal h4 + .field{margin-top:16px;}
 .modal-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:16px;}
+/* An app's settings popup (C4): a field's help close under it; a toggle
+   a checkbox before its label, the help on its own line under both. */
+.modal .as-help{font-size:12px;margin:0;}
+.as-toggle{flex-direction:row;flex-wrap:wrap;align-items:center;gap:0 8px;}
+.as-toggle .as-check{order:-1;width:16px;height:16px;margin:0;accent-color:var(--accent);}
+.as-toggle .as-help{flex-basis:100%;margin-top:4px;}
 /* Remove source on the left, Close on the right */
 .modal-actions.split{justify-content:space-between;}
 /* one button on the left, the rest on the right - Delete tab */
@@ -1365,6 +1371,11 @@ h5 + .dnote{margin-top:0;}
     /* Install one from its files, {name: text}; the server reads the id
        from the app.yaml among them and re-checks everything. Updating
        one replaces its files with these, its id and data kept. */
+    /* An app's app-wide settings (C4): the user's, for the whole app -
+       its fields and their values now; saved as a whole form's values,
+       which the server checks again, field by field. */
+    appSettings:  id             => fetchJSON('/api/app/'+enc(id)+'/settings'),
+    saveAppSettings: (id, values) => send('/api/app/'+enc(id)+'/settings', 'PUT', {values}),
     installApp:   files          => send('/api/apps', 'POST', {files}),
     updateApp:    (id, files)    => send('/api/apps/'+enc(id), 'PUT', {files}),
     /* The app library - the shelf the Admin publishes: what's on it, one
@@ -3008,6 +3019,106 @@ h5 + .dnote{margin-top:0;}
   }
 
   /* An open row: Reads · Files · Writes, then the actions. */
+  /* ---- an app's app-wide settings (C4) ----
+     The user's, for the whole app, set once: declared in its manifest's
+     settings:, read by the app with ctx.settings(). Not a tile's own
+     config (Configure's gear, openTileConfig()), which stays per tile. */
+  /* One settings field's markup: its label, its input - by type, with
+     the field's own limits as attributes - and its help under it. Every
+     label, help and option escaped; values are set afterwards, as
+     .value or .checked, never markup. */
+  function settingField(f, i){
+    const id = 'appSet'+i;
+    const num = v => typeof v === 'number' && Number.isFinite(v);
+    let input;
+    if(f.type==='number'){
+      input = `<input class="input" id="${id}" type="number" step="${f.integer ? '1' : 'any'}"`
+        + (num(f.min) ? ` min="${esc(String(f.min))}"` : '')
+        + (num(f.max) ? ` max="${esc(String(f.max))}"` : '')
+        + ' autocomplete="off">';
+    }else if(f.type==='select'){
+      const options = Array.isArray(f.options) ? f.options : [];
+      input = `<select class="input" id="${id}">`
+        + options.map(o => `<option value="${esc(o)}">${esc(o)}</option>`).join('')
+        + '</select>';
+    }else if(f.type==='toggle'){
+      input = `<input class="as-check" id="${id}" type="checkbox">`;
+    }else{
+      input = `<input class="input" id="${id}" type="text" maxlength="${esc(String(+f.max_length || 200))}" autocomplete="off">`;
+    }
+    return `
+      <div class="field as-field${f.type==='toggle' ? ' as-toggle' : ''}">
+        <label for="${id}">${esc(f.label || f.key)}</label>
+        ${input}
+        ${f.help ? `<p class="hint as-help">${esc(f.help)}</p>` : ''}
+      </div>`;
+  }
+
+  /* The settings popup: a form of `got.fields` (GET /api/app/<id>/settings),
+     filled from `got.values`. Save PUTs every field's value; the server's
+     refusal (a 400 naming the field) stays beside the form, the popup
+     open. Saved, it closes, `saved()` is told, and the app's tile on the
+     tab - the one a tile an app - is drawn again from a fresh render. */
+  function openAppSettings(a, got, saved){
+    const name = a.name || a.id;
+    const fields = Array.isArray(got && got.fields) ? got.fields : [];
+    const values = (got && got.values) || {};
+    const {box, close} = openModal(`
+      <h4>${esc(name)} settings</h4>
+      <p class="hint">Applies to this app everywhere it appears, for you. A tile's own settings are separate.</p>
+      ${fields.map(settingField).join('')}
+      <div class="form-msg as-msg" role="status"></div>
+      <div class="modal-actions">
+        <button class="btn sm" data-act="close" type="button">Cancel</button>
+        <button class="btn sm primary" data-act="save" type="button">Save</button>
+      </div>`);
+    const inputs = fields.map((f, i) => box.querySelector('#appSet'+i));
+    const msg = box.querySelector('.as-msg');
+    const saveBtn = box.querySelector('[data-act="save"]');
+    fields.forEach((f, i) => {
+      const v = Object.prototype.hasOwnProperty.call(values, f.key) ? values[f.key] : f.default;
+      if(f.type==='toggle') inputs[i].checked = v===true;
+      else inputs[i].value = v==null ? '' : String(v);
+    });
+    const say = text => { msg.className = 'form-msg as-msg' + (text ? ' bad' : ''); msg.textContent = text; };
+    const save = async () => {
+      if(saveBtn.disabled) return;
+      const next = {};
+      for(let i = 0; i < fields.length; i++){
+        const f = fields[i], input = inputs[i];
+        if(f.type==='toggle') next[f.key] = !!input.checked;
+        else if(f.type==='number'){
+          const n = Number(input.value);
+          if(String(input.value).trim()==='' || !Number.isFinite(n)){
+            say(`Enter a number for ${f.label || f.key}.`);
+            return;
+          }
+          next[f.key] = n;
+        }
+        else next[f.key] = String(input.value);
+      }
+      say('');
+      saveBtn.disabled = true;
+      const res = await api.saveAppSettings(a.id, next);
+      saveBtn.disabled = false;
+      if(!res.ok){ say(res.error || `Couldn't save ${name}'s settings.`); return; }
+      close();
+      if(saved) saved(res.values);
+      let spec;
+      try{ spec = await api.renderApp(a.id, tileCfg(a.id)); }
+      catch(e){ spec = {type:'error', message:"Couldn't load this app."}; }
+      repaintTile(a.id, spec);
+    };
+    inputs.forEach((input, i) => {
+      if(fields[i].type!=='select' && fields[i].type!=='toggle'){
+        input.onkeydown = e => { if(e.key==='Enter') save(); };
+      }
+    });
+    saveBtn.onclick = save;
+    box.querySelector('[data-act="close"]').onclick = close;
+    if(inputs.length) inputs[0].focus();
+  }
+
   function appPanel(a){
     const name = a.name || a.id;
     const reads = Array.isArray(a.reads) ? a.reads : [];
@@ -3032,6 +3143,7 @@ h5 + .dnote{margin-top:0;}
       <div>${writesTicker()}</div>
       <div class="a-acts">
         <button class="btn sm" data-act="refresh" type="button">Refresh</button>
+        ${Array.isArray(a.settings) && a.settings.length ? '<button class="btn sm" data-act="settings" type="button" aria-haspopup="dialog">Settings</button>' : ''}
         <span class="a-acts-end">
           ${a.library
             ? `<span class="dnote a-lib">From the ${esc(a.library)} library · updated by your admin</span>`
@@ -3079,6 +3191,19 @@ h5 + .dnote{margin-top:0;}
       refresh.disabled = false;
       if(spec && spec.type === 'error') say('bad', 'Its render failed: ' + (spec.message || 'no message'));
       else say('ok', '✓ Refreshed');
+    };
+
+    /* Settings: the app's app-wide settings (C4), read afresh and opened
+       as a form; saved, the app's tile is drawn again with them. */
+    const setBtn = act('settings');
+    if(setBtn) setBtn.onclick = async () => {
+      setBtn.disabled = true;
+      say('', '');
+      let got;
+      try{ got = await api.appSettings(a.id); }
+      catch(e){ say('bad', `Couldn't read ${name}'s settings.`); setBtn.disabled = false; return; }
+      setBtn.disabled = false;
+      openAppSettings(a, got, () => say('ok', '✓ Settings saved'));
     };
 
     /* Every one of the app's files, read back through the file route -

@@ -106,6 +106,16 @@ downloaded file. A "button" input - ctx.input(key, action, label=...,
 kind="button") - sends an action with no field, {key: True}, for "Make
 October's report".
 
+An app's app-wide settings (app level 7) are the user's, declared in its
+manifest's `settings:` and set once for the whole app in Data ->
+Applications; render() and handle() read them, never write them:
+
+    ctx.settings()               # {"home_base": "HKG", "units": "metric"}
+    ctx.setting("home_base")     # "HKG"; an undeclared key: KeyError
+
+A stored value no longer valid under the manifest reads as the field's
+default. A tile's own config (render()'s cfg) is separate.
+
 A file input's value in the payload is a FileUpload - the file as the
 browser sent it, which the app reads and parses itself: OpenFit carries
 a file, and never reads one. A file input may carry a companion toggle
@@ -276,7 +286,7 @@ from typing import NamedTuple
 # The module itself, not its now_utc(): a test pins clock.now_utc, and a
 # record's timestamps follow it.
 import clock
-from apps import scan_apps
+from apps import scan_apps, setting_problem, setting_value
 from clock import today_in, user_zone
 from derived import derived_points, session_rows
 from metrics import METRICS, SESSION_KINDS, finite_number, plausible_value
@@ -1519,9 +1529,9 @@ class Ctx:
     Made for one app, `app` (an InstalledApp): it reads OpenFit's metrics
     and the ones that app declares (metric()), every source's sessions
     of OpenFit's kinds (sessions()), and that app's own records
-    (record(), records()) and report files (files()). A ctx for no app
-    reads the same, less the app's own metrics, and has no records or
-    files.
+    (record(), records()), report files (files()) and app-wide settings
+    (settings(), setting()). A ctx for no app reads the same, less the
+    app's own metrics, and has no records, files or settings.
     """
 
     number = staticmethod(number)
@@ -1556,8 +1566,11 @@ class Ctx:
         self._app_id = None
         # Short key -> its CustomMetric: the only app metrics this ctx knows.
         self._own = {}
+        # Its app-wide settings fields (C4), by key, in the manifest's order.
+        self._settings = {}
         if app is not None:
             self._app_id = app.id
+            self._settings = {f["key"]: f for f in getattr(app, "settings", None) or []}
             self._own = {declared.key: declared for declared in app_metric_defs(app).values()}
 
     def _resolve(self, key):
@@ -1725,6 +1738,38 @@ class Ctx:
             for row in self._conn.execute(sql, args)
         ]
 
+    def settings(self):
+        """The app's app-wide settings, as the user set them: {key: value}.
+
+        Every key the manifest's `settings:` declares, in its order: the
+        value the user saved (Data -> Applications -> Settings) if there
+        is one and it's still valid for the field as the manifest has it
+        now, else the field's default. A stored value that no longer fits
+        - a key no longer declared, a select option that's gone, a number
+        now out of range, a value of the wrong type - is passed over,
+        never an error, so an app update that changes its settings never
+        breaks a render. {} for an app that declares none. Read afresh
+        each call; the app never writes them (the user does). App level 7.
+
+        Raises ValueError for a ctx made for no app.
+        """
+        if self._app_id is None:
+            raise ValueError("settings belong to an app: this ctx was made for none")
+        return effective_settings(self._settings.values(), stored_settings(self._conn, self._app_id))
+
+    def setting(self, key):
+        """One app-wide setting's value, as settings() gives it.
+
+        Raises KeyError for a key the manifest doesn't declare - a typo
+        in the app's code is caught, never read as a default - and
+        ValueError for a ctx made for no app. App level 7.
+        """
+        if self._app_id is None:
+            raise ValueError("settings belong to an app: this ctx was made for none")
+        if not isinstance(key, str) or key not in self._settings:
+            raise KeyError(key)
+        return self.settings()[key]
+
     def _files_app(self):
         """The app whose report files this ctx reaches: its own, always."""
         if self._app_id is None:
@@ -1861,8 +1906,8 @@ def _session_instant(raw, field):
 # 0-9, _ or -.
 RECORD_COLLECTION = re.compile(r"[a-z][a-z0-9_-]{0,39}\Z")
 # A collection starting with this is OpenFit's own - the app-wide
-# settings (C4) will be _settings - and no app reaches it through its
-# ctx, read or write.
+# settings (C4) are _settings - and no app reaches it through its
+# ctx's records, read or write (settings() reads that one).
 RESERVED_COLLECTION_PREFIX = "_"
 # A key is 1 to this many printable characters.
 MAX_RECORD_KEY = 200
@@ -1942,6 +1987,127 @@ def _record_limit(raw):
     if not isinstance(raw, int) or isinstance(raw, bool) or not 1 <= raw <= MAX_RECORDS_LISTED:
         raise ValueError(f"limit must be a whole number from 1 to {MAX_RECORDS_LISTED}, or None: {raw!r}")
     return raw
+
+
+def _store_record(conn, app, collection, key, value):
+    """Upsert one record of `app`'s, `collection` and `key` already
+    checked: put_record()'s write, and the settings route's (C4) into
+    OpenFit's own _settings, so both are held to the same limits - 256 KB
+    a record, the app's 50 MB in all. Commits nothing. ValueError for a
+    value that isn't plain JSON or is over a limit, nothing written."""
+    text, size = _record_value(value)
+    old = conn.execute(
+        "SELECT size FROM app_records WHERE app = ? AND collection = ? AND key = ?",
+        (app, collection, key),
+    ).fetchone()
+    growth = size - (old[0] if old is not None else 0)
+    if growth > 0:
+        # The app's own total: one SUM, read from idx_app_records_size
+        # (011), never touching a value.
+        total = conn.execute(
+            "SELECT COALESCE(SUM(size), 0) FROM app_records WHERE app = ?", (app,)
+        ).fetchone()[0]
+        if total + growth > MAX_APP_RECORD_BYTES:
+            raise ValueError(
+                f"value would take the app's records to {total + growth:,} bytes; an app keeps "
+                f"at most 50 MB of records ({MAX_APP_RECORD_BYTES:,} bytes) - delete some first"
+            )
+    now = iso_utc(clock.now_utc())
+    conn.execute(
+        "INSERT INTO app_records (app, collection, key, value, size, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?) "
+        "ON CONFLICT (app, collection, key) DO UPDATE SET "
+        "value = excluded.value, size = excluded.size, updated_at = excluded.updated_at",
+        (app, collection, key, text, size, now, now),
+    )
+
+
+# ---------- app-wide settings (C4) ----------
+#
+# The user's settings for an app, one record in OpenFit's own collection:
+# app_records (app, "_settings", "values"), a JSON object {key: value} of
+# the keys the user has set. Written only by write_settings() - the
+# settings route's (PUT /api/app/<id>/settings) - never by an app: an
+# app's put_record() refuses every _ collection. It counts toward the
+# app's records total, goes with Delete data (purge_source() takes all
+# an app's records) and stays through an uninstall, as records do.
+SETTINGS_COLLECTION = RESERVED_COLLECTION_PREFIX + "settings"
+SETTINGS_KEY = "values"
+
+
+class SettingError(ValueError):
+    """A settings value the user sent that won't do; `field` its key."""
+
+    def __init__(self, message, field=None):
+        super().__init__(message)
+        self.field = field
+
+
+def stored_settings(conn, app_id):
+    """What's stored of an app's settings: the record's {key: value}, as
+    written - {} for none, or for a record that isn't a JSON object."""
+    row = conn.execute(
+        "SELECT value FROM app_records WHERE app = ? AND collection = ? AND key = ?",
+        (app_id, SETTINGS_COLLECTION, SETTINGS_KEY),
+    ).fetchone()
+    if row is None:
+        return {}
+    try:
+        stored = json.loads(row[0])
+    except ValueError:
+        return {}
+    return stored if isinstance(stored, dict) else {}
+
+
+def effective_settings(fields, stored):
+    """{key: value} for every field in `fields`, in order: the stored
+    value where it's there and setting_problem() takes it under the
+    field as declared now, else the field's default - a stale value
+    passed over, never an error."""
+    values = {}
+    for field in fields:
+        key = field["key"]
+        if key in stored and setting_problem(field, stored[key]) is None:
+            values[key] = setting_value(field, stored[key])
+        else:
+            values[key] = field["default"]
+    return values
+
+
+def write_settings(conn, installed, values):
+    """Set some of an installed app's settings, as the user sent them:
+    the effective settings after (effective_settings()).
+
+    `values` a mapping of declared keys only, each valid for its field
+    (setting_problem()); a key left out keeps what it had. Every check
+    before anything is written: SettingError naming the field, nothing
+    stored. The record then holds every declared key's value that's
+    still valid and the ones sent - a stale one left behind. Commits
+    nothing.
+    """
+    fields = {f["key"]: f for f in installed.settings}
+    if not isinstance(values, dict):
+        raise SettingError("values must be an object of {setting key: value}")
+    for key in values:
+        if key not in fields:
+            raise SettingError(f"{installed.id!r} has no setting {key!r}", key)
+    for key, value in values.items():
+        field = fields[key]
+        problem = setting_problem(field, value)
+        if problem:
+            raise SettingError(f"{field['label']} ({key}) {problem}", key)
+    stored = stored_settings(conn, installed.id)
+    kept = {
+        key: setting_value(field, stored[key])
+        for key, field in fields.items()
+        if key in stored and setting_problem(field, stored[key]) is None
+    }
+    kept.update({key: setting_value(fields[key], value) for key, value in values.items()})
+    try:
+        _store_record(conn, installed.id, SETTINGS_COLLECTION, SETTINGS_KEY, kept)
+    except ValueError as e:
+        raise SettingError(str(e)) from None
+    return effective_settings(installed.settings, kept)
 
 
 # ---------- report files: documents an app makes (C3) ----------
@@ -2193,32 +2359,7 @@ class WriteCtx(Ctx):
         collection, key or value that won't do, or one over a limit.
         """
         collection, key = _record_collection(collection), _record_key(key)
-        text, size = _record_value(value)
-        app = self._records_app()
-        old = self._conn.execute(
-            "SELECT size FROM app_records WHERE app = ? AND collection = ? AND key = ?",
-            (app, collection, key),
-        ).fetchone()
-        growth = size - (old[0] if old is not None else 0)
-        if growth > 0:
-            # The app's own total: one SUM, read from idx_app_records_size
-            # (011), never touching a value.
-            total = self._conn.execute(
-                "SELECT COALESCE(SUM(size), 0) FROM app_records WHERE app = ?", (app,)
-            ).fetchone()[0]
-            if total + growth > MAX_APP_RECORD_BYTES:
-                raise ValueError(
-                    f"value would take the app's records to {total + growth:,} bytes; an app keeps "
-                    f"at most 50 MB of records ({MAX_APP_RECORD_BYTES:,} bytes) - delete some first"
-                )
-        now = iso_utc(clock.now_utc())
-        self._conn.execute(
-            "INSERT INTO app_records (app, collection, key, value, size, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?) "
-            "ON CONFLICT (app, collection, key) DO UPDATE SET "
-            "value = excluded.value, size = excluded.size, updated_at = excluded.updated_at",
-            (app, collection, key, text, size, now, now),
-        )
+        _store_record(self._conn, self._records_app(), collection, key, value)
 
     def delete_record(self, collection, key):
         """Remove the app's own record `key` from `collection`: whether there was one to remove.

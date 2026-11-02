@@ -5,7 +5,9 @@ An app is a folder in the apps directory (APPS_DIR, /data/apps by
 default) holding its manifest and, usually, its engine:
 
     <apps dir>/steps/
-        app.yaml    the manifest: id, name, sizes, reads, config, metrics
+        app.yaml    the manifest: id, name, sizes, reads, config, metrics,
+                    settings (app-wide, the user's: {key, label, type,
+                    default, ...}, checked strictly - C4)
                     (sizes the tile's allowed sizes in cells, the default
                     first; config an ordered list of fields:
                     {key, label, type, default}; metrics the ones the
@@ -61,6 +63,7 @@ sections, below.
 
 import importlib.util
 import json
+import math
 import os
 import re
 import secrets
@@ -141,7 +144,9 @@ class AppError(Exception):
 #      ctx.delete_record() - a private JSON store per app (C2)
 #   6  report files: ctx.save_file(), ctx.delete_file(), ctx.files(),
 #      ctx.download(); a "button" input (C3)
-APP_LEVEL = 6
+#   7  app-wide settings: settings: in the manifest, ctx.settings() /
+#      ctx.setting(), set by the user per app (C4)
+APP_LEVEL = 7
 
 # The most a description says, trimmed: a line or two in Browse.
 MAX_DESCRIPTION = 300
@@ -230,6 +235,9 @@ class InstalledApp:
     handle: object = field(default=None, repr=False)
     # The metrics it invents (_metrics()), in its manifest's order.
     metrics: list = field(default_factory=list)
+    # Its app-wide settings fields (_settings(), C4), in its manifest's
+    # order: the user's, set per app, read with ctx.settings().
+    settings: list = field(default_factory=list)
     # What Browse says of it, the app level it needs and the apps it
     # replaces: the manifest's, checked (manifest_description() and its
     # siblings). Not listed by summary().
@@ -240,7 +248,8 @@ class InstalledApp:
     def summary(self):
         """What GET /api/apps lists for it: the manifest's id, name, sizes
         (default_size their first), reads, config fields - the schema a
-        tile's settings form is built from - and the metrics it invents,
+        tile's settings form is built from - the metrics it invents, its
+        app-wide settings fields (C4: the form in Data -> Applications),
         and the names of the files in its folder. library is the library
         it was installed from ('openfit' for openfit.frms: read-only, so
         the page offers no Update), None for a custom app."""
@@ -255,6 +264,10 @@ class InstalledApp:
             "metrics": [
                 {**metric, "range": None if metric["range"] is None else list(metric["range"])}
                 for metric in self.metrics
+            ],
+            "settings": [
+                {**f, **({"options": list(f["options"])} if "options" in f else {})}
+                for f in self.settings
             ],
             "files": app_files(self.path),
         }
@@ -469,6 +482,193 @@ def _metrics(raw):
     return metrics
 
 
+# ---------- app-wide settings (C4) ----------
+#
+# An app's `settings:` - the user's, for the whole app, set once in Data ->
+# Applications (PUT /api/app/<id>/settings) and read by the app with
+# ctx.settings() / ctx.setting() (host.py). Unlike config (per tile, its
+# fields the app's own to interpret), every field is checked here, and so
+# is every value the user sets: setting_problem() is the one rule, for a
+# field's default, a value sent to the route and a stored value read back.
+
+# A setting's key: a lowercase letter, then up to 39 of a-z, 0-9 or _.
+SETTING_KEY = re.compile(r"[a-z][a-z0-9_]{0,39}\Z")
+SETTING_TYPES = ("text", "number", "select", "toggle")
+# The fields each type has: these and nothing else, so a misspelt `max`
+# can't quietly mean no maximum.
+SETTING_COMMON = ("key", "label", "help", "type", "default")
+SETTING_EXTRA = {
+    "text": ("max_length",),
+    "number": ("min", "max", "integer"),
+    "select": ("options",),
+    "toggle": (),
+}
+MAX_SETTINGS = 30
+MAX_SETTING_LABEL = 80
+MAX_SETTING_HELP = 200
+# A text setting's longest value: max_length, 1 to MAX_TEXT_SETTING,
+# DEFAULT_TEXT_SETTING when the field doesn't say.
+MAX_TEXT_SETTING = 500
+DEFAULT_TEXT_SETTING = 200
+MAX_SETTING_OPTIONS = 50
+MAX_SETTING_OPTION = 80
+
+
+def _is_number(value):
+    """A finite int or float, never a bool."""
+    return (
+        isinstance(value, (int, float)) and not isinstance(value, bool)
+        and math.isfinite(value)
+    )
+
+
+def setting_problem(field, value):
+    """Why `value` won't do for the settings field `field` (as _settings()
+    gives it), or None if it will.
+
+    text: a str of at most max_length characters, printable (spaces are,
+    a tab or a line break isn't); number: finite, not a bool, within
+    min/max, whole if integer; select: one of options; toggle: a bool.
+    """
+    kind = field["type"]
+    if kind == "text":
+        if not isinstance(value, str):
+            return "must be text"
+        if len(value) > field["max_length"]:
+            return f"must be at most {field['max_length']} characters: it has {len(value)}"
+        if not value.isprintable():
+            return "must be printable text, with no tabs, line breaks or control characters"
+        return None
+    if kind == "number":
+        if not _is_number(value):
+            return "must be a number"
+        if field["integer"] and not float(value).is_integer():
+            return "must be a whole number"
+        if field["min"] is not None and value < field["min"]:
+            return f"must be at least {field['min']}"
+        if field["max"] is not None and value > field["max"]:
+            return f"must be at most {field['max']}"
+        return None
+    if kind == "select":
+        if not isinstance(value, str) or value not in field["options"]:
+            return "must be one of " + ", ".join(field["options"])
+        return None
+    # toggle
+    if not isinstance(value, bool):
+        return "must be true or false"
+    return None
+
+
+def setting_value(field, value):
+    """A value setting_problem() took, as it's stored and read: a whole
+    number for an integer field (3.0 is 3), else as given."""
+    if field["type"] == "number" and field["integer"]:
+        return int(value)
+    return value
+
+
+def _setting_text(entry, key, name, most, required):
+    value = entry.get(name)
+    if value is None and not required:
+        return None
+    if not isinstance(value, str) or not 1 <= len(value.strip()) <= most:
+        raise AppError(f"setting {key!r}: {name} must be text of 1 to {most} characters: {value!r}")
+    return value.strip()
+
+
+def _setting(entry):
+    """One settings field, checked: its key, label, help (or None), type
+    and default, and its type's own - a text's max_length, a number's
+    min, max and integer, a select's options - every one filled in."""
+    if not isinstance(entry, dict):
+        raise AppError(f"each setting must be a mapping of key, label, type and default: {entry!r}")
+    key = entry.get("key")
+    if not isinstance(key, str) or not SETTING_KEY.match(key):
+        raise AppError(
+            "each setting needs a key: a lowercase letter, then up to 39 lowercase "
+            f"letters, digits or _: {key!r}"
+        )
+    kind = entry.get("type")
+    if kind not in SETTING_TYPES:
+        raise AppError(f"setting {key!r}: type must be one of {', '.join(SETTING_TYPES)}: {kind!r}")
+    allowed = SETTING_COMMON + SETTING_EXTRA[kind]
+    unknown = sorted(str(name) for name in entry if name not in allowed)
+    if unknown:
+        raise AppError(
+            f"setting {key!r} has a field a {kind} setting doesn't: {', '.join(map(repr, unknown))} "
+            f"- a {kind} setting is {{{', '.join(allowed)}}}"
+        )
+    field = {
+        "key": key,
+        "label": _setting_text(entry, key, "label", MAX_SETTING_LABEL, True),
+        "help": _setting_text(entry, key, "help", MAX_SETTING_HELP, False),
+        "type": kind,
+    }
+    if kind == "text":
+        most = entry.get("max_length", DEFAULT_TEXT_SETTING)
+        if not isinstance(most, int) or isinstance(most, bool) or not 1 <= most <= MAX_TEXT_SETTING:
+            raise AppError(
+                f"setting {key!r}: max_length must be a whole number from 1 to {MAX_TEXT_SETTING}: {most!r}"
+            )
+        field["max_length"] = most
+    elif kind == "number":
+        bounds = {}
+        for name in ("min", "max"):
+            bound = entry.get(name)
+            if bound is not None and not _is_number(bound):
+                raise AppError(f"setting {key!r}: {name} must be a finite number: {bound!r}")
+            bounds[name] = bound
+        if bounds["min"] is not None and bounds["max"] is not None and bounds["min"] > bounds["max"]:
+            raise AppError(f"setting {key!r}: min must not be more than max: {bounds['min']} > {bounds['max']}")
+        integer = entry.get("integer", False)
+        if not isinstance(integer, bool):
+            raise AppError(f"setting {key!r}: integer must be true or false: {integer!r}")
+        field.update(bounds, integer=integer)
+    elif kind == "select":
+        options = entry.get("options")
+        if not isinstance(options, list) or not 1 <= len(options) <= MAX_SETTING_OPTIONS:
+            raise AppError(
+                f"setting {key!r}: options must be a list of 1 to {MAX_SETTING_OPTIONS} choices: {options!r}"
+            )
+        for option in options:
+            if not isinstance(option, str) or not 1 <= len(option) <= MAX_SETTING_OPTION:
+                raise AppError(
+                    f"setting {key!r}: each option must be text of 1 to {MAX_SETTING_OPTION} characters: {option!r}"
+                )
+        if len(set(options)) != len(options):
+            raise AppError(f"setting {key!r}: an option is listed twice")
+        field["options"] = list(options)
+    if "default" not in entry:
+        raise AppError(f"setting {key!r} needs a default")
+    default = entry["default"]
+    problem = setting_problem(field, default)
+    if problem:
+        raise AppError(f"setting {key!r}: its default {problem}: {default!r}")
+    field["default"] = setting_value(field, default)
+    return field
+
+
+def _settings(raw):
+    """The manifest's app-wide settings, in order: [{key, label, help, type,
+    default, ...}, ...] - [] for none. At most MAX_SETTINGS, each key
+    once; each field as _setting() checks it. Else AppError: the app
+    doesn't load."""
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise AppError("settings must be a list of fields, each {key, label, type, default}")
+    if len(raw) > MAX_SETTINGS:
+        raise AppError(f"settings lists at most {MAX_SETTINGS} fields: it lists {len(raw)}")
+    fields, keys = [], set()
+    for entry in raw:
+        field = _setting(entry)
+        if field["key"] in keys:
+            raise AppError(f"setting {field['key']!r} is listed twice")
+        keys.add(field["key"])
+        fields.append(field)
+    return fields
+
+
 def _manifest(folder, name=None):
     """The folder's manifest, checked and with defaults filled in, as it
     loads in a folder called `name` - its own name unless given: an
@@ -525,6 +725,7 @@ def _manifest(folder, name=None):
         "reads": list(reads),
         "config": _config(raw.get("config")),
         "metrics": _metrics(raw.get("metrics")),
+        "settings": _settings(raw.get("settings")),
         "description": manifest_description(raw),
         "requires": requires,
         "replaces": manifest_replaces(raw, own=app_id if library_of(app_id) else None),
