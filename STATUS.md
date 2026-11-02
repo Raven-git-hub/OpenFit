@@ -1,6 +1,6 @@
 # OpenFit status
 
-_Where things stand, as of 2 Nov 2026 (after A7, the Admin's visibility).
+_Where things stand, as of 2 Nov 2026 (after C2, app records).
 The phase plan this replaces is archived at
 [docs/history/roadmap.md](docs/history/roadmap.md)._
 
@@ -22,9 +22,10 @@ pushes. Readings land in three grains: daily and instant `metrics`, interval
 `sessions` (sleep, workouts, duties) and intraday `samples`, all keyed by the
 canonical vocabulary in `app/metrics.py`. Where sources overlap, a per-metric
 source role (or the default precedence) picks one stored derived value a day,
-tagged with its source; the raw rows stay. Schema changes are numbered,
-additive migrations (`app/migrations/`, at `010`); device credentials are
-encrypted at rest. See
+tagged with its source; the raw rows stay. Beside them, each app's own
+records (C2): a private JSON store, `app_records`, in collections the app
+names. Schema changes are numbered, additive migrations (`app/migrations/`,
+at `011`); device credentials are encrypted at rest. See
 [data-consolidation-model.md](docs/architecture/data-consolidation-model.md),
 [metric-schema-v2.md](docs/architecture/metric-schema-v2.md) and
 [apps-as-source.md](docs/architecture/apps-as-source.md).
@@ -33,8 +34,12 @@ encrypted at rest. See
 `app.py`: `render(ctx, cfg)` returns a display spec the page draws as a tile,
 and `handle(ctx, action, payload)` writes under the app's own source. The
 contract is versioned by the **app level**, `APP_LEVEL` in `app/apps.py`, now
-4; the list above it says what each level added, and an app declares the
-level it needs with `requires:`. The spec types cover numbers, lines,
+5; the list above it says what each level added, and an app declares the
+level it needs with `requires:`. Anything an app keeps that isn't a reading
+or a session - a report, a log, a saved list - is a record, in its own
+private JSON store (C2, level 5): read in `render()` and `handle()`, written
+in `handle()` inside the action's transaction, at most 256 KB a record and
+50 MB an app, kept at uninstall and shown, and removed, under Your data. The spec types cover numbers, lines,
 panels, inputs (field, dropdown, file), timelines and rails, grids, rows and
 columns, donuts and bars, images and strips, and a tile's views (switch,
 toggle, pager, choose) flip between versions of a tile without a round trip.
@@ -105,14 +110,19 @@ published to the shelf as `openfitavi.frms`, with its own tests.
 
 ## Next
 
-Nothing pinned yet: the next slice comes from testing, as ever.
+- **C3, report files**: an app produces HTML reports, always served as a
+  download, never shown inside OpenFit, PDF by the browser's Print; privacy
+  inside a downloaded report is the app author's. With C2 it resolves core
+  item 2 (FRMS's report store), more generally than FRMS asked.
+- **C4, per-app settings**: an app's own app-wide settings, declared in its
+  manifest and set from a settings form, kept in the reserved `_settings`
+  records collection C2 left for it.
+- Timers and scheduled app jobs come after these: apps act on demand first.
 
 ## Parked
 
 - **FRMS personal settings**: handled in the FRMS thread (FRMS still reads
   its home base and timezone from its own `config.json`).
-- **Per-app settings**: the timezone is the one account-wide field apps need
-  now, and a tile's `config` covers the rest.
 - **B2, `replaces`' data move**: nothing to move, since FRMS was reinstalled
   fresh from Browse; `replaces` stays parsed and refused.
 - **The `.local` names**: deferred with the proxy and the mDNS announcer;
@@ -121,7 +131,6 @@ Nothing pinned yet: the next slice comes from testing, as ever.
   brief-and-review process.
 - **The Admin on phones**: the portal is built for a desktop browser, and
   scrolls sideways under 1180px.
-- **FRMS's report store** (core item 2): waiting on FRMS's design.
 - **The layover label under the lane tag** (core item 5): polish.
 - **The one-off `docker image prune -f` and the server's disk size**: Andy's,
   on the server, not a code change.

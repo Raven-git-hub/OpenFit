@@ -3121,7 +3121,7 @@ def browse_shelf(tmp_path, monkeypatch):
                      "app.py": "def render(ctx, cfg):\n    return ctx.empty('<i>hi</i>')\n",
                      "notes.txt": "stride: 0.75 m\n"},
             "added": {"app.yaml": "id: added\nname: Added\nsizes: [{w: 1, h: 1}]\n"},
-            "newer": {"app.yaml": "id: newer\nname: Newer\nrequires: 5\nsizes: [{w: 1, h: 1}]\n"},
+            "newer": {"app.yaml": "id: newer\nname: Newer\nrequires: 6\nsizes: [{w: 1, h: 1}]\n"},
             "heir": {"app.yaml": "id: heir\nname: Heir\nreplaces: [old]\nsizes: [{w: 1, h: 1}]\n"},
             "deep": {"app.yaml": "id: deep\nname: Deep\nsizes: [{w: 1, h: 1}]\n", "assets/x.txt": "x"},
         },
@@ -7622,8 +7622,8 @@ def test_the_curve_leaves_room_under_its_trough_for_the_wocl_with_or_without_it(
 
 ORPHAN_PARTS = [
     "$", "el", "num", "orphans", "loadAppSources", "orphanRow", "orphanMetrics", "countOf",
-    "appDataSummary", "openRemoveAppData", "openModal", "paintSources", "orphanLines", "fillSources",
-    "sourceList", "expandable",
+    "appDataSummary", "appDataCounts", "recordsOf", "sizeText", "openRemoveAppData", "openModal",
+    "paintSources", "orphanLines", "fillSources", "sourceList", "expandable",
 ]
 
 ORPHAN_HARNESS = r"""
@@ -7785,13 +7785,13 @@ def test_an_orphan_shows_remove_data_and_a_live_app_doesnt(client, orphaned_app)
     result = _node(script)
 
     # Connected sources: the device's row, then the orphan's - name, its
-    # source, status and a red Remove all data, its head a button that
-    # opens it - and nothing for steps, live.
+    # source, what it holds, status and a red Remove all data, its head a
+    # button that opens it - and nothing for steps, live.
     assert result["card"] == [
         {"cls": "src", "id": "garmin", "source": None, "text": "", "buttons": []},
         {"cls": "src orphan", "id": None, "source": "app:old",
-         "text": "›oldapp:old○ app uninstalledRemove all data",
-         "buttons": [["›oldapp:old", "src-name orphan-head"], ["Remove all data", "btn sm danger"]]},
+         "text": "›oldapp:old3 readings○ app uninstalledRemove all data",
+         "buttons": [["›oldapp:old3 readings", "src-name orphan-head"], ["Remove all data", "btn sm danger"]]},
     ]
     assert result["metric"] == [
         ["app:old is from an uninstalled app.", "Remove data", "btn sm danger"],
@@ -7820,7 +7820,7 @@ def test_remove_data_confirms_what_goes_then_calls_the_route_and_refreshes(clien
     # the listing it refreshes to is the server's own.
     reply = _sent(client.delete("/api/app-sources/old"))
     after = client.get("/api/app-sources").get_json()
-    assert reply == {"ok": True, "removed": {"metrics": 3, "sessions": 0, "samples": 0}}
+    assert reply == {"ok": True, "removed": {"metrics": 3, "sessions": 0, "samples": 0, "records": 0}}
     assert [a["id"] for a in after] == ["steps"]
     conn = sqlite3.connect(main.app.config["DB_PATH"])
     assert conn.execute("SELECT COUNT(*) FROM metrics WHERE source = 'app:old'").fetchone()[0] == 0
@@ -7888,7 +7888,7 @@ def test_a_metrics_remove_data_in_the_orphan_row_takes_only_that_metric(client, 
     before = client.get("/api/app-sources").get_json()
     reply = _sent(client.delete("/api/app-sources/old/steps"))
     after = client.get("/api/app-sources").get_json()
-    assert reply == {"ok": True, "removed": {"metrics": 1, "sessions": 0, "samples": 0}}
+    assert reply == {"ok": True, "removed": {"metrics": 1, "sessions": 0, "samples": 0, "records": 0}}
     assert [(a["id"], a["metrics"]) for a in after] == [("old", ["weight_kg"]), ("steps", ["steps"])]
     conn = sqlite3.connect(main.app.config["DB_PATH"])
     assert conn.execute(
@@ -7929,7 +7929,7 @@ def test_your_datas_remove_data_takes_only_that_rows_metric(client, orphaned_app
     assert "app:old" in roles["weight_kg"]["sources"]
     reply = _sent(client.delete("/api/app-sources/old/weight_kg"))
     after = client.get("/api/app-sources").get_json()
-    assert reply == {"ok": True, "removed": {"metrics": 2, "sessions": 0, "samples": 0}}
+    assert reply == {"ok": True, "removed": {"metrics": 2, "sessions": 0, "samples": 0, "records": 0}}
     # Garmin's weigh-in, and old's steps, are still there.
     assert client.get("/api/source-roles").get_json()["weight_kg"]["sources"] == ["garmin"]
     assert [(a["id"], a["metrics"]) for a in after] == [("old", ["steps"]), ("steps", ["steps"])]
@@ -7983,7 +7983,7 @@ def test_an_orphan_with_no_readings_left_says_remove_all_data_takes_the_rest(cli
 @pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
 def test_the_summary_counts_every_kind_of_row(client):
     page = _page(client)
-    script = "\n".join(_js(page, n) for n in ["num", "countOf", "appDataSummary"]) + """
+    script = "\n".join(_js(page, n) for n in ["num", "countOf", "appDataSummary", "recordsOf", "sizeText"]) + """
         const metricName = k => ({weight_kg:'Weight', steps:'Steps'})[k] || k;
         console.log(JSON.stringify([
           appDataSummary({metrics:['weight_kg'], readings:1, sessions:0, samples:0}),
@@ -7996,6 +7996,111 @@ def test_the_summary_counts_every_kind_of_row(client):
         "1,200 readings across 2 metrics (Steps, Weight), 1 session and 3 samples",
         "2 sessions",
     ]
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
+def test_the_summary_counts_records_and_their_size(client):
+    page = _page(client)
+    script = "\n".join(_js(page, n) for n in
+                       ["num", "countOf", "appDataSummary", "appDataCounts", "recordsOf", "sizeText"]) + """
+        const metricName = k => ({weight_kg:'Weight', steps:'Steps'})[k] || k;
+        const rec = (count, bytes) => ({count, bytes});
+        console.log(JSON.stringify({
+          summary:[
+            appDataSummary({metrics:['weight_kg'], readings:1, sessions:0, samples:0, records:rec(4, 1229)}),
+            appDataSummary({metrics:[], readings:0, sessions:0, samples:0, records:rec(1, 7)}),
+            appDataSummary({metrics:[], readings:0, sessions:2, samples:0, records:rec(0, 0)}),
+            // A listing from before records: none said.
+            appDataSummary({metrics:[], readings:0, sessions:2, samples:0}),
+          ],
+          counts:[
+            appDataCounts({readings:3, sessions:1, samples:0, records:rec(4, 1229)}),
+            appDataCounts({readings:1, sessions:0, samples:2, records:rec(0, 0)}),
+            appDataCounts({readings:0, sessions:0, samples:0, records:rec(1200, 52428800)}),
+          ],
+          sizes:[1, 51, 102, 1024, 1229, 10239, 10240, 38000, 1048575, 1048576, 1258291, 52428800].map(sizeText),
+          none:[recordsOf({}), recordsOf({records:null}), recordsOf({records:rec(0, 0)})],
+        }));
+    """
+    assert _node(script) == {
+        "summary": [
+            "1 reading across 1 metric (Weight) and 4 records (1.2 KB)",
+            "1 record (0.1 KB)",
+            "2 sessions",
+            "2 sessions",
+        ],
+        "counts": [
+            "3 readings · 1 session · 4 records (1.2 KB)",
+            "1 reading · 2 samples",
+            "1,200 records (50 MB)",
+        ],
+        "sizes": ["0.1 KB", "0.1 KB", "0.1 KB", "1.0 KB", "1.2 KB", "10.0 KB", "10 KB", "37 KB",
+                  "1,024 KB", "1.0 MB", "1.2 MB", "50 MB"],
+        "none": ["", "", ""],
+    }
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
+def test_an_orphans_records_show_on_its_row_in_its_panel_and_in_its_confirm(client, orphaned_app):
+    import sqlite3
+
+    import main
+
+    conn = sqlite3.connect(main.app.config["DB_PATH"])
+    conn.executemany(
+        "INSERT INTO app_records VALUES ('old', 'trips', ?, ?, ?, 't', 't')",
+        [("a", '"' + "x" * 1000 + '"', 1002), ("b", '{"v":1}', 7)],
+    )
+    # An app with records alone: listed, and its panel says so.
+    conn.execute("INSERT INTO app_records VALUES ('notes', 'trips', 'k', '1', 1, 't', 't')")
+    conn.commit()
+    conn.close()
+    listing = client.get("/api/app-sources").get_json()
+    assert [(a["id"], a["orphaned"], a["records"]) for a in listing] == [
+        ("notes", True, {"count": 1, "bytes": 1}),
+        ("old", True, {"count": 2, "bytes": 1009}),
+        ("steps", False, {"count": 0, "bytes": 0}),
+    ]
+
+    script = _orphan_script(_page(client), listing, listing, {"ok": True}, """
+        await loadAppSources();
+        r.card = look().map(row => row.text);
+        const heads = card.querySelectorAll('.src.orphan .orphan-head');
+        heads.forEach(h => h.onclick());
+        r.panels = card.querySelectorAll('.src.orphan').map(row => ({
+          source:row.dataset.source,
+          note:(row.querySelector('.orphan-item .dnote') || {}).textContent || null,
+          records:(row.querySelector('.orphan-records') || {}).textContent || null,
+          metrics:row.querySelectorAll('.orphan-metric').map(l => l.dataset.metric),
+        }));
+        const old = card.querySelectorAll('.src.orphan').find(row => row.dataset.source === 'app:old');
+        old.querySelector('[data-act="remove-data"]').onclick();
+        r.all = lookModal(modal()).what;
+        modal().children[0].querySelector('[data-act="cancel"]').onclick();
+        old.querySelector('.orphan-metric [data-act="remove-metric"]').onclick();
+        r.metric = lookModal(modal()).what;
+    """)
+    result = _node(script)
+
+    # The row's head: name, source, then what it holds - its records and
+    # their size beside its readings.
+    assert result["card"] == [
+        "",
+        "›notesapp:notes1 record (0.1 KB)○ app uninstalledRemove all data",
+        "›oldapp:old3 readings · 2 records (1.0 KB)○ app uninstalledRemove all data",
+    ]
+    # Opened: records alone are the note; beside metrics, a line after
+    # them - no metric's Remove data takes them.
+    assert result["panels"] == [
+        {"source": "app:notes", "note": "No readings left - 1 record (0.1 KB), which Remove all data takes.",
+         "records": None, "metrics": []},
+        {"source": "app:old", "note": None, "records": "2 records (1.0 KB), which Remove all data takes",
+         "metrics": ["steps", "weight_kg"]},
+    ]
+    # Remove all data's confirm names them; a metric's doesn't.
+    assert result["all"] == ("Remove all data from the uninstalled app 'old'? 3 readings across 2 metrics "
+                             "(Steps, Weight) and 2 records (1.0 KB). This can't be undone.")
+    assert result["metric"] == "Remove Steps from the uninstalled app 'old'? This can't be undone."
 
 
 # ---------- an app's own metric in Your data ----------

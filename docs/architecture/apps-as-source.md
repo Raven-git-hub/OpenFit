@@ -130,6 +130,15 @@ built-in/default metrics themselves are never purgeable.
     `purge_source()`.
   - Not yet: the legacy `manual` source — left alone for now, a possible later
     addition on the same `purge_source()`.
+  - **Records (C2):** an app's private JSON store (`app_records`, keyed by the
+    app's id, [app-host.md](app-host.md#records-a-private-json-store-per-app))
+    follows the same lifecycle: kept at uninstall, listed by `GET
+    /api/app-sources` as `records: {count, bytes}` (an app with records alone
+    included), and deleted with the rest by `DELETE /api/app-sources/<id>` —
+    `purge_source()` on an `app:` source deletes the app's records too, while
+    a device's wipe never reaches an app that shares its id. The per-metric
+    route leaves them, and its reply, like the whole-app one, now counts
+    `records` (0 there).
 - **(B) Purge a whole CUSTOM metric** (`app:<id>:<key>`) once no installed app
   defines it -> metric + data vanish from the dataset/catalog. This is "tidy up a
   custom metric I don't use any more"; built-in metrics are never purgeable.
@@ -154,8 +163,9 @@ built-in/default metrics themselves are never purgeable.
       `"no <metric> data from app:<id> to remove"` when that `(source, metric)`
       has no reading or sample (`_has_metric_data()`; sessions are kind-keyed,
       so a kind is never found here). 200 `{ok, removed: {metrics, sessions,
-      samples}}`, `sessions` always 0. DELETE only (405 otherwise).
-      `GET /api/app-sources`' shape is unchanged — no per-metric counts.
+      samples, records}}`, `sessions` and `records` always 0 (`records` since
+      C2). DELETE only (405 otherwise). `GET /api/app-sources`' shape is
+      unchanged by B1 — no per-metric counts.
     - **The factoring:** `purge_source(conn, source, metric=None,
       keep_roles=False)` — with `metric`, deletes that metric's `metrics` rows
       (`RETURNING date`) and `samples` rows from the source, never `sessions`,

@@ -19,7 +19,7 @@ then writes what the new roster has, in one action.
   action that deletes and then raises removes nothing.
 - Nothing re-derived: sessions feed no derived value.
 
-And app level 4, which an app using it declares.
+And app level 4, which an app using it declares (or a later one).
 
 Every test gets its own temp database and apps folder.
 """
@@ -371,22 +371,26 @@ def test_render_has_no_delete_sessions(client, conn, apps_dir, roster):
 
 
 # ---------- app level 4 ----------
+#
+# Level 4 brought delete_sessions(); this OpenFit is that or newer (5
+# brought records, C2), so an app saying requires: 4 loads, and one a
+# level beyond this OpenFit's is skipped and refused.
 
-LEVEL_5 = "needs OpenFit app level 5; this OpenFit is level 4"
 
-
-def test_this_openfit_is_app_level_four(client, apps_dir, capsys):
-    assert apps.APP_LEVEL == 4
+def test_an_app_needing_level_four_loads_on_this_openfit(client, apps_dir, capsys):
+    newer = apps.APP_LEVEL + 1
+    beyond = f"needs OpenFit app level {newer}; this OpenFit is level {apps.APP_LEVEL}"
+    assert apps.APP_LEVEL >= 4
     assert apps.level_problem(4) is None
-    assert apps.level_problem(5) == LEVEL_5
+    assert apps.level_problem(newer) == beyond
     make_app(apps_dir, "needs", ROSTER, extra="requires: 4\n")
-    make_app(apps_dir, "newer", ROSTER, extra="requires: 5\n")
+    make_app(apps_dir, "newer", ROSTER, extra=f"requires: {newer}\n")
 
-    # requires: 4 loads; requires: 5 is skipped ...
+    # requires: 4 loads; a level beyond this OpenFit's is skipped ...
     assert [(a.id, a.requires) for a in apps.scan_apps(apps_dir)] == [("needs", 4)]
-    assert f"[apps] skipping {apps_dir / 'newer'}: {LEVEL_5}" in capsys.readouterr().out
+    assert f"[apps] skipping {apps_dir / 'newer'}: {beyond}" in capsys.readouterr().out
     # ... and refused at install.
-    resp = client.post("/api/apps", json={"files": {"app.yaml": f"id: newest\nrequires: 5\n{SIZE}"}})
-    assert (resp.status_code, resp.get_json()) == (400, {"ok": False, "error": LEVEL_5})
+    resp = client.post("/api/apps", json={"files": {"app.yaml": f"id: newest\nrequires: {newer}\n{SIZE}"}})
+    assert (resp.status_code, resp.get_json()) == (400, {"ok": False, "error": beyond})
     resp = client.post("/api/apps", json={"files": {"app.yaml": f"id: fine\nrequires: 4\n{SIZE}"}})
     assert resp.status_code == 201

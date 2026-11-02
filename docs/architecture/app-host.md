@@ -135,18 +135,22 @@ broken, and the app doesn't load; `GET /api/apps` lists none of them):
 - **`requires`**: the **app level** the app needs, a whole number from 1 (not
   a bool, not `"2"`), 1 when it doesn't say. `APP_LEVEL` in `app/apps.py` is
   the app contract this OpenFit provides, raised when apps gain something an
-  older OpenFit lacks. It's **4**: level 1 was the first contract; level 2
+  older OpenFit lacks. It's **5**: level 1 was the first contract; level 2
   (TZ1) added `ctx.timezone()` and made `ctx.today()` the user's date rather
   than the server's; level 3 added a tile's view (`ctx.switch()`,
   `ctx.toggle()`, `ctx.pager()`, `ctx.choose()`), a chart's hint and a
   donut's control, the `wocl` tone, a strips lane's `ahead` and bands on a
-  sleep lane; and level 4 (C1) added
+  sleep lane; level 4 (C1) added
   [`ctx.delete_sessions()`](#writing-apps-as-sources), an app removing
-  its own sessions over a time span (`handle()` only). An app that calls
+  its own sessions over a time span (`handle()` only); and level 5 (C2)
+  added [app records](#records-a-private-json-store-per-app),
+  `ctx.record()`, `ctx.records()`, `ctx.put_record()` and
+  `ctx.delete_record()`, a private JSON store per app. An app that calls
   `ctx.timezone()` says `requires: 2`, one that calls `ctx.delete_sessions()`
-  `requires: 4`; one that says nothing is level 1 and loads as it always did.
+  `requires: 4`, one that keeps records `requires: 5`; one that says nothing
+  is level 1 and loads as it always did.
   An app needing more doesn't load (the scanner skips it: `needs OpenFit app
-  level 5; this OpenFit is level 4`), and an install or update refuses it with
+  level 6; this OpenFit is level 5`), and an install or update refuses it with
   those words (`check_app()`, 400). It's checked first, before any other field: a
   higher-level app may mean something by a field that this OpenFit can't
   read.
@@ -255,11 +259,14 @@ reuse it.
 
 `render()` runs server-side, once per render request, with a fresh `Ctx` over
 that request's database connection. The ctx is the app's only data path, and
-it has two reads: `ctx.metric()` for a metric's daily values and
-`ctx.sessions()` for a session kind's intervals. Each gives the same answer
-as its access-contract route (`GET /api/metric/<key>`, `GET
+it has two reads of the dataset: `ctx.metric()` for a metric's daily values
+and `ctx.sessions()` for a session kind's intervals. Each gives the same
+answer as its access-contract route (`GET /api/metric/<key>`, `GET
 /api/sessions/<kind>`), because each route and its read call one shared
-function in `app/derived.py` (`derived_points()`, `session_rows()`).
+function in `app/derived.py` (`derived_points()`, `session_rows()`). Beside
+them, the app's own records: `ctx.record()` and `ctx.records()` (app level
+5, [below](#records-a-private-json-store-per-app)), which no route serves -
+they're the app's alone.
 
 - **`ctx.metric(key, days=None)`** reads one metric. It
   **returns a list of points**: `list[Point]`, in ascending date order. So
@@ -330,6 +337,11 @@ function in `app/derived.py` (`derived_points()`, `session_rows()`).
   It only reads, in `render()` and `handle()` alike. In `handle()` it also
   sees sessions written earlier in the same action, which aren't committed
   yet.
+- **`ctx.record(collection, key)`** and **`ctx.records(collection,
+  prefix=None, limit=None)`** read the app's own records, its private JSON
+  store: one value, or `[{key, value, updated_at}]` by key. On the base
+  `Ctx`, so `render()` and `handle()` both have them; only `handle()` can
+  write one. See [Records](#records-a-private-json-store-per-app).
 - **`ctx.today()`** returns today as `YYYY-MM-DD`, the format points' dates
   use. It's the user's local date: their timezone setting (Settings → Your
   account, stored as `profile.timezone` and set through `PUT /api/profile`),
@@ -1179,6 +1191,8 @@ read as in `render()`), plus
 ctx.write_metric(metric, value, date=None)                  # files one reading, under ctx.source
 ctx.write_session(kind, start, end=None, summary=None)      # files one session, under ctx.source
 ctx.delete_sessions(kind, since, until)                     # removes ctx.source's sessions starting in [since, until): how many
+ctx.put_record(collection, key, value)                      # stores one of the app's own records (below)
+ctx.delete_record(collection, key)                          # removes one: whether there was one
 ```
 
 - **The source is the ctx's, never the app's.** It's fixed when the ctx is
@@ -1382,6 +1396,107 @@ only, so nothing else can write one.
 starts `app:`. Uninstalling an app keeps what it wrote, as a disconnected
 device's data stays, and an app installed again under the same id carries
 on under the same source. A Duplicate is a different app, `app:<new-id>`.
+
+### Records: a private JSON store per app
+
+Metrics, sessions and samples are data OpenFit knows the shape of. Anything
+else an app keeps - a trip report, a log entry, a saved list - is a
+**record**: one JSON value under a key, in a collection the app names (C2,
+app level 5). Records are the app's alone: no route serves them, no other
+app reads them, and nothing is derived from them. They live in `tracker.db`'s
+`app_records` table (migration `011`), so every backup, download and restore
+carries them.
+
+```python
+ctx.record(collection, key)                         # the value, or None          (render() and handle())
+ctx.records(collection, prefix=None, limit=None)    # [{key, value, updated_at}]  (render() and handle())
+ctx.put_record(collection, key, value)              # store it, replacing any     (handle() only)
+ctx.delete_record(collection, key)                  # remove it: True if one went (handle() only)
+```
+
+A trip's report, filed by `handle()` and drawn by `render()`:
+
+```python
+def handle(ctx, action, payload):
+    if action == "report":
+        trip_id = payload["trip"]                # the trip's stable id, its flight out's start
+        ctx.put_record("reports", trip_id, {
+            "rested": payload["rested"] == "yes",
+            "note": payload.get("note", ""),
+        })
+
+def render(ctx, cfg):
+    reports = ctx.records("reports", prefix="2026-")   # this year's trips, by key: in time order
+    if not reports:
+        return ctx.empty("No reports yet")
+    latest = reports[-1]
+    return ctx.number(len(reports), label="reports", caption=f"latest {latest['key'][:10]}")
+```
+
+- **Only the app's own.** Every read and write is scoped to the ctx's app,
+  by its installed id (`openfitavi.frms`, `mood`): none of the four takes an
+  app, so two apps with the same collection and key each have their own
+  record, and neither can reach the other's. A Duplicate is another app, with
+  a store of its own (empty). A ctx made for no app has no records
+  (`ValueError`).
+- **Reads, in `render()` and `handle()`.** `ctx.record()` gives the value as
+  JSON parses it - a `dict`, `list`, `str`, `int`, `float`, `bool` or `None`
+  - a fresh copy each call, or `None` when there's no such record. A record
+  stored as `None` reads `None` too; to tell the two apart, list it:
+  `any(r["key"] == key for r in ctx.records(collection, prefix=key))`.
+  `ctx.records()` lists a collection as `[{key, value, updated_at}]`, sorted
+  by key as text sorts (so keys that start with a date list in time order),
+  `updated_at` when it was last written (`YYYY-MM-DDTHH:MM:SSZ`). `prefix`
+  keeps the keys that start with it, exactly: case counts, and `%` and `_`
+  are themselves, never wildcards. `limit` is a whole number from 1 to 1000;
+  with none, it gives them all, up to 1000 - page past that by prefix.
+- **Writes, in `handle()` only.** `ctx.put_record()` stores the value,
+  replacing any record already under that key: the record keeps when it was
+  first written (`created_at`), and its `updated_at` moves to now.
+  `ctx.delete_record()` removes one and says whether there was one to remove.
+  They're on the `WriteCtx` alone: `render()`'s `Ctx` has neither.
+- **A collection** is a lowercase letter, then up to 39 of `a-z`, `0-9`, `_`
+  or `-` (`[a-z][a-z0-9_-]{0,39}`). **A name starting with `_` is OpenFit's
+  own** - the app-wide settings (C4) will be `_settings` - and no app reads
+  or writes one through these methods: `ValueError("collection '_settings'
+  is reserved: ...")`.
+- **A key** is text of 1 to 200 characters, printable (`str.isprintable()`:
+  no control character, line break or tab).
+- **A value** is plain JSON, all the way down: stored as
+  `json.dumps(value, ensure_ascii=False, separators=(",", ":"),
+  allow_nan=False)`, and read back as JSON parses it (a tuple comes back a
+  list, a dict's number keys as text). A set, an object, a `datetime`, NaN or
+  Infinity is `ValueError("value must be plain JSON - ...")`.
+- **The limits**: a record is at most **256 KB** as JSON (UTF-8 bytes of the
+  text stored), and one app's records at most **50 MB** in all - the sum of
+  every record's size, counted with this write's net change. So at the
+  total, a write that adds a byte is refused, while one that replaces a
+  record with a smaller value (or one the same size) still goes in. Over
+  either is a `ValueError` with the sizes in it ("value is 262,145 bytes as
+  JSON; a record holds at most 256 KB (262,144 bytes)", "value would take
+  the app's records to ... bytes; an app keeps at most 50 MB of records ...
+  - delete some first").
+- **Errors** are `ValueError`, naming the field (`collection`, `key`,
+  `value`, `prefix`, `limit`), as `ctx.write_session()`'s and
+  `ctx.delete_sessions()`' are, and a refused call writes nothing.
+- **One transaction with the rest of the action.** Neither writer commits:
+  the action route commits `handle()`'s work once it returns, and rolls all
+  of it back if it raises. So an action that writes a record and then raises
+  leaves nothing, and one that deletes a record and then raises removes
+  nothing. A record feeds no derived value, so no day is noted in
+  `ctx.written`.
+- **Uninstall keeps them; Delete data removes them.** Uninstalling an app
+  keeps its records, as it keeps the rest of what it wrote, and an app
+  installed again under the same id finds them. An Update keeps them too.
+  Under Your data, an uninstalled app's row shows them beside its other
+  counts ("2 records (1.0 KB)"), and its **Remove all data** (`DELETE
+  /api/app-sources/<id>`) deletes them with its readings, sessions and
+  samples; one metric's Remove data (`DELETE /api/app-sources/<id>/<metric>`)
+  leaves them. `GET /api/app-sources` lists each app's `records: {count,
+  bytes}`, an app with records alone included.
+
+An app that keeps records says `requires: 5` in its `app.yaml`, so an older
+OpenFit refuses it rather than failing on the first save.
 
 ### The weight app
 
@@ -2198,7 +2313,8 @@ the app, never a path. It's `uninstall_app()` in `app/apps.py`.
 5. **The response** is `200 {"ok": true, "id": "<id>"}`.
 
 Uninstalling removes only its folder: what the app wrote stays, under its
-source `app:<id>`, as a disconnected device's data does.
+source `app:<id>`, as a disconnected device's data does, and so do its
+[records](#records-a-private-json-store-per-app).
 
 ### Updating an app: `PUT /api/apps/<id>`
 
@@ -2640,6 +2756,11 @@ saved positions and gives `paintTiles` start cells. The sizes, the CSS grid,
   day, and removing its own metrics or samples over a range (its own
   sessions it can remove since C1, `ctx.delete_sessions()`). (The day a
   write lands on follows the user's timezone since TZ1.)
+- **On top of records**: an app's report files, HTML it produces for the
+  browser to download (never shown inside OpenFit; PDF by the browser's
+  Print), C3, next; and its app-wide settings, kept in the reserved
+  `_settings` collection, C4. Timers and scheduled app jobs come later:
+  everything an app does is on demand for now.
 - **Enforcing `reads`:** it's recorded, but `ctx.metric()` serves any
   canonical key, and the app's own, and `ctx.sessions()` serves any session
   kind.

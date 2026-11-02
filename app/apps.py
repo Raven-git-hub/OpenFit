@@ -137,7 +137,9 @@ class AppError(Exception):
 #      ahead, and bands on a sleep lane
 #   4  ctx.delete_sessions(): an app removes its own sessions in a time
 #      range (handle() only)
-APP_LEVEL = 4
+#   5  app records: ctx.record(), ctx.records(), ctx.put_record(),
+#      ctx.delete_record() - a private JSON store per app (C2)
+APP_LEVEL = 5
 
 # The most a description says, trimmed: a line or two in Browse.
 MAX_DESCRIPTION = 300

@@ -231,7 +231,7 @@ until a move is needed.
 - **Host version.** A library app carries a host-version requirement, and
   the host refuses an install it isn't compatible with. Built in B1 as an
   **app level**: a manifest's `requires` (1 when it doesn't say) against the
-  user system's `APP_LEVEL` (4 since C1, below), raised when apps gain
+  user system's `APP_LEVEL` (5 since C2, below), raised when apps gain
   something an older OpenFit lacks. An app needing more doesn't load, won't install, and shows in
   Browse as needing a newer OpenFit. L4's host-version labels build on it.
 - **Library apps are the Admin's to update.** The Admin publishes a library
@@ -576,9 +576,20 @@ a second real person gets a container. Re-ordered 2026-10-27, after A1:
    Scoped to the app's own source by construction; `APP_LEVEL` 4, which an
    app using it declares ([app-host.md](app-host.md#writing-apps-as-sources)).
    Deploy: merge it, Update OpenFit, and only then the FRMS change that uses
-   it (`requires: 4`). Item 2, the report store, and item 5, the layover
-   label, are parked; items 4 and 6, two doc fixes, came with the status
-   page.
+   it (`requires: 4`). **Item 2, the report store**, is resolved by C2 and
+   C3, more generally than FRMS asked: **C2, app records** (built; the user
+   system, migration `011`): a private JSON store per app - `ctx.record()`
+   and `ctx.records()` in `render()` and `handle()`, `ctx.put_record()` and
+   `ctx.delete_record()` in `handle()`, in collections the app names, each
+   app's its own, at most 256 KB a record and 50 MB an app, in `tracker.db`
+   so every backup carries it, kept at uninstall and removed with the rest
+   by Your data's Remove all data; `APP_LEVEL` 5
+   ([app-host.md](app-host.md#records-a-private-json-store-per-app)).
+   Deploy: merge it, Update OpenFit, then any app change that uses it
+   (`requires: 5`). C3, next, is report files (HTML an app produces,
+   always downloaded, PDF by the browser's Print), and C4 an app's own
+   settings on top of records. Item 5, the layover label, is parked; items 4
+   and 6, two doc fixes, came with the status page.
 13. **A7: the Admin's visibility** (built, `admin/` only,
    [admin.md](admin.md#a-slow-or-full-disk-made-obvious-a7)): a slow or
    full disk made obvious, after a full disk read as "Couldn't reach

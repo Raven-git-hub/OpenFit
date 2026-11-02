@@ -365,6 +365,8 @@ a.btn{display:inline-block;text-decoration:none;}
 .orphan-item.open .chev{transform:rotate(90deg);}
 .orphan-metrics{list-style:none;margin:10px 0 0 20px;padding:0;display:flex;flex-direction:column;gap:6px;max-width:320px;}
 .orphan-metric{display:flex;align-items:center;justify-content:space-between;gap:10px;font-size:13.5px;}
+/* ...and the records it kept, which go only with Remove all data */
+.orphan-records{font-size:13.5px;color:var(--muted);}
 .orphan-item .dnote{margin:10px 0 0 20px;}
 .src-r{display:flex;align-items:center;gap:10px;flex:none;}
 .pill{font-size:11px;font-weight:600;padding:4px 9px;border-radius:20px;font-family:var(--font-mono);white-space:nowrap;}
@@ -1412,7 +1414,7 @@ h5 + .dnote{margin-top:0;}
      ========================================================= */
   const state = {
     connectors:null,   // [{id, name, fields, add_flow, add_note, connected, configured}]; null until loaded
-    appSources:null,   // /api/app-sources: [{id, source, orphaned, metrics, readings, sessions, samples}]
+    appSources:null,   // /api/app-sources: [{id, source, orphaned, metrics, readings, sessions, samples, records: {count, bytes}}]
     status:'loading',  // the data card: loading | ready | error
     stale:false,       // a refresh failed; the last good load is still shown
     data:null,         // {rows, coverage, win}
@@ -2298,12 +2300,13 @@ h5 + .dnote{margin-top:0;}
 
   /* ---- an uninstalled app's data ----
      Uninstall keeps what an app wrote (hand-entered data can't be
-     re-synced), so it stays a source, app:<id>, with no app behind it.
-     Removing it is its own step: in the source list it has no account
-     to sync or set up - just Remove all data, and, opened, each metric
-     it left behind with its own Remove data - each behind one confirm
-     naming what goes. Your data's rows reach the same confirm, a
-     metric at a time. */
+     re-synced) and the records it kept, so it stays a source, app:<id>,
+     with no app behind it. Removing it is its own step: in the source
+     list it has no account to sync or set up - just what it holds and
+     Remove all data, and, opened, each metric it left behind with its
+     own Remove data - each behind one confirm naming what goes. Your
+     data's rows reach the same confirm, a metric at a time. Records go
+     only with Remove all data. */
   const orphans = () => (state.appSources || []).filter(o => o.orphaned);
 
   /* Read at boot, and again whenever what's orphaned may have changed:
@@ -2321,15 +2324,17 @@ h5 + .dnote{margin-top:0;}
     if(state.data) state.data.rows.forEach(r => repaintPanel(r));
   }
 
-  /* An orphan's row: its name, which opens the metrics it left behind
-     (expandable(), as a Your data row opens), and Remove all data. */
+  /* An orphan's row: its name, its source and what it holds, which
+     opens the metrics it left behind (expandable(), as a Your data row
+     opens), and Remove all data. */
   function orphanRow(o){
     const row = el('div','src orphan');
     const head = el('button','src-name orphan-head', `
       <span class="chev" aria-hidden="true">›</span>
-      <span><span data-f="name"></span><span class="src-note" data-f="source"></span></span>`);
+      <span><span data-f="name"></span><span class="src-note" data-f="source"></span><span class="src-note" data-f="counts"></span></span>`);
     head.querySelector('[data-f="name"]').textContent = o.id;
     head.querySelector('[data-f="source"]').textContent = o.source;
+    head.querySelector('[data-f="counts"]').textContent = appDataCounts(o);
     const id = 'orphan-' + o.source.replace(/[^a-z0-9_-]/gi, '-');
     row.appendChild(expandable(el('div','orphan-item'), head, {
       open:state.orphanOpen, id:o.source, panelId:id, panel:() => orphanMetrics(o, id),
@@ -2344,7 +2349,8 @@ h5 + .dnote{margin-top:0;}
 
   /* An orphan's metrics, opened: one line each - its name, and Remove
      data for just that metric. A custom one's app is gone, so it reads
-     by its short key. */
+     by its short key. Its records, if it kept any, a line after them:
+     no metric's Remove data takes those. */
   function orphanMetrics(o, id){
     const metrics = Array.isArray(o.metrics) ? o.metrics : [];
     if(!metrics.length){
@@ -2364,10 +2370,17 @@ h5 + .dnote{margin-top:0;}
       line.dataset.metric = key;
       list.appendChild(line);
     });
+    const records = recordsOf(o);
+    if(records){
+      const line = el('li','orphan-records');
+      line.textContent = `${records}, which Remove all data takes`;
+      list.appendChild(line);
+    }
     return list;
   }
 
-  /* "3 readings across 1 metric (Weight)", then any sessions and samples. */
+  /* "3 readings across 1 metric (Weight)", then any sessions, samples
+     and records. */
   const countOf = (n, what) => `${num(n)} ${what}${n===1 ? '' : 's'}`;
   function appDataSummary(o){
     const metrics = Array.isArray(o.metrics) ? o.metrics : [];
@@ -2375,8 +2388,36 @@ h5 + .dnote{margin-top:0;}
     if(o.readings) parts.push(`${countOf(o.readings, 'reading')} across ${countOf(metrics.length, 'metric')} (${metrics.map(metricName).join(', ')})`);
     if(o.sessions) parts.push(countOf(o.sessions, 'session'));
     if(o.samples) parts.push(countOf(o.samples, 'sample'));
+    const records = recordsOf(o);
+    if(records) parts.push(records);
     if(parts.length < 2) return parts[0] || 'Nothing is left';
     return parts.slice(0, -1).join(', ') + ' and ' + parts[parts.length-1];
+  }
+
+  /* What an orphan holds, on its row: "3 readings · 1 session · 4
+     records (1.2 KB)" - each kind it has any of. */
+  function appDataCounts(o){
+    return [
+      o.readings ? countOf(o.readings, 'reading') : '',
+      o.sessions ? countOf(o.sessions, 'session') : '',
+      o.samples ? countOf(o.samples, 'sample') : '',
+      recordsOf(o),
+    ].filter(Boolean).join(' · ');
+  }
+
+  /* An app's records, as the listing gives them ({count, bytes}): "4
+     records (1.2 KB)", or '' for none. */
+  function recordsOf(o){
+    const r = o && o.records;
+    return r && r.count ? `${countOf(r.count, 'record')} (${sizeText(r.bytes)})` : '';
+  }
+
+  /* A size in bytes: "0.4 KB", "37 KB", "1.2 MB" - a tenth under ten,
+     whole from ten, and never 0.0 for something there. */
+  function sizeText(n){
+    const [v, unit] = n >= 1048576 ? [n / 1048576, 'MB'] : [n / 1024, 'KB'];
+    const shown = v >= 10 ? num(Math.round(v)) : Math.max(0.1, Math.round(v * 10) / 10).toFixed(1);
+    return `${shown} ${unit}`;
   }
 
   /* Remove data: the confirm - the source settings' danger panel - then

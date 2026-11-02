@@ -183,11 +183,13 @@ def test_every_app_source_is_listed_orphaned_or_not(client, orphan):
             # Vocabulary order: steps (Activity) before weight_kg.
             "metrics": ["steps", "weight_kg"],
             "readings": 3, "sessions": 1, "samples": 1,
+            "records": {"count": 0, "bytes": 0},
         },
         {
             "id": "steps", "source": "app:steps", "orphaned": False,
             "metrics": ["distance_m"],
             "readings": 1, "sessions": 0, "samples": 0,
+            "records": {"count": 0, "bytes": 0},
         },
     ]
 
@@ -204,6 +206,7 @@ def test_only_the_app_prefix_counts(client, conn, apps_dir):
     assert listed[0] == {
         "id": "z", "source": "app:z", "orphaned": True, "metrics": [],
         "readings": 0, "sessions": 0, "samples": 1,
+        "records": {"count": 0, "bytes": 0},
     }
 
 
@@ -225,7 +228,7 @@ def test_removing_an_orphan_deletes_everything_it_wrote(client, conn, orphan):
     resp = client.delete("/api/app-sources/old")
 
     assert resp.status_code == 200
-    assert resp.get_json() == {"ok": True, "removed": {"metrics": 3, "sessions": 1, "samples": 1}}
+    assert resp.get_json() == {"ok": True, "removed": {"metrics": 3, "sessions": 1, "samples": 1, "records": 0}}
     after = counts(conn)
     for table in ("metrics", "sessions", "samples"):
         assert (table, "app:old") not in after, table
@@ -462,11 +465,12 @@ def test_uninstall_then_remove_the_weight_apps_data(client, conn, apps_dir):
     assert client.get("/api/app-sources").get_json() == [{
         "id": "weight", "source": "app:weight", "orphaned": True,
         "metrics": ["weight_kg"], "readings": 1, "sessions": 0, "samples": 0,
+        "records": {"count": 0, "bytes": 0},
     }]
 
     resp = client.delete("/api/app-sources/weight")
 
-    assert resp.get_json() == {"ok": True, "removed": {"metrics": 1, "sessions": 0, "samples": 0}}
+    assert resp.get_json() == {"ok": True, "removed": {"metrics": 1, "sessions": 0, "samples": 0, "records": 0}}
     assert counts(conn) == {}
     assert picked(conn, TODAY, "weight_kg") is None
     assert load_source_roles(conn) == {}
@@ -490,7 +494,7 @@ def test_removing_one_metric_deletes_only_its_rows(client, conn, orphan):
     resp = client.delete("/api/app-sources/old/weight_kg")
 
     assert resp.status_code == 200
-    assert resp.get_json() == {"ok": True, "removed": {"metrics": 2, "sessions": 0, "samples": 0}}
+    assert resp.get_json() == {"ok": True, "removed": {"metrics": 2, "sessions": 0, "samples": 0, "records": 0}}
     # Its weigh-ins go; its steps, sample and session stay...
     assert rows_of(conn, "app:old") == [("2026-10-02", "steps")]
     # ...and every other source's rows are just as they were.
@@ -504,7 +508,7 @@ def test_removing_a_metric_it_lost_keeps_the_winner(client, conn, orphan):
 
     resp = client.delete("/api/app-sources/old/steps")
 
-    assert resp.get_json() == {"ok": True, "removed": {"metrics": 1, "sessions": 0, "samples": 0}}
+    assert resp.get_json() == {"ok": True, "removed": {"metrics": 1, "sessions": 0, "samples": 0, "records": 0}}
     assert rows_of(conn, "app:old") == [("2026-10-01", "weight_kg"), ("2026-10-02", "weight_kg")]
     assert rows_of(conn, "garmin") == [("2026-10-02", "steps"), ("2026-10-02", "weight_kg")]
     assert picked(conn, "2026-10-02", "steps") == (9000, "garmin")
@@ -583,11 +587,12 @@ def test_removing_an_orphaned_custom_metric_end_to_end(client, conn, apps_dir):
     assert client.get("/api/app-sources").get_json() == [{
         "id": "caffeine", "source": "app:caffeine", "orphaned": True,
         "metrics": ["app:caffeine:caffeine_mg"], "readings": 1, "sessions": 0, "samples": 0,
+        "records": {"count": 0, "bytes": 0},
     }]
 
     resp = client.delete("/api/app-sources/caffeine/app%3Acaffeine%3Acaffeine_mg")
 
-    assert resp.get_json() == {"ok": True, "removed": {"metrics": 1, "sessions": 0, "samples": 0}}
+    assert resp.get_json() == {"ok": True, "removed": {"metrics": 1, "sessions": 0, "samples": 0, "records": 0}}
     assert counts(conn) == {}
     assert picked(conn, TODAY, "app:caffeine:caffeine_mg") is None
     # Its last metric gone, so is the source.
@@ -604,7 +609,7 @@ def test_a_custom_key_reads_the_same_unencoded(client, conn, apps_dir):
 
     resp = client.delete("/api/app-sources/coffee/app:coffee:caffeine_mg")
 
-    assert resp.get_json() == {"ok": True, "removed": {"metrics": 1, "sessions": 0, "samples": 0}}
+    assert resp.get_json() == {"ok": True, "removed": {"metrics": 1, "sessions": 0, "samples": 0, "records": 0}}
     assert counts(conn) == {}
 
 
@@ -617,6 +622,7 @@ def test_an_orphan_lists_what_its_left_until_its_last_metric_goes(client, conn, 
     assert client.get("/api/app-sources").get_json() == [{
         "id": "pair", "source": "app:pair", "orphaned": True,
         "metrics": ["steps"], "readings": 1, "sessions": 0, "samples": 0,
+        "records": {"count": 0, "bytes": 0},
     }]
 
     assert client.delete("/api/app-sources/pair/steps").status_code == 200
@@ -631,7 +637,7 @@ def test_with_its_metrics_gone_an_orphans_sessions_and_samples_stay_for_remove_a
     assert (old["metrics"], old["readings"], old["sessions"], old["samples"]) == ([], 0, 1, 1)
     # The whole-app removal takes what's left.
     resp = client.delete("/api/app-sources/old")
-    assert resp.get_json() == {"ok": True, "removed": {"metrics": 0, "sessions": 1, "samples": 1}}
+    assert resp.get_json() == {"ok": True, "removed": {"metrics": 0, "sessions": 1, "samples": 1, "records": 0}}
 
 
 def test_a_series_metric_takes_only_its_samples(client, conn, orphan):
@@ -641,7 +647,7 @@ def test_a_series_metric_takes_only_its_samples(client, conn, orphan):
 
     resp = client.delete("/api/app-sources/old/heart_rate")
 
-    assert resp.get_json() == {"ok": True, "removed": {"metrics": 0, "sessions": 0, "samples": 1}}
+    assert resp.get_json() == {"ok": True, "removed": {"metrics": 0, "sessions": 0, "samples": 1, "records": 0}}
     expected = {k: n for k, n in before.items() if k != ("samples", "app:old")}
     assert counts(conn) == expected
     assert derived(conn) == picks
