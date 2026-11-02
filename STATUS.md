@@ -1,6 +1,6 @@
 # OpenFit status
 
-_Where things stand, as of 2 Nov 2026 (after C3, report files).
+_Where things stand, as of 2 Nov 2026 (after C4, app-wide settings).
 The phase plan this replaces is archived at
 [docs/history/roadmap.md](docs/history/roadmap.md)._
 
@@ -34,7 +34,7 @@ numbered, additive migrations (`app/migrations/`, at `012`); device credentials 
 `app.py`: `render(ctx, cfg)` returns a display spec the page draws as a tile,
 and `handle(ctx, action, payload)` writes under the app's own source. The
 contract is versioned by the **app level**, `APP_LEVEL` in `app/apps.py`, now
-6; the list above it says what each level added, and an app declares the
+7; the list above it says what each level added, and an app declares the
 level it needs with `requires:`. Anything an app keeps that isn't a reading
 or a session - a report, a log, a saved list - is a record, in its own
 private JSON store (C2, level 5): read in `render()` and `handle()`, written
@@ -45,8 +45,12 @@ Documents the user keeps - a monthly report - are report files (C3, level
 `ctx.files()` and offers with `ctx.download()`; always handed over as a
 download, never shown inside OpenFit, a PDF the browser's Print; 10 MB a
 file, 200 MB and 1000 files an app, kept at uninstall, and downloaded or
-removed under Your data. Records and files together resolve core item 2 (FRMS's report
-store), more generally than FRMS asked. The spec types cover numbers, lines,
+removed under Your data. Settings for the whole app - a home base, a unit
+- are the user's (C4, level 7): declared in the manifest's `settings:`,
+checked strictly, set once in the app's row in Data → Applications, read with
+`ctx.settings()`, kept as the app's `_settings` record; a tile's own
+`config:` is unchanged. Records, files and settings together complete core
+item 2 (FRMS's report store), more generally than FRMS asked. The spec types cover numbers, lines,
 panels, inputs (field, dropdown, file, button), downloads, timelines and rails, grids, rows and
 columns, donuts and bars, images and strips, and a tile's views (switch,
 toggle, pager, choose) flip between versions of a tile without a round trip.
@@ -117,10 +121,8 @@ published to the shelf as `openfitavi.frms`, with its own tests.
 
 ## Next
 
-- **C4, per-app settings**: an app's own app-wide settings, declared in its
-  manifest and set from a settings form, kept in the reserved `_settings`
-  records collection C2 left for it.
-- Timers and scheduled app jobs come after these: apps act on demand first.
+- Timers and scheduled app jobs: apps act on demand first. (C4, app-wide
+  settings, is built: the platform side of the core brief is complete.)
 
 ## Parked
 

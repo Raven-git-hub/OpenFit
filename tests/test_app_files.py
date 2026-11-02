@@ -792,20 +792,23 @@ def test_the_totals_are_read_from_the_index_alone(conn):
     assert "COVERING INDEX idx_app_files_size" in plan
 
 
-def test_this_openfit_is_app_level_six(client, apps_dir, capsys):
-    assert apps.APP_LEVEL == 6
+def test_an_app_needing_level_six_loads_on_this_openfit(client, apps_dir, capsys):
+    # Level 6 brought report files; this OpenFit is that or newer (7
+    # brought app-wide settings, C4).
+    newer = apps.APP_LEVEL + 1
+    beyond = f"needs OpenFit app level {newer}; this OpenFit is level {apps.APP_LEVEL}"
+    assert apps.APP_LEVEL >= 6
     assert apps.level_problem(6) is None
-    seven = "needs OpenFit app level 7; this OpenFit is level 6"
-    assert apps.level_problem(7) == seven
+    assert apps.level_problem(newer) == beyond
     make_app(apps_dir, "reports", REPORTS, extra="requires: 6\n")
-    make_app(apps_dir, "newer", REPORTS, extra="requires: 7\n")
+    make_app(apps_dir, "newer", REPORTS, extra=f"requires: {newer}\n")
 
-    # requires: 6 loads, and its files work; requires: 7 is skipped ...
+    # requires: 6 loads, and its files work; a level beyond is skipped ...
     assert [(a.id, a.requires) for a in apps.scan_apps(apps_dir)] == [("reports", 6)]
-    assert f"[apps] skipping {apps_dir / 'newer'}: {seven}" in capsys.readouterr().out
+    assert f"[apps] skipping {apps_dir / 'newer'}: {beyond}" in capsys.readouterr().out
     assert act(client, "make", make=True).status_code == 200
     # ... and refused at install.
-    resp = client.post("/api/apps", json={"files": {"app.yaml": f"id: newest\nrequires: 7\n{SIZE}"}})
-    assert (resp.status_code, resp.get_json()) == (400, {"ok": False, "error": seven})
+    resp = client.post("/api/apps", json={"files": {"app.yaml": f"id: newest\nrequires: {newer}\n{SIZE}"}})
+    assert (resp.status_code, resp.get_json()) == (400, {"ok": False, "error": beyond})
     resp = client.post("/api/apps", json={"files": {"app.yaml": f"id: fine\nrequires: 6\n{SIZE}"}})
     assert resp.status_code == 201

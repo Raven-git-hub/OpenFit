@@ -301,12 +301,14 @@ def test_the_applications_list_writes_only_uninstall_and_the_popup_installs_or_u
     home = page.index("HOME - the installed apps' tiles", popup)
 
     # The controls and the list read /api/apps, an app's files and its
-    # render; their one write is Uninstall. All of it through the API
-    # block - the only place that knows a URL - so no raw request here.
+    # render; their writes are Uninstall and, for an app with settings,
+    # the Settings popup's save (C4). All of it through the API block -
+    # the only place that knows a URL - so no raw request here.
     section = page[start:browse]
     assert "api.apps()" in section
     assert sorted(set(re.findall(r"api\.\w+", section))) == [
-        "api.appFile", "api.apps", "api.renderApp", "api.uninstallApp",
+        "api.appFile", "api.appSettings", "api.apps", "api.renderApp", "api.saveAppSettings",
+        "api.uninstallApp",
     ]
     for other in ("send(", "fetch(", "'POST'", "'PUT'", "'DELETE'", "localStorage", "'/api/"):
         assert other not in section, other
@@ -3121,7 +3123,7 @@ def browse_shelf(tmp_path, monkeypatch):
                      "app.py": "def render(ctx, cfg):\n    return ctx.empty('<i>hi</i>')\n",
                      "notes.txt": "stride: 0.75 m\n"},
             "added": {"app.yaml": "id: added\nname: Added\nsizes: [{w: 1, h: 1}]\n"},
-            "newer": {"app.yaml": "id: newer\nname: Newer\nrequires: 7\nsizes: [{w: 1, h: 1}]\n"},
+            "newer": {"app.yaml": "id: newer\nname: Newer\nrequires: 8\nsizes: [{w: 1, h: 1}]\n"},
             "heir": {"app.yaml": "id: heir\nname: Heir\nreplaces: [old]\nsizes: [{w: 1, h: 1}]\n"},
             "deep": {"app.yaml": "id: deep\nname: Deep\nsizes: [{w: 1, h: 1}]\n", "assets/x.txt": "x"},
         },

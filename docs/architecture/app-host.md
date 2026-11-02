@@ -44,8 +44,10 @@ id: steps                     # optional: defaults to the folder's name
 name: Steps                   # optional: defaults to the id
 sizes: [{w: 1, h: 1}, {w: 2, h: 2}]   # REQUIRED: the tile sizes, in cells; the first is the default
 reads: [steps]                # optional: the metric keys it reads (declared, not enforced yet)
-config:                       # optional: the app's settings, an ordered list of fields
+config:                       # optional: a tile's own settings, an ordered list of fields
   - {key: stride_m, label: Stride length (m), type: number, default: 0.75}
+settings:                     # optional: app-wide settings, the user's, checked strictly (C4, level 7)
+  - {key: units, label: Units, type: select, options: [metric, imperial], default: metric}
 metrics:                      # optional: the metrics the app invents, an ordered list
   - {key: caffeine_mg, label: Caffeine, unit: mg, category: "Nutrition & hydration", grain: daily, range: [0, 2000]}
 description: Counts your steps.   # optional: what Browse says of it, at most 300 characters
@@ -135,7 +137,7 @@ broken, and the app doesn't load; `GET /api/apps` lists none of them):
 - **`requires`**: the **app level** the app needs, a whole number from 1 (not
   a bool, not `"2"`), 1 when it doesn't say. `APP_LEVEL` in `app/apps.py` is
   the app contract this OpenFit provides, raised when apps gain something an
-  older OpenFit lacks. It's **5**: level 1 was the first contract; level 2
+  older OpenFit lacks. It's **7**: level 1 was the first contract; level 2
   (TZ1) added `ctx.timezone()` and made `ctx.today()` the user's date rather
   than the server's; level 3 added a tile's view (`ctx.switch()`,
   `ctx.toggle()`, `ctx.pager()`, `ctx.choose()`), a chart's hint and a
@@ -145,12 +147,18 @@ broken, and the app doesn't load; `GET /api/apps` lists none of them):
   its own sessions over a time span (`handle()` only); and level 5 (C2)
   added [app records](#records-a-private-json-store-per-app),
   `ctx.record()`, `ctx.records()`, `ctx.put_record()` and
-  `ctx.delete_record()`, a private JSON store per app. An app that calls
+  `ctx.delete_record()`, a private JSON store per app; level 6 (C3) added
+  [report files](#report-files-documents-an-app-makes-for-the-user-to-download)
+  and a `"button"` input; and level 7 (C4) added
+  [app-wide settings](#settings-an-apps-app-wide-settings-the-users):
+  `settings:` in the manifest, `ctx.settings()` and `ctx.setting()`, set by
+  the user per app. An app that calls
   `ctx.timezone()` says `requires: 2`, one that calls `ctx.delete_sessions()`
-  `requires: 4`, one that keeps records `requires: 5`; one that says nothing
+  `requires: 4`, one that keeps records `requires: 5`, one that makes reports
+  `requires: 6`, one that declares settings `requires: 7`; one that says nothing
   is level 1 and loads as it always did.
   An app needing more doesn't load (the scanner skips it: `needs OpenFit app
-  level 6; this OpenFit is level 5`), and an install or update refuses it with
+  level 8; this OpenFit is level 7`), and an install or update refuses it with
   those words (`check_app()`, 400). It's checked first, before any other field: a
   higher-level app may mean something by a field that this OpenFit can't
   read.
@@ -1457,7 +1465,7 @@ def render(ctx, cfg):
   They're on the `WriteCtx` alone: `render()`'s `Ctx` has neither.
 - **A collection** is a lowercase letter, then up to 39 of `a-z`, `0-9`, `_`
   or `-` (`[a-z][a-z0-9_-]{0,39}`). **A name starting with `_` is OpenFit's
-  own** - the app-wide settings (C4) will be `_settings` - and no app reads
+  own** - the app-wide settings (C4) are `_settings` - and no app reads
   or writes one through these methods: `ValueError("collection '_settings'
   is reserved: ...")`.
 - **A key** is text of 1 to 200 characters, printable (`str.isprintable()`:
@@ -1619,6 +1627,125 @@ deletes them with the rest - its confirm names them; one metric's Remove
 data leaves them.
 
 An app that makes reports says `requires: 6` in its `app.yaml`.
+
+### Settings: an app's app-wide settings, the user's
+
+A tile's `config:` is per tile: each placement has its own values, saved
+with the Home layout. Many settings belong to the whole app instead - a
+home base, a preferred unit, a report's title - set once by the user, for
+every tile of the app and for its `handle()` too. Those are **settings**
+(C4, app level 7), declared in the manifest's `settings:` and set in Data
+→ Applications, the app's row's **Settings**.
+
+```yaml
+requires: 7
+settings:
+  - key: home_base
+    label: Home base
+    help: The airport you fly from.
+    type: text
+    default: ""
+  - key: rest_target
+    label: Rest target (hours)
+    type: number
+    default: 10
+    min: 0
+    max: 24
+  - key: units
+    label: Units
+    type: select
+    options: [metric, imperial]
+    default: metric
+  - key: show_wocl
+    label: Show the low-alertness window
+    type: toggle
+    default: true
+```
+
+**The manifest** is checked strictly, unlike `config:` (`_settings()` in
+`app/apps.py`): a field that breaks a rule is an `AppError`, and the app
+doesn't load. A list of at most 30 fields, in the order the form shows
+them, each with only its type's fields (so a misspelt `max` can't quietly
+mean none):
+
+- `key`: `[a-z][a-z0-9_]{0,39}`, once per app.
+- `label`: text of 1–80 characters (trimmed); `help`, optional, 1–200,
+  shown under the field.
+- `type`: `text`, `number`, `select` or `toggle`; `default` required for
+  every field and valid for it.
+  - `text`: `default` a string; `max_length` 1–500, 200 when absent. A
+    value is printable (no tab, line break or control character) and at
+    most that long.
+  - `number`: `default` a finite number; `min` and `max` optional, finite,
+    `min ≤ max`, the default inside them; `integer: true` for whole
+    numbers only (a whole float, `3.0`, is taken as `3`).
+  - `select`: `options` 1–50 unique strings of 1–80 characters, `default`
+    one of them.
+  - `toggle`: `default` a bool.
+
+`InstalledApp.settings` holds the checked fields, every one filled in (a
+text's `max_length`, a number's `min`/`max` (null for none) and
+`integer`, `help` null for none), and `GET /api/apps` lists them as each
+app's `settings` (`[]` for none). One rule, `setting_problem(field,
+value)`, says whether a value fits a field: for a manifest's default, a
+value the user sends and a value read back.
+
+**Reading them**, in `render()` and `handle()` alike:
+
+```python
+ctx.settings()          # {"home_base": "HKG", "rest_target": 10, "units": "metric", "show_wocl": True}
+ctx.setting("units")    # "metric"
+ctx.setting("unit")     # KeyError: not declared - a typo caught
+```
+
+`ctx.settings()` gives every declared key, in the manifest's order: the
+user's value where one is stored and **still valid** for the field as the
+manifest declares it now, else the field's `default`. A stale value - a key
+no longer declared, a select option that's gone, a number now out of
+range, a value of the wrong type - is passed over, never an error, so an
+app update that changes its settings never breaks its render. They're read
+afresh each call; no ctx writes them. A ctx for no app raises `ValueError`.
+
+**Setting them** is the user's, through two routes (behind the session; the
+PUT behind the `X-OpenFit` header, as every write):
+
+- `GET /api/app/<id>/settings` → `{fields, values}`: the fields as
+  `/api/apps` lists them, and `values` as `ctx.settings()` gives them now.
+- `PUT /api/app/<id>/settings` `{values}` → `{ok: true, values}`, the
+  effective values after. `values` an object whose every key is declared
+  (another is a 400), every value valid for its field: else 400 `{ok:
+  false, error, field}`, the field named ("Rest target (hours)
+  (rest_target) must be at most 24"), nothing saved. A key left out keeps
+  its value; to reset one, send its default.
+- Both 404 for an app not installed, or one that declares no settings. A
+  library app's are set like any: settings are the user's, not the app's
+  files, so a read-only library app can still be set up.
+
+**Stored** as one record in OpenFit's own collection: `app_records` (app,
+`_settings`, `values`), a JSON object of the keys the user has set
+(`host.write_settings()`; each write keeps the declared keys' still-valid
+values and the ones sent, a stale one dropped, and moves `updated_at`).
+Only the route writes it: an app's `ctx.put_record()` and `ctx.record()`
+still refuse every `_` collection. It counts toward the app's 50 MB of
+records under the same limits (tiny in practice). Uninstalling keeps it,
+and a reinstall under the same id finds it; an Update keeps it; **Delete
+data** (`purge_source()`, which takes all of an app's records) removes it.
+
+**The form.** In Data → Applications, an app with settings has a
+**Settings** button beside Refresh. It reads the route, then opens
+"<name> settings": a text input (`maxlength`), a number (`type=number`,
+`min`/`max`, `step` 1 when whole, else `any`), a select or a checkbox per
+field, its help under it - every label, help and option escaped, values
+set as `.value`/`.checked` - over "Applies to this app everywhere it
+appears, for you. A tile's own settings are separate." Save PUTs every
+field's value; a 400 shows the server's message in the popup and keeps it
+open; saved, it closes and the app's tile is rendered again.
+
+**Which to use.** `config:` for what differs between tiles of one app on
+Home - a goal shown on one tile, a stride on another - its values passed to
+`render(ctx, cfg)` and never seen by `handle()`. `settings:` for what is
+the user's for the whole app - who they are, where they're based, how
+they like it shown - read by both. Neither is for a secret.
 
 ### The weight app
 
@@ -2514,7 +2641,8 @@ again, or uninstall the app, to see or remove it.
 
 - `GET /api/apps` → `[{id, name, library, default_size: {w, h}, sizes: [{w,
   h}], reads: [key], config: [{key, label, type, default}], metrics: [{key,
-  label, unit, category, grain, range}], files: [name]}]`, the apps that load,
+  label, unit, category, grain, range}], settings: [{key, label, help, type,
+  default, ...}], files: [name]}]`, the apps that load,
   in folder order. `library` is the library a library app came from
   (`"openfit"` for `openfit.frms`), `null` for a custom app. `sizes` are the tile sizes the manifest declares, in its
   order, and `default_size` the first of them (for a manifest with the older
@@ -2579,6 +2707,10 @@ again, or uninstall the app, to see or remove it.
   404 for an unknown app or file, 413 for a file too big to show, 415 for one
   that isn't text. See
   [Showing a file](#showing-a-file-get-apiappidfilenamefile).
+- `GET /api/app/<id>/settings` → `{fields, values}`; `PUT
+  /api/app/<id>/settings` `{values}` → `{ok, values}`, 400 naming a field
+  that won't do, nothing saved; 404 for an app not installed or with no
+  settings ([above](#settings-an-apps-app-wide-settings-the-users)).
 - `GET /api/app/<id>/files/<name>` → one of the app's report files, its bytes
   as saved, always as a download: `application/octet-stream`, `attachment;
   filename="<name>"`, `nosniff`, `Content-Security-Policy: sandbox`,
@@ -2886,11 +3018,10 @@ saved positions and gives `paintTiles` start cells. The sizes, the CSS grid,
   day, and removing its own metrics or samples over a range (its own
   sessions it can remove since C1, `ctx.delete_sessions()`). (The day a
   write lands on follows the user's timezone since TZ1.)
-- **On top of records**: an app's report files, HTML it produces for the
-  browser to download (never shown inside OpenFit; PDF by the browser's
-  Print), C3, next; and its app-wide settings, kept in the reserved
-  `_settings` collection, C4. Timers and scheduled app jobs come later:
-  everything an app does is on demand for now.
+- **Timers and scheduled app jobs**: everything an app does is on demand
+  for now. (Report files, C3, and app-wide settings, C4, are built.)
+- **Secret settings** (a password or token as an app setting): it would
+  need encryption at rest, as device credentials have; not yet.
 - **Enforcing `reads`:** it's recorded, but `ctx.metric()` serves any
   canonical key, and the app's own, and `ctx.sessions()` serves any session
   kind.

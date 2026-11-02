@@ -376,7 +376,7 @@ def test_this_openfit_is_app_level_two_or_more_and_an_app_saying_nothing_still_l
     assert [a.id for a in apps.scan_apps(str(tmp_path))] == ["needs", "plain"]
     assert (plain.requires, needs.requires) == (1, 2)
     assert apps.level_problem(2) is None
-    assert apps.level_problem(7) == "needs OpenFit app level 7; this OpenFit is level 6"
+    assert apps.level_problem(8) == "needs OpenFit app level 8; this OpenFit is level 7"
 
 
 def test_an_app_reads_the_timezone_through_its_ctx(conn, tmp_path, pin_clock):

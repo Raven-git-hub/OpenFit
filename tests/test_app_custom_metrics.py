@@ -619,6 +619,7 @@ def test_the_caffeine_app_declares_its_metric(client, apps_dir):
          "sizes": [{"w": 1, "h": 1}, {"w": 2, "h": 1}], "reads": ["caffeine_mg"], "config": [],
          "metrics": [{"key": "caffeine_mg", "label": "Caffeine", "unit": "mg",
                       "category": "Nutrition & hydration", "grain": "daily", "range": [0, 2000]}],
+         "settings": [],
          "files": ["app.py", "app.yaml"]},
     ]
     # Declared, so in the catalog - in its category - before any data.
