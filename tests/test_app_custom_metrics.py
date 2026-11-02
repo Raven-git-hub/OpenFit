@@ -343,7 +343,7 @@ def test_removing_an_uninstalled_apps_data_takes_its_metrics_readings(client, co
 
     resp = client.delete("/api/app-sources/coffee")
 
-    assert resp.get_json() == {"ok": True, "removed": {"metrics": 2, "sessions": 0, "samples": 0}}
+    assert resp.get_json() == {"ok": True, "removed": {"metrics": 2, "sessions": 0, "samples": 0, "records": 0}}
     assert rows(conn) == [] and derived(conn) == []
 
 

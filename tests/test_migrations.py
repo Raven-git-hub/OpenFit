@@ -1069,8 +1069,9 @@ def test_drop_sleep_minutes_deletes_those_rows_and_nothing_else(db_at_version):
         ).fetchone()[0] == 0
     # Every other row of every table - other metrics, their derived
     # values, the sleep sessions, samples, settings - and every table's
-    # schema, exactly as they were.
-    assert every_table(conn) == without_sleep_minutes(before)
+    # schema, exactly as they were. (Tables a later migration adds, such
+    # as 011's app_records, aren't 010's change.)
+    assert everything_but(conn, "schema_migrations", only=before) == without_sleep_minutes(before)
     assert conn.execute(
         "SELECT metric, value FROM metrics ORDER BY date, metric"
     ).fetchall() == [("steps", 9000), ("resting_hr_bpm", 61), ("weight_kg", 82.0)]

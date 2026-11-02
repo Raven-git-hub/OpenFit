@@ -250,13 +250,15 @@ them), what's next and what's parked.
   `check_app()` doesn't check it), `description` (text ≤
   `MAX_DESCRIPTION` 300 once trimmed, blank none — what Browse shows),
   `requires` (the **app level** it needs, a whole number ≥ 1, not a bool,
-  default 1; `APP_LEVEL` = 4, "the app contract this OpenFit provides;
+  default 1; `APP_LEVEL` = 5, "the app contract this OpenFit provides;
   raised when apps gain something an older OpenFit lacks" — 1 the first
   contract, 2 (TZ1) `ctx.timezone()` and `ctx.today()` the user's date,
   3 a tile's view, a chart's hint and a donut's control, the wocl tone,
-  strips `ahead` and a sleep lane's bands, 4 (C1) `ctx.delete_sessions()`;
-  checked first, an app needing more skipped: "needs OpenFit app level 5;
-  this OpenFit is level 4"; `manifest_requires()`, `level_problem()`.
+  strips `ahead` and a sleep lane's bands, 4 (C1) `ctx.delete_sessions()`,
+  5 (C2) app records: `ctx.record()`, `ctx.records()`, `ctx.put_record()`,
+  `ctx.delete_record()`; checked first, an app needing more skipped: "needs
+  OpenFit app level 6; this OpenFit is level 5"; `manifest_requires()`,
+  `level_problem()`.
   **The standing rule** (`STATUS.md`): every app-facing addition to core
   raises `APP_LEVEL`, adds a line to the list above it in `app/apps.py`,
   and an app that uses it declares `requires:` that level. **The deploy
@@ -527,8 +529,9 @@ them), what's next and what's parked.
 - `app/host.py` — the app host: `Ctx(conn, today=None, app=None)`, built
   per render call for the app (`app` its `InstalledApp`; None, a ctx for no
   app, reads canonical keys only), is all an app's `render()` gets — its
-  two reads, `ctx.metric()` and `ctx.sessions()`, each its contract
-  route's answer from the same `app/derived.py` function.
+  two reads of the dataset, `ctx.metric()` and `ctx.sessions()`, each its
+  contract route's answer from the same `app/derived.py` function, and
+  its app's own records, `ctx.record()`/`ctx.records()` (C2, below).
   `ctx.metric(key, days=None)` → a
   list of `Point(date, value, source)` (a `NamedTuple`: `.date` a
   `YYYY-MM-DD` str, `.value` a float in the canonical unit — or an app
@@ -840,9 +843,51 @@ them), what's next and what's parked.
   never read. It commits nothing — the action's one transaction, so an
   action that deletes and then raises removes nothing, and a delete then a
   rewrite of some of the same starts leaves exactly those (the upsert) —
-  and notes no day in `ctx.written`. On the `WriteCtx` alone. The render
-  path's `Ctx` has no writer. The app is trusted code, as its `render()`
-  is: the scoping is the ctx, not a sandbox. **A file input's value**
+  and notes no day in `ctx.written`. On the `WriteCtx` alone. **App
+  records** (C2, app level 5; `docs/architecture/app-host.md`'s Records):
+  an app's private JSON store, the `app_records` table (migration `011`),
+  one value per `(app, collection, key)`, `app` the ctx's app's installed
+  id (`self._app_id`, `_records_app()`; a ctx for no app → `ValueError(
+  "records belong to an app: this ctx was made for none")`) in every query,
+  no argument naming another. Reads on the base `Ctx` (`render()` and
+  `handle()`): `ctx.record(collection, key)` → the value as `json.loads()`
+  gives it (a fresh copy), `None` for none — a stored `None` reads the
+  same, `ctx.records()` tells them apart; `ctx.records(collection,
+  prefix=None, limit=None)` → `[{key, value, updated_at}]` `ORDER BY key`
+  (code point order), `prefix` (`_record_prefix()`: None, or text ≤ 200)
+  matched exactly — `key LIKE ? ESCAPE '\'` of the prefix with `\`, `%`,
+  `_` escaped (`_like_prefix()`) **and** `substr(key, 1, len) = prefix`,
+  since SQLite's LIKE ignores ASCII case — `limit` (`_record_limit()`) a
+  whole number 1–`MAX_RECORDS_LISTED` 1000, not a bool, None → 1000 (else
+  `ValueError("limit must be a whole number from 1 to 1000, or None:
+  …")`). Writes on the `WriteCtx` alone (`handle()`): `ctx.put_record(
+  collection, key, value)` upserts (`ON CONFLICT … DO UPDATE` of `value`,
+  `size`, `updated_at`: `created_at` kept), stamps `iso_utc(clock.now_utc())`
+  (host imports `clock` as a module, so `pin_clock` moves it), returns
+  nothing; `ctx.delete_record(collection, key)` → whether a row went
+  (`rowcount > 0`). The rules (`ValueError`, the field named, nothing
+  written): a collection (`_record_collection()`) text — `"collection must
+  be text"` — not starting `_` (`RESERVED_COLLECTION_PREFIX`: OpenFit's
+  own, C4's `_settings`; `"collection '<name>' is reserved: …"`, before
+  the pattern) and matching `RECORD_COLLECTION` `[a-z][a-z0-9_-]{0,39}\Z`
+  (`"collection must be 1 to 40 characters - …"`); a key (`_record_key()`)
+  text of 1–`MAX_RECORD_KEY` 200 characters, `str.isprintable()`; a value
+  (`_record_value()`) through `json.dumps(value, ensure_ascii=False,
+  separators=(",", ":"), allow_nan=False)` and its UTF-8 size — a
+  `TypeError`/`ValueError`/`RecursionError` (a set, an object, NaN, a
+  cycle, a lone surrogate, nesting too deep) → `"value must be plain JSON
+  - …"` — at most `MAX_RECORD_BYTES` 256 KiB (`"value is <n> bytes as
+  JSON; a record holds at most 256 KB (262,144 bytes)"`), and the app's
+  total, `SUM(size)` over its rows, at most `MAX_APP_RECORD_BYTES` 50 MiB
+  counting the write's net change — checked only when it grows, so a
+  shrink (or the same size) at or over the total goes in (`"value would
+  take the app's records to <n> bytes; an app keeps at most 50 MB of
+  records (52,428,800 bytes) - delete some first"`). Every check before
+  any write. Neither writer commits — the action's one transaction, so a
+  put or delete then a raise leaves nothing changed — and neither notes a
+  day in `ctx.written`. The render path's `Ctx` has no writer. The app is
+  trusted code, as its `render()` is: the scoping is the ctx, not a
+  sandbox. **A file input's value**
   is a `FileUpload(path, name="", content_type="")`: `.name` the file's
   name as the browser gave it (display only, never a path),
   `.content_type` the type it reported (`""` for none; informational),
@@ -1390,14 +1435,20 @@ them), what's next and what's parked.
   app is uninstalled or installed, after a removal — which repaints the
   card and any open Your data row) is a `.src.orphan` row after the
   connected ones: its head (`.orphan-head`, a button: chevron, its id, its
-  source under it, `.src-note`) and a `.pill.wait` "○ app uninstalled"
+  source under it, `.src-note`, and under that what it holds, another
+  `.src-note`, `appDataCounts()`: "3 readings · 1 session · 4 records (1.2
+  KB)", each kind it has any of, records by `recordsOf()` with
+  `sizeText()`'s size — a tenth of a KB under ten, whole from ten, MB from
+  1 MiB, never 0.0) and a `.pill.wait` "○ app uninstalled"
   and a red **Remove all data** (`btn sm danger`) — no Sync now, no
   Settings; a live app's source gets no row. The head opens it
   (`expandable()`, the open sources in `state.orphanOpen`, so it stays open
   across a refresh) on `orphanMetrics()`: a line per key in its `metrics`
   (`.orphan-metric`, `metricName()` — an orphaned custom one by its short
-  key, prettified) with its own red **Remove data**; none left → a note
-  that Remove all data takes its sessions/samples. A Your data row's
+  key, prettified) with its own red **Remove data**, then, if it kept
+  records, an `.orphan-records` line "4 records (1.2 KB), which Remove all
+  data takes" (no metric's Remove data takes them); none left → a note
+  that Remove all data takes its sessions/samples/records. A Your data row's
   source list (`fillSources()`, metrics and series/sessions alike) ends
   with `orphanLines(row, …)`: for each of its sources an orphan,
   "`app:<id>` is from an uninstalled app." and a Remove data for that
@@ -1405,8 +1456,9 @@ them), what's next and what's parked.
   metric)` — `metric` null (Remove all data) for the whole app: a
   `.modal` titled with the source, one `danger-panel` "Remove data?" —
   "Remove all data from the uninstalled app '<id>'? <`appDataSummary()`:
-  N readings across M metrics (their names), then any sessions and
-  samples>. This can't be undone."; a metric: titled with its name, "From
+  N readings across M metrics (their names), then any sessions, samples
+  and records (with their size)>. This can't be undone."; a metric:
+  titled with its name, "From
   <source>, whose app is no longer installed. The rest of what it wrote
   stays." over "Remove <name> from the uninstalled app '<id>'? This can't
   be undone." — [Cancel] (focused) / [Remove data]; no `confirm()`.
@@ -2742,7 +2794,10 @@ them), what's next and what's parked.
   hand-entered data can't be re-synced — until they're removed, a separate
   explicit step for an app no longer installed (no migration; `app/main.py`):
   `GET /api/app-sources` → `[{id, source, orphaned, metrics, readings,
-  sessions, samples}]`, one per `app:<id>` source with any row, by id —
+  sessions, samples, records: {count, bytes}}]`, one per `app:<id>` source
+  with any row or any record (C2: `app_records` grouped by `app`, its
+  `COUNT` and `SUM(size)`, the source `app_source(app)`; `{0, 0}` for
+  none), by id —
   `orphaned` once its app is gone from the volume (`app_present()` false:
   no `<apps dir>/<id>`, as anything, and no other folder's app loading
   under the id) — an app whose folder is there but fails to load is
@@ -2752,10 +2807,11 @@ them), what's next and what's parked.
   (`>= 'app:' AND < 'app;'`, case-sensitive, unlike `LIKE`), so
   `apple_health` or `APP:x` isn't one. `DELETE /api/app-sources/<id>` →
   `purge_source(conn, "app:" + id)`, then `{ok: true, removed: {metrics,
-  sessions, samples}}` (rows deleted); 404 for an id failing `is_app_id()`
+  sessions, samples, records}}` (rows deleted); 404 for an id failing `is_app_id()`
   (checked first); 400 while `app_present()` — "'<id>' is present — fix
   or uninstall it first; …": a live or broken app's data is never
-  removed; 404 when `app:<id>` has no rows (checked before anything is
+  removed; 404 when `app:<id>` has no rows and the app no records
+  (`_has_data()`, which looks at `app_records` for an `app:` source; checked before anything is
   written, so a role naming it stays) — nothing changes on any of them,
   and the listing marks orphaned exactly what this would remove. The id is always read as
   `app:<id>` (the prefix never stripped), so it can't reach a device, a
@@ -2763,11 +2819,11 @@ them), what's next and what's parked.
   `DELETE /api/app-sources/<id>/<metric>` (B1) is the same for one
   metric — `<metric>` the key as stored, a canonical one or the full
   `app:<id>:<key>`: `purge_source(conn, "app:" + id, metric=metric)`,
-  the same reply (`sessions` always 0) and guards in the same order, the
+  the same reply (`sessions` and `records` always 0) and guards in the same order, the
   last 404 "no <metric> data from app:<id> to remove" when that
   `(source, metric)` has no reading or sample (`_has_metric_data()`;
   sessions are kind-keyed, never looked at); DELETE only. The app's other
-  metrics, its sessions and its roles for anything else stay; a metric
+  metrics, its sessions, its records and its roles for anything else stay; a metric
   another source wins keeps its winner.
   `purge_source(conn, source, metric=None, keep_roles=False)`
   (`app/main.py`, shared with the connector wipe) deletes every `metrics`
@@ -2775,9 +2831,12 @@ them), what's next and what's parked.
   every source role naming it (`clear_source_roles()`) unless
   `keep_roles`, and `recompute_derived()`s the min..max of the deleted
   dates, one transaction with whatever the caller did first (a failure
-  rolls it all back); → `{days, metrics, sessions, samples}`. With
+  rolls it all back); → `{days, metrics, sessions, samples, records}`.
+  For an `app:` source it deletes that app's `app_records` too (keyed by
+  the id after the prefix, so a device's wipe — `purge_source(conn,
+  "garmin")` — never reaches an app installed as `garmin`). With
   `metric`, only that metric's `metrics` and `samples` rows go (no
-  sessions) and only its role is cleared (`only=metric`). The metrics
+  sessions, no records) and only its role is cleared (`only=metric`). The metrics
   stay: `weight_kg` without `app:weight`'s readings is still `weight_kg`.
   **`manual` is frozen**: the hand-entered weigh-ins — migration `006`'s
   and the retired `POST /api/weights`' — stay under source `manual` as
@@ -2909,6 +2968,29 @@ them), what's next and what's parked.
   is empty — never a blanket re-derive (a policy change is forward-only). The
   access contract and the default `/api/activity` read it; `?by_source=1`
   still reads `metrics`.
+- `app_records(app, collection, key, value, size, created_at, updated_at)`
+  keyed `(app, collection, key)` (migration `011`, purely additive; C2):
+  each app's private JSON store, every column NOT NULL. `app` is the app's
+  installed id (`mood`, `openfitavi.frms`) — not its source, so a device
+  sharing an app's id never meets its records; `collection` and `key` the
+  app's names; `value` the record as JSON text (`json.dumps(…,
+  ensure_ascii=False, separators=(",", ":"), allow_nan=False)`); `size`
+  that text's UTF-8 bytes; `created_at`/`updated_at` `iso_utc()` text, the
+  first write and the latest. Beside the key, `idx_app_records_size` on
+  `(app, size)`: `size` follows `value` in the row, so reading it from the
+  table walks each value's overflow pages, while the index serves an app's
+  total (`put_record()`'s limit) and `/api/app-sources`' bytes without
+  touching a value. Written only by `WriteCtx.put_record()`/
+  `delete_record()` and read only by `Ctx.record()`/`records()`
+  (`app/host.py`, above), each scoped to the ctx's app; no route serves
+  them. Nothing derives from a record. Limits: 256 KiB a record, 50 MiB an
+  app. Uninstalling an app keeps its records (as its rows), a reinstall
+  under the same id finds them, an Update keeps them, and `purge_source()`
+  on its `app:` source — Your data's Remove all data, `DELETE
+  /api/app-sources/<id>` — deletes them (the per-metric delete never). In
+  `tracker.db`, so every backup, download and restore carries them.
+  Collections starting `_` are OpenFit's own (C4's `_settings`), out of
+  the ctx's reach.
 - Source roles: the `settings` row `source_roles` (no migration) holds JSON
   `{metric: primary_source}`, e.g. `{"steps": "google_health"}`; a metric absent
   from it uses the default precedence. Read by `load_source_roles()`, written by
@@ -3521,6 +3603,21 @@ what's parked:
   returned — so a re-uploaded roster's dropped duties go; `APP_LEVEL` 4.
   Deploy: merge it, Update OpenFit, and only then the FRMS change that
   uses it (`requires: 4`).
+  Then C2 landed (migration `011`, no new route; item 2 of the core
+  adjustments, the report store, resolved with C3 more generally than
+  FRMS asked): app records, a private JSON store per app — the
+  `app_records` table, `ctx.record()`/`ctx.records()` on the `Ctx`,
+  `ctx.put_record()`/`ctx.delete_record()` on the `WriteCtx`, each scoped
+  to the ctx's app, in the action's transaction; 256 KiB a record, 50 MiB
+  an app; `_` collections OpenFit's own; `GET /api/app-sources` lists each
+  app's `records: {count, bytes}` and `purge_source()` takes them with an
+  uninstalled app's data (the `removed` replies gain `records`); the orphan
+  row shows what it holds, records and their size among it; `APP_LEVEL` 5.
+  Deploy: merge it, Update OpenFit, then any app change that uses it
+  (`requires: 5`). Next: C3, report files (HTML an app produces, always
+  served as a download, PDF by the browser's Print), and C4, an app's own
+  settings on top of records (the manifest fields, a settings form,
+  `_settings`); timers and scheduled app jobs after them.
   Still to come for write-back: an app replacing its own
   metrics (and samples) over a date range,
   the rostered↔flown per-duty matching (needs a derived duty key — the

@@ -80,6 +80,18 @@ it - and read back with ctx.sessions(kind), or GET /api/sessions/<kind>,
 beside every other source's. That's the whole of the scoping: the app is
 trusted code, as its render() is, not sandboxed.
 
+An app keeps anything else - a trip report, a log entry, a saved list -
+as records: a private JSON store of its own (app level 5), one value a
+key in collections it names. handle() writes them, inside the action's
+transaction, and both handle() and render() read them back:
+
+    ctx.put_record("reports", trip_id, {"port": "LHR", "rested": True})
+    ctx.record("reports", trip_id)          # {"port": "LHR", "rested": True}
+    ctx.records("reports", prefix="2026-")  # [{key, value, updated_at}, ...]
+
+A ctx only ever reaches its own app's records: none of the four takes an
+app.
+
 A file input's value in the payload is a FileUpload - the file as the
 browser sent it, which the app reads and parses itself: OpenFit carries
 a file, and never reads one. A file input may carry a companion toggle
@@ -240,6 +252,9 @@ import traceback
 from datetime import date, datetime, timedelta
 from typing import NamedTuple
 
+# The module itself, not its now_utc(): a test pins clock.now_utc, and a
+# record's timestamps follow it.
+import clock
 from apps import scan_apps
 from clock import today_in, user_zone
 from derived import derived_points, session_rows
@@ -1447,9 +1462,10 @@ class Ctx:
     """What render(ctx, cfg) is given. One per render call.
 
     Made for one app, `app` (an InstalledApp): it reads OpenFit's metrics
-    and the ones that app declares (metric()), and every source's
-    sessions of OpenFit's kinds (sessions()). A ctx for no app reads the
-    same, less the app's own metrics.
+    and the ones that app declares (metric()), every source's sessions
+    of OpenFit's kinds (sessions()), and that app's own records
+    (record(), records()). A ctx for no app reads the same, less the
+    app's own metrics, and has no records.
     """
 
     number = staticmethod(number)
@@ -1586,6 +1602,72 @@ class Ctx:
             for s in session_rows(self._conn, kind, since, until)
         ]
 
+    def _records_app(self):
+        """The app whose records this ctx reaches: its own, always."""
+        if self._app_id is None:
+            raise ValueError("records belong to an app: this ctx was made for none")
+        return self._app_id
+
+    def record(self, collection, key):
+        """One of the app's own records: the value stored under `key` in `collection`.
+
+        Given back as JSON parses it - a dict, list, str, int, float, bool
+        or None - a fresh copy each call. None when there's no such
+        record; a record stored as None reads the same, so to tell the
+        two apart, look for its key in records(collection, prefix=key).
+
+        Only ever this ctx's app's: no argument names another app. App
+        level 5.
+
+        `collection` is a lowercase letter then up to 39 of a-z, 0-9, _
+        or -; a name starting with _ is OpenFit's own, never an app's.
+        `key` is 1 to 200 printable characters. Raises ValueError, naming
+        the field, for either that won't do.
+        """
+        collection, key = _record_collection(collection), _record_key(key)
+        row = self._conn.execute(
+            "SELECT value FROM app_records WHERE app = ? AND collection = ? AND key = ?",
+            (self._records_app(), collection, key),
+        ).fetchone()
+        return None if row is None else json.loads(row[0])
+
+    def records(self, collection, prefix=None, limit=None):
+        """The app's own records in `collection`: [{key, value, updated_at}], by key.
+
+        `value` is as record() gives it; `updated_at` is when it was last
+        written (iso_utc() text, YYYY-MM-DDTHH:MM:SSZ). Sorted by key, as
+        text sorts - so keys that start with a date, 2026-11-02-..., list
+        in time order - and [] for none. A record stored as None is
+        listed, its value None: here a missing one and a None one differ.
+
+        `prefix`, if given, keeps the keys that start with it, exactly:
+        case counts, and % and _ are themselves, never wildcards.
+        `limit` is how many to give at most, a whole number from 1 to
+        1000; None gives them all, up to 1000 - past that, page by
+        prefix. Only ever this ctx's app's. App level 5.
+
+        Raises ValueError, naming the field, for a collection as record()
+        refuses one, a prefix that isn't text of at most 200 characters,
+        or a limit out of range.
+        """
+        collection = _record_collection(collection)
+        prefix = _record_prefix(prefix)
+        limit = _record_limit(limit)
+        sql = "SELECT key, value, updated_at FROM app_records WHERE app = ? AND collection = ?"
+        args = [self._records_app(), collection]
+        if prefix:
+            # LIKE, escaped, so % and _ in the prefix are themselves; and
+            # substr() too, since SQLite's LIKE ignores ASCII case, and a
+            # prefix is matched exactly.
+            sql += " AND key LIKE ? ESCAPE '\\' AND substr(key, 1, ?) = ?"
+            args += [_like_prefix(prefix), len(prefix), prefix]
+        sql += " ORDER BY key LIMIT ?"
+        args.append(limit)
+        return [
+            {"key": row[0], "value": json.loads(row[1]), "updated_at": row[2]}
+            for row in self._conn.execute(sql, args)
+        ]
+
 
 # An app's source is this and its id: app:weight. Nothing but the app's
 # own WriteCtx writes under it (the webhook refuses the prefix).
@@ -1688,18 +1770,120 @@ def _session_instant(raw, field):
     raise ValueError(f"{field} must be a datetime or ISO-8601 timestamp: {raw!r}")
 
 
+# ---------- records: a private JSON store per app (C2) ----------
+#
+# The app_records table (migration 011): one JSON value per (app,
+# collection, key), `app` the app's installed id. Read by Ctx.record()
+# and Ctx.records(), written by WriteCtx.put_record() and
+# WriteCtx.delete_record(), every query naming the ctx's own app.
+
+# A collection an app names: a lowercase letter, then up to 39 of a-z,
+# 0-9, _ or -.
+RECORD_COLLECTION = re.compile(r"[a-z][a-z0-9_-]{0,39}\Z")
+# A collection starting with this is OpenFit's own - the app-wide
+# settings (C4) will be _settings - and no app reaches it through its
+# ctx, read or write.
+RESERVED_COLLECTION_PREFIX = "_"
+# A key is 1 to this many printable characters.
+MAX_RECORD_KEY = 200
+# The most records() gives at once, and what it gives with no limit.
+MAX_RECORDS_LISTED = 1000
+# The most one record's value may be, serialised - UTF-8 bytes of the
+# JSON text stored - and the most one app's records may be in all.
+MAX_RECORD_BYTES = 256 * 1024
+MAX_APP_RECORD_BYTES = 50 * 1024 * 1024
+
+
+def _record_collection(raw):
+    """`raw` as a collection an app may name, or ValueError."""
+    if not isinstance(raw, str):
+        raise ValueError(f"collection must be text: {raw!r}")
+    if raw.startswith(RESERVED_COLLECTION_PREFIX):
+        raise ValueError(
+            f"collection {raw!r} is reserved: a name starting with "
+            f"{RESERVED_COLLECTION_PREFIX!r} is OpenFit's own, never an app's"
+        )
+    if not RECORD_COLLECTION.match(raw):
+        raise ValueError(
+            "collection must be 1 to 40 characters - a lowercase letter, then lowercase "
+            f"letters, digits, _ or -: {raw!r}"
+        )
+    return raw
+
+
+def _record_key(raw):
+    """`raw` as a record's key - 1 to MAX_RECORD_KEY printable
+    characters - or ValueError."""
+    if not isinstance(raw, str):
+        raise ValueError(f"key must be text: {raw!r}")
+    if not 1 <= len(raw) <= MAX_RECORD_KEY:
+        raise ValueError(f"key must be 1 to {MAX_RECORD_KEY} characters: it has {len(raw)}")
+    if not raw.isprintable():
+        # str.isprintable(): no control character, line break or tab, nor
+        # anything else Unicode doesn't print (a lone surrogate among them).
+        raise ValueError(f"key must be printable, with no control characters: {raw!r}")
+    return raw
+
+
+def _record_value(raw):
+    """`raw` as a record's stored value: (its JSON text, that text's size
+    in UTF-8 bytes). Plain JSON only - a dict, list, str, number, bool
+    or None, all the way down - at most MAX_RECORD_BYTES; else
+    ValueError."""
+    try:
+        text = json.dumps(raw, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+        size = len(text.encode("utf-8"))
+    except (TypeError, ValueError, RecursionError) as e:
+        # A set or an object (TypeError), NaN or Infinity, a value that
+        # holds itself, or text with a lone surrogate, which UTF-8 can't
+        # hold (ValueErrors), or nesting too deep to write out.
+        raise ValueError(f"value must be plain JSON - a dict, list, text, number, bool or None: {e}") from None
+    if size > MAX_RECORD_BYTES:
+        raise ValueError(
+            f"value is {size:,} bytes as JSON; a record holds at most 256 KB ({MAX_RECORD_BYTES:,} bytes)"
+        )
+    return text, size
+
+
+def _record_prefix(raw):
+    """`raw` as records()' prefix - None, or text of at most
+    MAX_RECORD_KEY characters - or ValueError."""
+    if raw is not None and (not isinstance(raw, str) or len(raw) > MAX_RECORD_KEY):
+        raise ValueError(f"prefix must be text of at most {MAX_RECORD_KEY} characters, or None: {raw!r}")
+    return raw
+
+
+def _record_limit(raw):
+    """`raw` as records()' limit - a whole number from 1 to
+    MAX_RECORDS_LISTED, never a bool; None is all of them, up to that -
+    or ValueError."""
+    if raw is None:
+        return MAX_RECORDS_LISTED
+    if not isinstance(raw, int) or isinstance(raw, bool) or not 1 <= raw <= MAX_RECORDS_LISTED:
+        raise ValueError(f"limit must be a whole number from 1 to {MAX_RECORDS_LISTED}, or None: {raw!r}")
+    return raw
+
+
+def _like_prefix(prefix):
+    """A LIKE pattern, ESCAPE '\\', matching keys that start with `prefix`:
+    its \\, % and _ escaped, so each is itself, and a % after it."""
+    return prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+
+
 class WriteCtx(Ctx):
     """What handle(ctx, action, payload) is given: a Ctx that can also write.
 
     One per action, for the app `app` (an InstalledApp). It writes
     readings (write_metric()) and sessions (write_session(), of an
-    existing kind), and removes its own sessions over a span
-    (delete_sessions()). Its source is the app's own, app:<id>, fixed
-    here - none of its writers takes one - so whatever the app does, it
-    can only create, overwrite or remove its own rows. It notes the days
-    it wrote readings to, for the action route to re-derive once the
-    action has succeeded (a session is derived into nothing, so it notes
-    none); nothing is committed here.
+    existing kind), removes its own sessions over a span
+    (delete_sessions()), and writes and removes its own records
+    (put_record(), delete_record()). Its source is the app's own,
+    app:<id>, fixed here - none of its writers takes one, nor an app -
+    so whatever the app does, it can only create, overwrite or remove
+    its own rows. It notes the days it wrote readings to, for the action
+    route to re-derive once the action has succeeded (a session or a
+    record is derived into nothing, so it notes none); nothing is
+    committed here.
     """
 
     def __init__(self, conn, app, today=None):
@@ -1844,6 +2028,84 @@ class WriteCtx(Ctx):
             (self._source, kind, since, until),
         )
         return cursor.rowcount
+
+    def put_record(self, collection, key, value):
+        """Store `value` as the app's own record `key` in `collection`.
+
+        For whatever an app keeps that isn't a reading or a session - a
+        trip report, a log entry, a saved list - read back with record()
+        and records(), in handle() or render(). A record already there is
+        replaced; it keeps when it was first written (created_at), and
+        its updated_at moves to now.
+
+        `collection` and `key` as record() takes them: a collection
+        starting with _ is OpenFit's own. `value` is plain JSON - a dict,
+        list, str, int, float, bool or None, all the way down - stored as
+        its JSON text and read back as JSON parses it (a tuple comes back
+        a list, a dict's number keys as text). A set, an object, NaN or
+        Infinity won't do.
+
+        The limits: a record is at most 256 KB as JSON (UTF-8 bytes), and
+        one app's records 50 MB in all, counted with this write's net
+        change - so at the total, a write that adds bytes is refused,
+        while one that replaces a record with a smaller value (or one the
+        same size) still goes in.
+
+        Only ever this ctx's app's: no argument names another. Nothing is
+        committed here - the action's one transaction holds it with the
+        rest, so an action that writes a record and then raises leaves
+        nothing behind - and nothing is re-derived: no day is noted in
+        `written`. App level 5.
+
+        Raises ValueError, naming the field and writing nothing, for a
+        collection, key or value that won't do, or one over a limit.
+        """
+        collection, key = _record_collection(collection), _record_key(key)
+        text, size = _record_value(value)
+        app = self._records_app()
+        old = self._conn.execute(
+            "SELECT size FROM app_records WHERE app = ? AND collection = ? AND key = ?",
+            (app, collection, key),
+        ).fetchone()
+        growth = size - (old[0] if old is not None else 0)
+        if growth > 0:
+            # The app's own total: one SUM, read from idx_app_records_size
+            # (011), never touching a value.
+            total = self._conn.execute(
+                "SELECT COALESCE(SUM(size), 0) FROM app_records WHERE app = ?", (app,)
+            ).fetchone()[0]
+            if total + growth > MAX_APP_RECORD_BYTES:
+                raise ValueError(
+                    f"value would take the app's records to {total + growth:,} bytes; an app keeps "
+                    f"at most 50 MB of records ({MAX_APP_RECORD_BYTES:,} bytes) - delete some first"
+                )
+        now = iso_utc(clock.now_utc())
+        self._conn.execute(
+            "INSERT INTO app_records (app, collection, key, value, size, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT (app, collection, key) DO UPDATE SET "
+            "value = excluded.value, size = excluded.size, updated_at = excluded.updated_at",
+            (app, collection, key, text, size, now, now),
+        )
+
+    def delete_record(self, collection, key):
+        """Remove the app's own record `key` from `collection`: whether there was one to remove.
+
+        `collection` and `key` as record() takes them. Only ever this
+        ctx's app's. Nothing is committed here: the action's transaction
+        holds it, so an action that deletes a record and then raises
+        removes nothing. App level 5.
+
+        Raises ValueError, naming the field and removing nothing, for a
+        collection or key that won't do. Returns True if a record was
+        removed, False if there was none.
+        """
+        collection, key = _record_collection(collection), _record_key(key)
+        cursor = self._conn.execute(
+            "DELETE FROM app_records WHERE app = ? AND collection = ? AND key = ?",
+            (self._records_app(), collection, key),
+        )
+        return cursor.rowcount > 0
 
 
 def render_app(installed, conn, cfg=None, today=None):
