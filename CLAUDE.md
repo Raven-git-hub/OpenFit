@@ -250,14 +250,16 @@ them), what's next and what's parked.
   `check_app()` doesn't check it), `description` (text ≤
   `MAX_DESCRIPTION` 300 once trimmed, blank none — what Browse shows),
   `requires` (the **app level** it needs, a whole number ≥ 1, not a bool,
-  default 1; `APP_LEVEL` = 5, "the app contract this OpenFit provides;
+  default 1; `APP_LEVEL` = 6, "the app contract this OpenFit provides;
   raised when apps gain something an older OpenFit lacks" — 1 the first
   contract, 2 (TZ1) `ctx.timezone()` and `ctx.today()` the user's date,
   3 a tile's view, a chart's hint and a donut's control, the wocl tone,
   strips `ahead` and a sleep lane's bands, 4 (C1) `ctx.delete_sessions()`,
   5 (C2) app records: `ctx.record()`, `ctx.records()`, `ctx.put_record()`,
-  `ctx.delete_record()`; checked first, an app needing more skipped: "needs
-  OpenFit app level 6; this OpenFit is level 5"; `manifest_requires()`,
+  `ctx.delete_record()`, 6 (C3) report files: `ctx.save_file()`,
+  `ctx.delete_file()`, `ctx.files()`, `ctx.download()` and a `"button"`
+  input; checked first, an app needing more skipped: "needs
+  OpenFit app level 7; this OpenFit is level 6"; `manifest_requires()`,
   `level_problem()`.
   **The standing rule** (`STATUS.md`): every app-facing addition to core
   raises `APP_LEVEL`, adds a line to the list above it in `app/apps.py`,
@@ -588,8 +590,13 @@ them), what's next and what's parked.
   interactive element: a
   field and Save, which sends `action` to the app's `handle()` with `{key:
   what was entered}`; `key` and `action` non-empty text, `kind`
-  `"number"`/`"text"`/`"select"`/`"file"` (`INPUT_KINDS`), `label`/`unit` text or
-  `None`, else `TypeError`/`ValueError`; `options` a select's dropdown —
+  `"number"`/`"text"`/`"select"`/`"file"`/`"button"` (`INPUT_KINDS`), `label`/`unit` text or
+  `None`, else `TypeError`/`ValueError` — a `"button"` (C3) is no field and
+  no Save, a button whose text is `label`, required (`None` →
+  `ValueError("a button needs a label: …")`, not text `TypeError`, empty
+  `ValueError`), pressing it sending `action` with `{key: True}`, a `unit`
+  refused (`ValueError`, "a unit isn't for a button") as `options`,
+  `accept` and `toggle` are by their own rules; `options` a select's dropdown —
   required for one (missing/`None`/empty → `ValueError`), a list or tuple
   of non-empty strings (else `TypeError`, "a select's options must be a
   non-empty list of strings"), in the spec a plain list as written — and
@@ -887,7 +894,31 @@ them), what's next and what's parked.
   put or delete then a raise leaves nothing changed — and neither notes a
   day in `ctx.written`. The render path's `Ctx` has no writer. The app is
   trusted code, as its `render()` is: the scoping is the ctx, not a
-  sandbox. **A file input's value**
+  sandbox. **Report files** (C3, app level 6; `docs/architecture/
+  app-host.md`'s Report files): HTML an app makes for the user to keep,
+  the `app_files` table (migration `012`), one file per `(app, name)`,
+  `app` the ctx's app's installed id (`_files_app()`; a ctx for no app →
+  `ValueError("files belong to an app: …")`) in every query.
+  `ctx.files()` on the base `Ctx` → `[{name, size, updated_at}]` `ORDER BY
+  name`; `ctx.save_file(name, html)` (upsert, `created_at` kept,
+  `updated_at` `iso_utc(clock.now_utc())`, returns nothing) and
+  `ctx.delete_file(name)` → whether a row went, on the `WriteCtx` alone.
+  A name (`_file_name()`, `is_file_name()`) matches `FILE_NAME`
+  `[a-z0-9][a-z0-9._-]{0,94}\.html\Z` (6–100 characters, never a path),
+  else `ValueError("name must be 6 to 100 characters - …")`; `html`
+  (`_file_html()`) a `str` (else `ValueError("html must be text (a str):
+  …")`), encoded UTF-8 (a lone surrogate refused), stored exactly as given
+  (no validation, nothing injected), at most `MAX_FILE_BYTES` 10 MiB (`"html
+  is <n> bytes; a file holds at most 10 MB (10,485,760 bytes)"`); the app's
+  `COUNT(*)`/`SUM(size)` (from `idx_app_files_size`) checked only when the
+  save adds a file or grows one — a new file at `MAX_APP_FILES` 1000
+  refused, a total over `MAX_APP_FILE_BYTES` 200 MiB refused (`"html would
+  take the app's files to <n> bytes; … - delete some first"`), so a shrink
+  at the total goes in. Neither writer commits (the action's transaction)
+  nor notes a day. `download(name, label=None)` (bound on `Ctx` as
+  `ctx.download`) → `{"type": "download", name, label}`, the name held to
+  `_file_name()`, `label` text or `None` (the name; not text `TypeError`,
+  `""` `ValueError`); the host never looks for the file. **A file input's value**
   is a `FileUpload(path, name="", content_type="")`: `.name` the file's
   name as the browser gave it (display only, never a path),
   `.content_type` the type it reported (`""` for none; informational),
@@ -1437,18 +1468,24 @@ them), what's next and what's parked.
   connected ones: its head (`.orphan-head`, a button: chevron, its id, its
   source under it, `.src-note`, and under that what it holds, another
   `.src-note`, `appDataCounts()`: "3 readings · 1 session · 4 records (1.2
-  KB)", each kind it has any of, records by `recordsOf()` with
+  KB) · 2 files (37 KB)", each kind it has any of, records by `recordsOf()`
+  and report files by `filesOf()`, each with
   `sizeText()`'s size — a tenth of a KB under ten, whole from ten, MB from
   1 MiB, never 0.0) and a `.pill.wait` "○ app uninstalled"
   and a red **Remove all data** (`btn sm danger`) — no Sync now, no
   Settings; a live app's source gets no row. The head opens it
   (`expandable()`, the open sources in `state.orphanOpen`, so it stays open
-  across a refresh) on `orphanMetrics()`: a line per key in its `metrics`
+  across a refresh) on `orphanPanel()`: `orphanMetrics()` — a line per key in its `metrics`
   (`.orphan-metric`, `metricName()` — an orphaned custom one by its short
   key, prettified) with its own red **Remove data**, then, if it kept
   records, an `.orphan-records` line "4 records (1.2 KB), which Remove all
   data takes" (no metric's Remove data takes them); none left → a note
-  that Remove all data takes its sessions/samples/records. A Your data row's
+  that Remove all data takes its sessions/samples/records — then, if it
+  made files, `orphanFiles()`: `api.appFiles()` (`GET /api/app/<id>/files`)
+  listed as `.orphan-file` lines, each its name (as text), **Download** (an
+  `<a download>` to `api.appFileUrl()`, through `checkedDownload()`) and a
+  red **Delete** (`api.removeAppFile()`, `DELETE /api/app/<id>/files/<name>`,
+  then `loadAppSources()`; a refusal in the list's message line). A Your data row's
   source list (`fillSources()`, metrics and series/sessions alike) ends
   with `orphanLines(row, …)`: for each of its sources an orphan,
   "`app:<id>` is from an uninstalled app." and a Remove data for that
@@ -1456,8 +1493,8 @@ them), what's next and what's parked.
   metric)` — `metric` null (Remove all data) for the whole app: a
   `.modal` titled with the source, one `danger-panel` "Remove data?" —
   "Remove all data from the uninstalled app '<id>'? <`appDataSummary()`:
-  N readings across M metrics (their names), then any sessions, samples
-  and records (with their size)>. This can't be undone."; a metric:
+  N readings across M metrics (their names), then any sessions, samples,
+  records and files (with their sizes)>. This can't be undone."; a metric:
   titled with its name, "From
   <source>, whose app is no longer installed. The rest of what it wrote
   stays." over "Remove <name> from the uninstalled app '<id>'? This can't
@@ -1702,7 +1739,9 @@ them), what's next and what's parked.
   `/api/sync/<plugin>`), and the app routes (`/api/apps`, `POST /api/apps`,
   `PUT /api/apps/<id>`, `DELETE /api/apps/<id>`, `POST /api/app/<id>/render`, `POST
   /api/app/<id>/action`, `/api/app/<id>/file`, `/api/app-sources`, `DELETE
-  /api/app-sources/<id>`, `DELETE /api/app-sources/<id>/<metric>`), the
+  /api/app-sources/<id>`, `DELETE /api/app-sources/<id>/<metric>`, `GET
+  /api/app/<id>/files`, `HEAD`/`DELETE /api/app/<id>/files/<name>` and the
+  download links to its `GET`), the
   library's (`/api/library`, `/api/library/<source>/<app>`, `POST
   /api/library/<source>/<app>/install`), Home's layout (`GET`/`PUT /api/home-layout`),
   the profile (`GET`/`PUT /api/profile`) and `POST /api/auth/logout`;
@@ -1818,7 +1857,11 @@ them), what's next and what's parked.
   missing between them — never interpolated or zeroed — a lone point a dot,
   none "No data"),
   `panel` (children stacked; the line takes the rest, an input sits at the
-  foot), `input` (`specInput(s, appId)`: the `label` small and uppercase
+  foot), `input` (`specInput(s, appId)` — kind `"button"` handed to
+  `specButton()`: a `btn sm press` whose text is the label (as text), no
+  field or Save; pressed, `api.appAction(appId, action, {[key]: true},
+  tileCfg(appId))`, held meanwhile, the reply's spec repainting the tile or
+  its `error` in the `.m` line; off for no app — else `specInput()`: the `label` small and uppercase
   over a row of the field — `type="number" step="any"` unless `kind` is
   `"text"`, or for `kind` `"select"` a `<select class="input">`: a
   "Choose…" placeholder first (value `""`, selected and disabled), then an
@@ -2163,6 +2206,15 @@ them), what's next and what's parked.
   (the host refuses them on a sky lane). Its CSS a commented block after
   the grid's; no `.tl-*`/`.rail-*` rule, nor `timelineSpec()`, the rails
   or the focus clock, changed),
+  `download` (`downloadSpec(s, appId)`, C3: a `.spec-download` of an `a.btn
+  sm` — its `<span>` the label else the name, as text, `title` the name,
+  `href` `api.appFileUrl(appId, name)` (`/api/app/<id>/files/<name>`) and
+  the `download` attribute the name, all attributes, never markup — over a
+  `.m` line; its click `checkedDownload()`: held, a `HEAD` through
+  `apiFetch()`, a 404 "That file isn't there any more." and another
+  failure "Couldn't download that file." with no download, else the link
+  clicked again, let through, so the browser saves it; drawn for no app,
+  `aria-disabled`, no href),
   `empty`/`error` (muted, centred; error under
   "Couldn't render <name>"), any other type an error tile. A spec is drawn
   for its app — `renderSpec(spec, name, appId)`, the id threaded from the
@@ -2794,10 +2846,10 @@ them), what's next and what's parked.
   hand-entered data can't be re-synced — until they're removed, a separate
   explicit step for an app no longer installed (no migration; `app/main.py`):
   `GET /api/app-sources` → `[{id, source, orphaned, metrics, readings,
-  sessions, samples, records: {count, bytes}}]`, one per `app:<id>` source
-  with any row or any record (C2: `app_records` grouped by `app`, its
+  sessions, samples, records: {count, bytes}, files: {count, bytes}}]`, one per `app:<id>` source
+  with any row, record or file (C2: `app_records` grouped by `app`, its
   `COUNT` and `SUM(size)`, the source `app_source(app)`; `{0, 0}` for
-  none), by id —
+  none; C3: `app_files` likewise), by id —
   `orphaned` once its app is gone from the volume (`app_present()` false:
   no `<apps dir>/<id>`, as anything, and no other folder's app loading
   under the id) — an app whose folder is there but fails to load is
@@ -2807,11 +2859,11 @@ them), what's next and what's parked.
   (`>= 'app:' AND < 'app;'`, case-sensitive, unlike `LIKE`), so
   `apple_health` or `APP:x` isn't one. `DELETE /api/app-sources/<id>` →
   `purge_source(conn, "app:" + id)`, then `{ok: true, removed: {metrics,
-  sessions, samples, records}}` (rows deleted); 404 for an id failing `is_app_id()`
+  sessions, samples, records, files}}` (rows deleted); 404 for an id failing `is_app_id()`
   (checked first); 400 while `app_present()` — "'<id>' is present — fix
   or uninstall it first; …": a live or broken app's data is never
-  removed; 404 when `app:<id>` has no rows and the app no records
-  (`_has_data()`, which looks at `app_records` for an `app:` source; checked before anything is
+  removed; 404 when `app:<id>` has no rows and the app no records or files
+  (`_has_data()`, which looks at `app_records` and `app_files` for an `app:` source; checked before anything is
   written, so a role naming it stays) — nothing changes on any of them,
   and the listing marks orphaned exactly what this would remove. The id is always read as
   `app:<id>` (the prefix never stripped), so it can't reach a device, a
@@ -2819,11 +2871,11 @@ them), what's next and what's parked.
   `DELETE /api/app-sources/<id>/<metric>` (B1) is the same for one
   metric — `<metric>` the key as stored, a canonical one or the full
   `app:<id>:<key>`: `purge_source(conn, "app:" + id, metric=metric)`,
-  the same reply (`sessions` and `records` always 0) and guards in the same order, the
+  the same reply (`sessions`, `records` and `files` always 0) and guards in the same order, the
   last 404 "no <metric> data from app:<id> to remove" when that
   `(source, metric)` has no reading or sample (`_has_metric_data()`;
   sessions are kind-keyed, never looked at); DELETE only. The app's other
-  metrics, its sessions, its records and its roles for anything else stay; a metric
+  metrics, its sessions, its records, its files and its roles for anything else stay; a metric
   another source wins keeps its winner.
   `purge_source(conn, source, metric=None, keep_roles=False)`
   (`app/main.py`, shared with the connector wipe) deletes every `metrics`
@@ -2831,12 +2883,12 @@ them), what's next and what's parked.
   every source role naming it (`clear_source_roles()`) unless
   `keep_roles`, and `recompute_derived()`s the min..max of the deleted
   dates, one transaction with whatever the caller did first (a failure
-  rolls it all back); → `{days, metrics, sessions, samples, records}`.
-  For an `app:` source it deletes that app's `app_records` too (keyed by
+  rolls it all back); → `{days, metrics, sessions, samples, records, files}`.
+  For an `app:` source it deletes that app's `app_records` and `app_files` too (keyed by
   the id after the prefix, so a device's wipe — `purge_source(conn,
   "garmin")` — never reaches an app installed as `garmin`). With
   `metric`, only that metric's `metrics` and `samples` rows go (no
-  sessions, no records) and only its role is cleared (`only=metric`). The metrics
+  sessions, records or files) and only its role is cleared (`only=metric`). The metrics
   stay: `weight_kg` without `app:weight`'s readings is still `weight_kg`.
   **`manual` is frozen**: the hand-entered weigh-ins — migration `006`'s
   and the retired `POST /api/weights`' — stay under source `manual` as
@@ -2991,6 +3043,34 @@ them), what's next and what's parked.
   `tracker.db`, so every backup, download and restore carries them.
   Collections starting `_` are OpenFit's own (C4's `_settings`), out of
   the ctx's reach.
+- `app_files(app, name, content, size, created_at, updated_at)` keyed
+  `(app, name)` (migration `012`, purely additive; C3): the report files
+  apps make, every column NOT NULL. `app` the app's installed id (as
+  `app_records`'), `name` `FILE_NAME`'s (`fatigue-2026-10.html`), `content`
+  a BLOB of the HTML's UTF-8 bytes exactly as given, `size` their count,
+  `created_at`/`updated_at` `iso_utc()` text; `idx_app_files_size` on
+  `(app, size)` serves the count and total without touching a file's
+  bytes. Written only by `WriteCtx.save_file()`/`delete_file()` and the
+  Your data delete, listed by `Ctx.files()`. **Download only**: `GET
+  /api/app/<id>/files/<name>` (`download_app_file()`, `app/main.py`) —
+  an id failing `is_app_id()`, a name failing `is_file_name()` or no such
+  row → 404 (the query names both `app` and `name`); else the bytes with
+  `FILE_DOWNLOAD_HEADERS` — `Content-Type: application/octet-stream`,
+  `X-Content-Type-Options: nosniff`, `Content-Security-Policy: sandbox`,
+  `Cache-Control: no-store` — and `Content-Disposition: attachment;
+  filename="<name>"`, so no browser renders one inside OpenFit (its script
+  never runs under OpenFit's origin and session); a session needed (a GET,
+  no `X-OpenFit`), HEAD too (the page's check), an uninstalled app's
+  served, nothing changed or logged. `GET /api/app/<id>/files` → `{id,
+  files: [{name, size, updated_at}]}` (any id `is_app_id()` takes, `[]` for
+  none); `DELETE /api/app/<id>/files/<name>` (`X-OpenFit`) → `{ok: true}`,
+  404 as the download's, 400 while `app_present()` (an installed app's files
+  are its own). Limits: 10 MiB a file, 200 MiB and 1000 files an app.
+  Uninstall keeps them, a reinstall finds them, an Update keeps them,
+  `purge_source()` on the `app:` source deletes them (the per-metric delete
+  never). What a report does when opened on the user's computer is the
+  app author's; PDF is the browser's Print. In `tracker.db`, so every
+  backup, download and restore carries them.
 - Source roles: the `settings` row `source_roles` (no migration) holds JSON
   `{metric: primary_source}`, e.g. `{"steps": "google_health"}`; a metric absent
   from it uses the default precedence. Read by `load_source_roles()`, written by
@@ -3614,10 +3694,23 @@ what's parked:
   uninstalled app's data (the `removed` replies gain `records`); the orphan
   row shows what it holds, records and their size among it; `APP_LEVEL` 5.
   Deploy: merge it, Update OpenFit, then any app change that uses it
-  (`requires: 5`). Next: C3, report files (HTML an app produces, always
-  served as a download, PDF by the browser's Print), and C4, an app's own
+  (`requires: 5`).
+  Then C3 landed (migration `012`; core item 2 resolved with C2's records):
+  report files — HTML an app makes on demand from an action (often a
+  `"button"` input, `{key: true}`), saved with `ctx.save_file()` in the
+  action's transaction, listed with `ctx.files()`, offered with the
+  `download` spec (`ctx.download()`, drawn as an `<a download>` the page
+  checks with a HEAD first); `GET /api/app/<id>/files/<name>` always a
+  download (octet-stream, attachment, nosniff, CSP sandbox, no-store), never
+  shown in OpenFit, PDF by the browser's Print; `GET /api/app/<id>/files`
+  and `DELETE /api/app/<id>/files/<name>` (an uninstalled app's) for Your
+  data, whose orphan row counts and lists them; `/api/app-sources` lists
+  `files: {count, bytes}`, `purge_source()` takes them (the `removed`
+  replies gain `files`); 10 MiB a file, 200 MiB and 1000 files an app;
+  `APP_LEVEL` 6. Deploy: merge it, Update OpenFit (012 runs at startup),
+  then any app that makes reports (`requires: 6`). Next: C4, an app's own
   settings on top of records (the manifest fields, a settings form,
-  `_settings`); timers and scheduled app jobs after them.
+  `_settings`); timers and scheduled app jobs after it.
   Still to come for write-back: an app replacing its own
   metrics (and samples) over a date range,
   the rostered↔flown per-duty matching (needs a derived duty key — the

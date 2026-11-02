@@ -367,6 +367,12 @@ a.btn{display:inline-block;text-decoration:none;}
 .orphan-metric{display:flex;align-items:center;justify-content:space-between;gap:10px;font-size:13.5px;}
 /* ...and the records it kept, which go only with Remove all data */
 .orphan-records{font-size:13.5px;color:var(--muted);}
+.orphan-file{display:flex;align-items:center;justify-content:space-between;gap:10px;font-size:13.5px;}
+.orphan-file .f-name{font-family:var(--font-mono);font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;}
+.orphan-file .f-acts{display:flex;gap:6px;flex:none;}
+.orphan-file a.btn{text-decoration:none;}
+.orphan-files-msg{font-size:12px;color:var(--crit);}
+.orphan-files-msg:empty{display:none;}
 .orphan-item .dnote{margin:10px 0 0 20px;}
 .src-r{display:flex;align-items:center;gap:10px;flex:none;}
 .pill{font-size:11px;font-weight:600;padding:4px 9px;border-radius:20px;font-family:var(--font-mono);white-space:nowrap;}
@@ -1028,6 +1034,18 @@ h5 + .dnote{margin-top:0;}
 .spec-input .btn{flex:none;padding:5px 9px;}
 .spec-input .m{font-size:11px;font-family:var(--font-mono);color:var(--crit);overflow-wrap:anywhere;}
 .spec-input .m:empty{display:none;}
+/* a button input: the button alone, its label its text, the width it
+   needs (wrapping in a narrow tile) */
+.spec-input .row > .btn.press{flex:0 1 auto;white-space:normal;text-align:left;}
+/* download: a report file the app made, as a link-styled button - it
+   saves the file, never opens it - and, should the file be gone, a line
+   saying so under it */
+.spec-download{display:flex;flex-direction:column;align-items:flex-start;gap:4px;min-width:0;}
+.spec-panel > .spec-download{flex:none;}
+.spec-download a.btn{display:inline-flex;align-items:center;gap:6px;max-width:100%;text-decoration:none;}
+.spec-download a.btn span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;}
+.spec-download .m{font-size:11px;font-family:var(--font-mono);color:var(--crit);overflow-wrap:anywhere;}
+.spec-download .m:empty{display:none;}
 /* empty and error: muted, centred */
 /* image: a picture carried in the spec, drawn whole in its box at its
    position; a dark one, when given, in place of it in the dark themes -
@@ -1368,6 +1386,12 @@ h5 + .dnote{margin-top:0;}
     appSources:      ()          => fetchJSON('/api/app-sources'),
     removeAppSource: id          => send('/api/app-sources/'+enc(id), 'DELETE'),
     removeAppSourceMetric: (id, metric) => send('/api/app-sources/'+enc(id)+'/'+enc(metric), 'DELETE'),
+    /* An app's report files ({id, files: [{name, size, updated_at}]}),
+       one's download address - always saved as a file, never shown -
+       and an uninstalled app's file deleted (refused while installed). */
+    appFiles:      id            => send('/api/app/'+enc(id)+'/files', 'GET'),
+    appFileUrl:    (id, name)    => '/api/app/'+enc(id)+'/files/'+enc(name),
+    removeAppFile: (id, name)    => send('/api/app/'+enc(id)+'/files/'+enc(name), 'DELETE'),
     /* Signing out: this browser's session ended (the page then reloads,
        onto the sign-in). */
     signOut:      ()             => send('/api/auth/logout', 'POST'),
@@ -2306,7 +2330,8 @@ h5 + .dnote{margin-top:0;}
      Remove all data, and, opened, each metric it left behind with its
      own Remove data - each behind one confirm naming what goes. Your
      data's rows reach the same confirm, a metric at a time. Records go
-     only with Remove all data. */
+     only with Remove all data; its report files go with it too, or one
+     at a time from its opened row, where each can be downloaded. */
   const orphans = () => (state.appSources || []).filter(o => o.orphaned);
 
   /* Read at boot, and again whenever what's orphaned may have changed:
@@ -2337,7 +2362,7 @@ h5 + .dnote{margin-top:0;}
     head.querySelector('[data-f="counts"]').textContent = appDataCounts(o);
     const id = 'orphan-' + o.source.replace(/[^a-z0-9_-]/gi, '-');
     row.appendChild(expandable(el('div','orphan-item'), head, {
-      open:state.orphanOpen, id:o.source, panelId:id, panel:() => orphanMetrics(o, id),
+      open:state.orphanOpen, id:o.source, panelId:id, panel:() => orphanPanel(o, id),
     }));
     const right = row.appendChild(el('div','src-r', `
       <span class="pill wait">○ app uninstalled</span>
@@ -2379,8 +2404,59 @@ h5 + .dnote{margin-top:0;}
     return list;
   }
 
-  /* "3 readings across 1 metric (Weight)", then any sessions, samples
-     and records. */
+  /* An orphan, opened: its metrics (orphanMetrics()), then, if it made
+     any, its report files (orphanFiles()). */
+  function orphanPanel(o, id){
+    const box = orphanMetrics(o, id);
+    if(!filesOf(o)) return box;
+    const wrap = el('div');
+    wrap.appendChild(box);
+    wrap.appendChild(orphanFiles(o));
+    return wrap;
+  }
+
+  /* An uninstalled app's report files, each a line: its name (as text),
+     Download - its route, which hands it over as a file - and a red
+     Delete, which deletes that one file (DELETE /api/app/<id>/files/
+     <name>) and re-reads the app sources. Listed from GET
+     /api/app/<id>/files once opened. */
+  function orphanFiles(o){
+    const list = el('ul','orphan-metrics orphan-files');
+    list.dataset.files = o.id;
+    const msg = el('li','orphan-files-msg');
+    msg.setAttribute('role','status');
+    list.appendChild(msg);
+    api.appFiles(o.id).then(res => {
+      if(!res.ok || !Array.isArray(res.files)){ msg.textContent = res.error || "Couldn't list its files."; return; }
+      res.files.forEach(f => {
+        const line = el('li','orphan-file', `
+          <span class="f-name" data-f="name"></span>
+          <span class="f-acts">
+            <a class="btn sm" data-act="download">Download</a>
+            <button class="btn sm danger" type="button" data-act="delete-file">Delete</button>
+          </span>`);
+        line.querySelector('[data-f="name"]').textContent = f.name;
+        line.querySelector('[data-f="name"]').title = `${f.name} (${sizeText(f.size)})`;
+        const a = line.querySelector('[data-act="download"]');
+        a.href = api.appFileUrl(o.id, f.name);
+        a.setAttribute('download', f.name);
+        a.onclick = e => checkedDownload(e, a, msg);
+        const del = line.querySelector('[data-act="delete-file"]');
+        del.onclick = async () => {
+          del.disabled = true; msg.textContent = '';
+          const r = await api.removeAppFile(o.id, f.name);
+          if(r.ok){ loadAppSources(); }
+          else{ msg.textContent = r.error || "Couldn't delete that file."; del.disabled = false; }
+        };
+        line.dataset.file = f.name;
+        list.appendChild(line);
+      });
+    });
+    return list;
+  }
+
+  /* "3 readings across 1 metric (Weight)", then any sessions, samples,
+     records and files. */
   const countOf = (n, what) => `${num(n)} ${what}${n===1 ? '' : 's'}`;
   function appDataSummary(o){
     const metrics = Array.isArray(o.metrics) ? o.metrics : [];
@@ -2390,19 +2466,29 @@ h5 + .dnote{margin-top:0;}
     if(o.samples) parts.push(countOf(o.samples, 'sample'));
     const records = recordsOf(o);
     if(records) parts.push(records);
+    const files = filesOf(o);
+    if(files) parts.push(files);
     if(parts.length < 2) return parts[0] || 'Nothing is left';
     return parts.slice(0, -1).join(', ') + ' and ' + parts[parts.length-1];
   }
 
   /* What an orphan holds, on its row: "3 readings · 1 session · 4
-     records (1.2 KB)" - each kind it has any of. */
+     records (1.2 KB) · 2 files (37 KB)" - each kind it has any of. */
   function appDataCounts(o){
     return [
       o.readings ? countOf(o.readings, 'reading') : '',
       o.sessions ? countOf(o.sessions, 'session') : '',
       o.samples ? countOf(o.samples, 'sample') : '',
       recordsOf(o),
+      filesOf(o),
     ].filter(Boolean).join(' · ');
+  }
+
+  /* An app's report files, as the listing gives them ({count, bytes}):
+     "2 files (37 KB)", or '' for none. */
+  function filesOf(o){
+    const f = o && o.files;
+    return f && f.count ? `${countOf(f.count, 'file')} (${sizeText(f.bytes)})` : '';
   }
 
   /* An app's records, as the listing gives them ({count, bytes}): "4
@@ -4404,6 +4490,7 @@ h5 + .dnote{margin-top:0;}
     pager: (s, name, appId) => pagerSpec(s, appId),
     choose: (s, name, appId) => chooseSpec(s, name, appId),
     image: s => imageSpec(s),
+    download: (s, name, appId) => downloadSpec(s, appId),
     grid: (s, name, appId) => {
       const box = el('div','spec-grid');
       box.style.gridTemplateColumns = `repeat(${s.cols}, minmax(0, 1fr))`;
@@ -4444,6 +4531,7 @@ h5 + .dnote{margin-top:0;}
      ticked, with a confirm, that's asked first (confirmFirst()), and
      nothing is sent unless it's confirmed. */
   function specInput(s, appId){
+    if(s.kind==='button') return specButton(s, appId);
     const box = el('div','spec-input');
     const label = s.label!=null && s.label!=='' ? String(s.label) : '';
     if(label){ const l = el('div','t'); l.textContent = label; box.appendChild(l); }
@@ -4538,6 +4626,75 @@ h5 + .dnote{margin-top:0;}
     // Enter in a file picker opens it: it's Save that sends.
     if(!upload) field.onkeydown = e => { if(e.key==='Enter') submit(); };
     return box;
+  }
+  /* input, kind "button": the button alone, its label its text (as
+     text). Pressing it sends the app its action with {key: true} and the
+     tile's config, through the action route as Save does; the app's
+     fresh spec redraws the tile (a report it made, ready to download),
+     and a refusal shows under it. Held while it's on its way; off in a
+     tile drawn for no app. */
+  function specButton(s, appId){
+    const box = el('div','spec-input');
+    const row = el('div','row');
+    const press = el('button','btn sm press');
+    press.type = 'button';
+    press.textContent = s.label!=null && s.label!=='' ? String(s.label) : String(s.key);
+    press.disabled = !appId;
+    row.appendChild(press);
+    box.appendChild(row);
+    const msg = el('div','m');
+    msg.setAttribute('role','status');
+    box.appendChild(msg);
+    press.onclick = async () => {
+      if(press.disabled) return;
+      msg.textContent = '';
+      press.disabled = true;
+      const res = await api.appAction(appId, s.action, {[s.key]: true}, tileCfg(appId));
+      press.disabled = false;
+      if(res.ok && res.spec) repaintTile(appId, res.spec);
+      else msg.textContent = res.error || "Couldn't do that.";
+    };
+    return box;
+  }
+  /* download: one of the app's own report files, as a link-styled
+     button - <a href download> to its route, which always hands the file
+     over as an attachment, so it's saved, never opened in OpenFit. Name
+     and label are set as attributes and text, never markup. Pressed, it
+     first asks the route (HEAD) whether the file is still there: gone,
+     it says so and nothing downloads; there, the browser's own download
+     goes ahead. Drawn for no app, it's a plain label. */
+  function downloadSpec(s, appId){
+    const box = el('div','spec-download');
+    const name = typeof s.name==='string' ? s.name : '';
+    const a = el('a','btn sm');
+    const t = el('span');
+    t.textContent = s.label!=null && s.label!=='' ? String(s.label) : name;
+    a.appendChild(t);
+    a.title = name;
+    box.appendChild(a);
+    const msg = el('div','m');
+    msg.setAttribute('role','status');
+    box.appendChild(msg);
+    if(!appId || !name){ a.setAttribute('aria-disabled','true'); return box; }
+    a.href = api.appFileUrl(appId, name);
+    a.setAttribute('download', name);
+    a.onclick = e => checkedDownload(e, a, msg);
+    return box;
+  }
+  /* A download link's click: the file asked after first (HEAD - it
+     changes nothing), its message cleared; gone, "That file isn't there
+     any more." and no download; else the link clicked again, now let
+     through, so the browser saves it. */
+  async function checkedDownload(e, a, msg){
+    if(a.dataset.checked==='1'){ delete a.dataset.checked; return; }
+    e.preventDefault();
+    msg.textContent = '';
+    let r = null;
+    try{ r = await apiFetch(a.href, {method:'HEAD'}); }catch(err){ r = null; }
+    if(r && r.status===404){ msg.textContent = "That file isn't there any more."; return; }
+    if(!r || !r.ok){ msg.textContent = "Couldn't download that file."; return; }
+    a.dataset.checked = '1';
+    a.click();
   }
   function specMsg(title, text){
     const box = el('div','spec-msg');

@@ -92,6 +92,20 @@ transaction, and both handle() and render() read them back:
 A ctx only ever reaches its own app's records: none of the four takes an
 app.
 
+An app makes documents the user keeps - a monthly report - as report
+files (app level 6): HTML text handle() saves under a name, inside the
+action's transaction, which render() lists and offers as downloads:
+
+    ctx.save_file("fatigue-2026-10.html", html)   # handle() only
+    ctx.files()                  # [{name, size, updated_at}, ...], by name
+    ctx.download("fatigue-2026-10.html", "October's report")   # a spec
+
+OpenFit never shows one: its route always hands it over as a file, so
+nothing in it runs inside OpenFit. A PDF is the browser's Print, from the
+downloaded file. A "button" input - ctx.input(key, action, label=...,
+kind="button") - sends an action with no field, {key: True}, for "Make
+October's report".
+
 A file input's value in the payload is a FileUpload - the file as the
 browser sent it, which the app reads and parses itself: OpenFit carries
 a file, and never reads one. A file input may carry a companion toggle
@@ -121,7 +135,14 @@ the dicts directly):
         {"key", "label", "confirm"}: a checkbox beside the picker, its
         checked state sent in the payload under its own key beside the
         file, and with it ticked the page asks `confirm` (null: none)
-        before it sends
+        before it sends. Kind "button" is a button alone, labelled
+        `label` (required), no field or Save: pressing it sends
+        `action`, the payload {key: true}; unit, options, accept and
+        toggle are all null or absent
+    {"type": "download", "name", "label"}
+        a link-styled button downloading the app's own report file
+        `name` (saved with ctx.save_file()), labelled `label`; a file
+        that's gone says so when pressed
     {"type": "timeline", "title", "now", "lanes": [{"label", "grey_after_now",
                                                     "intervals": [{"start", "end", "label"}, ...],
                                                     "bands": [{"start", "end", "label"}, ...]}, ...],
@@ -376,8 +397,9 @@ def panel(*children):
 
 
 # What an input element's field takes: a number, text, one of a set of
-# options (a dropdown), or a file.
-INPUT_KINDS = ("number", "text", "select", "file")
+# options (a dropdown), or a file - or no field at all, a button that
+# sends its action (C3: "Make October's report").
+INPUT_KINDS = ("number", "text", "select", "file", "button")
 
 OPTIONS_PROBLEM = "a select's options must be a non-empty list of strings"
 ACCEPT_PROBLEM = "a file input's accept must be non-empty text, such as '.ics,.csv'"
@@ -483,12 +505,29 @@ def input(key, action, label=None, kind="number", unit=None, options=None, accep
 
     An input without one carries no "toggle" key: its spec is the one
     from before toggles.
+
+    Kind "button" is a button and nothing else - no field, no Save:
+    pressing it sends `action` with the payload {key: True}, as for
+    "Make October's report". Its `label` is the button's text, so it's
+    required (non-empty text); `unit`, `options`, `accept` and `toggle`
+    aren't for a button, and are refused. App level 6.
+
+        ctx.input("make", "report", label="Make October's report", kind="button")
     """
     for what, value in (("key", key), ("action", action)):
         if not isinstance(value, str) or not value:
             raise TypeError(f"an input's {what} must be non-empty text: {value!r}")
     if kind not in INPUT_KINDS:
         raise ValueError(f"an input's kind is one of {', '.join(INPUT_KINDS)}: {kind!r}")
+    if kind == "button":
+        if label is None:
+            raise ValueError("a button needs a label: it's the button's text")
+        if not isinstance(label, str):
+            raise TypeError(f"a button's label must be non-empty text: {label!r}")
+        if not label:
+            raise ValueError(f"a button's label must be non-empty text: {label!r}")
+        if unit is not None:
+            raise ValueError(f"a unit isn't for a button: {unit!r}")
     spec = {
         "type": "input",
         "key": key,
@@ -1446,6 +1485,22 @@ def image(src, alt=None, dark=None, position="center"):
     }
 
 
+def download(name, label=None):
+    """A link-styled button that downloads one of the app's own report
+    files - `name`, as saved with ctx.save_file() - labelled `label` (the
+    name when None). OpenFit hands the file over, never shows it. The
+    host doesn't look for the file: list what's there with ctx.files(),
+    and a download of one since deleted says so when pressed. Raises
+    ValueError for a name save_file() wouldn't take, TypeError for a
+    label that isn't text, ValueError for an empty one. App level 6."""
+    name = _file_name(name)
+    if label is not None and not isinstance(label, str):
+        raise TypeError(f"a download's label must be text: {label!r}")
+    if label == "":
+        raise ValueError("a download's label must be non-empty text, or None for its name")
+    return {"type": "download", "name": name, "label": name if label is None else label}
+
+
 def empty(message=None):
     """Nothing to show, and why."""
     return {"type": "empty", "message": message or "No data yet"}
@@ -1464,8 +1519,9 @@ class Ctx:
     Made for one app, `app` (an InstalledApp): it reads OpenFit's metrics
     and the ones that app declares (metric()), every source's sessions
     of OpenFit's kinds (sessions()), and that app's own records
-    (record(), records()). A ctx for no app reads the same, less the
-    app's own metrics, and has no records.
+    (record(), records()) and report files (files()). A ctx for no app
+    reads the same, less the app's own metrics, and has no records or
+    files.
     """
 
     number = staticmethod(number)
@@ -1486,6 +1542,7 @@ class Ctx:
     pager = staticmethod(pager)
     choose = staticmethod(choose)
     image = staticmethod(image)
+    download = staticmethod(download)
     empty = staticmethod(empty)
     error = staticmethod(error)
 
@@ -1666,6 +1723,29 @@ class Ctx:
         return [
             {"key": row[0], "value": json.loads(row[1]), "updated_at": row[2]}
             for row in self._conn.execute(sql, args)
+        ]
+
+    def _files_app(self):
+        """The app whose report files this ctx reaches: its own, always."""
+        if self._app_id is None:
+            raise ValueError("files belong to an app: this ctx was made for none")
+        return self._app_id
+
+    def files(self):
+        """The app's own report files: [{name, size, updated_at}], by name.
+
+        `size` is the file's bytes (its HTML as UTF-8), `updated_at` when
+        it was last saved (iso_utc() text). Sorted by name, as text sorts
+        - so names with a date in them, report-2026-10.html, list in time
+        order - and [] for none. Offer each with download(name). Only
+        ever this ctx's app's. App level 6.
+        """
+        return [
+            {"name": row[0], "size": row[1], "updated_at": row[2]}
+            for row in self._conn.execute(
+                "SELECT name, size, updated_at FROM app_files WHERE app = ? ORDER BY name",
+                (self._files_app(),),
+            )
         ]
 
 
@@ -1864,6 +1944,57 @@ def _record_limit(raw):
     return raw
 
 
+# ---------- report files: documents an app makes (C3) ----------
+#
+# The app_files table (migration 012): one HTML file per (app, name),
+# `app` the app's installed id. Listed by Ctx.files(), saved and deleted
+# by WriteCtx.save_file()/delete_file(), every query naming the ctx's own
+# app; served only as a download, by GET /api/app/<id>/files/<name>
+# (main.py), which never lets a browser render one.
+
+# A file's name: lowercase letters, digits, ., _ or -, starting with a
+# letter or digit, ending .html - at most 100 characters in all. No /,
+# so never a path; nothing a Content-Disposition header needs quoting.
+FILE_NAME = re.compile(r"[a-z0-9][a-z0-9._-]{0,94}\.html\Z")
+# The most one file may be (its HTML's UTF-8 bytes), the most one app's
+# files may be in all, and how many files one app may keep.
+MAX_FILE_BYTES = 10 * 1024 * 1024
+MAX_APP_FILE_BYTES = 200 * 1024 * 1024
+MAX_APP_FILES = 1000
+
+
+def is_file_name(raw):
+    """Whether `raw` is a name a report file may have."""
+    return isinstance(raw, str) and FILE_NAME.match(raw) is not None
+
+
+def _file_name(raw):
+    """`raw` as a report file's name, or ValueError."""
+    if not is_file_name(raw):
+        raise ValueError(
+            "name must be 6 to 100 characters - lowercase letters, digits, ., _ or -, "
+            f"starting with a letter or digit and ending .html: {raw!r}"
+        )
+    return raw
+
+
+def _file_html(raw):
+    """`raw` as a report file's content: (its UTF-8 bytes, their count).
+    Text only, at most MAX_FILE_BYTES once encoded; else ValueError."""
+    if not isinstance(raw, str):
+        raise ValueError(f"html must be text (a str): {type(raw).__name__}")
+    try:
+        content = raw.encode("utf-8")
+    except UnicodeEncodeError as e:
+        # A lone surrogate, which UTF-8 can't hold.
+        raise ValueError(f"html must be text UTF-8 can hold: {e}") from None
+    if len(content) > MAX_FILE_BYTES:
+        raise ValueError(
+            f"html is {len(content):,} bytes; a file holds at most 10 MB ({MAX_FILE_BYTES:,} bytes)"
+        )
+    return content, len(content)
+
+
 def _like_prefix(prefix):
     """A LIKE pattern, ESCAPE '\\', matching keys that start with `prefix`:
     its \\, % and _ escaped, so each is itself, and a % after it."""
@@ -1876,8 +2007,9 @@ class WriteCtx(Ctx):
     One per action, for the app `app` (an InstalledApp). It writes
     readings (write_metric()) and sessions (write_session(), of an
     existing kind), removes its own sessions over a span
-    (delete_sessions()), and writes and removes its own records
-    (put_record(), delete_record()). Its source is the app's own,
+    (delete_sessions()), writes and removes its own records
+    (put_record(), delete_record()) and its own report files
+    (save_file(), delete_file()). Its source is the app's own,
     app:<id>, fixed here - none of its writers takes one, nor an app -
     so whatever the app does, it can only create, overwrite or remove
     its own rows. It notes the days it wrote readings to, for the action
@@ -2104,6 +2236,86 @@ class WriteCtx(Ctx):
         cursor = self._conn.execute(
             "DELETE FROM app_records WHERE app = ? AND collection = ? AND key = ?",
             (self._records_app(), collection, key),
+        )
+        return cursor.rowcount > 0
+
+    def save_file(self, name, html):
+        """Save `html` as the app's own report file `name`, for the user to download.
+
+        A report - a month's fatigue figures, a trip's - made here and
+        offered in render() with download(name), listed with files().
+        OpenFit never shows it: it's always handed over as a file, which
+        the user opens on their own computer (a PDF: the browser's Print).
+        What the file does when opened is the app's - OpenFit doesn't
+        check, change or add to it: it's stored exactly as given. A file
+        already saved under `name` is replaced; it keeps when it was
+        first saved (created_at), and its updated_at moves to now.
+
+        `name` is lowercase letters, digits, ., _ or -, starting with a
+        letter or digit and ending .html, at most 100 characters:
+        "fatigue-2026-10.html". `html` is text (a str), stored as UTF-8.
+
+        The limits: a file is at most 10 MB (UTF-8 bytes), one app's
+        files 200 MB in all and 1000 in number, counted with this save's
+        net change - so at the total, a save that adds bytes is refused,
+        while one that replaces a file with a smaller one (or one the
+        same size) still goes in.
+
+        Only ever this ctx's app's: no argument names another. Nothing is
+        committed here - the action's one transaction holds it with the
+        rest, so an action that saves a file and then raises leaves no
+        file behind. App level 6.
+
+        Raises ValueError, naming the field and saving nothing, for a
+        name or html that won't do, or one over a limit.
+        """
+        name = _file_name(name)
+        content, size = _file_html(html)
+        app = self._files_app()
+        old = self._conn.execute(
+            "SELECT size FROM app_files WHERE app = ? AND name = ?", (app, name)
+        ).fetchone()
+        if old is None or size > old[0]:
+            # The app's own count and total: read from idx_app_files_size
+            # (012), never touching a file's content.
+            count, total = self._conn.execute(
+                "SELECT COUNT(*), COALESCE(SUM(size), 0) FROM app_files WHERE app = ?", (app,)
+            ).fetchone()
+            if old is None and count >= MAX_APP_FILES:
+                raise ValueError(
+                    f"name {name!r} would be the app's {count + 1:,}th file; an app keeps at most "
+                    f"{MAX_APP_FILES:,} files - delete some first"
+                )
+            growth = size - (old[0] if old is not None else 0)
+            if total + growth > MAX_APP_FILE_BYTES:
+                raise ValueError(
+                    f"html would take the app's files to {total + growth:,} bytes; an app keeps "
+                    f"at most 200 MB of files ({MAX_APP_FILE_BYTES:,} bytes) - delete some first"
+                )
+        now = iso_utc(clock.now_utc())
+        self._conn.execute(
+            "INSERT INTO app_files (app, name, content, size, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT (app, name) DO UPDATE SET "
+            "content = excluded.content, size = excluded.size, updated_at = excluded.updated_at",
+            (app, name, content, size, now, now),
+        )
+
+    def delete_file(self, name):
+        """Remove the app's own report file `name`: whether there was one to remove.
+
+        `name` as save_file() takes it. Only ever this ctx's app's.
+        Nothing is committed here: the action's transaction holds it, so
+        an action that deletes a file and then raises removes nothing.
+        App level 6.
+
+        Raises ValueError, naming the field and removing nothing, for a
+        name that won't do. Returns True if a file was removed, False if
+        there was none.
+        """
+        name = _file_name(name)
+        cursor = self._conn.execute(
+            "DELETE FROM app_files WHERE app = ? AND name = ?", (self._files_app(), name)
         )
         return cursor.rowcount > 0
 

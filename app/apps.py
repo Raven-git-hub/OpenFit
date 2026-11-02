@@ -139,7 +139,9 @@ class AppError(Exception):
 #      range (handle() only)
 #   5  app records: ctx.record(), ctx.records(), ctx.put_record(),
 #      ctx.delete_record() - a private JSON store per app (C2)
-APP_LEVEL = 5
+#   6  report files: ctx.save_file(), ctx.delete_file(), ctx.files(),
+#      ctx.download(); a "button" input (C3)
+APP_LEVEL = 6
 
 # The most a description says, trimmed: a line or two in Browse.
 MAX_DESCRIPTION = 300

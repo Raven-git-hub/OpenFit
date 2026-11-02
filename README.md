@@ -623,11 +623,21 @@ nothing is derived from them. A record is at most 256 KB and an app's records
 50 MB in all; they live in the database, so every backup carries them, and
 uninstalling the app keeps them, as it keeps the rest of what it wrote.
 
+A document you keep — a monthly report — is a **report file** (app level 6):
+HTML the app makes when you press one of its buttons (`ctx.save_file()`),
+listed in its tile as a download (`ctx.files()`, `ctx.download()`). OpenFit
+never opens a report: `GET /api/app/<id>/files/<name>` always hands it over
+as a file to save, so nothing in it runs inside OpenFit. For a PDF, open the
+downloaded file and use your browser's Print → Save as PDF. A file is at most
+10 MB, and an app keeps at most 200 MB and 1000 files; they live in the
+database too, uninstalling keeps them, and an uninstalled app's row in
+Connected sources lists each with Download and Delete.
+
 Removing that data is its own, explicit step, once the app is gone. An
 uninstalled app's source shows in **Connected sources** with what it holds
-(its readings, sessions, samples, and records with their size) and a red
+(its readings, sessions, samples, and records and files with their size) and a red
 **Remove all data**; after a confirm naming what goes, it deletes every
-reading, session, sample and record the app wrote, re-derives the days they
+reading, session, sample, record and file the app wrote, re-derives the days they
 covered (each falls to another source, or is left empty), and clears any
 metric's primary that named it. The metrics themselves stay: `weight_kg` without the weight app's
 readings is still `weight_kg`. That's `DELETE /api/app-sources/<id>`, which
@@ -636,7 +646,7 @@ app in it fails to load: a broken app isn't a gone one, so fix or uninstall it
 first — and only ever reaches `app:<id>`, never a device's, a webhook's or
 `manual`'s. `GET /api/app-sources` lists every app source with data or
 records, each marked `orphaned` (its app gone from the volume) or not, with
-its records' `{count, bytes}`.
+its records' and files' `{count, bytes}`.
 
 Or one metric at a time: open the app's row in Connected sources for a line
 per metric it left behind (its own metrics among them, by their short key —
@@ -644,7 +654,7 @@ uninstalled, they've already left the catalog), or open a metric in Your data,
 where the uninstalled app is listed under its sources; either way **Remove
 data** takes only that metric's readings from that app, re-derives their days
 (a metric another source wins keeps its winner) and clears that metric's
-primary if it named the app — the app's other data, its records included,
+primary if it named the app — the app's other data, its records and files included,
 stays. That's `DELETE /api/app-sources/<id>/<metric>`, with the same guards.
 
 The **Weight** app above (in full in `tests/fixtures/apps/weight/`, a test app) is the one

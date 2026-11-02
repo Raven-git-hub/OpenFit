@@ -420,6 +420,7 @@ def test_a_library_apps_data_is_orphaned_once_uninstalled_and_then_removable(cli
         "id": "openfit.weight", "source": "app:openfit.weight", "metrics": [WEIGHT_KG],
         "readings": 1, "sessions": 0, "samples": 0,
         "records": {"count": 0, "bytes": 0},
+        "files": {"count": 0, "bytes": 0},
     }
 
     assert client.get("/api/app-sources").get_json() == [{**entry, "orphaned": False}]
@@ -432,7 +433,7 @@ def test_a_library_apps_data_is_orphaned_once_uninstalled_and_then_removable(cli
     resp = client.delete("/api/app-sources/openfit.weight")
 
     assert resp.status_code == 200
-    assert resp.get_json() == {"ok": True, "removed": {"metrics": 1, "sessions": 0, "samples": 0, "records": 0}}
+    assert resp.get_json() == {"ok": True, "removed": {"metrics": 1, "sessions": 0, "samples": 0, "records": 0, "files": 0}}
     assert rows(conn) == []
     assert client.get("/api/app-sources").get_json() == []
 
@@ -445,7 +446,7 @@ def test_one_metric_of_an_uninstalled_library_app_is_removable(client, conn, app
     resp = client.delete(f"/api/app-sources/openfit.weight/{WEIGHT_KG}")
 
     assert resp.status_code == 200
-    assert resp.get_json() == {"ok": True, "removed": {"metrics": 1, "sessions": 0, "samples": 0, "records": 0}}
+    assert resp.get_json() == {"ok": True, "removed": {"metrics": 1, "sessions": 0, "samples": 0, "records": 0, "files": 0}}
     assert rows(conn) == []
 
 
