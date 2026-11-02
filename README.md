@@ -13,8 +13,8 @@ are external apps that read the data; the platform itself just owns, derives and
 serves the data. Think of it as an open, self-hosted Apple HealthKit / Google
 Health Connect.
 
-Built and run by one person on a home server — see [ROADMAP.md](ROADMAP.md) for
-where it's headed, and
+Built and run by one person on a home server — see [STATUS.md](STATUS.md) for
+where it stands and what's next, and
 [docs/architecture/openfit-overview-and-design-pathway.md](docs/architecture/openfit-overview-and-design-pathway.md)
 for the full design.
 
@@ -1072,7 +1072,7 @@ plugin.
 
 **Multi-user:** not row-level multi-tenancy. Each person has an isolated
 container of their own, with one account, managed by the Admin (see
-[ROADMAP.md](ROADMAP.md)).
+[STATUS.md](STATUS.md)).
 
 ## License
 

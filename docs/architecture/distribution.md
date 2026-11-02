@@ -470,6 +470,10 @@ as OpenFit is today on 8080, and the Admin at 8090._
 
 ## Build order
 
+**Complete through C1** (`ctx.delete_sessions()`, item 12 below). What's next
+and what's parked are in [STATUS.md](../../STATUS.md), the project's status
+page; this list stays as the record of how it was built.
+
 The Admin comes first now, in A-slices; the user system's login lands before
 a second real person gets a container. Re-ordered 2026-10-27, after A1:
 
@@ -557,8 +561,8 @@ a second real person gets a container. Re-ordered 2026-10-27, after A1:
    own `personal.timezone` from its `config.json`; when FRMS work resumes
    it should switch to `ctx.timezone()` (and say `requires: 2`), so the
    body clock follows the account's setting. Nothing in the Admin changed.
-12. **The OpenFit core adjustments** (the brief of 1 Nov 2026; their status
-   page comes with the next slice, this line until then). **Item 1, C1:
+12. **The OpenFit core adjustments** (the brief of 1 Nov 2026; where the
+   rest of them stand is in [STATUS.md](../../STATUS.md)). **Item 1, C1:
    `ctx.delete_sessions()`** (built; the user system, no migration): an
    app's `handle()` removes its own sessions of a kind starting in a time
    span, `[since, until)`, in the action's one transaction, and is told how
@@ -567,7 +571,9 @@ a second real person gets a container. Re-ordered 2026-10-27, after A1:
    Scoped to the app's own source by construction; `APP_LEVEL` 4, which an
    app using it declares ([app-host.md](app-host.md#writing-apps-as-sources)).
    Deploy: merge it, Update OpenFit, and only then the FRMS change that uses
-   it (`requires: 4`). Item 2, the report store, and the rest are to come.
+   it (`requires: 4`). Item 2, the report store, and item 5, the layover
+   label, are parked; items 4 and 6, two doc fixes, came with the status
+   page.
 
 ### Parked
 

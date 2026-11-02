@@ -1,7 +1,9 @@
 # OpenFit — overview and design pathway
 
 **Status:** canonical architecture direction (engine + app host; OpenFit ships no
-tracking apps). Read this first; ROADMAP.md has the phases.
+tracking apps). Read this first for what OpenFit is;
+[STATUS.md](../../STATUS.md) has where things stand (the old phase plan is
+archived at [docs/history/roadmap.md](../history/roadmap.md)).
 
 ## What OpenFit is
 
