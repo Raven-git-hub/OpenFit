@@ -64,14 +64,18 @@ someone else's - all but an organisation repo's, above. Docker runs as
 root, for the socket.
 """
 
+import collections
 import contextlib
 import errno
 import functools
 import hashlib
 import json
+import math
 import os
+import queue
 import re
 import secrets
+import signal
 import stat
 import subprocess
 import shutil
@@ -170,10 +174,11 @@ KEEP_SNAPSHOTS = 3
 # Admin's build, and its helper's stop - before it puts settings back, so
 # no Admin is running to write over them - and recreate.
 ADMIN_COMPOSE_ARGS = (
-    ("build", ADMIN_SERVICE),
+    ("--progress", "plain", "build", ADMIN_SERVICE),
     ("up", "-d", "--no-build", "--force-recreate", ADMIN_SERVICE),
     ("stop", ADMIN_SERVICE),
 )
+ADMIN_BUILD = ADMIN_COMPOSE_ARGS[0]  # the Admin's build: through Runner.lines(), its progress in the log
 # What an Admin update's step returns once the helper has it: the op stays
 # running, and the lock held, until the helper has gone (Admin._settle).
 HANDED_OVER = object()
@@ -287,6 +292,45 @@ DOCKER_INFO_EVERY = 60
 SERVER_FIELDS = ("Name", "ServerVersion", "NCPU", "MemTotal")
 
 TICK_EVERY = 60  # how often the background thread looks for the schedule's run (SU1)
+
+# A full disk (A7): what a command says when the disk it writes to is full -
+# every word of one entry in its output, case aside - and what the Admin
+# says instead of the step's own words. git says "unable to write loose
+# object" for more than a full disk, so that only beside "space".
+OUT_OF_SPACE = (
+    ("no space left on device",),
+    ("enospc",),
+    ("disk quota exceeded",),
+    ("unable to write loose object", "space"),
+)
+DISK_FULL = ("The server's disk is full{free}. Free some space, for example by removing unused Docker images, "
+             "then try again.")
+
+# The two builds (A7), the user system's and the Admin's: BuildKit's plain
+# progress, its steps in the op's log as they come (BuildLog), and stopped
+# once it's run BUILD_TIMEOUT in all or printed nothing for BUILD_IDLE.
+BUILD_PROGRESS = ("--progress", "plain")  # compose's global flag, just before its build
+BUILD_TIMEOUT = 15 * 60
+BUILD_IDLE = 5 * 60
+BUILD_LOG_MAX = 60  # build lines in one op's log, then a line saying there's more
+LINES_TAIL = 40  # Runner.lines()'s tail: a failed build's detail
+SLOW_DISK = "The server's disk or network may be very slow; see System information."
+
+# The disk warnings (A7), in System information and the update popup: how
+# full the disk the Admin keeps its data on is (os.statvfs), and how busy -
+# the share of the CPUs' time spent waiting on I/O, from the `cpu` line of
+# /proc/stat (the VM's own view, not the host's) read once a minute, between
+# one minute's read and the next. Busy is amber at IOWAIT_AMBER or more for
+# IOWAIT_AMBER_MINUTES minutes in a row, red at IOWAIT_RED.
+PROC_STAT = "/proc/stat"
+DISK_AMBER = 90
+DISK_RED = 97
+IOWAIT_AMBER = 30
+IOWAIT_AMBER_MINUTES = 2
+IOWAIT_RED = 60
+DISK_FULL_WARNING = ("The server's disk is {pct}% full ({free} free). Updates need room to build; "
+                     "consider freeing space.")
+DISK_BUSY_WARNING = "The server's disk is very busy (I/O wait {pct}%). Updates and builds will be slow, and may fail."
 HEALTH_EVERY = 2
 HEALTH_FOR = 60
 KEEP_BACKUPS = 3
@@ -452,6 +496,76 @@ class Runner:
             return 127, "", str(e)
         return done.returncode, done.stdout, done.stderr
 
+    def lines(self, args, cwd=None, on_line=None, timeout=None, idle=None):
+        """Runs one command, an argument list and never through a shell, its
+        stdout and stderr merged into one, for its output a line at a time:
+        on_line(text) for each line as it arrives (its line ending gone), in
+        this thread. Killed - and anything it started, its process group - once
+        it's run `timeout` seconds in all (the runner's own if not given), or
+        `idle` seconds have passed with no new line (None: no such limit).
+
+        -> (returncode, tail, why): `tail` its last LINES_TAIL lines, `why`
+        None, "timeout" or "idle" (and the returncode 124 for those). A
+        command that can't start is 127, its tail why. Never an exception
+        for a command; one from on_line kills it, then goes on up."""
+        if not isinstance(args, list) or not all(isinstance(a, str) for a in args):
+            raise TypeError("a command is a list of strings")
+        try:
+            proc = subprocess.Popen(args, cwd=cwd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                    stderr=subprocess.STDOUT, env=dict(os.environ, GIT_TERMINAL_PROMPT="0"),
+                                    start_new_session=True)
+        except OSError as e:
+            return 127, str(e), None
+        arrived = queue.Queue()
+
+        def read():  # its lines, as they come; None once it's closed its output
+            try:
+                for raw in iter(proc.stdout.readline, b""):
+                    arrived.put(raw.decode("utf-8", "replace").rstrip("\r\n"))
+            finally:
+                arrived.put(None)
+
+        reader = threading.Thread(target=read, daemon=True)
+        reader.start()
+        tail = collections.deque(maxlen=LINES_TAIL)
+        total = timeout if timeout is not None else self.timeout
+        start = last = time.monotonic()
+        why, finished = None, False
+        try:
+            while True:
+                now = time.monotonic()
+                until_total = start + total - now
+                until_idle = last + idle - now if idle is not None else until_total
+                if min(until_total, until_idle) <= 0:
+                    why = "timeout" if until_total <= until_idle else "idle"
+                    break
+                try:
+                    line = arrived.get(timeout=min(until_total, until_idle))
+                except queue.Empty:
+                    continue
+                if line is None:
+                    break
+                last = time.monotonic()
+                tail.append(line)
+                if on_line is not None:
+                    on_line(line)
+            if why is None:  # its output closed: its exit, within what's left of the total
+                try:
+                    proc.wait(timeout=max(0.1, start + total - time.monotonic()))
+                except subprocess.TimeoutExpired:
+                    why = "timeout"
+            finished = why is None
+        finally:
+            if not finished:
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except OSError:  # gone already
+                    pass
+            rc = proc.wait()
+            reader.join(5)
+            proc.stdout.close()
+        return (124 if why else rc), "\n".join(tail), why
+
     @contextlib.contextmanager
     def stream(self, args):
         """Runs one command, an argument list and never through a shell, for
@@ -499,12 +613,14 @@ def _text(out):
 
 
 class OpError(Exception):
-    """A step that failed: a plain-words message, and the output behind it."""
+    """A step that failed: a plain-words message, and the output behind it -
+    and whether that's because the server's disk is full (A7)."""
 
-    def __init__(self, message, detail=""):
+    def __init__(self, message, detail="", disk_full=False):
         super().__init__(message)
         self.message = message
         self.detail = detail
+        self.disk_full = disk_full
 
 
 class Refused(Exception):
@@ -533,6 +649,140 @@ class BadSchedule(Refused):
 def _tail(out, err, lines=12):
     text = "\n".join(t.strip() for t in (err, out) if t and t.strip())
     return "\n".join(text.splitlines()[-lines:])
+
+
+def out_of_space(out, err):
+    """Whether a command's output says the disk it wrote to is full: every
+    word of one of OUT_OF_SPACE's entries in it, case aside."""
+    text = f"{_text(out)}\n{_text(err)}".lower()
+    return any(all(word in text for word in words) for words in OUT_OF_SPACE)
+
+
+def size_words(n):
+    """A number of bytes as the page's size() says it: 1.5 GB, 12.0 MB,
+    300 KB, 12 B - or "—" for none."""
+    if not isinstance(n, int) or isinstance(n, bool):
+        return "—"
+    if n >= 1 << 30:
+        return f"{n / (1 << 30):.1f} GB"
+    if n >= 1 << 20:
+        return f"{n / (1 << 20):.1f} MB"
+    if n >= 1 << 10:
+        return f"{round(n / (1 << 10))} KB"
+    return f"{n} B"
+
+
+def disk_full_words(free):
+    """What a step that found the disk full says: DISK_FULL, with the free
+    space (bytes, or None if it can't be read)."""
+    return DISK_FULL.format(free=f" ({size_words(free)} free)" if isinstance(free, int) else "")
+
+
+def used_pct(st):
+    """How full a statvfs result's disk is, in whole percent rounded up, as
+    df says it: what's used of what a user may use. None if it can't say."""
+    used = (st.f_blocks - st.f_bfree) * st.f_frsize
+    room = used + st.f_bavail * st.f_frsize
+    return math.ceil(used * 100 / room) if room > 0 and used >= 0 else None
+
+
+def cpu_times(text):
+    """The `cpu` line of /proc/stat: its fields, whole numbers - user, nice,
+    system, idle, iowait and on - or a ValueError for anything else."""
+    for line in text.splitlines():
+        parts = line.split()
+        if parts and parts[0] == "cpu":
+            fields = [int(x) for x in parts[1:] if x.isdigit()]
+            if len(fields) != len(parts) - 1 or len(fields) < 5:
+                raise ValueError(f"/proc/stat's cpu line isn't what was expected: {line[:120]!r}")
+            return fields
+    raise ValueError("/proc/stat has no cpu line")
+
+
+def iowait_between(before, after):
+    """The share of the time between two `cpu` lines spent waiting on I/O,
+    in whole percent: Δiowait / Δtotal over all the fields. None where the
+    two don't make a span (the same reading, or the counters gone back)."""
+    if len(before) != len(after):
+        return None
+    total = sum(after) - sum(before)
+    wait = after[4] - before[4]
+    if total <= 0 or wait < 0:
+        return None
+    return round(wait * 100 / total)
+
+
+# BuildKit's plain progress: a step's header (`#7 [tracker 3/6] RUN pip
+# install ...`), how it ended (`#7 DONE 12.3s`, `#7 CACHED`, `#7 ERROR:
+# ...`), and the image it named (`#10 naming to docker.io/... done`).
+_BUILD_STEP = re.compile(r"#(\d+) \[([^\]]*)\] ?(.*)\Z")
+_BUILD_END = re.compile(r"#(\d+) (DONE|CACHED|ERROR)\b:? ?(.*)\Z")
+_BUILD_NAMING = re.compile(r"#\d+ (naming to \S+)")
+_BUILD_COUNT = re.compile(r"(?:\S+ )?\d+/\d+\Z")  # a step's place: 3/6, or builder 3/6
+MAX_BUILD_LINE = 300
+
+
+class BuildLog:
+    """A build's plain progress boiled down for an op's log, a line at a time
+    (Runner.lines()'s on_line): BuildKit's step headers - the image's
+    metadata lookup among them, where a slow disk or network shows - each
+    step's DONE, CACHED and ERROR, and the image's name; never the steps'
+    own output. Said through `say` as plain words, "Build: [3/6] RUN ...",
+    "Build: [3/6] done (cached)" - the service's name, which compose puts
+    in every step's brackets, left out - at most `most` of them, then one
+    line saying there's more. `last` is the last such line, said or not:
+    where a build that stopped making progress was."""
+
+    def __init__(self, say, service, most=BUILD_LOG_MAX):
+        self.say, self.service, self.most = say, service, most
+        self.steps = {}  # a step's number -> how its end is said; a header said once
+        self.shown = 0
+        self.last = None
+        self.more = False
+
+    def __call__(self, line):
+        text = self.words(line.strip())
+        if text is None:
+            return
+        text = text[:MAX_BUILD_LINE]
+        self.last = text
+        if self.shown < self.most:
+            self.shown += 1
+            self.say(f"Build: {text}")
+        elif not self.more:
+            self.more = True
+            self.say("… (more build output not shown)")
+
+    def words(self, line):
+        """A line of plain progress in words, or None for one that's noise."""
+        step = _BUILD_STEP.match(line)
+        if step:
+            number, where, what = step.groups()
+            if number in self.steps:  # its header again, as BuildKit says it between other steps' lines
+                return None
+            where = "" if where == self.service else where.removeprefix(f"{self.service} ")
+            header = f"[{where}] {what}".strip() if where else what.strip()
+            self.steps[number] = f"[{where}]" if _BUILD_COUNT.match(where) else header
+            return header
+        end = _BUILD_END.match(line)
+        if end and end.group(1) in self.steps:
+            label, how, rest = self.steps[end.group(1)], end.group(2), end.group(3).strip()
+            if how == "CACHED":
+                return f"{label} done (cached)"
+            if how == "DONE":
+                return f"{label} done ({rest})" if rest else f"{label} done"
+            return f"{label} failed: {rest}" if rest else f"{label} failed"
+        naming = _BUILD_NAMING.match(line)
+        if naming:
+            return naming.group(1)
+        return None
+
+    def stalled(self, why):
+        """What a build stopped for `why` ("idle" or "timeout") says."""
+        at = self.last or "its start"
+        if why == "idle":
+            return (f"The build stopped making progress for {BUILD_IDLE // 60} minutes, at: {at}. {SLOW_DISK}")
+        return f"The build took longer than {BUILD_TIMEOUT // 60} minutes, and was stopped at: {at}. {SLOW_DISK}"
 
 
 def _read_json(path, default):
@@ -1616,17 +1866,25 @@ def swap_helper(runner):
     return bool(out.strip())
 
 
-def admin_compose(runner, repo, *args):
+def admin_compose(runner, repo, *args, on_line=None):
     """docker compose on the Admin's own project: -p openfit-admin with the
     repo's admin/docker-compose.yml, and only ever one of its three
-    commands - `build admin`, run by the Admin, and `stop admin` and `up -d
-    --no-build --force-recreate admin`, run by the helper (a stop always
-    followed by an up). The one way such a command is run."""
+    commands - `--progress plain build admin`, run by the Admin, and `stop
+    admin` and `up -d --no-build --force-recreate admin`, run by the helper
+    (a stop always followed by an up). The one way such a command is run.
+
+    The build goes through Runner.lines(), each line of its plain progress
+    to `on_line`, stopped past BUILD_TIMEOUT or BUILD_IDLE: (returncode,
+    tail, why). The other two through Runner.run(): (returncode, stdout,
+    stderr)."""
     if args not in ADMIN_COMPOSE_ARGS:
         raise ValueError(f"a compose command on the Admin's own project that isn't one of its three: {args!r}")
     compose_file = os.path.join(repo, "admin", "docker-compose.yml")
-    return runner.run(["docker", "compose", "-p", ADMIN_PROJECT, "-f", compose_file, *args],
-                      cwd=os.path.dirname(compose_file))
+    command = ["docker", "compose", "-p", ADMIN_PROJECT, "-f", compose_file, *args]
+    if args == ADMIN_BUILD:
+        return runner.lines(command, cwd=os.path.dirname(compose_file), on_line=on_line, timeout=BUILD_TIMEOUT,
+                            idle=BUILD_IDLE)
+    return runner.run(command, cwd=os.path.dirname(compose_file))
 
 
 def admin_tag(runner, source, target):
@@ -1993,6 +2251,12 @@ def registry_people(reg):
             {(e["name"], e["removed_at"]) for e in reg["removed"]})
 
 
+def _read_proc_stat():
+    """/proc/stat's text: the kernel's CPU time counters, read-only."""
+    with open(PROC_STAT, encoding="ascii", errors="replace") as f:
+        return f.read(64 * 1024)
+
+
 class Admin:
     """The OpenFit users the Admin manages, and the operations on them.
 
@@ -2033,6 +2297,7 @@ class Admin:
         admin_volume=ADMIN_VOLUME,
         admin_image=ADMIN_IMAGE,
         library_dir=LIBRARY_DIR,
+        proc_stat=None,
     ):
         self.repo = repo
         self.data_dir = data_dir
@@ -2071,6 +2336,14 @@ class Admin:
         self.started_at = self._iso()  # this Admin process's start, for the System panel
         self._server = None  # (when, server_fields()) of the last `docker info`
         self._ranges = {}  # (old, new, folder) -> the commits and PRs between: fixed once read
+        # How busy the disk is (A7): /proc/stat's text, read by this seam a
+        # test feeds; the last `cpu` line read, and the I/O wait of the
+        # latest minutes, newest last - IOWAIT_AMBER_MINUTES of them.
+        self.proc_stat = proc_stat or _read_proc_stat
+        self._io_lock = threading.Lock()
+        self._cpu = None
+        self._iowait = collections.deque(maxlen=IOWAIT_AMBER_MINUTES)
+        self._io_said = False  # an unreadable /proc/stat is logged once
         os.makedirs(self.backups_dir, exist_ok=True)
         self._clear_restores()  # left from a restore the Admin was stopped in the middle of
         self.registry()  # a bad users.json stops the Admin starting
@@ -2158,16 +2431,90 @@ class Admin:
             return [user.compose_file]
         raise ValueError(f"a compose command outside the Admin's lane: {user!r}")
 
-    def compose(self, user, *args):
+    def compose(self, user, *args, on_line=None):
         """docker compose, scoped to one user's project and its own files:
         -p <project> with the repo's compose file and the override for the
         primary, -p openfit-<name> with the file the Admin wrote for an
-        added user."""
+        added user.
+
+        A build is only ever the primary's - one image, everyone's - and
+        only `--progress plain build <its service>` (A7), through
+        Runner.lines(): each line of its plain progress to `on_line`,
+        stopped past BUILD_TIMEOUT or BUILD_IDLE, -> (returncode, tail,
+        why). Anything else through Runner.run(), -> (returncode, stdout,
+        stderr): never a build by another name (`up --build`), and
+        --progress the build's alone."""
         files = self.compose_files(user)
-        return self.runner.run(
-            ["docker", "compose", "-p", user.project, *[a for f in files for a in ("-f", f)], *args],
-            cwd=os.path.dirname(user.compose_file),
-        )
+        command = ["docker", "compose", "-p", user.project, *[a for f in files for a in ("-f", f)], *args]
+        cwd = os.path.dirname(user.compose_file)
+        if user.primary and args == (*BUILD_PROGRESS, "build", user.service):
+            return self.runner.lines(command, cwd=cwd, on_line=on_line, timeout=BUILD_TIMEOUT, idle=BUILD_IDLE)
+        if {"build", "--build", "--progress"} & set(args):
+            raise ValueError(f"a build that isn't the primary's `--progress plain build {user.service}`: {args!r}")
+        return self.runner.run(command, cwd=cwd)
+
+    # --- a full disk, and how busy it is (A7) --------------------------------
+
+    def disk_free(self):
+        """The free space where the Admin keeps its data and backups, in
+        bytes, or None if it can't be read."""
+        try:
+            st = os.statvfs(self.data_dir)
+            return st.f_bavail * st.f_frsize
+        except (OSError, AttributeError, TypeError):
+            return None
+
+    def disk_used_pct(self):
+        """How full that disk is, in whole percent (df's), or None."""
+        try:
+            return used_pct(os.statvfs(self.data_dir))
+        except (OSError, AttributeError, TypeError):
+            return None
+
+    def disk_full_message(self):
+        return disk_full_words(self.disk_free())
+
+    def _error(self, message, out="", err=""):
+        """The OpError for a command that failed: `message` - or, its output
+        saying the disk is full, the disk-full message - with its output as
+        the detail either way."""
+        if out_of_space(out, err):
+            return OpError(self.disk_full_message(), _tail(out, err), disk_full=True)
+        return OpError(message, _tail(out, err))
+
+    def _disk(self, e):
+        """An OpError as it stands - or, its words saying the disk is full,
+        the disk-full one, its detail kept."""
+        if not e.disk_full and out_of_space(e.message, e.detail):
+            return OpError(self.disk_full_message(), e.detail, disk_full=True)
+        return e
+
+    @staticmethod
+    def _lead(e):
+        """What an op's summary starts with for a step that failed with `e`:
+        the disk-full message, when that's why, else nothing."""
+        return f"{e.message} " if e.disk_full else ""
+
+    def _say_failure(self, op, message, out="", err=""):
+        """A command's failure in an op's log: `message`, or the disk-full
+        message when its output says that's why, the output its detail. The
+        summary's lead (_lead())."""
+        e = self._error(message, out, err)
+        self.say(op, e.message, e.detail)
+        return self._lead(e)
+
+    def _say_build_failure(self, op, message, tail, why, log):
+        """A build that failed, in an op's log, its tail the detail: stopped
+        for making no progress, or for taking too long (BuildLog.stalled()),
+        else the disk-full message, else `message`. The summary's lead: the
+        first two, or nothing."""
+        if why:
+            text = log.stalled(why)
+            self.say(op, text, tail)
+            return f"{text} "
+        e = self._error(message, tail)
+        self.say(op, e.message, tail)  # all of the tail Runner.lines() kept
+        return self._lead(e)
 
     def docker(self, *args, timeout=None):
         return self.runner.run(["docker", *args], timeout=timeout)
@@ -2175,7 +2522,7 @@ class Admin:
     def _git_out(self, *args, what):
         rc, out, err = self.git(*args)
         if rc != 0:
-            raise OpError(f"Couldn't {what}.", _tail(out, err))
+            raise self._error(f"Couldn't {what}.", out, err)
         return out
 
     # --- the repo -------------------------------------------------------
@@ -2295,7 +2642,7 @@ class Admin:
         rc, out, err = self.git("fetch", "origin", branch, timeout=300)
         try:
             if rc != 0:
-                raise OpError("Couldn't reach GitHub to check for updates.", _tail(out, err))
+                raise self._error("Couldn't reach GitHub to check for updates.", out, err)
             result = self._compare()
         except OpError as e:
             last = self.last_check() or {}
@@ -2529,19 +2876,27 @@ class Admin:
 
     def start_schedule(self):
         """serve()'s: the background thread, ticking at once - a run missed
-        while the Admin was down catches up now - then once a minute."""
+        while the Admin was down catches up now - then once a minute; and
+        beside it, on the same minute, the disk's I/O wait read (A7) - in a
+        thread of its own, since a scheduled run holds the tick's for as
+        long as it runs, and a busy disk matters most then."""
         stop = threading.Event()
 
-        def loop():
-            while True:
-                try:
-                    self.tick()
-                except Exception as e:  # a bug: said, and the thread goes on
-                    print(f"[admin] schedule: the tick failed: {e}", flush=True)
-                if stop.wait(TICK_EVERY):
-                    return
+        def every_minute(work, what):
+            def loop():
+                while True:
+                    try:
+                        work()
+                    except Exception as e:  # a bug: said, and the thread goes on
+                        print(f"[admin] {what} failed: {e}", flush=True)
+                    if stop.wait(TICK_EVERY):
+                        return
+            return loop
 
-        threading.Thread(target=loop, name="admin-schedule", daemon=True).start()
+        threading.Thread(target=every_minute(self.sample_disk, "disk: the sample"), name="admin-disk",
+                         daemon=True).start()
+        threading.Thread(target=every_minute(self.tick, "schedule: the tick"), name="admin-schedule",
+                         daemon=True).start()
         return stop
 
     def _scheduled_run(self, run, schedule, due, late):
@@ -2555,6 +2910,9 @@ class Admin:
         came before it left done. Whatever the users are doing."""
         at, zone = schedule["time"], schedule["timezone"]
         why = "the Admin wasn't running" if iso(due) < self.started_at else "something else was running"
+        warning = self.disk_warning()
+        if warning:  # it runs all the same: the log says what it ran into
+            self.say(run, f"Heads up: {warning['text']}")
         if late:
             self.say(run, f"This run is late: it was due at {at} ({zone}), when {why}.")
 
@@ -2781,21 +3139,25 @@ class Admin:
             self.say(op, "Keeping a copy of the version the Admin is on…")
             rc, out, err = admin_tag(self.runner, image_id, ADMIN_PREV)
             if rc != 0:
-                raise OpError("Couldn't keep a copy of the Admin's version.", _tail(out, err))
+                raise self._error("Couldn't keep a copy of the Admin's version.", out, err)
             stamp = self._stamp()
             self.say(op, "Keeping a copy of the Admin's settings…")
             self._snapshot(stamp)
             with self._op_lock:
                 op["snapshot"] = stamp  # what a revert of this update puts back
         except OpError as e:
+            e = self._disk(e)
             self.say(op, e.message, e.detail)
-            return self._finish(op, "failed", "Nothing was changed.")
+            return self._finish(op, "failed", self._lead(e) + "Nothing was changed.")
 
+        # Its steps reach the log as they come; one that stops making
+        # progress, or takes too long, is stopped (A7).
         self.say(op, "Building the new Admin. This one keeps running meanwhile…")
-        rc, out, err = admin_compose(self.runner, self.repo, "build", ADMIN_SERVICE)
+        log = BuildLog(lambda text: self.say(op, text), ADMIN_SERVICE)
+        rc, tail, why = admin_compose(self.runner, self.repo, *ADMIN_BUILD, on_line=log)
         if rc != 0:
-            self.say(op, "The new Admin didn't build.", _tail(out, err))
-            return self._finish(op, "failed", "The build failed, so nothing was changed. The Admin kept running.")
+            lead = self._say_build_failure(op, "The new Admin didn't build.", tail, why, log)
+            return self._finish(op, "failed", lead + "The build failed, so nothing was changed. The Admin kept running.")
 
         self.say(op, "Starting the helper that swaps the Admin over…")
         rc, out, err = self.runner.run(swap_helper_args(self.repo, self.admin_volume, stamp, op["id"]))
@@ -3156,8 +3518,11 @@ class Admin:
         index, and no other source's, each app's change notes `changes`'s.
         publish_set()'s result; an OpError with the shelf as it was."""
         log = log or (lambda text: print(f"[admin] app library: {text}", flush=True))
-        return publish_set(src_dir, self.library_dir, source, commit, self._iso(), log, label=label,
-                           skip_hidden=skip_hidden, changes=changes)
+        try:
+            return publish_set(src_dir, self.library_dir, source, commit, self._iso(), log, label=label,
+                               skip_hidden=skip_hidden, changes=changes)
+        except OpError as e:
+            raise self._disk(e)
 
     def _official_changes(self, commit):
         """publish_set()'s `changes` for the official library at `commit`:
@@ -3188,8 +3553,9 @@ class Admin:
             result = self.publish_source(OFFICIAL_SOURCE, os.path.join(self.repo, "library"), commit, log,
                                          changes=self._official_changes(commit))
         except OpError as e:
-            self.library_error = {"at": self._iso(), "text": e.message, "detail": e.detail}
-            raise
+            e = self._disk(e)
+            self.library_error = {"at": self._iso(), "text": e.message, "detail": e.detail, "disk_full": e.disk_full}
+            raise e
         self.library_error = None
         return result
 
@@ -3331,20 +3697,21 @@ class Admin:
             op["old"] = old
         except OpError as e:
             self.say(op, e.message, e.detail)
-            return self._finish(op, "failed", "Nothing was changed.")
+            return self._finish(op, "failed", self._lead(e) + "Nothing was changed.")
 
         self.say(op, "Pulling the new apps…")
         rc, out, err = self.git("merge", "--ff-only", f"origin/{self.settings['branch']}")
         if rc != 0:
-            self.say(op, "The new code can't be added on top of the server's copy (not a fast-forward).", _tail(out, err))
-            return self._finish(op, "failed", "Nothing was changed.")
+            lead = self._say_failure(op, "The new code can't be added on top of the server's copy (not a fast-forward).",
+                                     out, err)
+            return self._finish(op, "failed", lead + "Nothing was changed.")
         try:
             op["new"] = self.head()
             arrived = self._git_out("diff", "--name-only", old["commit"], "HEAD", what="list what arrived").splitlines()
         except OpError as e:
             self.say(op, e.message, e.detail)
             self._reset(op, old)
-            return self._finish(op, "failed", "Nothing was changed.")
+            return self._finish(op, "failed", self._lead(e) + "Nothing was changed.")
         core = [p for p in arrived if group_of(p) in ("app", "admin")]
         if core:
             self.say(op, "OpenFit itself changed on GitHub since the last check: " + ", ".join(core[:10])
@@ -3354,8 +3721,9 @@ class Admin:
 
         if not self._publish_step(op, op["new"]["commit"]):
             self._reset(op, old)
-            return self._finish(op, "failed", "The app library couldn't be updated, so the code was put back. "
-                                              "The app library is as it was.")
+            lead = f"{self.library_error['text']} " if (self.library_error or {}).get("disk_full") else ""
+            return self._finish(op, "failed", lead + "The app library couldn't be updated, so the code was put back. "
+                                                     "The app library is as it was.")
         self.refresh_check()
         return self._finish(op, "ok", f"Updated the app library to {op['new']['short']}.")
 
@@ -3564,7 +3932,9 @@ class Admin:
 
     def _clone(self, entry):
         """The repo cloned afresh into its own folder: None if it worked, else
-        (what went wrong, git's words behind it), with no clone left."""
+        (what went wrong, git's words behind it), with no clone left - a
+        full disk said as such, a key GitHub turned down, or GitHub not
+        reached."""
         clone = self._clone_of(entry["slug"])
         try:
             self._clear(clone)  # one an earlier Connect left part-way
@@ -3577,6 +3947,8 @@ class Admin:
             self._clear(clone)
         except OSError:
             pass
+        if out_of_space(out, err):
+            return self.disk_full_message(), _tail(out, err)
         if key_refused(out, err):
             return KEY_REFUSED, _tail(out, err)
         return f"Couldn't reach GitHub: {git_reason(out, err)}", _tail(out, err)
@@ -3623,7 +3995,7 @@ class Admin:
                 self.say(op, "Putting the repo's files back as they were…")
                 rc, out, err = self.org_git(entry, "reset", "--hard", old)
                 if rc != 0:
-                    self.say(op, "Couldn't put the repo's files back.", _tail(out, err))
+                    self._say_failure(op, "Couldn't put the repo's files back.", out, err)
             else:
                 self.say(op, "It had no commits before, so its files stay as they are.")
 
@@ -3646,10 +4018,10 @@ class Admin:
             self.say(op, e.message, e.detail)
             back()
             if updating:
-                return self._finish(op, "failed", "The app library couldn't be updated, so the repo was put back. "
-                                                  "The app library is as it was.")
-            return self._finish(op, "failed", f"Connected {name}, but its apps couldn't be published. Check now, "
-                                              "then its Update available, tries again.")
+                return self._finish(op, "failed", self._lead(e) + "The app library couldn't be updated, so the repo "
+                                                                  "was put back. The app library is as it was.")
+            return self._finish(op, "failed", self._lead(e) + f"Connected {name}, but its apps couldn't be published. "
+                                                              "Check now, then its Update available, tries again.")
         reg = self.repos_registry()
         for e in reg["repos"]:
             if e["slug"] == slug:
@@ -3698,9 +4070,9 @@ class Admin:
         self.say(op, "Adding the repo's new commits…")
         rc, out, err = self.org_git(entry, "merge", "--ff-only", target)
         if rc != 0:
-            self.say(op, "The new commits can't be added on top of the Admin's copy (not a fast-forward).",
-                     _tail(out, err))
-            return self._finish(op, "failed", "Nothing was changed.")
+            lead = self._say_failure(op, "The new commits can't be added on top of the Admin's copy (not a "
+                                         "fast-forward).", out, err)
+            return self._finish(op, "failed", lead + "Nothing was changed.")
         head = self._org_rev(entry, "HEAD^{commit}")
         if head != target:
             self.say(op, "The repo didn't end up on the version it was updated to.")
@@ -3749,7 +4121,8 @@ class Admin:
             try:
                 self._check_repo(entry, now, reg)
             except OpError as e:
-                self._note_repo_check(entry["slug"], error={"at": now, "text": e.message, "detail": e.detail})
+                self._note_repo_check(entry["slug"], error={"at": now, "text": e.message, "detail": e.detail,
+                                                            "disk_full": e.disk_full})
                 print(f"[admin] check: {entry['owner']}/{entry['repo']}: {e.message}", flush=True)
 
     def _check_repo(self, entry, now, reg):
@@ -3760,12 +4133,12 @@ class Admin:
             # the branch GitHub makes its default.
             failed = self._clone(entry)
             if failed:
-                raise OpError(*failed)
+                raise self._disk(OpError(*failed))
             head = self._org_rev(entry, "HEAD^{commit}")
         else:
             rc, out, err = self.org_git(entry, "fetch", "origin", timeout=300)
             if rc != 0:
-                raise OpError(f"Couldn't reach GitHub: {git_reason(out, err)}", _tail(out, err))
+                raise self._error(f"Couldn't reach GitHub: {git_reason(out, err)}", out, err)
             head = self._org_rev(entry, "@{upstream}^{commit}")
         commits, problem = [], None
         if head is None:
@@ -4152,31 +4525,35 @@ class Admin:
                 raise OpError("Couldn't tell which image OpenFit is running.", image_id)
             rc, out, err = self.docker("tag", image_id, f"{self.image}:prev")
             if rc != 0:
-                raise OpError("Couldn't keep a copy of the version you're on.", _tail(out, err))
+                raise self._error("Couldn't keep a copy of the version you're on.", out, err)
         except OpError as e:
             self.say(op, e.message, e.detail)
-            return self._finish(op, "failed", "Nothing was changed.")
+            return self._finish(op, "failed", self._lead(e) + "Nothing was changed.")
 
         self.say(op, "Pulling the new code…")
         rc, out, err = self.git("merge", "--ff-only", f"origin/{self.settings['branch']}")
         if rc != 0:
-            self.say(op, "The new code can't be added on top of the server's copy (not a fast-forward).", _tail(out, err))
-            return self._finish(op, "failed", "Nothing was changed.")
+            lead = self._say_failure(op, "The new code can't be added on top of the server's copy (not a fast-forward).",
+                                     out, err)
+            return self._finish(op, "failed", lead + "Nothing was changed.")
         try:
             op["new"] = self.head()
         except OpError as e:
             self.say(op, e.message, e.detail)
             self._reset(op, old)
-            return self._finish(op, "failed", "Nothing was changed.")
+            return self._finish(op, "failed", self._lead(e) + "Nothing was changed.")
 
         # One build, for everyone: an added user's compose file names the
-        # image the primary's project builds.
+        # image the primary's project builds. Its steps reach the log as
+        # they come; one that stops making progress, or takes too long, is
+        # stopped (A7).
         self.say(op, "Building the new version. OpenFit keeps running meanwhile…")
-        rc, out, err = self.compose(primary, "build", primary.service)
+        log = BuildLog(lambda text: self.say(op, text), primary.service)
+        rc, tail, why = self.compose(primary, *BUILD_PROGRESS, "build", primary.service, on_line=log)
         if rc != 0:
-            self.say(op, "The new version didn't build.", _tail(out, err))
+            lead = self._say_build_failure(op, "The new version didn't build.", tail, why, log)
             self._reset(op, old)
-            return self._finish(op, "failed", "The build failed, so nothing was changed. OpenFit kept running.")
+            return self._finish(op, "failed", lead + "The build failed, so nothing was changed. OpenFit kept running.")
 
         # Every user, primary first: who's running, so each comes back as it was.
         targets = []
@@ -4219,12 +4596,13 @@ class Admin:
                     "tar", "czf", f"/b/backups/{name}", "-C", "/v", ".",
                 )
                 if rc != 0:
-                    raise OpError(f"{user.name}'s backup failed.", _tail(out, err))
+                    raise self._error(f"{user.name}'s backup failed.", out, err)
             except OpError as e:
                 self.say(op, e.message, e.detail)
                 self._drop_backups(op, [r["backup"] for _u, _c, r in targets if r["backup"]] + [name])
                 self._back_out(op, old, targets)
-                return self._finish(op, "failed", "The data couldn't be backed up, so the update was called off. Everyone is on the old version.")
+                return self._finish(op, "failed", self._lead(e) + "The data couldn't be backed up, so the update was "
+                                                                  "called off. Everyone is on the old version.")
             with self._op_lock:
                 rec["backup"] = name
 
@@ -4235,7 +4613,7 @@ class Admin:
             self.say(op, f"Putting {user.name} on the new version…")
             rc, out, err = self.compose(user, *self._recreate(user, rec["was_running"]))
             if rc != 0:
-                self.say(op, f"{user.name}'s OpenFit didn't come up on the new version.", _tail(out, err))
+                self._say_failure(op, f"{user.name}'s OpenFit didn't come up on the new version.", out, err)
                 problem = True
                 break
         if not problem:
@@ -4290,7 +4668,7 @@ class Admin:
         self.say(op, "Putting the code back as it was…")
         rc, out, err = self.git("reset", "--hard", old["commit"])
         if rc != 0:
-            self.say(op, "Couldn't put the code back.", _tail(out, err))
+            self._say_failure(op, "Couldn't put the code back.", out, err)
 
     def _back_out(self, op, old, targets):
         """Called off after the build: old code, old image, and everyone who
@@ -4427,7 +4805,7 @@ class Admin:
                     "sh", "-c", f"find /v -mindepth 1 -delete && tar xzf /b/backups/{r['backup']} -C /v",
                 )
                 if rc != 0:
-                    raise OpError(f"{u.name}'s data couldn't be put back.", _tail(out, err))
+                    raise self._error(f"{u.name}'s data couldn't be put back.", out, err)
             except OpError as e:
                 self.say(op, e.message, e.detail)
                 self.say(op, "Stopped there, so everyone is left stopped, and the code and image are still "
@@ -4448,7 +4826,7 @@ class Admin:
             self.say(op, f"Putting {u.name} back on the previous version…")
             rc, out, err = self.compose(u, *self._recreate(u, r["was_running"]))
             if rc != 0:
-                self.say(op, f"{u.name}'s OpenFit didn't come up on the previous version.", _tail(out, err))
+                self._say_failure(op, f"{u.name}'s OpenFit didn't come up on the previous version.", out, err)
                 ok = False
         for u, r in todo:
             if r["was_running"] and ok:
@@ -4746,11 +5124,13 @@ class Admin:
                             break
                         out.write(chunk)
             except OpError as e:
+                e = self._disk(e)
                 self.say(op, e.message, e.detail)
-                return self._finish(op, "failed", f"Couldn't read {ref}'s kept data. Nothing was created.")
+                return self._finish(op, "failed", self._lead(e) + f"Couldn't read {ref}'s kept data. Nothing was "
+                                                                  "created.")
             except OSError as e:
-                self.say(op, "Couldn't write their kept data to a file.", str(e))
-                return self._finish(op, "failed", f"Couldn't read {ref}'s kept data. Nothing was created.")
+                lead = self._say_failure(op, "Couldn't write their kept data to a file.", str(e))
+                return self._finish(op, "failed", lead + f"Couldn't read {ref}'s kept data. Nothing was created.")
 
         # 2. Every member checked, the database too, before anything is created.
         self.say(op, "Checking the backup…")
@@ -4767,9 +5147,14 @@ class Admin:
                 # 3. The clean archive: the checked members, but what's never restored.
                 dropped = write_clean(tar, members, clean, keep)
         except OpError as e:
+            e = self._disk(e)
             self.say(op, e.message, e.detail)
             return self._finish(op, "failed", f"{e.message} Nothing was created.")
         except (OSError, tarfile.TarError, EOFError, zlib.error, ValueError) as e:
+            if isinstance(e, OSError) and out_of_space(str(e), ""):  # writing its copies, not reading it
+                full = self.disk_full_message()
+                self.say(op, full, str(e))
+                return self._finish(op, "failed", f"{full} Nothing was created.")
             self.say(op, "It isn't a backup the Admin can read: it should be a .tar.gz.", str(e))
             return self._finish(op, "failed", "It isn't a backup the Admin can read: it should be a .tar.gz. "
                                               "Nothing was created.")
@@ -4786,9 +5171,9 @@ class Admin:
             with open(user.compose_file, "w", encoding="utf-8") as f:
                 f.write(self._compose_text(user))
         except OSError as e:
-            self.say(op, "Couldn't write their compose file.", str(e))
+            lead = self._say_failure(op, "Couldn't write their compose file.", str(e))
             shutil.rmtree(folder, ignore_errors=True)
-            return self._finish(op, "failed", f"{user.name} wasn't restored. Nothing was created.")
+            return self._finish(op, "failed", lead + f"{user.name} wasn't restored. Nothing was created.")
 
         # From here on a failure is taken back with `down -v`: this project
         # and its volume were made moments ago, by this op's own `up
@@ -4803,24 +5188,27 @@ class Admin:
         self.say(op, f"Creating {user.name}'s OpenFit, without starting it…")
         rc, out, err = self.compose(user, "up", "--no-start", "--no-build")
         if rc != 0:
-            self.say(op, "Their OpenFit wasn't created.", _tail(out, err))
-            return fail(f"{user.name} wasn't restored: their OpenFit wasn't created.")
+            lead = self._say_failure(op, "Their OpenFit wasn't created.", out, err)
+            return fail(lead + f"{user.name} wasn't restored: their OpenFit wasn't created.")
 
         # 6. The volume filled, by a helper, from the clean archive alone.
         self.say(op, f"Putting the backup's data into {user.name}'s storage…")
         rc, out, err = self.runner.run(restore_helper_args(user_volume(user.name), os.path.basename(clean),
                                                            self.admin_volume, self.admin_image))
         if rc != 0:
-            self.say(op, "The data didn't go in.", _tail(out, err))
-            return fail(f"{user.name} wasn't restored: the backup's data didn't go into their storage.")
+            lead = self._say_failure(op, "The data didn't go in.", out, err)
+            return fail(lead + f"{user.name} wasn't restored: the backup's data didn't go into their storage.")
 
         # 7. Started (its migrations run as it starts), and checked.
         self.say(op, f"Starting {user.name}'s OpenFit…")
         rc, out, err = self.compose(user, "up", "-d", "--no-build")
         if rc != 0:
             clash = port_clash(user.port, out, err)
-            self.say(op, clash or "Their OpenFit didn't start.", _tail(out, err))
-            return fail(clash or f"{user.name} wasn't restored: their OpenFit didn't start.")
+            if clash:
+                self.say(op, clash, _tail(out, err))
+                return fail(clash)
+            lead = self._say_failure(op, "Their OpenFit didn't start.", out, err)
+            return fail(lead + f"{user.name} wasn't restored: their OpenFit didn't start.")
         self.say(op, f"Checking {user.name}'s OpenFit is answering…")
         if not self.healthy(user):
             self.say(op, "Their OpenFit didn't answer.")
@@ -4983,21 +5371,68 @@ class Admin:
 
     def system(self, users, views, backups):
         """The System information panel: the server (server()), the free
-        space where the Admin keeps its data and backups, the backups' total
-        size, how many of the Admin's users are running, stopped or not
-        found, and when this Admin started."""
-        try:
-            st = os.statvfs(self.data_dir)
-            disk_free = st.f_bavail * st.f_frsize
-        except OSError:
-            disk_free = None
+        space where the Admin keeps its data and backups and how full that
+        disk is, how busy it is (the latest minute's I/O wait, None until
+        two reads), the warning those make (disk_warning()), the backups'
+        total size, how many of the Admin's users are running, stopped or
+        not found, and when this Admin started."""
         counts = {"running": 0, "stopped": 0, "missing": 0}
         for u in users:
             state = self.plain_state(views[u.name][0])
             counts[state if state in counts else "missing"] += 1
-        return {"server": self.server(), "disk_free": disk_free,
+        free, pct = self.disk_free(), self.disk_used_pct()
+        return {"server": self.server(), "disk_free": free, "disk_used_pct": pct,
+                "iowait_pct": self.iowait_pct(), "disk_warning": self.disk_warning(free, pct),
                 "backups_bytes": sum(b["size"] for b in backups), "users": counts,
                 "admin_up_since": self.started_at}
+
+    def sample_disk(self):
+        """Once a minute (start_schedule()): /proc/stat's `cpu` line read,
+        and the I/O wait between it and the last one noted. One that can't
+        be read, or reads oddly, is logged - once - and forgets what came
+        before, so no figure or warning stands on a stale read."""
+        try:
+            fields = cpu_times(self.proc_stat())
+        except (OSError, ValueError, TypeError) as e:
+            with self._io_lock:
+                self._cpu = None
+                self._iowait.clear()
+                said, self._io_said = self._io_said, True
+            if not said:
+                print(f"[admin] disk: how busy the disk is can't be read, so it isn't shown: {e}", flush=True)
+            return
+        with self._io_lock:
+            pct = iowait_between(self._cpu, fields) if self._cpu is not None else None
+            self._cpu = fields
+            if pct is None:
+                self._iowait.clear()
+            else:
+                self._iowait.append(pct)
+
+    def iowait_pct(self):
+        """The latest minute's I/O wait, in whole percent, or None."""
+        with self._io_lock:
+            return self._iowait[-1] if self._iowait else None
+
+    def disk_warning(self, free=None, pct=None):
+        """{level: amber or red, text}, or None: the worse of the disk's two
+        warnings - full, at DISK_AMBER% or more (red at DISK_RED%), and busy,
+        IOWAIT_AMBER% or more of I/O wait for IOWAIT_AMBER_MINUTES minutes
+        in a row (red at IOWAIT_RED% in the latest). `free` and `pct` read
+        afresh where not given."""
+        free = self.disk_free() if free is None else free
+        pct = self.disk_used_pct() if pct is None else pct
+        with self._io_lock:
+            minutes = list(self._iowait)
+        found = []
+        if pct is not None and pct >= DISK_AMBER:
+            found.append({"level": "red" if pct >= DISK_RED else "amber",
+                          "text": DISK_FULL_WARNING.format(pct=pct, free=size_words(free))})
+        if minutes and minutes[-1] >= IOWAIT_RED:
+            found.append({"level": "red", "text": DISK_BUSY_WARNING.format(pct=minutes[-1])})
+        elif len(minutes) >= IOWAIT_AMBER_MINUTES and min(minutes[-IOWAIT_AMBER_MINUTES:]) >= IOWAIT_AMBER:
+            found.append({"level": "amber", "text": DISK_BUSY_WARNING.format(pct=minutes[-1])})
+        return max(found, key=lambda w: w["level"] == "red", default=None)
 
     def _range(self, old, new, folder=None):
         """The commits from `old` to `new` (full commits; touching `folder`,

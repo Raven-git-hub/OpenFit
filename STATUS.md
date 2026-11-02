@@ -1,6 +1,6 @@
 # OpenFit status
 
-_Where things stand, as of 2 Nov 2026 (after F1, the waiting-update retry).
+_Where things stand, as of 2 Nov 2026 (after A7, the Admin's visibility).
 The phase plan this replaces is archived at
 [docs/history/roadmap.md](docs/history/roadmap.md)._
 
@@ -65,7 +65,14 @@ restored as a new user. It publishes the app shelf every user mounts
 read-only, from the official library and from organisation repos, each
 cloned over SSH with its own read-only deploy key. The Admin Portal shows
 system information, versions, the schedule, repos and the activity log; a
-weekly schedule either checks for updates or checks and installs them. See
+weekly schedule either checks for updates or checks and installs them. A
+slow or full disk is obvious (A7): a step that failed for a full disk says
+"The server's disk is full", the build's steps reach the update's log as
+they happen and a build that stalls is stopped (15 minutes in all, 5 with
+nothing new), and System information, the update popup and a scheduled
+run's log warn when the disk is nearly full or very busy. How busy is the
+I/O wait read from `/proc/stat` inside the VM: the VM's own view of its
+disk, not the Proxmox host's. See
 [admin.md](docs/architecture/admin.md).
 
 **Repos.** OpenFit (public): the core, the Admin and an empty official
@@ -96,12 +103,9 @@ published to the shelf as `openfitavi.frms`, with its own tests.
 - **One account per container**, and still no `user_id`: more people means
   more containers, managed by the Admin.
 
-## Next: the Admin visibility slice
+## Next
 
-- Git's out-of-space errors reported as "the server's disk is full".
-- The build's progress in the update log.
-- A shorter build limit.
-- A slow- or full-disk warning in System information.
+Nothing pinned yet: the next slice comes from testing, as ever.
 
 ## Parked
 
@@ -121,6 +125,8 @@ published to the shelf as `openfitavi.frms`, with its own tests.
 - **The layover label under the lane tag** (core item 5): polish.
 - **The one-off `docker image prune -f` and the server's disk size**: Andy's,
   on the server, not a code change.
+- **Acting on a slow or full disk** (out of A7, which only warns): putting a
+  scheduled run off while the disk is busy, and freeing space by itself.
 
 ## Where things live
 

@@ -230,6 +230,14 @@ button{font-family:inherit;cursor:pointer;}
 .danger-panel p{font-size:13px;color:var(--ink-2);margin:0;}
 .danger-panel .modal-actions{margin-top:12px;}
 .danger-panel:first-child{margin-top:12px;}
+/* A7: the disk nearly full or very busy - amber, or red - atop System
+   information and in the update popup, above Proceed. */
+.disk-warn{
+  border:1px solid color-mix(in srgb,var(--warn) 45%,var(--border));border-radius:var(--radius-sm);
+  background:color-mix(in srgb,var(--warn) 9%,var(--surface));padding:10px 12px;font-size:13px;color:var(--ink-2);margin:0 0 12px;
+}
+.disk-warn.red{border-color:color-mix(in srgb,var(--crit) 45%,var(--border));background:color-mix(in srgb,var(--crit) 7%,var(--surface));}
+.disk-warn[hidden]{display:none;}
 .install-warn{
   border:1px solid color-mix(in srgb,var(--warn) 45%,var(--border));border-radius:var(--radius-sm);
   background:color-mix(in srgb,var(--warn) 9%,var(--surface));padding:10px 12px;font-size:13px;color:var(--ink-2);margin:0;
@@ -448,7 +456,7 @@ ol.steps li{padding:2px 0;}
       </section>
       <section class="card" id="systemCard">
         <div class="card-title"><h3>System information</h3><button class="fold-btn" id="systemFold" type="button" aria-expanded="true" aria-controls="systemBody" aria-label="Fold System information"></button></div>
-        <div class="card-body" id="systemBody"><dl class="info" id="systemInfo"></dl></div>
+        <div class="card-body" id="systemBody"><p class="disk-warn" id="diskWarn" hidden></p><dl class="info" id="systemInfo"></dl></div>
       </section>
       <section class="card" id="versionsCard">
         <div class="card-title"><h3>Versions</h3><button class="fold-btn" id="versionsFold" type="button" aria-expanded="true" aria-controls="versionsBody" aria-label="Fold Versions"></button></div>
@@ -1061,6 +1069,9 @@ function openUpdate(kind, r) {
     } else {
       body.append(changesBlock(checkGroups()));
     }
+    // The disk nearly full or very busy (A7): said above Proceed, which stays as it was - information, not a block.
+    const warning = S.system && S.system.disk_warning;
+    if (warning) body.append(paintDiskWarn(el("p"), warning, "Heads up: "));
     const msg = el("div", null, "form-msg");
     const go = button("Proceed", "btn primary", (b) => proceed(kind, b, msg, r), !ready || busy());
     body.append(msg, actions(button("Cancel", "btn", closePopup), go));
@@ -1210,15 +1221,27 @@ function paintSystem(s) {
   const cpu = [srv.NCPU != null ? plural(srv.NCPU, "CPU") : null, srv.MemTotal != null ? size(srv.MemTotal) + " memory" : null]
     .filter(Boolean).join(" · ");
   const n = s.backups.length;
+  paintDiskWarn($("diskWarn"), sys.disk_warning, "");
   infoList($("systemInfo"), [
     ["Server", srv.Name || "—"],
     ["Docker", srv.ServerVersion || "—"],
     ["CPU and memory", cpu || "—"],
-    ["Disk free", size(sys.disk_free)],
+    ["Disk free", size(sys.disk_free) + (typeof sys.disk_used_pct === "number" ? ` (${sys.disk_used_pct}% used)` : "")],
+    // How busy the disk is, the latest minute's I/O wait: left out until it's been read twice, or where it can't be.
+    ...(typeof sys.iowait_pct === "number" ? [["Disk busy", `${sys.iowait_pct}% I/O wait`]] : []),
     ["Backups", n ? `${size(sys.backups_bytes)} in ${plural(n, "backup")}` : "None yet"],
     ["Users", counts.join(" · ")],
     ["Admin up since", when(sys.admin_up_since)],
   ]);
+}
+
+// The disk's warning (A7), amber or red, or none: `p` shown with its words
+// after `lead`, or hidden.
+function paintDiskWarn(p, warning, lead) {
+  p.hidden = !warning;
+  p.className = "disk-warn" + (warning && warning.level === "red" ? " red" : "");
+  p.textContent = warning ? lead + warning.text : "";
+  return p;
 }
 
 function paintVersions(s, isBusy) {
@@ -1329,7 +1352,7 @@ function paintRepos(s, isBusy) {
     if (r.update === "repo") acts.append(offer("Update available", () => openUpdate("repo", r), isBusy));
     if (r.official && r.current === false) acts.append(button("Publish again", "btn sm", (b) => publishAgain(b), isBusy));
     if (r.repo && r.repo.error) {
-      const p = pill("Couldn't reach GitHub", "bad");
+      const p = pill(r.repo.error.disk_full ? "Disk full" : "Couldn't reach GitHub", "bad");
       p.title = r.repo.error.text;
       acts.append(p);
     }

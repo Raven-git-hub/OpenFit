@@ -118,7 +118,7 @@ def test_an_update_runs_in_the_exact_order(admin_env):
         git(env, "merge", "--ff-only", "origin/main"),
         git(env, *HEAD_LOG[1:]),
         # 4. build, still running the old version
-        Call(compose(env, "build", "tracker"), env.repos.repo, False),
+        Call(compose(env, "--progress", "plain", "build", "tracker"), env.repos.repo, False),
         # 5. who's running, then stop them
         docker(*PS[1:]),
         Call(compose(env, "stop", "tracker"), env.repos.repo, False),
@@ -197,7 +197,7 @@ def test_a_failed_build_resets_the_code_and_never_stops(admin_env):
     op = run_update(env)
 
     commands = env.fake.commands()
-    build = commands.index(compose(env, "build", "tracker"))
+    build = commands.index(compose(env, "--progress", "plain", "build", "tracker"))
     assert commands[build + 1] == ["git", "reset", "--hard", old]
     assert commands[build + 2:] == []
     assert not any(c[:2] == ["docker", "compose"] and ("stop" in c or "up" in c) for c in commands)

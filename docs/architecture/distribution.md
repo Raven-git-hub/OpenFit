@@ -130,7 +130,9 @@ components, copied and held to OpenFit's by a drift test, under OpenFit's
 header with ADMIN PORTAL beside the brand. A left column of four panels
 that are always there: **System information** (the server's name, Docker
 version, CPUs and memory from `docker info`, of which nothing else is kept;
-the free disk, the backups, the users and when the Admin started),
+the free disk, the backups, the users and when the Admin started - and,
+since A7, how full and how busy the disk is, with a warning when it's
+nearly full or very busy),
 **Versions** (the users' and the Admin's, when each was last updated, what
 the last update brought, and Update available opening one update popup),
 **Repos** (each shelf source, its version and last publish) and the
@@ -473,7 +475,7 @@ as OpenFit is today on 8080, and the Admin at 8090._
 
 ## Build order
 
-**Complete through C1** (`ctx.delete_sessions()`, item 12 below). What's next
+**Complete through A7** (the Admin's visibility, item 13 below). What's next
 and what's parked are in [STATUS.md](../../STATUS.md), the project's status
 page; this list stays as the record of how it was built.
 
@@ -577,6 +579,19 @@ a second real person gets a container. Re-ordered 2026-10-27, after A1:
    it (`requires: 4`). Item 2, the report store, and item 5, the layover
    label, are parked; items 4 and 6, two doc fixes, came with the status
    page.
+13. **A7: the Admin's visibility** (built, `admin/` only,
+   [admin.md](admin.md#a-slow-or-full-disk-made-obvious-a7)): a slow or
+   full disk made obvious, after a full disk read as "Couldn't reach
+   GitHub" and a RAID check that held a build for half an hour with nothing
+   to show. A command that failed for a full disk says "The server's disk
+   is full" (one table of patterns, wherever a step's failure is said); both
+   builds run with BuildKit's plain progress, a line at a time, their steps
+   in the operation's log (at most 60 lines), and stop after 15 minutes, or
+   5 with nothing new; and System information, the update popup and a
+   scheduled run's log warn when the disk is 90% full or more (red at 97%),
+   or busy - 30% I/O wait or more two minutes running (red at 60%), read
+   from `/proc/stat`, the VM's own view. Information only: Proceed stays
+   enabled, a scheduled run still runs, and nothing frees space by itself.
 
 ### Parked
 
