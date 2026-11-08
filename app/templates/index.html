@@ -2681,8 +2681,21 @@ h5 + .dnote{margin-top:0;}
     frame.setAttribute('sandbox', 'allow-scripts allow-modals');
     frame.setAttribute('referrerpolicy', 'no-referrer');
     frame.title = name;
-    frame.src = '/api/app/' + enc(appId) + '/files/' + enc(name) + '/view';
+    // OpenFit's theme, light or dark, told to the report in the address's
+    // fragment (#theme=dark) - never sent to the server, and the one way in:
+    // the sealed frame can't read this page. A report that knows it can
+    // match; one that doesn't just ignores it.
+    frame.src = '/api/app/' + enc(appId) + '/files/' + enc(name) + '/view#theme=' + currentTheme();
     return {box, close, frame};
+  }
+  /* The theme the page is showing now: its data-theme if set, else the
+     browser's preference. */
+  function currentTheme(){
+    const set = document.documentElement && document.documentElement.getAttribute
+      ? document.documentElement.getAttribute('data-theme') : null;
+    if(set === 'dark' || set === 'light') return set;
+    const dark = typeof matchMedia === 'function' && matchMedia('(prefers-color-scheme: dark)').matches;
+    return dark ? 'dark' : 'light';
   }
   /* Why an action from a rail card didn't go through, in a small popup. */
   function reportProblem(text){

@@ -5061,9 +5061,11 @@ REPORT_CARDS = {
 def test_a_rail_with_an_action_sends_the_pressed_card_and_opens_the_report_it_names(client):
     page = _page(client)
     rail = {**REPORT, "action": "report"}
-    r = _node(MINI_DOM + "\n".join(_js(page, n) for n in RAILS_PARTS + ["enc", "openModal", "openReport", "reportProblem"])
+    r = _node(MINI_DOM + "\n".join(_js(page, n) for n in RAILS_PARTS + ["enc", "openModal", "openReport", "currentTheme", "reportProblem"])
               + TIMELINE_HARNESS + SYNC_HARNESS + RAILS_HARNESS + f"""
         document.body = mk('body');
+        document.documentElement = mk('html');
+        document.documentElement.setAttribute('data-theme', 'dark');
         document.removeEventListener = document.removeEventListener || (() => {{}});
         const calls = [];
         let reply = {{ok: true, spec: {{type: 'panel'}}, show: 'trip-2026-10-12.html'}};
@@ -5103,7 +5105,8 @@ def test_a_rail_with_an_action_sends_the_pressed_card_and_opens_the_report_it_na
     assert "modal-report" in cls.split() and fcls == "report-frame"
     # Sealed: scripts and print, never its own origin back.
     assert sandbox == "allow-scripts allow-modals" and ref == "no-referrer"
-    assert src == "/api/app/frms/files/trip-2026-10-12.html/view" and name == "trip-2026-10-12.html"
+    # OpenFit's theme rides in the fragment, which never reaches the server.
+    assert src == "/api/app/frms/files/trip-2026-10-12.html/view#theme=dark" and name == "trip-2026-10-12.html"
     assert links == [["Download", "/api/app/frms/files/trip-2026-10-12.html", "trip-2026-10-12.html"]]
     assert r["closed"] == 0 and r["problem"] == "no such trip"
     assert r["plain"][1] == "listitem" and "act" not in r["plain"][0].split() and "act" not in r["plain"][2].split()
