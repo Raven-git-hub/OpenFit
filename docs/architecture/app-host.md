@@ -1520,7 +1520,11 @@ sandbox from its route, `GET /api/app/<id>/files/<name>/view`, with
 report, its own print button - but in an origin of its own, so it can't
 reach OpenFit's page, the session or the API, and it loads nothing from
 anywhere (styles, scripts, images and fonts inline or `data:`). The viewer's
-bar has the file's name, Download (the same file, saved) and Close. For a
+bar has the file's name, Download (the same file, saved) and Close. The
+frame's address ends `#theme=dark` or `#theme=light`, OpenFit's theme as
+shown: the fragment never reaches the server, and it's the one way the
+sealed report can know it - a report that reads `location.hash` can match
+the page; one that doesn't just ignores it. For a
 PDF, the report's own button, or the browser's **Print → Save as PDF** on
 the downloaded file - there's no PDF generation on the server. Files live in
 `tracker.db`'s `app_files` table (migration `012`), not on disk: a file is
