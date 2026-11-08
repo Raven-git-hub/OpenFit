@@ -146,7 +146,9 @@ class AppError(Exception):
 #      ctx.download(); a "button" input (C3)
 #   7  app-wide settings: settings: in the manifest, ctx.settings() /
 #      ctx.setting(), set by the user per app (C4)
-APP_LEVEL = 7
+#   8  a rail's action - its cards buttons sending {card: id} - and
+#      ctx.show_file(): an action's report file shown in the report viewer
+APP_LEVEL = 8
 
 # The most a description says, trimmed: a line or two in Browse.
 MAX_DESCRIPTION = 300

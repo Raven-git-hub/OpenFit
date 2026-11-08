@@ -3123,7 +3123,7 @@ def browse_shelf(tmp_path, monkeypatch):
                      "app.py": "def render(ctx, cfg):\n    return ctx.empty('<i>hi</i>')\n",
                      "notes.txt": "stride: 0.75 m\n"},
             "added": {"app.yaml": "id: added\nname: Added\nsizes: [{w: 1, h: 1}]\n"},
-            "newer": {"app.yaml": "id: newer\nname: Newer\nrequires: 8\nsizes: [{w: 1, h: 1}]\n"},
+            "newer": {"app.yaml": "id: newer\nname: Newer\nrequires: 9\nsizes: [{w: 1, h: 1}]\n"},
             "heir": {"app.yaml": "id: heir\nname: Heir\nreplaces: [old]\nsizes: [{w: 1, h: 1}]\n"},
             "deep": {"app.yaml": "id: deep\nname: Deep\nsizes: [{w: 1, h: 1}]\n", "assets/x.txt": "x"},
         },
@@ -5055,6 +5055,58 @@ REPORT_CARDS = {
     "LHR": "CX255 LHR CX254 28 Sep", "SIN": "CX711 SIN CX710 03 Oct", "NRT": "CX500 NRT CX501 08 Oct",
     "SYD": "CX101 SYD CX100 12 Oct",
 }
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to run the page's script")
+def test_a_rail_with_an_action_sends_the_pressed_card_and_opens_the_report_it_names(client):
+    page = _page(client)
+    rail = {**REPORT, "action": "report"}
+    r = _node(MINI_DOM + "\n".join(_js(page, n) for n in RAILS_PARTS + ["enc", "openModal", "openReport", "reportProblem"])
+              + TIMELINE_HARNESS + SYNC_HARNESS + RAILS_HARNESS + f"""
+        document.body = mk('body');
+        document.removeEventListener = document.removeEventListener || (() => {{}});
+        const calls = [];
+        let reply = {{ok: true, spec: {{type: 'panel'}}, show: 'trip-2026-10-12.html'}};
+        const api = {{appAction: async (id, action, payload, cfg) => {{ calls.push([id, action, payload]); return reply; }}}};
+        const tileCfg = () => ({{}});
+        const repainted = [];
+        const repaintTile = (id, spec) => repainted.push(id);
+        (async () => {{
+          const box = railSpec({json.dumps(rail)}, [], 'frms');
+          const card = box.querySelector('.rail-card');
+          r.card = [card.className, card.getAttribute('role'), card.tabIndex, card.getAttribute('aria-label')];
+          await card.onclick();
+          r.calls = calls; r.repainted = repainted;
+          const modal = document.body.querySelector('.modal');
+          const frame = modal.querySelector('iframe');
+          r.viewer = [modal.className, frame.className, frame.getAttribute('sandbox'), frame.getAttribute('referrerpolicy'), frame.src,
+                      modal.querySelector('.report-name').textContent,
+                      modal.querySelectorAll('.report-bar a').map(a => [a.textContent, a.href, a.getAttribute('download')])];
+          modal.querySelectorAll('.report-bar button')[0].onclick();
+          r.closed = document.body.querySelectorAll('.modal').length;
+          // A refusal: no viewer, the error said in a popup.
+          reply = {{ok: false, error: 'no such trip'}};
+          await box.querySelector('.rail-card').onclick();
+          r.problem = document.body.querySelector('.modal .hint').textContent;
+          // Without an action, or drawn for no app: plain cards, as ever.
+          const plain = railSpec({json.dumps(REPORT)}, [], 'frms').querySelector('.rail-card');
+          const noApp = railSpec({json.dumps(rail)}, [], null).querySelector('.rail-card');
+          r.plain = [plain.className, plain.getAttribute('role'), noApp.className];
+          console.log(JSON.stringify(r));
+        }})();
+    """)
+    assert r["card"][0].startswith("rail-card") and "act" in r["card"][0].split()
+    assert r["card"][1:3] == ["button", 0] and r["card"][3]
+    assert r["calls"][0][0:2] == ["frms", "report"] and set(r["calls"][0][2]) == {"card"}
+    assert r["repainted"] == ["frms"]
+    cls, fcls, sandbox, ref, src, name, links = r["viewer"]
+    assert "modal-report" in cls.split() and fcls == "report-frame"
+    # Sealed: scripts and print, never its own origin back.
+    assert sandbox == "allow-scripts allow-modals" and ref == "no-referrer"
+    assert src == "/api/app/frms/files/trip-2026-10-12.html/view" and name == "trip-2026-10-12.html"
+    assert links == [["Download", "/api/app/frms/files/trip-2026-10-12.html", "trip-2026-10-12.html"]]
+    assert r["closed"] == 0 and r["problem"] == "no such trip"
+    assert r["plain"][1] == "listitem" and "act" not in r["plain"][0].split() and "act" not in r["plain"][2].split()
 
 
 def _cards(table, ports, head=None):

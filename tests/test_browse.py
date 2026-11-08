@@ -155,27 +155,27 @@ def test_requires_is_a_whole_number_from_one(tmp_path, value):
 
 
 def test_requires_defaults_to_one_and_this_openfit_is_level_seven(tmp_path):
-    assert apps.APP_LEVEL == 7
+    assert apps.APP_LEVEL == 8
     assert load(tmp_path, "id: a\n" + SIZE, "a").requires == 1
     assert load(tmp_path, "id: b\nrequires: 1\n" + SIZE, "b").requires == 1
 
 
-LEVEL_8 = "needs OpenFit app level 8; this OpenFit is level 7"
+LEVEL_8 = "needs OpenFit app level 9; this OpenFit is level 8"
 
 
 def test_an_app_needing_a_newer_openfit_is_skipped_by_the_scanner(apps_dir, capsys):
-    write(apps_dir / "newer", {"app.yaml": "id: newer\nrequires: 8\n" + SIZE})
+    write(apps_dir / "newer", {"app.yaml": "id: newer\nrequires: 9\n" + SIZE})
     write(apps_dir / "fine", {"app.yaml": "id: fine\nrequires: 1\n" + SIZE})
 
     assert [a.id for a in apps.scan_apps(apps_dir)] == ["fine"]
     assert f"[apps] skipping {apps_dir / 'newer'}: {LEVEL_8}" in capsys.readouterr().out
     # Said first, whatever else a level-2 manifest has that this one can't read.
     with pytest.raises(apps.AppError, match=f"^{LEVEL_8}$"):
-        load(apps_dir.parent, "id: newer2\nrequires: 8\nsizes: a new shape\n", "newer2")
+        load(apps_dir.parent, "id: newer2\nrequires: 9\nsizes: a new shape\n", "newer2")
 
 
 def test_install_refuses_an_app_needing_a_newer_openfit(client, apps_dir):
-    files = {"app.yaml": "id: newer\nrequires: 8\n" + SIZE}
+    files = {"app.yaml": "id: newer\nrequires: 9\n" + SIZE}
 
     resp = client.post("/api/apps", json={"files": files})
 
@@ -192,7 +192,7 @@ def test_install_refuses_an_app_needing_a_newer_openfit(client, apps_dir):
 def test_an_update_to_an_app_needing_a_newer_openfit_is_refused(client, apps_dir):
     assert client.post("/api/apps", json={"files": {"app.yaml": "id: a\n" + SIZE}}).status_code == 201
 
-    resp = client.put("/api/apps/a", json={"files": {"app.yaml": "id: a\nrequires: 8\n" + SIZE}})
+    resp = client.put("/api/apps/a", json={"files": {"app.yaml": "id: a\nrequires: 9\n" + SIZE}})
 
     assert resp.status_code == 400 and resp.get_json()["error"] == LEVEL_8
     assert (apps_dir / "a" / "app.yaml").read_text() == "id: a\n" + SIZE
@@ -327,12 +327,12 @@ def test_each_state_is_the_first_that_applies(tmp_path, conn, apps_dir):
         "fresh": app("fresh"),
         "mine": app("mine"),
         "nested": app("nested", **{"assets/logo.txt": "x"}),
-        "newer": app("newer", extra="requires: 8\n"),
+        "newer": app("newer", extra="requires: 9\n"),
         "heir": app("heir", extra="replaces: [old]\n"),
         "heir2": app("heir2", extra="replaces: [gone]\n"),
         # Installed already beats everything after it: folders, a level,
         # a replacement still pending.
-        "both": app("both", extra="requires: 8\nreplaces: [old]\n", **{"sub/x.txt": "x"}),
+        "both": app("both", extra="requires: 9\nreplaces: [old]\n", **{"sub/x.txt": "x"}),
     }})
     # Installed: from the library, as Browse installs it - and a library
     # app hand-placed on the volume counts too.
@@ -683,7 +683,7 @@ def test_install_from_the_library_refuses_each_state_but_available(client, conn,
     publish(library, {"openfit": {
         "mine": app("mine", "Mine"),
         "nested": app("nested", **{"assets/x.txt": "x"}),
-        "newer": app("newer", extra="requires: 8\n"),
+        "newer": app("newer", extra="requires: 9\n"),
         "heir": app("heir", "Heir", extra="replaces: [old]\n"),
         "heir2": app("heir2", "Heir 2", extra="replaces: [gone]\n"),
     }})
