@@ -1188,6 +1188,24 @@ FILE_DOWNLOAD_HEADERS = {
     "Content-Security-Policy": "sandbox",
     "Cache-Control": "no-store",
 }
+# A report file shown in the report viewer (GET .../files/<name>/view):
+# a page, but a sealed one. Sandboxed - its own scripts run (an
+# interactive report, its print button: allow-modals is print()'s) but
+# in an origin of its own, so it can't reach OpenFit's page, cookies or
+# API - and with nothing fetched from anywhere: its styles, scripts,
+# images and fonts are inline or data: URIs, or not at all. Framed only
+# by OpenFit's own page; no referrer; never cached.
+FILE_VIEW_HEADERS = {
+    "Content-Type": "text/html; charset=utf-8",
+    "X-Content-Type-Options": "nosniff",
+    "Content-Security-Policy": (
+        "sandbox allow-scripts allow-modals; default-src 'none'; "
+        "style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src data:; font-src data:; "
+        "frame-ancestors 'self'"
+    ),
+    "Referrer-Policy": "no-referrer",
+    "Cache-Control": "no-store",
+}
 
 
 def _no_file(app_id, name):
@@ -1248,6 +1266,36 @@ def download_app_file(app_id, name):
     # The name is FILE_NAME's - lowercase letters, digits, . _ - - so
     # nothing in it needs quoting or escaping.
     resp.headers["Content-Disposition"] = f'attachment; filename="{name}"'
+    return resp
+
+
+@app.route("/api/app/<app_id>/files/<name>/view", methods=["GET"])
+def view_app_file(app_id, name):
+    """One of an app's report files as a page, for the report viewer.
+
+    The bytes it saved, exactly, as text/html - but sealed
+    (FILE_VIEW_HEADERS): a CSP sandbox that gives it an origin of its
+    own, so its scripts run without reaching OpenFit's page, cookies or
+    API; nothing loaded from anywhere; framed only by OpenFit's page.
+    The page shows it in a sandboxed frame too, so it's sealed twice.
+    Inline, never an attachment: the download route hands a file over,
+    this one shows it. 404 as the download route's.
+    """
+    if not is_app_id(app_id) or not is_file_name(name):
+        return _no_file(app_id, name)
+    conn = get_conn()
+    try:
+        row = conn.execute(
+            "SELECT content FROM app_files WHERE app = ? AND name = ?", (app_id, name)
+        ).fetchone()
+    finally:
+        conn.close()
+    if row is None:
+        return _no_file(app_id, name)
+    resp = make_response(bytes(row["content"]))
+    for header, value in FILE_VIEW_HEADERS.items():
+        resp.headers[header] = value
+    resp.headers["Content-Disposition"] = f'inline; filename="{name}"'
     return resp
 
 
@@ -1387,7 +1435,8 @@ def act_on_app(app_id):
     writes and their pick together (a session, a record or a file is
     derived into nothing, and is committed all the same), and the app is rendered
     afresh (render_app(), which never raises) for the tile: 200 {"ok":
-    true, "spec"}.
+    true, "spec"} - and "show", a report file's name, when handle() asked
+    for one to be shown (ctx.show_file()), for the page's report viewer.
 
     404 for an id with no app that loads; 400 for an app with no
     handle(), or a body whose action isn't text or whose payload isn't a
@@ -1453,7 +1502,11 @@ def act_on_app(app_id):
             spec = render_app(installed, conn, cfg)
         finally:
             conn.close()
-    return jsonify({"ok": True, "spec": spec})
+    reply = {"ok": True, "spec": spec}
+    if ctx.shown is not None:
+        # ctx.show_file(): the page opens it in the report viewer.
+        reply["show"] = ctx.shown
+    return jsonify(reply)
 
 
 # ---------- removing a source's data ----------

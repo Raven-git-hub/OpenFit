@@ -484,6 +484,13 @@ a.btn{display:inline-block;text-decoration:none;}
 .modal .field{margin-bottom:12px;}
 .modal h4 + .field{margin-top:16px;}
 .modal-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:16px;}
+/* the report viewer (app level 8): an app's report file in a sealed frame,
+   most of the screen, its bar over it - the file's name, Download, Close.
+   The frame is always white: a report is a page of paper. */
+.modal.modal-report{width:min(920px,100%);height:92vh;max-height:none;padding:0;display:flex;flex-direction:column;overflow:hidden;}
+.report-bar{display:flex;align-items:center;gap:10px;padding:10px 14px;border-bottom:1px solid var(--border);}
+.report-bar .report-name{margin-right:auto;font-size:13px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.report-frame{flex:1;width:100%;border:0;background:#fff;}
 /* An app's settings popup (C4): a field's help close under it; a toggle
    a checkbox before its label, the help on its own line under both. */
 .modal .as-help{font-size:12px;margin:0;}
@@ -891,6 +898,12 @@ h5 + .dnote{margin-top:0;}
   border-radius:var(--radius-sm);background:var(--inset);
 }
 .rail-card.head{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent);}
+/* a rail with an action: each card a button - pressed, the app's handle()
+   gets the card's id (a Report rail's trip, made into a report) */
+.rail-card.act{cursor:pointer;}
+.rail-card.act:hover{border-color:var(--border-strong);}
+.rail-card.act:focus-visible{outline:2px solid var(--accent);outline-offset:2px;}
+.rail-card.act.busy{opacity:.6;cursor:progress;}
 .rc-out, .rc-in, .rc-port, .rc-day{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;}
 .rc-out{font:600 11.5px/16px var(--font-mono);color:var(--ink);}
 .rc-in{font:500 11.5px/16px var(--font-mono);color:var(--muted);}
@@ -2639,6 +2652,47 @@ h5 + .dnote{margin-top:0;}
     bg.onclick = e => { if(e.target === bg) close(); };
 
     return {box, close};
+  }
+
+  /* The report viewer (app level 8): one of an app's own report files,
+     named by an action's reply (ctx.show_file()), in a sealed frame - the
+     sandbox attribute here and the CSP sandbox its route sends both give
+     it an origin of its own, so its scripts run (an interactive report,
+     its own Save as PDF) without reaching this page, the session or the
+     API; it loads nothing from anywhere. Its bar: the file's name,
+     Download (the download route: the same file, saved), Close. Escape
+     or the backdrop close it too. */
+  function openReport(appId, name){
+    const {box, close} = openModal('');
+    box.classList.toggle('modal-report', true);
+    box.setAttribute('role','dialog');
+    box.setAttribute('aria-label', 'Report ' + name);
+    const bar = box.appendChild(el('div','report-bar'));
+    bar.appendChild(el('div','report-name')).textContent = name;
+    const dl = bar.appendChild(el('a','btn sm'));
+    dl.textContent = 'Download';
+    dl.href = '/api/app/' + enc(appId) + '/files/' + enc(name);
+    dl.setAttribute('download', name);
+    const shut = bar.appendChild(el('button','btn sm'));
+    shut.type = 'button';
+    shut.textContent = 'Close';
+    shut.onclick = () => close();
+    const frame = box.appendChild(el('iframe','report-frame'));
+    frame.setAttribute('sandbox', 'allow-scripts allow-modals');
+    frame.setAttribute('referrerpolicy', 'no-referrer');
+    frame.title = name;
+    frame.src = '/api/app/' + enc(appId) + '/files/' + enc(name) + '/view';
+    return {box, close, frame};
+  }
+  /* Why an action from a rail card didn't go through, in a small popup. */
+  function reportProblem(text){
+    const {box, close} = openModal('');
+    box.appendChild(el('h4')).textContent = "Couldn't do that";
+    box.appendChild(el('p','hint')).textContent = text;
+    const shut = box.appendChild(el('div','modal-actions')).appendChild(el('button','btn sm'));
+    shut.type = 'button';
+    shut.textContent = 'Close';
+    shut.onclick = () => close();
   }
 
   /* A stand-in for popups that aren't built yet: Add source (when nothing
@@ -6093,7 +6147,7 @@ h5 + .dnote{margin-top:0;}
     const d = new Date(ms);
     return `${String(d.getUTCDate()).padStart(2, '0')} ${TL_MONTHS[d.getUTCMonth()]}`;
   }
-  function railSpec(s, above){
+  function railSpec(s, above, appId){
     const ms = t => { const v = typeof t==='string' ? Date.parse(t) : NaN; return Number.isFinite(v) ? v : null; };
     const text = v => v!=null && v!=='' ? String(v) : '';
     const side = s.side==='report' ? 'report' : 'plan';
@@ -6119,9 +6173,32 @@ h5 + .dnote{margin-top:0;}
     list.setAttribute('role','list');
     list.setAttribute('aria-label', (s.title ? s.title+': ' : '') + `${cards.length} card${cards.length===1 ? '' : 's'}`);
     if(!cards.length){ list.appendChild(el('div','rail-none')).textContent = 'None'; }
+    // A rail with an action, drawn for an app: each card with an id is a
+    // button sending it, {card: id}; the reply repaints the tile and may
+    // name a report file to show (ctx.show_file()), opened in the viewer.
+    const acting = typeof s.action==='string' && s.action!=='' && !!appId;
+    const press = async (n, c) => {
+      if(n.dataset.busy) return;
+      n.dataset.busy = '1';
+      n.classList.toggle('busy', true);
+      const res = await api.appAction(appId, s.action, {card: c.id}, tileCfg(appId));
+      delete n.dataset.busy;
+      n.classList.toggle('busy', false);
+      if(res.ok && res.spec) repaintTile(appId, res.spec);
+      if(res.ok && typeof res.show==='string' && res.show) openReport(appId, res.show);
+      else if(!res.ok) reportProblem(res.error || "Couldn't do that.");
+    };
     const card = (c, isHead) => {
       const n = el('div','rail-card' + (isHead ? ' head' : ''));
       n.setAttribute('role','listitem');
+      if(acting && c.id){
+        n.classList.toggle('act', true);
+        n.setAttribute('role','button');
+        n.tabIndex = 0;
+        n.setAttribute('aria-label', [c.out, c.port, c.in, fmtCardDay(c.a)].filter(Boolean).join(' '));
+        n.onclick = () => press(n, c);
+        n.onkeydown = e => { if(e.key==='Enter' || e.key===' '){ if(e.preventDefault) e.preventDefault(); press(n, c); } };
+      }
       if(isHead) n.setAttribute('aria-current','true');
       if(c.id) n.dataset.id = c.id;
       // Its corners in reading order, so the grid places them: out and
@@ -6190,7 +6267,7 @@ h5 + .dnote{margin-top:0;}
       if(cls.includes('t')) above.push('t');
       else if(cls.includes('tl-focus')) above.push('tl-focus');
     }
-    const side = r => r!==null && typeof r==='object' && r.type==='rail' ? railSpec(r, above) : null;
+    const side = r => r!==null && typeof r==='object' && r.type==='rail' ? railSpec(r, above, appId) : null;
     const left = side(s.left), right = side(s.right);
     if(left) box.appendChild(left);
     box.appendChild(centre);

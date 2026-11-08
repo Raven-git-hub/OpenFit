@@ -755,7 +755,7 @@ def _card(raw):
     return card
 
 
-def rail(cards, side, title=None, sync=None):
+def rail(cards, side, title=None, sync=None, action=None):
     """A column of fixed-size cards - a trip each, in the roster's - that
     restacks as a focus group's time moves.
 
@@ -793,10 +793,17 @@ def rail(cards, side, title=None, sync=None):
     reads that group's focus time and restacks whenever it moves - it
     never moves it - and the spec carries it; None (or an empty name)
     adds no key, and the rail is drawn for the time it's drawn at.
-    Raises TypeError or ValueError for anything it can't draw.
+    `action` is text or None: given, each card is a button, and pressing
+    one sends `action` to the app's handle() with the payload {"card":
+    <the card's id>} - a Report rail's trip, made into a report there and
+    shown with ctx.show_file(); the spec carries it only when given, so a
+    rail without one is as before. App level 8. Raises TypeError or
+    ValueError for anything it can't draw.
     """
     if not isinstance(cards, (list, tuple)):
         raise TypeError(f"a rail's cards must be a list: {cards!r}")
+    if action is not None and (not isinstance(action, str) or not action):
+        raise TypeError(f"a rail's action must be non-empty text, an action's name: {action!r}")
     if not isinstance(side, str) or side not in RAIL_SIDES:
         raise ValueError(f"a rail's side is {' or '.join(map(repr, RAIL_SIDES))}, not {side!r}")
     if title is not None and not isinstance(title, str):
@@ -806,6 +813,8 @@ def rail(cards, side, title=None, sync=None):
     spec = {"type": "rail", "side": side, "title": title, "cards": [_card(card) for card in cards]}
     if sync:
         spec["sync"] = sync
+    if action is not None:
+        spec["action"] = action
     return spec
 
 
@@ -2188,6 +2197,30 @@ class WriteCtx(Ctx):
         super().__init__(conn, today=today, app=app)
         self._source = app_source(app.id)
         self._written = set()
+        self._shown = None
+
+    def show_file(self, name):
+        """Ask the page to show the app's own report file `name` once this
+        action has succeeded: it opens in OpenFit's report viewer, a popup
+        over the tile, in a sealed frame - the report's own scripts run,
+        but it can't reach OpenFit's page, the user's session or anything
+        on the network. The file must exist by now: saved before, or
+        earlier in this action (save_file()). Called again, the last name
+        wins; an action that then fails shows nothing. App level 8.
+        Raises ValueError, naming `name`, for a name no file could have
+        or no such file of this app's."""
+        name = _file_name(name)
+        row = self._conn.execute(
+            "SELECT 1 FROM app_files WHERE app = ? AND name = ?", (self._files_app(), name)
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"name: no report file {name!r} to show - save it first (ctx.save_file())")
+        self._shown = name
+
+    @property
+    def shown(self):
+        """The report file this action asked to show (show_file()), or None."""
+        return self._shown
 
     @property
     def source(self):

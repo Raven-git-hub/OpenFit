@@ -4004,6 +4004,18 @@ what's parked:
   `failed`, never a loop; `failed` and `updated` still never retried.
   Deploy: Update OpenFit; a version already waiting installs within a
   minute of it.
+  Then the report viewer (app level 8; no migration): a rail's optional
+  `action` makes each card a button sending `{"card": id}` to `handle()`
+  (`.rail-card.act`, role button, Enter or Space too); `ctx.show_file(name)`
+  on the `WriteCtx` names one of the app's own report files - it must
+  exist by then - and the action's reply carries `"show"`, which the page
+  opens in `openReport()`: a popup with the file in a sealed frame
+  (`sandbox="allow-scripts allow-modals"`), served inline by `GET
+  /api/app/<id>/files/<name>/view` with `FILE_VIEW_HEADERS` (a CSP sandbox,
+  `default-src 'none'`, `frame-ancestors 'self'`, no referrer, no-store) -
+  the first time an app's own HTML is on OpenFit's page, so sealed twice;
+  its bar the name, Download and Close. A refused action's error opens in
+  `reportProblem()`. First user: FRMS's Report rail, a trip's report.
   Still to come, in order: L4;
   non-GitHub hosts, HTTPS or token access, and per-user repo visibility
   are out; installing an app with folders

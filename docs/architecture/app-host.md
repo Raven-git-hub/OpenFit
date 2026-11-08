@@ -1511,10 +1511,18 @@ OpenFit refuses it rather than failing on the first save.
 A report - a month's fatigue figures, a trip's rest - is a document the user
 keeps, prints or sends on. An app makes one as **HTML** (C3, app level 6):
 `handle()` builds the text and saves it under a name, and `render()` lists
-what's there and offers each as a download. OpenFit **never displays a
-report**: it always hands it over as a file, which the user opens on their
-own computer. For a PDF, they open the file and use the browser's **Print →
-Save as PDF** - there's no PDF generation on the server. Files live in
+what's there and offers each as a download. From app level 8 an action can
+also **show** one: `ctx.show_file(name)` in `handle()`, and the page opens it
+in the **report viewer** - a popup over the tile, the file in a **sealed
+frame** (`sandbox="allow-scripts allow-modals"` on the frame, and a CSP
+sandbox from its route, `GET /api/app/<id>/files/<name>/view`, with
+`default-src 'none'`): the report's own scripts run - an interactive
+report, its own print button - but in an origin of its own, so it can't
+reach OpenFit's page, the session or the API, and it loads nothing from
+anywhere (styles, scripts, images and fonts inline or `data:`). The viewer's
+bar has the file's name, Download (the same file, saved) and Close. For a
+PDF, the report's own button, or the browser's **Print → Save as PDF** on
+the downloaded file - there's no PDF generation on the server. Files live in
 `tracker.db`'s `app_files` table (migration `012`), not on disk: a file is
 saved inside the action's one transaction, and every backup, download and
 restore carries it.
@@ -1524,6 +1532,8 @@ ctx.save_file(name, html)          # save it, replacing any             (handle(
 ctx.delete_file(name)              # remove it: True if one went        (handle() only)
 ctx.files()                        # [{name, size, updated_at}], by name (render() and handle())
 ctx.download(name, label=None)     # a spec: a button that downloads it
+ctx.show_file(name)                # show it in the report viewer, once the action succeeds (handle() only; level 8)
+ctx.rail(cards, side, ..., action=None)   # action given: each card a button sending {"card": id} (level 8)
 ctx.input(key, action, label="...", kind="button")   # a spec: a button that sends an action
 ```
 

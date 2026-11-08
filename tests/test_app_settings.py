@@ -515,10 +515,10 @@ def handle(ctx, action, payload):
 # ---------- 6. the level ----------
 
 def test_the_app_level_is_7_and_8_waits(tmp_path):
-    assert apps.APP_LEVEL == 7
+    assert apps.APP_LEVEL == 8
     assert load(tmp_path, "", requires=7).requires == 7
-    with pytest.raises(apps.AppError, match="needs OpenFit app level 8; this OpenFit is level 7"):
-        load(tmp_path, "", requires=8)
+    with pytest.raises(apps.AppError, match="needs OpenFit app level 9; this OpenFit is level 8"):
+        load(tmp_path, "", requires=9)
 
 
 # ---------- 7. the page ----------
