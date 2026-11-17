@@ -124,9 +124,12 @@ USER_AGENT = "OpenFit (self-hosted)"
 
 # Only what sync() reads, in the form the moi authorization server takes:
 # Oura's scope names (its docs list spo2 for daily SpO2) under the
-# "extapi:" prefix its tokens carry. No email or personal: nothing here
+# "extapi:" prefix its tokens carry. heart_health, which Oura's docs don't
+# list, is what vO2_max asks for (401 "Token is not authorized access
+# heart_health scope", Nov 2026). No email or personal: nothing here
 # reads them.
-SCOPES = ["extapi:daily", "extapi:heartrate", "extapi:workout", "extapi:spo2"]
+SCOPES = ["extapi:daily", "extapi:heartrate", "extapi:workout", "extapi:spo2",
+          "extapi:heart_health"]
 
 # A stored access token is reused until it is this close to expiring.
 # Oura's last about 30 days (expires_in); refreshing only near the end
@@ -334,9 +337,12 @@ class OuraPlugin(SyncPlugin):
                 print(f"[oura] {collection} fetch failed: {e}")
                 return []
             kept = [d for d in docs if isinstance(d, dict) and first <= str(d.get("day")) <= last]
-            if len(kept) < len(docs):
-                print(f"[oura] {collection}: dropped {len(docs) - len(kept)} documents dated "
-                      f"outside {first} to {last}")
+            # One line a type, every sync, so the log says what Oura sent:
+            # how many documents, which days, and how many fell outside.
+            days = sorted({str(d.get("day")) for d in kept})
+            span = f"{days[0]} to {days[-1]}" if days else "no days"
+            print(f"[oura] {collection}: {len(docs)} documents for {first} to {last} "
+                  f"({span}){f'; dropped {len(docs) - len(kept)} dated outside' if len(kept) < len(docs) else ''}")
             return kept
 
         daily = {}  # date -> {metric: value}
@@ -362,6 +368,12 @@ class OuraPlugin(SyncPlugin):
                 put(doc["day"], metric, raw, f"daily_activity.{field}")
 
         sleep_docs = fetch("sleep")
+        if sleep_docs:
+            types = {}
+            for doc in sleep_docs:
+                types[str(doc.get("type"))] = types.get(str(doc.get("type")), 0) + 1
+            print(f"[oura] sleep periods by type: {dict(sorted(types.items()))} "
+                  f"(filed: {', '.join(FILED_SLEEP_TYPES)})")
         sessions = []
         for doc in sleep_docs:
             if doc.get("type") not in FILED_SLEEP_TYPES:
@@ -653,7 +665,7 @@ def _heart_rate(api, lo, hi):
     """heartrate rows from lo to hi, MAX_SERIES_DAYS a request, as
     [(ts, bpm)]: each at its own time, a positive whole number. A window
     that fails is logged and costs only its own span."""
-    samples, rejected = [], 0
+    samples, rejected, rows_seen = [], 0, 0
     start = lo
     while start < hi:
         stop = min(start + timedelta(days=MAX_SERIES_DAYS), hi)
@@ -667,6 +679,7 @@ def _heart_rate(api, lo, hi):
         except Exception as e:
             print(f"[oura] heartrate fetch failed for {iso_utc(start)} to {iso_utc(stop)}: {e}")
             rows = []
+        rows_seen += len(rows)
         for row in rows:
             moment = _moment(row.get("timestamp")) if isinstance(row, dict) else None
             bpm = row.get("bpm") if isinstance(row, dict) else None
@@ -675,6 +688,8 @@ def _heart_rate(api, lo, hi):
                 continue
             samples.append((iso_utc(moment), round(bpm)))
         start = stop
+    print(f"[oura] heartrate: {rows_seen} rows for {iso_utc(lo)} to {iso_utc(hi)}, "
+          f"{len(samples)} filed")
     if rejected:
         print(f"[oura] heartrate: {rejected} rows not filed - no usable time, no positive "
               f"bpm, or outside the window")

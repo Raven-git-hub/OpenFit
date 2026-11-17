@@ -43,7 +43,7 @@ from plugins.oura.plugin import MAX_SERIES_DAYS, SCOPES, TOKEN_URLS, OuraPlugin
 MOI_TOKEN = "https://moi.ouraring.com/oauth/v2/ext/oauth-token"
 ROUTE_SCOPES = {
     "daily_activity": "daily", "sleep": "daily", "daily_readiness": "daily",
-    "vO2_max": "daily", "daily_spo2": "spo2", "heartrate": "heartrate", "workout": "workout",
+    "vO2_max": "heart_health", "daily_spo2": "spo2", "heartrate": "heartrate", "workout": "workout",
 }
 LEGACY_TOKEN = "https://api.ouraring.com/oauth/token"
 
@@ -247,7 +247,8 @@ def test_the_consent_url_asks_for_the_scopes_read_and_carries_pkce():
     assert params["code_challenge"] == ["challenge-123"]
     assert params["code_challenge_method"] == ["S256"]
     assert params["prompt"] == ["consent"]
-    assert SCOPES == ["extapi:daily", "extapi:heartrate", "extapi:workout", "extapi:spo2"]
+    assert SCOPES == ["extapi:daily", "extapi:heartrate", "extapi:workout", "extapi:spo2",
+                      "extapi:heart_health"]
     # Nothing the plugin doesn't read, and never the secret in a URL.
     assert not {"email", "personal", "extapi:email", "extapi:personal"} & set(SCOPES)
     assert "oura-secret" not in url
@@ -652,7 +653,7 @@ def test_a_resync_replaces_rather_than_duplicates(conn, oura):
 
 
 def test_a_scope_not_granted_costs_only_its_own_data(conn, oura):
-    oura.granted = {"daily", "heartrate", "workout"}  # no spo2
+    oura.granted = {"daily", "heartrate", "workout", "heart_health"}  # no spo2
     oura.docs["daily_activity"] = [activity("2026-11-16", steps=500)]
     oura.docs["daily_spo2"] = [{"day": "2026-11-16", "spo2_percentage": {"average": 97}}]
     sync(conn)
@@ -684,3 +685,16 @@ def test_a_failed_manual_sync_is_logged(client, monkeypatch, capsys):
     resp = client.post("/api/sync/oura")
     assert resp.status_code == 500
     assert "[sync] oura failed: Oura granted none of the data" in capsys.readouterr().out
+
+
+def test_each_type_logs_what_oura_sent(conn, oura, capsys):
+    oura.docs["daily_activity"] = [activity("2026-11-16", steps=1), activity("2026-11-01", steps=2)]
+    oura.docs["sleep"] = [night("2026-11-16"), night("2026-11-15", "rest")]
+    oura.hr = [{"timestamp": "2026-11-16T03:00:00+00:00", "bpm": 61}]
+    sync(conn)
+    out = capsys.readouterr().out
+    assert ("[oura] daily_activity: 2 documents for 2026-11-11 to 2026-11-17 "
+            "(2026-11-16 to 2026-11-16); dropped 1 dated outside") in out
+    assert "[oura] workout: 0 documents for 2026-11-11 to 2026-11-17 (no days)" in out
+    assert "[oura] sleep periods by type: {'long_sleep': 1, 'rest': 1}" in out
+    assert "[oura] heartrate: 1 rows for 2026-11-11T00:00:00Z to 2026-11-17T12:00:00Z, 1 filed" in out
