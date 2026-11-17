@@ -2905,7 +2905,13 @@ them), what's next and what's parked.
   a refresh's rotated tokens go through `replace_credentials()` before any
   data request, and a refused CAS (re-authorised or removed meanwhile)
   fails the sync. A 401 refreshes once per sync and retries; a second 401
-  fails it. Every request carries a User-Agent (Oura 403s without). Scopes:
+  fails it. Token requests (exchange and refresh, credentials in the form
+  body) go to `TOKEN_URLS` in order: `moi.ouraring.com/oauth/v2/ext/oauth-token`
+  first — an app from Oura's newer developer portal (its consent redirect
+  carries `iss=https://moi.ouraring.com/...`) gets `invalid_client` from the
+  documented `api.ouraring.com/oauth/token` — then that legacy one as a
+  fallback. Order matters: Oura burns an authorization code the first
+  endpoint refuses. Every request carries a User-Agent (Oura 403s without). Scopes:
   `SCOPES` = daily, heartrate, workout, spo2 (Oura's docs say `spo2Daily`;
   integrators report `spo2` — the one line to change). Each type is its own
   fetch; a failed one costs only its data. Mappings confirmed against the
