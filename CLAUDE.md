@@ -3324,7 +3324,12 @@ them), what's next and what's parked.
   credentials wait server-side in `_oauth_pending`, 10 minutes), then
   `.../oauth/finish` `{code}` (the plugin's `oauth_exchange()`, stored via
   `_store_account()`; no refresh token back → 400 with its
-  `oauth_refresh_help`). `start_oauth` fills any manifest field the body
+  `oauth_refresh_help`). Both steps send the plugin's
+  `oauth_redirect_uri` — `OAUTH_REDIRECT_URI` (`http://127.0.0.1:9109/`,
+  `app/plugins/base.py`) unless the plugin overrides it; Oura's is
+  `http://localhost:9109/`, its app form taking plain http only for
+  `localhost`. Either is a loopback port OpenFit never serves, so the code
+  waits in the address bar to be pasted. `start_oauth` fills any manifest field the body
   leaves out from `plugin.get_credentials(conn)` (the stored account, else
   the env) — the body wins where it has a value, only manifest fields are
   taken (never the old refresh token), and the missing-fields 400 runs on

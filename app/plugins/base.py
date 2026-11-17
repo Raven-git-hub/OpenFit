@@ -23,8 +23,9 @@ from datetime import timezone
 from crypto import decrypt, encrypt
 from metrics import SERIES_METRICS, SESSION_KINDS, series_unit_for, unit_for
 
-# Where a provider sends the browser back after consent, for every
-# add_flow="oauth" plugin.
+# Where a provider sends the browser back after consent: the default for
+# every add_flow="oauth" plugin (SyncPlugin.oauth_redirect_uri overrides it
+# for a provider that wants another spelling of the loopback).
 #
 # It is a loopback address this app deliberately does NOT serve: the
 # browser lands on a "can't connect" page with ?code=... sitting in the
@@ -223,6 +224,13 @@ class SyncPlugin(ABC):
     # provider-specific ("revoke access over there, then retry"). Left
     # blank, main.py falls back to a generic version of the same advice.
     oauth_refresh_help: str = ""
+
+    # The redirect URI this provider is sent to and the token exchange
+    # repeats: OAUTH_REDIRECT_URI unless the provider can't register that.
+    # Oura's app form, for one, takes plain http only for the host
+    # "localhost", not 127.0.0.1. Same idea either way - a loopback port
+    # OpenFit doesn't serve, so the code waits in the address bar.
+    oauth_redirect_uri: str = OAUTH_REDIRECT_URI
 
     # Env var names this plugin needs to function. Superseded by `fields`
     # for anything with a manifest; kept for plugins that have none.

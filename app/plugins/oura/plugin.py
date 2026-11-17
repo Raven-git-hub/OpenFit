@@ -3,8 +3,9 @@ Oura sync plugin (Oura API v2, https://api.ouraring.com/v2/usercollection).
 
 Auth is OAuth 2.0 only - Oura retired personal access tokens in December
 2025. You register an API application at cloud.ouraring.com/oauth/applications
-with OpenFit's loopback redirect (OAUTH_REDIRECT_URI in plugins/base.py,
-http://127.0.0.1:9109/) as its redirect URI, then add the ring in the UI:
+with http://localhost:9109/ as its redirect URI (OuraPlugin.oauth_redirect_uri:
+Oura's form takes plain http only for "localhost", so not the
+127.0.0.1 spelling other OAuth sources use), then add the ring in the UI:
 client id and secret, approve on Oura's consent screen, paste back the
 address it sends you to. Gen3 and newer rings need an active Oura
 Membership for the API to return data.
@@ -189,9 +190,11 @@ class OuraPlugin(SyncPlugin):
     id = "oura"
     name = "Oura Ring"
     add_flow = "oauth"
+    # Oura accepts plain http for "localhost" only - never 127.0.0.1.
+    oauth_redirect_uri = "http://localhost:9109/"
     add_note = (
         "At cloud.ouraring.com/oauth/applications, create an API application "
-        "and add http://127.0.0.1:9109/ as its redirect URI, exactly. Enable "
+        "and add http://localhost:9109/ as its redirect URI, exactly. Enable "
         "the daily, heartrate, workout and SpO2 scopes. Gen3 and newer rings "
         "need an active Oura Membership for the API to return data."
     )
