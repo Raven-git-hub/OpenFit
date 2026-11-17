@@ -38,7 +38,10 @@ from metrics import (
 )
 from plugins import PLUGINS
 from plugins.base import OAUTH_REDIRECT_URI
-from plugins.oura.plugin import MAX_SERIES_DAYS, SCOPES, OuraPlugin
+from plugins.oura.plugin import MAX_SERIES_DAYS, SCOPES, TOKEN_URLS, OuraPlugin
+
+MOI_TOKEN = "https://moi.ouraring.com/oauth/v2/ext/oauth-token"
+LEGACY_TOKEN = "https://api.ouraring.com/oauth/token"
 
 TODAY = date(2026, 11, 17)
 NOW = datetime(2026, 11, 17, 12, 0, tzinfo=timezone.utc)
@@ -83,11 +86,23 @@ class FakeOura:
         self.issued = 0
         self.expires_in = 2_592_000
         self.token_posts = []
+        self.token_urls = []
+        # Which token endpoints know this client: a new-portal app is
+        # served by moi and refused (invalid_client) by the legacy one.
+        self.token_endpoints = {MOI_TOKEN}
         self.gets = []
 
     def post(self, url, data=None, headers=None, timeout=None):
-        assert url == "https://api.ouraring.com/oauth/token"
+        assert url in TOKEN_URLS
         assert headers and headers.get("User-Agent")
+        self.token_urls.append(url)
+        if url not in self.token_endpoints:
+            if data["grant_type"] == "authorization_code":
+                self.burned = True  # Oura revokes a code it refused
+            return FakeResponse({"status": 401, "error": "invalid_client",
+                                 "error_description": "Invalid client"}, 401)
+        if data["grant_type"] == "authorization_code" and getattr(self, "burned", False):
+            return FakeResponse({"error": "invalid_grant"}, 400)
         self.token_posts.append(dict(data))
         if data["grant_type"] == "refresh_token":
             if data["refresh_token"] not in self.live_refresh:
@@ -256,6 +271,35 @@ def test_adding_through_the_routes_stores_both_tokens(client, db_path, monkeypat
 
 
 # ---------- tokens ----------
+
+
+def test_the_new_portal_token_endpoint_is_asked_first():
+    # A rejected code is burned, so the endpoint that serves new-portal
+    # apps - Andy's, and every app made since - must come first.
+    assert TOKEN_URLS == (MOI_TOKEN, LEGACY_TOKEN)
+
+
+def test_an_exchange_goes_to_moi_and_never_touches_legacy(conn, oura, pin_clock):
+    creds = OuraPlugin().oauth_exchange(CLIENT, "code-1", "verifier", "http://localhost:9109/")
+    assert oura.token_urls == [MOI_TOKEN]
+    assert creds["refresh_token"] == "RT1"
+
+
+def test_a_client_moi_does_not_know_falls_back_to_legacy(conn, oura):
+    oura.token_endpoints = {LEGACY_TOKEN}
+    creds = stored(conn)
+    store(conn, {**creds, "access_token_expires_at": 0})
+    sync(conn)
+    assert oura.token_urls == [MOI_TOKEN, LEGACY_TOKEN]
+    assert stored(conn)["refresh_token"] == "RT1"
+
+
+def test_a_code_refused_everywhere_says_so_and_to_start_over(oura):
+    oura.token_endpoints = set()
+    with pytest.raises(RuntimeError) as e:
+        OuraPlugin().oauth_exchange(CLIENT, "code-1", "verifier", "http://localhost:9109/")
+    assert "invalid_client" in str(e.value) and "new authorization link" in str(e.value)
+    assert oura.token_urls == [MOI_TOKEN, LEGACY_TOKEN]
 
 
 def test_a_stored_access_token_with_time_left_is_reused(conn, oura):

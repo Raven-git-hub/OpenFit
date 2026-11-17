@@ -102,7 +102,19 @@ from metrics import (
 from ..base import SyncPlugin, iso_utc, write_metric, write_sample, write_session
 
 AUTH_URL = "https://cloud.ouraring.com/oauth/authorize"
-TOKEN_URL = "https://api.ouraring.com/oauth/token"
+# Where codes and refresh tokens are traded, in the order tried. Oura's
+# docs name only api.ouraring.com/oauth/token, but an application made in
+# its newer developer portal (the consent redirect carries
+# iss=https://moi.ouraring.com/oauth/v2/ext/oauth-anonymous) is refused
+# there with invalid_client, and is served by the moi endpoint - which
+# other integrations report serves the older applications too. So moi
+# first: Oura burns an authorization code the first endpoint rejects, so
+# the endpoint most likely to accept must go first. The legacy one stays
+# as a fallback for a client moi doesn't know.
+TOKEN_URLS = (
+    "https://moi.ouraring.com/oauth/v2/ext/oauth-token",
+    "https://api.ouraring.com/oauth/token",
+)
 API_BASE = "https://api.ouraring.com/v2/usercollection"
 USER_AGENT = "OpenFit (self-hosted)"
 
@@ -223,21 +235,19 @@ class OuraPlugin(SyncPlugin):
         return AUTH_URL + "?" + urllib.parse.urlencode(params)
 
     def oauth_exchange(self, credentials, code, code_verifier, redirect_uri):
-        resp = requests.post(
-            TOKEN_URL,
-            data={
-                "grant_type": "authorization_code",
-                "code": code,
-                "redirect_uri": redirect_uri,
-                "client_id": credentials.get("client_id"),
-                "client_secret": credentials.get("client_secret"),
-                "code_verifier": code_verifier,
-            },
-            headers={"User-Agent": USER_AGENT},
-            timeout=15,
-        )
-        if not resp.ok:
-            raise RuntimeError(f"Oura rejected the authorization code: {resp.text}")
+        resp, refusals = _post_token({
+            "grant_type": "authorization_code",
+            "code": code,
+            "redirect_uri": redirect_uri,
+            "client_id": credentials.get("client_id"),
+            "client_secret": credentials.get("client_secret"),
+            "code_verifier": code_verifier,
+        })
+        if resp is None:
+            raise RuntimeError(
+                f"Oura rejected the authorization code ({refusals}). A code works "
+                "once - get a new authorization link before trying again"
+            )
         tokens = resp.json()
         # Kept beside the refresh token: the first access token lasts
         # weeks, and spending the refresh token on the first sync would be
@@ -271,20 +281,15 @@ class OuraPlugin(SyncPlugin):
                 and expires_at - ACCESS_TOKEN_MARGIN_SECONDS > now):
             return token
 
-        resp = requests.post(
-            TOKEN_URL,
-            data={
-                "grant_type": "refresh_token",
-                "refresh_token": stored["refresh_token"],
-                "client_id": stored.get("client_id"),
-                "client_secret": stored.get("client_secret"),
-            },
-            headers={"User-Agent": USER_AGENT},
-            timeout=15,
-        )
-        if not resp.ok:
+        resp, refusals = _post_token({
+            "grant_type": "refresh_token",
+            "refresh_token": stored["refresh_token"],
+            "client_id": stored.get("client_id"),
+            "client_secret": stored.get("client_secret"),
+        })
+        if resp is None:
             raise RuntimeError(
-                f"Oura refused the refresh token ({resp.status_code}: {resp.text[:200]}) - "
+                f"Oura refused the refresh token ({refusals}) - "
                 "use Re-authenticate in the Oura source's Settings"
             )
         fields = _token_fields(resp.json(), stored["refresh_token"])
@@ -442,6 +447,31 @@ class _Api:
                 return items
         print(f"[oura] {path}: stopped after {MAX_PAGES} pages with more still to come")
         return items
+
+
+# ---- tokens ----
+
+
+def _post_token(data):
+    """POST a token request to each of TOKEN_URLS in turn, until one
+    accepts. Returns (response, None) for the first that does, else (None,
+    what each said). A refusal or a failed request moves on to the next;
+    nothing here raises. Credentials go in the form body, which Oura
+    documents for both endpoints."""
+    refusals = []
+    for url in TOKEN_URLS:
+        try:
+            resp = requests.post(url, data=data, headers={"User-Agent": USER_AGENT},
+                                 timeout=15)
+        except Exception as e:
+            refusals.append(f"{url}: {e}")
+            continue
+        if resp.ok:
+            if refusals:
+                print(f"[oura] token request accepted by {url} after: {'; '.join(refusals)}")
+            return resp, None
+        refusals.append(f"{url}: {resp.status_code} {resp.text[:200]}")
+    return None, "; ".join(refusals)
 
 
 # ---- readers ----
