@@ -20,7 +20,7 @@ import os
 from abc import ABC, abstractmethod
 from datetime import timezone
 
-from crypto import decrypt
+from crypto import decrypt, encrypt
 from metrics import SERIES_METRICS, SESSION_KINDS, series_unit_for, unit_for
 
 # Where a provider sends the browser back after consent, for every
@@ -245,6 +245,39 @@ class SyncPlugin(ABC):
                 out[field["key"]] = value
         return out
 
+    def _stored_row(self, conn):
+        """(ciphertext, dict) for this plugin's accounts row, or (None, None).
+
+        The dict is None too when the row can't be decrypted or isn't a
+        JSON object - logged, never raised.
+        """
+        row = conn.execute(
+            "SELECT credentials FROM accounts WHERE plugin_id = ?", (self.id,)
+        ).fetchone()
+        if not row or not row[0]:
+            return None, None
+        try:
+            stored = json.loads(decrypt(row[0]))
+        except Exception as e:
+            # A lost or rotated /data/.secret_key makes every
+            # stored credential undecryptable. That must not 500
+            # the connectors API - the UI is where you'd remove
+            # and re-add the device to fix it.
+            print(
+                f"[{self.id}] stored credentials could not be read ({e}) - "
+                "remove and re-add this device"
+            )
+            return row[0], None
+        return row[0], stored if isinstance(stored, dict) else None
+
+    def stored_credentials(self, conn) -> dict | None:
+        """The stored account's credentials exactly as stored, or None.
+
+        No env fill, unlike get_credentials(): this is the blob
+        replace_credentials() compares against.
+        """
+        return self._stored_row(conn)[1]
+
     def get_credentials(self, conn=None) -> dict:
         """This plugin's credentials: the stored account, else the env.
 
@@ -253,28 +286,42 @@ class SyncPlugin(ABC):
         vars named in the manifest.
         """
         if conn is not None:
-            row = conn.execute(
-                "SELECT credentials FROM accounts WHERE plugin_id = ?", (self.id,)
-            ).fetchone()
-            if row and row[0]:
-                try:
-                    stored = json.loads(decrypt(row[0]))
-                except Exception as e:
-                    # A lost or rotated /data/.secret_key makes every
-                    # stored credential undecryptable. That must not 500
-                    # the connectors API - the UI is where you'd remove
-                    # and re-add the device to fix it.
-                    print(
-                        f"[{self.id}] stored credentials could not be read ({e}) - "
-                        "remove and re-add this device"
-                    )
-                    stored = None
-                if isinstance(stored, dict):
-                    # An env var still fills a gap the stored account
-                    # doesn't cover - e.g. a field added to the manifest
-                    # after the device was connected.
-                    return {**self.credentials_from_env(), **stored}
+            stored = self.stored_credentials(conn)
+            if stored is not None:
+                # An env var still fills a gap the stored account
+                # doesn't cover - e.g. a field added to the manifest
+                # after the device was connected.
+                return {**self.credentials_from_env(), **stored}
         return self.credentials_from_env()
+
+    def replace_credentials(self, conn, expected: dict, updated: dict) -> bool:
+        """Store `updated` as this plugin's credentials, if they are still `expected`.
+
+        For a provider that rotates what it hands out - a refresh token
+        good for one use, as Oura's is - so the plugin must keep the new
+        one or lose the connection. `expected` is the blob as
+        stored_credentials() read it before the plugin spent it.
+
+        Compare-and-swap: the row is replaced only while it still holds
+        `expected`, so a sync can never overwrite a re-authorisation that
+        landed while it ran, and never brings back an account removed
+        meanwhile (there is no insert - no row, nothing written). Returns
+        whether it wrote.
+
+        Commits at once, apart from sync()'s batch: a rotated token that
+        isn't on disk before the data fetches is lost if one of them
+        fails. So call it before writing any readings on `conn`.
+        Never reschedules - the account is the same connection.
+        """
+        ciphertext, stored = self._stored_row(conn)
+        if ciphertext is None or stored != expected:
+            return False
+        cur = conn.execute(
+            "UPDATE accounts SET credentials = ? WHERE plugin_id = ? AND credentials = ?",
+            (encrypt(json.dumps(updated)), self.id, ciphertext),
+        )
+        conn.commit()
+        return cur.rowcount == 1
 
     def missing_fields(self, credentials: dict) -> list[dict]:
         """Required manifest fields with no value in `credentials`."""

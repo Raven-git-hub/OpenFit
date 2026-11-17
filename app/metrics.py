@@ -81,6 +81,7 @@ HRV_MS = "hrv_ms"
 SPO2_PCT = "spo2_pct"
 RESPIRATORY_RATE_BRPM = "respiratory_rate_brpm"
 SKIN_TEMPERATURE = "skin_temperature"
+SKIN_TEMPERATURE_DEVIATION = "skin_temperature_deviation"
 BODY_TEMPERATURE = "body_temperature"
 BLOOD_PRESSURE_SYSTOLIC = "blood_pressure_systolic"
 BLOOD_PRESSURE_DIASTOLIC = "blood_pressure_diastolic"
@@ -110,7 +111,10 @@ MOOD = "mood"
 # The range is what a reading can plausibly be, in its unit, both ends
 # inclusive (see PLAUSIBLE_RANGES). blood_glucose is in mmol/L - a source
 # reporting mg/dL converts - and is INSTANT until a CGM source makes it a
-# series. skin_temperature is absolute; visceral_fat is a unitless rating.
+# series. skin_temperature is absolute; skin_temperature_deviation is the
+# night's difference from the source's own baseline for the sleeper (law 3:
+# a different measurement from an absolute reading, never converted into
+# one); visceral_fat is a unitless rating.
 METRIC_DEFS = {
     STEPS:                    ("count",     "Activity",              DAILY,   (0, 100_000)),
     DISTANCE_M:               ("m",         "Activity",              DAILY,   (0, 300_000)),
@@ -128,6 +132,7 @@ METRIC_DEFS = {
     SPO2_PCT:                 ("%",         "Vitals",                DAILY,   (50, 100)),
     RESPIRATORY_RATE_BRPM:    ("brpm",      "Vitals",                DAILY,   (3, 60)),
     SKIN_TEMPERATURE:         ("°C",        "Vitals",                DAILY,   (20, 45)),
+    SKIN_TEMPERATURE_DEVIATION: ("°C",      "Vitals",                DAILY,   (-10, 10)),
     BODY_TEMPERATURE:         ("°C",        "Vitals",                INSTANT, (30, 45)),
     BLOOD_PRESSURE_SYSTOLIC:  ("mmHg",      "Vitals",                INSTANT, (50, 250)),
     BLOOD_PRESSURE_DIASTOLIC: ("mmHg",      "Vitals",                INSTANT, (30, 150)),
@@ -260,6 +265,8 @@ def series_unit_for(metric):
 #   sleep    asleep_minutes, light_minutes, deep_minutes, rem_minutes,
 #            awake_minutes - all whole minutes, the source's own totals
 #            (never recomputed from the timeline below);
+#            latency_minutes (whole minutes from going to bed to
+#            falling asleep, as the source reports it);
 #            main_sleep (bool - the source's main sleep of the day, not a
 #            nap); utc_offset_minutes (int - the offset the device kept
 #            when the sleep began, e.g. 480 for UTC+8);

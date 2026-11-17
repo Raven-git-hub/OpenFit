@@ -56,6 +56,7 @@ V2_TABLE = {
     "spo2_pct": ("%", "Vitals", "daily", (50, 100)),
     "respiratory_rate_brpm": ("brpm", "Vitals", "daily", (3, 60)),
     "skin_temperature": ("°C", "Vitals", "daily", (20, 45)),
+    "skin_temperature_deviation": ("°C", "Vitals", "daily", (-10, 10)),
     "body_temperature": ("°C", "Vitals", "instant", (30, 45)),
     "blood_pressure_systolic": ("mmHg", "Vitals", "instant", (50, 250)),
     "blood_pressure_diastolic": ("mmHg", "Vitals", "instant", (30, 150)),

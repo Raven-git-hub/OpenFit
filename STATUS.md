@@ -16,7 +16,7 @@ except each device plugin's call to its own API. The why:
 
 ## What's built
 
-**Data layer.** Garmin and Google Health pull plugins on a per-source
+**Data layer.** Garmin, Google Health and Oura pull plugins on a per-source
 schedule, and a webhook (`POST /api/webhook/<token>`) for anything that
 pushes. Readings land in three grains: daily and instant `metrics`, interval
 `sessions` (sleep, workouts, duties) and intraday `samples`, all keyed by the
