@@ -41,6 +41,10 @@ from plugins.base import OAUTH_REDIRECT_URI
 from plugins.oura.plugin import MAX_SERIES_DAYS, SCOPES, TOKEN_URLS, OuraPlugin
 
 MOI_TOKEN = "https://moi.ouraring.com/oauth/v2/ext/oauth-token"
+ROUTE_SCOPES = {
+    "daily_activity": "daily", "sleep": "daily", "daily_readiness": "daily",
+    "vO2_max": "daily", "daily_spo2": "spo2", "heartrate": "heartrate", "workout": "workout",
+}
 LEGACY_TOKEN = "https://api.ouraring.com/oauth/token"
 
 TODAY = date(2026, 11, 17)
@@ -90,6 +94,9 @@ class FakeOura:
         # Which token endpoints know this client: a new-portal app is
         # served by moi and refused (invalid_client) by the legacy one.
         self.token_endpoints = {MOI_TOKEN}
+        # The scopes the access tokens carry; None is every one. A route
+        # whose scope is missing answers 401 saying so, as Oura does.
+        self.granted = None
         self.gets = []
 
     def post(self, url, data=None, headers=None, timeout=None):
@@ -121,6 +128,9 @@ class FakeOura:
         self.gets.append((path, dict(params or {})))
         if headers["Authorization"].removeprefix("Bearer ") not in self.live_access:
             return FakeResponse({"detail": "unauthorized"}, 401)
+        scope = ROUTE_SCOPES[path]
+        if self.granted is not None and scope not in self.granted:
+            return FakeResponse({"detail": f"Token is not authorized access {scope} scope"}, 401)
         if path in self.fail:
             return FakeResponse({"detail": "boom"}, 500)
         if path == "heartrate":
@@ -226,7 +236,9 @@ def test_oura_is_a_registered_oauth_connector():
 
 def test_the_consent_url_asks_for_the_scopes_read_and_carries_pkce():
     url = OuraPlugin().oauth_auth_url(CLIENT, "http://localhost:9109/", "challenge-123")
-    assert url.startswith("https://cloud.ouraring.com/oauth/authorize?")
+    # moi directly: cloud.ouraring.com/oauth/authorize forwards there but
+    # drops the scope, and its tokens are refused by every data route.
+    assert url.startswith("https://moi.ouraring.com/oauth/v2/ext/oauth-authorize?")
     params = urllib.parse.parse_qs(urllib.parse.urlsplit(url).query)
     assert params["response_type"] == ["code"]
     assert params["client_id"] == ["oura-client"]
@@ -234,8 +246,10 @@ def test_the_consent_url_asks_for_the_scopes_read_and_carries_pkce():
     assert params["scope"] == [" ".join(SCOPES)]
     assert params["code_challenge"] == ["challenge-123"]
     assert params["code_challenge_method"] == ["S256"]
+    assert params["prompt"] == ["consent"]
+    assert SCOPES == ["extapi:daily", "extapi:heartrate", "extapi:workout", "extapi:spo2"]
     # Nothing the plugin doesn't read, and never the secret in a URL.
-    assert not {"email", "personal"} & set(SCOPES)
+    assert not {"email", "personal", "extapi:email", "extapi:personal"} & set(SCOPES)
     assert "oura-secret" not in url
 
 
@@ -632,3 +646,41 @@ def test_a_resync_replaces_rather_than_duplicates(conn, oura):
     assert readings(conn, STEPS) == {"2026-11-16": 20}
     assert len(sessions(conn, "sleep")) == 1
     assert conn.execute("SELECT COUNT(*) FROM samples WHERE source='oura'").fetchone()[0] == 1
+
+
+# ---------- scopes ----------
+
+
+def test_a_scope_not_granted_costs_only_its_own_data(conn, oura):
+    oura.granted = {"daily", "heartrate", "workout"}  # no spo2
+    oura.docs["daily_activity"] = [activity("2026-11-16", steps=500)]
+    oura.docs["daily_spo2"] = [{"day": "2026-11-16", "spo2_percentage": {"average": 97}}]
+    sync(conn)
+    assert readings(conn, STEPS) == {"2026-11-16": 500}
+    assert readings(conn, SPO2_PCT) == {}
+    # A refresh can't add a scope, so none is spent on one.
+    assert oura.token_posts == []
+
+
+def test_a_token_with_no_scopes_fails_the_sync_saying_so(conn, oura):
+    oura.granted = set()
+    oura.docs["daily_activity"] = [activity("2026-11-16", steps=500)]
+    with pytest.raises(RuntimeError, match="granted none.*Re-authenticate"):
+        sync(conn)
+    assert oura.token_posts == []
+    assert readings(conn, STEPS) == {}
+
+
+def test_a_quiet_window_is_not_a_scope_failure(conn, oura):
+    # Every scope granted, nothing recorded: a quiet week, not an error.
+    assert sync(conn) == 0
+
+
+def test_a_failed_manual_sync_is_logged(client, monkeypatch, capsys):
+    def broken(conn, days):
+        raise RuntimeError("Oura granted none of the data")
+
+    monkeypatch.setattr(PLUGINS["oura"], "sync", broken)
+    resp = client.post("/api/sync/oura")
+    assert resp.status_code == 500
+    assert "[sync] oura failed: Oura granted none of the data" in capsys.readouterr().out

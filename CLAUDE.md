@@ -69,7 +69,10 @@ them), what's next and what's parked.
   with `acquire(blocking=False)`, released in a `finally`) guards
   `POST /api/sync/<plugin>`, `scheduled_sync()` and `sync_one()`. A manual
   sync that finds one running gets a 409 and starts nothing:
-  `{"ok": false, "error": "a sync is already in progress"}`. A scheduled tick
+  `{"ok": false, "error": "a sync is already in progress"}`. A manual sync
+  that raises returns 500 `{"ok": false, "error"}` and logs
+  `[sync] <plugin> failed: <error>` (the page shows the error only in the
+  button's tooltip). A scheduled tick
   that finds one logs `[scheduler] sync already running, skipping` (plus the
   plugin id, for a plugin's own tick) and returns.
   The scheduler (`start_scheduler()`, stashed in the module-level
@@ -2911,11 +2914,20 @@ them), what's next and what's parked.
   carries `iss=https://moi.ouraring.com/...`) gets `invalid_client` from the
   documented `api.ouraring.com/oauth/token` — then that legacy one as a
   fallback. Order matters: Oura burns an authorization code the first
-  endpoint refuses. Every request carries a User-Agent (Oura 403s without). Scopes:
-  `SCOPES` = daily, heartrate, workout, spo2 (Oura's docs say `spo2Daily`;
-  integrators report `spo2` — the one line to change). Each type is its own
-  fetch; a failed one costs only its data. Mappings confirmed against the
-  OpenAPI spec (1.37), not yet a real sync.
+  endpoint refuses. Every request carries a User-Agent (Oura 403s without).
+  Consent goes straight to `AUTH_URL` =
+  `moi.ouraring.com/oauth/v2/ext/oauth-authorize` with `prompt=consent`: the
+  documented `cloud.ouraring.com/oauth/authorize` forwards there but drops
+  the scope, and its tokens are refused by every data route (401 "Token is
+  not authorized access daily scope" — met on Andy's account, Nov 2026).
+  `SCOPES` = `extapi:daily`, `extapi:heartrate`, `extapi:workout`,
+  `extapi:spo2`. A 401 whose body names a scope (`_scope_refusal()`) is no
+  bad token: it costs only that type, logged with how to fix it, and spends
+  no refresh; a sync where every type answered so and nothing came back
+  raises ("granted none of the data… Re-authenticate"), so the source
+  fails instead of reading synced. Each type is its own fetch; a failed one
+  costs only its data. Mappings confirmed against the OpenAPI spec (1.37),
+  not yet a real sync.
   Migration `005` unpivoted the old wide `activity` table into it and dropped
   `activity`; migration `006` moved the old `weights` table in as `weight_kg`
   readings under source `manual` (hand entry; `synced_at` NULL for migrated
