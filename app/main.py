@@ -2670,6 +2670,10 @@ def trigger_sync(plugin_id):
             conn.close()
         return jsonify({"ok": True, "days_written": n})
     except Exception as e:
+        # Logged as well as returned: the page shows it only in the
+        # button's tooltip, and the server log is where a failed sync is
+        # looked for.
+        print(f"[sync] {plugin_id} failed: {e}")
         return jsonify({"ok": False, "error": str(e)}), 500
     finally:
         _sync_lock.release()

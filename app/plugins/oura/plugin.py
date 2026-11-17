@@ -101,7 +101,11 @@ from metrics import (
 
 from ..base import SyncPlugin, iso_utc, write_metric, write_sample, write_session
 
-AUTH_URL = "https://cloud.ouraring.com/oauth/authorize"
+# Oura's newer authorization server. The documented
+# cloud.ouraring.com/oauth/authorize still answers, but forwards here
+# dropping the scope, and the tokens that come of it are refused by every
+# data route ("Token is not authorized access daily scope").
+AUTH_URL = "https://moi.ouraring.com/oauth/v2/ext/oauth-authorize"
 # Where codes and refresh tokens are traded, in the order tried. Oura's
 # docs name only api.ouraring.com/oauth/token, but an application made in
 # its newer developer portal (the consent redirect carries
@@ -118,11 +122,11 @@ TOKEN_URLS = (
 API_BASE = "https://api.ouraring.com/v2/usercollection"
 USER_AGENT = "OpenFit (self-hosted)"
 
-# Only what sync() reads. Oura's docs name the SpO2 scope spo2Daily, but
-# integrators who use it report the authorize endpoint wants "spo2"; if
-# consent rejects it, this is the one line to change. No email or
-# personal: nothing here reads them.
-SCOPES = ["daily", "heartrate", "workout", "spo2"]
+# Only what sync() reads, in the form the moi authorization server takes:
+# Oura's scope names (its docs list spo2 for daily SpO2) under the
+# "extapi:" prefix its tokens carry. No email or personal: nothing here
+# reads them.
+SCOPES = ["extapi:daily", "extapi:heartrate", "extapi:workout", "extapi:spo2"]
 
 # A stored access token is reused until it is this close to expiring.
 # Oura's last about 30 days (expires_in); refreshing only near the end
@@ -231,6 +235,10 @@ class OuraPlugin(SyncPlugin):
             # exchange below.
             "code_challenge": code_challenge,
             "code_challenge_method": "S256",
+            # Always show the consent screen, so a re-authorisation
+            # replaces an earlier grant - an unscoped one included -
+            # rather than silently reusing it.
+            "prompt": "consent",
         }
         return AUTH_URL + "?" + urllib.parse.urlencode(params)
 
@@ -376,6 +384,18 @@ class OuraPlugin(SyncPlugin):
                  clock.now_utc().replace(microsecond=0))
         samples = _heart_rate(api, lo, hi)
 
+        nothing = not (daily or sessions or workouts or samples)
+        if nothing and api.scope_refusals:
+            # Every type that answered refused for want of a scope: a
+            # token without the permissions, not a quiet day. Fail, so
+            # the source says so instead of "synced".
+            raise RuntimeError(
+                f"Oura granted none of the data this sync asked for "
+                f"({', '.join(sorted(set(api.scope_refusals)))} refused for scope) - "
+                "Re-authenticate in the Oura source's Settings and leave every "
+                "permission ticked"
+            )
+
         for day, values in daily.items():
             for metric, value in values.items():
                 write_metric(conn, day, self.id, metric, value)
@@ -397,6 +417,15 @@ class _AuthError(RuntimeError):
     """Oura refused this sync's token even after a refresh: the sync fails."""
 
 
+def _scope_refusal(resp):
+    """Oura's reason, when a 401 is a scope the token wasn't granted
+    ("Token is not authorized access daily scope") rather than a bad
+    token, else None. Such a 401 costs only its own data type: a refresh
+    can't add a scope, so none is spent on it."""
+    text = (resp.text or "")[:300]
+    return text if "scope" in text.lower() else None
+
+
 class _Api:
     """One sync's requests: the bearer token, the User-Agent, pagination,
     and one refresh-and-retry when Oura answers 401 to a token it issued."""
@@ -405,6 +434,7 @@ class _Api:
         self.plugin, self.conn = plugin, conn
         self.token = plugin._access_token(conn)
         self.refreshed = False
+        self.scope_refusals = []  # paths refused for a scope not granted
 
     def get(self, path, params):
         for attempt in (1, 2):
@@ -416,8 +446,17 @@ class _Api:
             )
             if resp.status_code != 401:
                 break
+            refusal = _scope_refusal(resp)
+            if refusal:
+                self.scope_refusals.append(path)
+                raise RuntimeError(
+                    f"not granted ({refusal}) - Re-authenticate in the Oura source's "
+                    "Settings and leave every permission ticked"
+                )
             if self.refreshed:
-                raise _AuthError(f"Oura refused the access token for {path} (401)")
+                raise _AuthError(
+                    f"Oura refused the access token for {path} (401: {resp.text[:200]})"
+                )
             # A stored token Oura no longer honours (revoked, or expired
             # early): refresh once for the whole sync and ask again.
             self.token = self.plugin._access_token(self.conn, force_refresh=True)
