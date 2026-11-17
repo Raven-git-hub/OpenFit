@@ -1,7 +1,7 @@
 # OpenFit
 
 Self-hosted middleware for your health and fitness data. OpenFit pulls data from
-the devices you own (Garmin, Google Health / Fitbit, soon Oura and others),
+the devices you own (Garmin, Google Health / Fitbit, Oura, and others),
 normalises it into one dataset you own — the **OpenFit Derived Data** — and
 exposes it to apps that read it. It runs in a single Docker container on your own
 hardware; nothing leaves your network except each connector's own call to its
@@ -50,6 +50,13 @@ what's parked.
   computed by Google) and SpO2 (a reading a minute while asleep), from Pixel
   Watch / Fitbit via Google's cloud Health API (not the legacy Fitbit Web API,
   retired September 2026).
+- **Oura** plugin — steps, active and total calories, sedentary minutes,
+  moderate and vigorous minutes (Oura's medium and high activity), resting HR
+  (Oura's lowest heart rate of the night), HRV, respiration rate, SpO2, skin
+  temperature deviation from your baseline, VO2 max, sleep (a session per
+  night, nap or short sleep, with stages), workouts, and intraday heart rate
+  as Oura records it. Oura's scores (readiness, sleep, activity, stress,
+  resilience) are never read.
 - Scheduled background sync plus a manual sync (`POST /api/sync/<plugin>`), with
   device connections managed in-app and credentials encrypted at rest. Each
   source's sync frequency is set from its Settings popup: every 1h, 3h, 6h (the
@@ -104,7 +111,7 @@ curl -X POST http://<your-server-ip>:8080/api/webhook/<token> \
   `distance_m`, `floors`, `active_kcal`, `total_kcal`, `basal_kcal`,
   `sedentary_min`, `elevation_gain_m`, `intensity_moderate_min`,
   `intensity_vigorous_min`, `active_minutes`), vitals (`resting_hr_bpm`,
-  `hrv_ms`, `spo2_pct`, `respiratory_rate_brpm`, `skin_temperature`,
+  `hrv_ms`, `spo2_pct`, `respiratory_rate_brpm`, `skin_temperature`, `skin_temperature_deviation`,
   `body_temperature`, `blood_pressure_systolic`, `blood_pressure_diastolic`,
   `blood_glucose` in mmol/L), body composition (`weight_kg`, `body_fat_pct`,
   `bmi`, `height_cm`, `muscle_mass_kg`, `bone_mass_kg`, `body_water_pct`,
@@ -779,6 +786,23 @@ removing the source, no re-entering the secret, and no revoking access at
 myaccount.google.com first: OpenFit asks Google with `prompt=consent`, so every
 authorization returns a fresh refresh token.
 
+### Oura plugin
+
+Oura uses OAuth too (personal access tokens were retired in December 2025), and
+the ring needs an active Oura Membership for the API to return data. The one-off
+Oura-side setup: at [cloud.ouraring.com/oauth/applications](https://cloud.ouraring.com/oauth/applications)
+create an API application, add `http://127.0.0.1:9109/` as its redirect URI
+(exactly that string), and enable the daily, heartrate, workout and SpO2 scopes.
+Then, under **Add source → Oura Ring**: paste the client ID and secret, press
+**Get authorization link**, approve on Oura, and paste back the address the
+browser fails to load, as for Google.
+
+Oura's refresh tokens work once: each refresh hands back the next. OpenFit
+stores the new one straight away (and reuses the access token, which lasts
+weeks, so most syncs don't refresh at all). If a refresh is ever lost in transit
+the sync fails saying so; **Settings → Re-authenticate** fixes it, keeping the
+source's data, cadence and roles.
+
 ## Admin
 
 The **OpenFit Admin** is a small web admin, in its own container on port 8090,
@@ -976,6 +1000,7 @@ app/
     __init__.py               PLUGINS registry — one line per installed plugin
     garmin/plugin.py          Garmin Connect
     google_health/plugin.py   Google Health API (Pixel Watch / Fitbit)
+    oura/plugin.py            Oura Ring (Oura API v2)
   metrics.py                  Canonical metric, session and series vocabulary
   derived.py                  Picks the one derived value per metric per day
   crypto.py                   Encrypt/decrypt for stored device credentials
@@ -1084,15 +1109,17 @@ goes in as a session with `write_session(conn, self.id, kind, start, end,
 summary)`, `kind` a session kind from the same module: a night's sleep
 (`SLEEP`) or a workout (`WORKOUT`), neither with a daily metric. Register
 it with one line in `app/plugins/__init__.py` — no changes to
-`main.py`, the API, or the UI. Oura's clean public API makes it the natural next
-plugin.
+`main.py`, the API, or the UI. A provider that rotates its tokens (Oura's
+single-use refresh tokens) stores the new ones with `self.replace_credentials()`
+— see `app/plugins/oura/plugin.py`.
 
 ## Privacy & security
 
 - Everything lives in the SQLite volume on your machine. Nothing leaves your
   network except each plugin's own calls to its own data source.
 - Google Health uses a standard OAuth refresh token, revocable anytime from your
-  Google account permissions; Garmin uses the password only for the first login,
+  Google account permissions; Oura likewise, revocable from the Oura app or
+  cloud.ouraring.com; Garmin uses the password only for the first login,
   then a cached session token.
 - One account per OpenFit, signed in with a password (a werkzeug hash in
   `/data/auth.json`, 0600, never in the database). Locked until it's set. It's

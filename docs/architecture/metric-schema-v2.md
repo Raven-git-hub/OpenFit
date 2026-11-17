@@ -133,6 +133,7 @@ catches garbage, not unusual days.
 | spo2_pct | % | Vitals | daily | 50–100 |
 | respiratory_rate_brpm | brpm | Vitals | daily | 3–60 |
 | skin_temperature | °C | Vitals | daily | 20–45 |
+| skin_temperature_deviation | °C | Vitals | daily | −10–10 |
 | body_temperature | °C | Vitals | instant | 30–45 |
 | blood_pressure_systolic | mmHg | Vitals | instant | 50–250 |
 | blood_pressure_diastolic | mmHg | Vitals | instant | 30–150 |
@@ -164,6 +165,12 @@ Notes:
   left Google's out; its v4 `daily-sleep-temperature-derivations` type also
   carries a `nightlyTemperatureCelsius` (the mean of the night's skin
   temperature samples), which is the one to weigh when it's picked up.
+- `skin_temperature_deviation` (added Nov 2026, with the Oura plugin) is that
+  other measurement: the night's skin temperature as °C above (+) or below (−)
+  the source's own baseline for the sleeper. Oura's `daily_readiness`
+  `temperature_deviation` fills it. Never converted into, or out of, an
+  absolute `skin_temperature`; two sources' deviations share the key but each
+  is against its own baseline.
 - `visceral_fat` is a unitless rating, as scales report it.
 - `mood` is a 1–5 scale.
 

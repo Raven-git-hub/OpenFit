@@ -59,7 +59,7 @@ def no_device_env(monkeypatch):
 def test_lists_every_plugin_with_its_manifest(client):
     found = connectors(client)
 
-    assert set(found) == {"garmin", "google_health"}
+    assert set(found) == {"garmin", "google_health", "oura"}
     for c in found.values():
         assert set(c) >= {"id", "name", "fields", "add_flow", "connected", "configured"}
         assert isinstance(c["fields"], list)
@@ -78,7 +78,7 @@ def test_lists_connectors_by_display_name(client, monkeypatch):
     names = [c["name"] for c in found]
 
     assert names == sorted(names, key=str.lower)
-    assert [c["id"] for c in found] == ["garmin", "google_health"]
+    assert [c["id"] for c in found] == ["garmin", "google_health", "oura"]
 
 
 def test_garmin_manifest_is_a_credentials_form(client):
@@ -101,7 +101,7 @@ def test_google_health_is_an_oauth_connector(client):
 
 
 def test_nothing_is_connected_on_a_fresh_install(client):
-    assert [c["connected"] for c in connectors(client).values()] == [False, False]
+    assert [c["connected"] for c in connectors(client).values()] == [False, False, False]
 
 
 # ---------- add / remove round trip ----------

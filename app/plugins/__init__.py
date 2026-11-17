@@ -9,11 +9,13 @@ and UI.
 
 from .garmin.plugin import GarminPlugin
 from .google_health.plugin import GoogleHealthPlugin
+from .oura.plugin import OuraPlugin
 
 PLUGINS = {
     p.id: p
     for p in [
         GarminPlugin(),
         GoogleHealthPlugin(),
+        OuraPlugin(),
     ]
 }

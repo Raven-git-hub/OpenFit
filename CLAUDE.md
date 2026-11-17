@@ -106,7 +106,11 @@ them), what's next and what's parked.
 - `app/plugins/` — sync (pull) plugins. Each `app/plugins/<name>/plugin.py`
   subclasses `SyncPlugin` (`app/plugins/base.py`), registered in `__init__.py`,
   declares a connector manifest (`fields`, `add_flow`), reads creds via
-  `self.get_credentials(conn)`, writes readings via `write_metric()`,
+  `self.get_credentials(conn)` (a provider that rotates its tokens stores
+  the new ones with `self.replace_credentials(conn, expected, updated)`:
+  compare-and-swap against the blob `stored_credentials()` read, UPDATE
+  only — never re-creating a removed account — committed at once, before
+  any reading is written; Oura is the one user), writes readings via `write_metric()`,
   interval records via `write_session()` and intraday samples via
   `write_sample()`. Never bypass this pattern. A plugin writes only what the
   device measured — never a source's no-data default (a 0/placeholder it
@@ -115,9 +119,10 @@ them), what's next and what's parked.
   docstring). Series, sessions, instant readings and the daily vitals meet
   this by nature (each exists, or is non-null, only where something was
   measured), so the one path gated is the daily activity accumulators a
-  source computes for the whole day regardless of wear — Garmin's (see
-  Data model). Google Health is compliant by construction: it returns a
-  daily point only for a day it has data. Don't extend the gate elsewhere.
+  source computes for the whole day regardless of wear — Garmin's and
+  Oura's (see Data model). Google Health is compliant by construction: it
+  returns a daily point only for a day it has data. Don't extend the gate
+  elsewhere.
 - `app/metrics.py` — the canonical vocabulary, schema v2
   (`docs/architecture/metric-schema-v2.md`). One table, `METRIC_DEFS`, gives
   each metric its unit, category, grain and plausible range
@@ -2735,7 +2740,7 @@ them), what's next and what's parked.
 - Current: a tidy `metrics(date, source, metric, value, unit, synced_at)` keyed
   `(date, source, metric)` — one row per reading, so a new metric is data not a
   migration. Keys, units, categories, grains and plausible ranges come from
-  `app/metrics.py` — the v2 vocabulary, 35 keys (beside them, at the
+  `app/metrics.py` — the v2 vocabulary, 36 keys (beside them, at the
   call sites with app context, each installed app's own, `app:<id>:<key>`
   — below) (the full table is
   `docs/architecture/metric-schema-v2.md`). Activity: `steps`/count,
@@ -2743,7 +2748,9 @@ them), what's next and what's parked.
   (kcal), `sedentary_min`/min, `elevation_gain_m`/m,
   `intensity_moderate_min`, `intensity_vigorous_min`, `active_minutes` (min).
   Vitals: `resting_hr_bpm`/bpm, `hrv_ms`/ms, `spo2_pct`/%,
-  `respiratory_rate_brpm`/brpm, `skin_temperature`/°C (absolute), and the
+  `respiratory_rate_brpm`/brpm, `skin_temperature`/°C (absolute),
+  `skin_temperature_deviation`/°C (from the source's own baseline — law 3,
+  never converted to or from an absolute; Oura fills it), and the
   instant `body_temperature`/°C, `blood_pressure_systolic`/`_diastolic`
   (mmHg), `blood_glucose`/mmol/L. Body composition, all instant:
   `weight_kg`/kg, `body_fat_pct`/%, `bmi`/kg/m2, `height_cm`/cm,
@@ -2867,6 +2874,42 @@ them), what's next and what's parked.
   intraday series as `samples` (see below). Not fetched: `basal_kcal`
   (`basal-energy-burned` has no rollup in v4, only raw interval points),
   body composition, nutrition and skin temperature.
+  Oura (`app/plugins/oura/plugin.py`, Oura API v2, OAuth only — PATs went in
+  Dec 2025) reads every daily type over the same window, asking `start_date`
+  = the window's first day and `end_date` = the day after today (inclusivity
+  undocumented) and dropping a document whose `day` is outside it.
+  `daily_activity` (Oura's 4am–4am day): `steps`, `active_calories` →
+  `active_kcal`, `total_calories` → `total_kcal`, and the seconds
+  `sedentary_time` / `medium_activity_time` / `high_activity_time` →
+  `sedentary_min` / `intensity_moderate_min` / `intensity_vigorous_min`
+  (`/ 60`, rounded; Oura's own MET bands filed as the WHO split — decided
+  Nov 2026: a close translation rather than a confirmed identity).
+  Its wear gate, `_worn()`: a day with every `class_5_min` mark `'0'`
+  (non-wear) — or, without it, `non_wear_time` ≥ 86400 — files no activity
+  at all (such a day's steps 0 and resting-rate total would be defaults;
+  whether Oura sends one is unconfirmed on a real account). Never `equivalent_walking_distance` (activity expressed as
+  walking, not distance — law 3), the MET minutes or any score. From
+  `sleep`, each period of `FILED_SLEEP_TYPES` (`long_sleep`, `sleep`,
+  `late_nap`; `rest` and `deleted` skipped, decided Nov 2026) is a sleep session
+  (below), and the day's `long_sleep` (the longest if two) gives
+  `lowest_heart_rate` → `resting_hr_bpm` (what Oura's app calls resting HR;
+  30-second samples, so lower than other vendors' — decided Nov 2026),
+  `average_hrv` → `hrv_ms`, `average_breath` → `respiratory_rate_brpm`, on
+  its `day` (the day it ends). `daily_spo2` `spo2_percentage.average` →
+  `spo2_pct`; `daily_readiness` `temperature_deviation` →
+  `skin_temperature_deviation`; `vO2_max` `vo2_max` → `vo2_max`. Values
+  outside `PLAUSIBLE_RANGES` (Oura's SpO2 0) are logged, not filed. Tokens:
+  Oura's refresh tokens are single-use, so the account blob also keeps
+  `access_token` and `access_token_expires_at` (epoch s; ~30 days), the
+  stored token reused until `ACCESS_TOKEN_MARGIN_SECONDS` (1h) from expiry;
+  a refresh's rotated tokens go through `replace_credentials()` before any
+  data request, and a refused CAS (re-authorised or removed meanwhile)
+  fails the sync. A 401 refreshes once per sync and retries; a second 401
+  fails it. Every request carries a User-Agent (Oura 403s without). Scopes:
+  `SCOPES` = daily, heartrate, workout, spo2 (Oura's docs say `spo2Daily`;
+  integrators report `spo2` — the one line to change). Each type is its own
+  fetch; a failed one costs only its data. Mappings confirmed against the
+  OpenAPI spec (1.37), not yet a real sync.
   Migration `005` unpivoted the old wide `activity` table into it and dropped
   `activity`; migration `006` moved the old `weights` table in as `weight_kg`
   readings under source `manual` (hand entry; `synced_at` NULL for migrated
@@ -2971,7 +3014,8 @@ them), what's next and what's parked.
   - `sleep` — one session per night/nap, summary in minutes: `asleep_minutes`
     plus `light_minutes`/`deep_minutes`/`rem_minutes`/`awake_minutes` (the
     source's totals, never recomputed); plus, where the source gives them
-    (Google today, Garmin not yet), `main_sleep`, `utc_offset_minutes`, the
+    (Google and Oura today, Garmin not yet), `latency_minutes` (Oura),
+    `main_sleep`, `utc_offset_minutes`, the
     `stages` timeline (`[{start, end, stage}]`, stage from `SLEEP_STAGES` in
     `metrics.py`, unmapped types → `"unknown"`, logged) and `brief_wakes`
     (`[{start, end}]`, an overlay, not awake time). A segment that can't be
@@ -2982,7 +3026,9 @@ them), what's next and what's parked.
     files one.
   - `workout` — one session per activity, and no daily metric: `type` (the
     source's activity type, lowercased — not yet mapped across sources),
-    `duration_minutes`, `distance_m`, `avg_hr_bpm`, `calories_kcal`.
+    `duration_minutes`, `distance_m`, `avg_hr_bpm`, `calories_kcal`. Oura's
+    carry `type`, `distance_m` and `calories_kcal` only: it reports no
+    pause-excluding duration and no average HR for a workout.
   - `duties_rostered` / `duties_complete` (category Roster) — one session
     per work duty off a roster, its `start`/`end` the duty's envelope
     (report to release, UTC); `duties_complete` if it had ended when filed,
@@ -3056,6 +3102,12 @@ them), what's next and what's parked.
   keys. Samples don't count toward a sync's days written (as with Garmin).
   Names are the v4 discovery doc's (`HeartRateRollupValue`,
   `OxygenSaturation`), not yet confirmed by a real sync.
+  Oura is the third `heart_rate` source (no SpO2 or respiration series in
+  its API): `heartrate` rows, `start_datetime`/`end_datetime` over the same
+  local-midnight-to-now span in back-to-back windows of `MAX_SERIES_DAYS`
+  (7), every page followed; each row's `bpm`, rounded, at its own
+  `timestamp` — Oura's own cadence (~5 min at rest, seconds in a workout),
+  never resampled. A non-positive bpm or unusable time is dropped, logged.
   Nothing derives from samples; apps read them through the access contract
   (`GET /api/series/<metric>`, below) as a per-source passthrough — Garmin's
   and Google's heart rate (and SpO2) both listed, each tagged. The
