@@ -791,8 +791,9 @@ authorization returns a fresh refresh token.
 Oura uses OAuth too (personal access tokens were retired in December 2025), and
 the ring needs an active Oura Membership for the API to return data. The one-off
 Oura-side setup: at [cloud.ouraring.com/oauth/applications](https://cloud.ouraring.com/oauth/applications)
-create an API application, add `http://127.0.0.1:9109/` as its redirect URI
-(exactly that string), and enable the daily, heartrate, workout and SpO2 scopes.
+create an API application, add `http://localhost:9109/` as its redirect URI
+(exactly that string - Oura takes plain `http` only for `localhost`, so not the
+`127.0.0.1` address Google uses), and enable the daily, heartrate, workout and SpO2 scopes.
 Then, under **Add source → Oura Ring**: paste the client ID and secret, press
 **Get authorization link**, approve on Oura, and paste back the address the
 browser fails to load, as for Google.

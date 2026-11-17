@@ -201,16 +201,21 @@ def test_oura_is_a_registered_oauth_connector():
     assert plugin.add_flow == "oauth"
     assert [f["key"] for f in plugin.fields] == ["client_id", "client_secret"]
     assert {f["key"]: f["type"] for f in plugin.fields}["client_secret"] == "password"
-    assert OAUTH_REDIRECT_URI in plugin.add_note
+    # Oura takes plain http only for "localhost": its own redirect, named
+    # in the setup note, not the shared 127.0.0.1 one.
+    assert plugin.oauth_redirect_uri == "http://localhost:9109/"
+    assert plugin.oauth_redirect_uri != OAUTH_REDIRECT_URI
+    assert plugin.oauth_redirect_uri in plugin.add_note
+    assert "127.0.0.1" not in plugin.add_note
 
 
 def test_the_consent_url_asks_for_the_scopes_read_and_carries_pkce():
-    url = OuraPlugin().oauth_auth_url(CLIENT, OAUTH_REDIRECT_URI, "challenge-123")
+    url = OuraPlugin().oauth_auth_url(CLIENT, "http://localhost:9109/", "challenge-123")
     assert url.startswith("https://cloud.ouraring.com/oauth/authorize?")
     params = urllib.parse.parse_qs(urllib.parse.urlsplit(url).query)
     assert params["response_type"] == ["code"]
     assert params["client_id"] == ["oura-client"]
-    assert params["redirect_uri"] == [OAUTH_REDIRECT_URI]
+    assert params["redirect_uri"] == ["http://localhost:9109/"]
     assert params["scope"] == [" ".join(SCOPES)]
     assert params["code_challenge"] == ["challenge-123"]
     assert params["code_challenge_method"] == ["S256"]
@@ -226,15 +231,18 @@ def test_adding_through_the_routes_stores_both_tokens(client, db_path, monkeypat
 
     start = client.post("/api/connectors/oura/oauth/start", json=CLIENT)
     assert start.status_code == 200
+    # The consent URL and the exchange both carry Oura's own redirect.
+    consent = urllib.parse.parse_qs(urllib.parse.urlsplit(start.get_json()["auth_url"]).query)
+    assert consent["redirect_uri"] == ["http://localhost:9109/"]
     resp = client.post("/api/connectors/oura/oauth/finish",
-                       json={"code": f"{OAUTH_REDIRECT_URI}?code=the-code&scope=daily"})
+                       json={"code": "http://localhost:9109/?code=the-code&scope=daily"})
     assert resp.get_json() == {"ok": True}
 
     exchange = fake.token_posts[0]
     assert exchange["grant_type"] == "authorization_code"
     assert exchange["code"] == "the-code"
     assert exchange["code_verifier"]
-    assert exchange["redirect_uri"] == OAUTH_REDIRECT_URI
+    assert exchange["redirect_uri"] == "http://localhost:9109/"
 
     conn = sqlite3.connect(db_path)
     creds = stored(conn)

@@ -25,7 +25,7 @@ import auth
 from clock import DEFAULT_ZONE, PROFILE_PREFIX, TIMEZONE_KEY, is_zone, stored_zone, user_today, zones
 from migrations import connect, run_migrations
 from plugins import PLUGINS
-from plugins.base import OAUTH_REDIRECT_URI, write_metric
+from plugins.base import write_metric
 from apps import (
     INSTALL_ID,
     LIBRARY_SOURCE,
@@ -2306,7 +2306,8 @@ def connect_connector(plugin_id):
 # provider to redirect back to: OpenFit is self-hosted, on whatever
 # address this container happens to have, with no domain and no hosted
 # callback. So consent lands on a loopback URL the app doesn't serve
-# (OAUTH_REDIRECT_URI - see plugins/base.py), the browser shows a
+# (the plugin's oauth_redirect_uri, OAUTH_REDIRECT_URI unless it says
+# otherwise - see plugins/base.py), the browser shows a
 # "can't connect" page with ?code=... in the address bar, and the human
 # pastes that back. No inbound callback, nothing registered with the
 # provider beyond a desktop-app client.
@@ -2412,7 +2413,7 @@ def start_oauth(plugin_id):
 
     verifier, challenge = _pkce_pair()
     try:
-        auth_url = plugin.oauth_auth_url(values, OAUTH_REDIRECT_URI, challenge)
+        auth_url = plugin.oauth_auth_url(values, plugin.oauth_redirect_uri, challenge)
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
 
@@ -2455,7 +2456,7 @@ def finish_oauth(plugin_id):
 
     try:
         credentials = plugin.oauth_exchange(
-            pending["credentials"], code, pending["code_verifier"], OAUTH_REDIRECT_URI
+            pending["credentials"], code, pending["code_verifier"], plugin.oauth_redirect_uri
         )
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 400
