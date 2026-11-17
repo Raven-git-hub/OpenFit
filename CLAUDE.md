@@ -2921,7 +2921,10 @@ them), what's next and what's parked.
   the scope, and its tokens are refused by every data route (401 "Token is
   not authorized access daily scope" — met on Andy's account, Nov 2026).
   `SCOPES` = `extapi:daily`, `extapi:heartrate`, `extapi:workout`,
-  `extapi:spo2`. A 401 whose body names a scope (`_scope_refusal()`) is no
+  `extapi:spo2`, `extapi:heart_health` (undocumented; `vO2_max` needs it).
+  Every type logs one line a sync — documents returned, the days they
+  span, any dropped as outside the window — plus sleep periods by type and
+  heart-rate rows returned vs filed, so the log says what Oura sent. A 401 whose body names a scope (`_scope_refusal()`) is no
   bad token: it costs only that type, logged with how to fix it, and spends
   no refresh; a sync where every type answered so and nothing came back
   raises ("granted none of the data… Re-authenticate"), so the source
